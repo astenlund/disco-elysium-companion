@@ -4,6 +4,20 @@ function Get-ConsumptionSourceIdentity {
     return ConvertFrom-SourceIdentity -Value $Document.Materialized['source']
 }
 
+function Test-ConsumptionMeetsSourceFloor {
+    param([Parameter(Mandatory)] [CompanionJsonValue] $Document, [Parameter(Mandatory)] $Floor)
+
+    $comparison = Compare-SourceIdentity -Left (Get-ConsumptionSourceIdentity -Document $Document) -Right $Floor
+
+    return $comparison.comparable -and $comparison.order -ge 0
+}
+
+function Complete-ConsumePayload {
+    param([Parameter(Mandatory)] [AllowNull()] $Payload, [Parameter(Mandatory)] [bool] $CacheDegraded, [Parameter(Mandatory)] [CompanionWarningSink] $WarningSink)
+
+    if ($Payload -is [TurnContextPayloadCandidate]) { $Payload.Complete($CacheDegraded, $WarningSink.Freeze()) }
+}
+
 function New-ConsumePayload {
     [CmdletBinding(DefaultParameterSetName = 'Raw')]
     param(
@@ -20,9 +34,7 @@ function New-ConsumePayload {
     }
     if ($PSCmdlet.ParameterSetName -cne 'Private') { throw [CompanionDiffSemanticException]::new('Private payload requires state and context.') }
 
-    $stateSource = Get-ConsumptionSourceIdentity -Document $State
-    $comparison = Compare-SourceIdentity -Left $stateSource -Right $Context.SourceFloor
-    if (-not $comparison.comparable -or $comparison.order -lt 0) { throw [CompanionDiffSemanticException]::new('Private payload state does not meet its source floor.') }
+    if (-not (Test-ConsumptionMeetsSourceFloor -Document $State -Floor $Context.SourceFloor)) { throw [CompanionDiffSemanticException]::new('Private payload state does not meet its source floor.') }
     if ($Diff.RootElement.GetProperty('adapterVersion').GetInt64() -ne $State.RootElement.GetProperty('adapterVersion').GetInt64() -or -not [string]::Equals($Diff.RootElement.GetProperty('game').GetString(), $State.RootElement.GetProperty('game').GetString(), [StringComparison]::Ordinal)) { throw [CompanionDiffSemanticException]::new('Private payload documents are incompatible.') }
 
     return [TurnContextPayloadCandidate]::new($Diff, $State, $Context)
@@ -67,9 +79,8 @@ function Invoke-CompanionConsumption {
             return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $detail
         }
         $target = $current.document
-        if ($null -ne $SourceFloor) {
-            $floorRelation = Compare-SourceIdentity -Left (Get-ConsumptionSourceIdentity -Document $target) -Right $SourceFloor
-            if (-not $floorRelation.comparable -or $floorRelation.order -lt 0) { return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'source-floor-not-met' }
+        if ($null -ne $SourceFloor -and -not (Test-ConsumptionMeetsSourceFloor -Document $target -Floor $SourceFloor)) {
+            return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'source-floor-not-met'
         }
 
         $baselineRead = & $ReadBaseline $CompanionRoot
@@ -117,7 +128,7 @@ function Invoke-CompanionConsumption {
             & $WriteBaseline $CompanionRoot $target
         }
         catch {
-            if ($payload -is [TurnContextPayloadCandidate]) { $payload.Complete($false, $WarningSink.Freeze()) }
+            Complete-ConsumePayload -Payload $payload -CacheDegraded $false -WarningSink $WarningSink
 
             return New-ConsumptionResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -Payload $payload -CacheDegraded $false -Detail 'baseline-write-failed'
         }
@@ -132,19 +143,19 @@ function Invoke-CompanionConsumption {
                 $cache = New-EmptyDiff -Target $target
             }
             else {
-                if ($payload -is [TurnContextPayloadCandidate]) { $payload.Complete($true, $WarningSink.Freeze()) }
+                Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
 
                 return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-target-invalid'
             }
             & $WriteCache $CompanionRoot $cache
         }
         catch {
-            if ($payload -is [TurnContextPayloadCandidate]) { $payload.Complete($true, $WarningSink.Freeze()) }
+            Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
 
             return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-write-failed'
         }
 
-        if ($payload -is [TurnContextPayloadCandidate]) { $payload.Complete($false, $WarningSink.Freeze()) }
+        Complete-ConsumePayload -Payload $payload -CacheDegraded $false -WarningSink $WarningSink
 
         return New-ConsumptionResult -OutcomeClass 'success' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $false -Detail $null
     }
