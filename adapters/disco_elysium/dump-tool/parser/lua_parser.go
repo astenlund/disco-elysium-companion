@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -95,9 +97,35 @@ func (t *Table) StringMap() (map[string]any, error) {
 	return result, nil
 }
 
+// StringEntry returns the raw-string-keyed value of a hash-only string-keyed
+// table without copying; the second result is false for any other table shape
+// or a missing key.
+func (t *Table) StringEntry(key string) (any, bool) {
+	if t.arrayCount != 0 || !t.stringOnly {
+		return nil, false
+	}
+	value, exists := t.stringEntries[key]
+
+	return value, exists
+}
+
+// EachStringEntry visits every raw-string-keyed entry of a hash-only
+// string-keyed table until visit returns false; any other table shape visits
+// nothing.
+func (t *Table) EachStringEntry(visit func(key string, value any) bool) {
+	if t.arrayCount != 0 || !t.stringOnly {
+		return
+	}
+	for key, value := range t.stringEntries {
+		if !visit(key, value) {
+			return
+		}
+	}
+}
+
 // LuaParser owns one TLV input cursor and its shared materialization budget.
 type LuaParser struct {
-	R             *bytes.Reader
+	reader        *bytes.Reader
 	budget        *MaterializationBudget
 	maxTableDepth int
 	projector     keyProjector
@@ -118,7 +146,7 @@ func New(data []byte, budget *MaterializationBudget, depthLimit ...int) *LuaPars
 	}
 
 	return &LuaParser{
-		R:             bytes.NewReader(data),
+		reader:        bytes.NewReader(data),
 		budget:        budget,
 		maxTableDepth: limit,
 		projector: keyProjector{
@@ -139,7 +167,7 @@ func New(data []byte, budget *MaterializationBudget, depthLimit ...int) *LuaPars
 func (p *LuaParser) read7BitInt() (uint32, error) {
 	var result uint32
 	for index := uint(0); index < 5; index++ {
-		value, err := p.R.ReadByte()
+		value, err := p.reader.ReadByte()
 		if err != nil {
 			return 0, err
 		}
@@ -162,14 +190,14 @@ func (p *LuaParser) readString() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("string length: %w", err)
 	}
-	if uint64(length) > uint64(p.R.Len()) {
-		return "", fmt.Errorf("string length %d exceeds remaining input (%d bytes)", length, p.R.Len())
+	if uint64(length) > uint64(p.reader.Len()) {
+		return "", fmt.Errorf("string length %d exceeds remaining input (%d bytes)", length, p.reader.Len())
 	}
 	if err := p.budget.Reserve(0, 0, int64(length)); err != nil {
 		return "", err
 	}
 	body := make([]byte, int(length))
-	if _, err := io.ReadFull(p.R, body); err != nil {
+	if _, err := io.ReadFull(p.reader, body); err != nil {
 		return "", fmt.Errorf("string body: %w", err)
 	}
 	if !utf8.Valid(body) {
@@ -184,15 +212,15 @@ func (p *LuaParser) readStringKey() (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("string length: %w", err)
 	}
-	if uint64(length) > uint64(p.R.Len()) {
-		return "", "", fmt.Errorf("string length %d exceeds remaining input (%d bytes)", length, p.R.Len())
+	if uint64(length) > uint64(p.reader.Len()) {
+		return "", "", fmt.Errorf("string length %d exceeds remaining input (%d bytes)", length, p.reader.Len())
 	}
 	retainedBytes := int64(length)*2 + 2
 	if err := p.budget.Reserve(0, 0, retainedBytes); err != nil {
 		return "", "", err
 	}
 	body := make([]byte, int(length))
-	if _, err := io.ReadFull(p.R, body); err != nil {
+	if _, err := io.ReadFull(p.reader, body); err != nil {
 		return "", "", fmt.Errorf("string body: %w", err)
 	}
 	if !utf8.Valid(body) {
@@ -205,7 +233,7 @@ func (p *LuaParser) readStringKey() (string, string, error) {
 
 func (p *LuaParser) readNumber() (float64, error) {
 	var value float64
-	if err := binary.Read(p.R, binary.LittleEndian, &value); err != nil {
+	if err := binary.Read(p.reader, binary.LittleEndian, &value); err != nil {
 		return 0, fmt.Errorf("number: %w", err)
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
@@ -216,7 +244,7 @@ func (p *LuaParser) readNumber() (float64, error) {
 }
 
 func (p *LuaParser) readBoolean() (bool, error) {
-	value, err := p.R.ReadByte()
+	value, err := p.reader.ReadByte()
 	if err != nil {
 		return false, fmt.Errorf("boolean: %w", err)
 	}
@@ -240,11 +268,36 @@ func numericKey(value float64) string {
 	return fmt.Sprintf("n:%016x", math.Float64bits(value))
 }
 
+// ValidProjectedKey reports whether key belongs to the grammar the keyProjector
+// emits: "s:<string>", "b:0"/"b:1", or "n:<16 lowercase hex>" holding the bits
+// of a finite, non-negative-zero float64. Consumers validating projected TLV
+// objects dispatch through this instead of restating the grammar.
+func ValidProjectedKey(key string) bool {
+	if strings.HasPrefix(key, "s:") || key == "b:0" || key == "b:1" {
+		return true
+	}
+	if len(key) != 18 || !strings.HasPrefix(key, "n:") {
+		return false
+	}
+	for _, character := range key[2:] {
+		if character < '0' || character > '9' && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	bits, err := strconv.ParseUint(key[2:], 16, 64)
+	if err != nil || bits == 1<<63 {
+		return false
+	}
+	value := math.Float64frombits(bits)
+
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
 func (p *LuaParser) readKey() (string, string, bool, error) {
 	if err := p.budget.Reserve(1, 0, 0); err != nil {
 		return "", "", false, err
 	}
-	typeByte, err := p.R.ReadByte()
+	typeByte, err := p.reader.ReadByte()
 	if err != nil {
 		return "", "", false, err
 	}
@@ -290,7 +343,7 @@ func (p *LuaParser) readValue(tableDepth int) (any, error) {
 	if err := p.budget.Reserve(1, 0, 0); err != nil {
 		return nil, err
 	}
-	typeByte, err := p.R.ReadByte()
+	typeByte, err := p.reader.ReadByte()
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +366,7 @@ func (p *LuaParser) readValue(tableDepth int) (any, error) {
 
 		return p.readTable(tableDepth + 1)
 	default:
-		offset := p.R.Size() - int64(p.R.Len()) - 1
+		offset := p.reader.Size() - int64(p.reader.Len()) - 1
 
 		return nil, fmt.Errorf("unknown type byte 0x%02X at offset %d", typeByte, offset)
 	}
@@ -321,10 +374,10 @@ func (p *LuaParser) readValue(tableDepth int) (any, error) {
 
 func (p *LuaParser) readTable(tableDepth int) (*Table, error) {
 	var arrayCount int32
-	if err := binary.Read(p.R, binary.LittleEndian, &arrayCount); err != nil {
+	if err := binary.Read(p.reader, binary.LittleEndian, &arrayCount); err != nil {
 		return nil, fmt.Errorf("table array count: %w", err)
 	}
-	if arrayCount < 0 || int64(arrayCount) > int64(p.R.Len()) {
+	if arrayCount < 0 || int64(arrayCount) > int64(p.reader.Len()) {
 		return nil, fmt.Errorf("invalid table array count %d", arrayCount)
 	}
 	if err := p.budget.Reserve(0, int64(arrayCount), 0); err != nil {
@@ -349,10 +402,10 @@ func (p *LuaParser) readTable(tableDepth int) (*Table, error) {
 	}
 
 	var hashCount int32
-	if err := binary.Read(p.R, binary.LittleEndian, &hashCount); err != nil {
+	if err := binary.Read(p.reader, binary.LittleEndian, &hashCount); err != nil {
 		return nil, fmt.Errorf("table hash count: %w", err)
 	}
-	if hashCount < 0 || int64(hashCount) > int64(p.R.Len()) {
+	if hashCount < 0 || int64(hashCount) > int64(p.reader.Len()) {
 		return nil, fmt.Errorf("invalid table hash count %d", hashCount)
 	}
 	if err := p.budget.Reserve(0, int64(hashCount), 0); err != nil {
@@ -384,7 +437,7 @@ func (p *LuaParser) readTable(tableDepth int) (*Table, error) {
 // ReadTopLevel reads every top-level value in order and propagates every failure.
 func (p *LuaParser) ReadTopLevel() ([]any, error) {
 	var values []any
-	for p.R.Len() > 0 {
+	for p.reader.Len() > 0 {
 		value, err := p.ReadValue()
 		if err != nil {
 			return nil, err
@@ -400,5 +453,5 @@ func (p *LuaParser) ReadTopLevel() ([]any, error) {
 
 // Remaining reports unread bytes.
 func (p *LuaParser) Remaining() int {
-	return p.R.Len()
+	return p.reader.Len()
 }

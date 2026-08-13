@@ -594,11 +594,13 @@ func validateJSONMember(data []byte) (json.RawMessage, error) {
 		return nil, fmt.Errorf("trailing-json: %w", err)
 	}
 
-	return json.RawMessage(append([]byte(nil), data...)), nil
+	// The archive member bytes are immutable once read, so the admitted member
+	// aliases them instead of copying.
+	return json.RawMessage(data), nil
 }
 
 func validateTopLevelTables(values []any) error {
-	if len(values) != 5 {
+	if len(values) != expectedTopLevelTableCount {
 		return fmt.Errorf("top-level-count-mismatch")
 	}
 	for _, value := range values {
@@ -610,44 +612,48 @@ func validateTopLevelTables(values []any) error {
 	return nil
 }
 
+func isVariableStore(table *parser.Table) bool {
+	probe, exists := table.StringEntry(variableProbeKey)
+	if !exists {
+		return false
+	}
+	if _, ok := probe.(int64); !ok {
+		return false
+	}
+	taskCount := 0
+	validTasks := true
+	table.EachStringEntry(func(key string, value any) bool {
+		if !strings.HasPrefix(key, "TASK.") {
+			return true
+		}
+		taskCount++
+		if _, ok := value.(bool); !ok {
+			validTasks = false
+		}
+
+		return true
+	})
+
+	return taskCount == expectedTaskVariableCount && validTasks
+}
+
 func findVariableStore(tables []any) (map[string]any, error) {
-	var match map[string]any
+	var match *parser.Table
 	for _, value := range tables {
 		table, ok := value.(*parser.Table)
-		if !ok {
-			continue
-		}
-		candidate, err := table.StringMap()
-		if err != nil {
-			continue
-		}
-		if _, ok := candidate[variableProbeKey].(int64); !ok {
-			continue
-		}
-		taskCount := 0
-		validTasks := true
-		for key, candidateValue := range candidate {
-			if !strings.HasPrefix(key, "TASK.") {
-				continue
-			}
-			taskCount++
-			if _, ok := candidateValue.(bool); !ok {
-				validTasks = false
-			}
-		}
-		if taskCount != expectedTaskVariableCount || !validTasks {
+		if !ok || !isVariableStore(table) {
 			continue
 		}
 		if match != nil {
 			return nil, fmt.Errorf("multiple-variable-store-matches")
 		}
-		match = candidate
+		match = table
 	}
 	if match == nil {
 		return nil, fmt.Errorf("no-variable-store-match")
 	}
 
-	return match, nil
+	return match.StringMap()
 }
 
 func buildDumpDocument(zipName string, archive *archiveContents, states parsedStates, variables map[string]any, tables []any, variablesOnly bool) (dumpDocument, error) {
@@ -902,27 +908,6 @@ func (validator *dumpJSONValidator) states(parentDepth int) error {
 	})
 }
 
-func validProjectedTLVKey(key string) bool {
-	if strings.HasPrefix(key, "s:") || key == "b:0" || key == "b:1" {
-		return true
-	}
-	if len(key) != 18 || !strings.HasPrefix(key, "n:") {
-		return false
-	}
-	for _, character := range key[2:] {
-		if character < '0' || character > '9' && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	bits, err := strconv.ParseUint(key[2:], 16, 64)
-	if err != nil || bits == 1<<63 {
-		return false
-	}
-	value := math.Float64frombits(bits)
-
-	return !math.IsNaN(value) && !math.IsInf(value, 0)
-}
-
 func (validator *dumpJSONValidator) tlvValue(parentDepth int) error {
 	token, err := validator.decoder.Token()
 	if err != nil {
@@ -959,7 +944,7 @@ func (validator *dumpJSONValidator) tlvValue(parentDepth int) error {
 			if !ok {
 				return fmt.Errorf("invalid-property-name")
 			}
-			if !validProjectedTLVKey(property) {
+			if !parser.ValidProjectedKey(property) {
 				return fmt.Errorf("invalid-projected-key")
 			}
 			if _, duplicate := seen[property]; duplicate {
@@ -986,7 +971,7 @@ func (validator *dumpJSONValidator) tlvObject(parentDepth int) error {
 
 func (validator *dumpJSONValidator) projectedTLVObject(parentDepth int) error {
 	_, err := validator.object(parentDepth, func(property string, depth int) error {
-		if !validProjectedTLVKey(property) {
+		if !parser.ValidProjectedKey(property) {
 			return fmt.Errorf("invalid-projected-key")
 		}
 
@@ -1012,7 +997,7 @@ func (validator *dumpJSONValidator) allTables(parentDepth int) error {
 		}
 		count++
 	}
-	if token, err := validator.decoder.Token(); err != nil || token != json.Delim(']') || count != 5 {
+	if token, err := validator.decoder.Token(); err != nil || token != json.Delim(']') || count != expectedTopLevelTableCount {
 		return fmt.Errorf("invalid-all-tables")
 	}
 

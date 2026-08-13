@@ -32,10 +32,10 @@ const (
 )
 
 var requiredSuffixes = [...]string{
-	".1st.ntwtf.json",
-	".2nd.ntwtf.json",
-	".ntwtf.lua",
-	".states.lua",
+	headerMember: ".1st.ntwtf.json",
+	worldMember:  ".2nd.ntwtf.json",
+	tlvMember:    ".ntwtf.lua",
+	statesMember: ".states.lua",
 }
 
 type directoryEntry struct {
@@ -312,7 +312,7 @@ func preflightArchive(path string) (*archiveManifest, error) {
 		if finalSlash == len(candidate)-1 {
 			return nil, fmt.Errorf("empty-logical-prefix-component")
 		}
-		if kind == 0 {
+		if memberKind(kind) == headerMember {
 			prefix = candidate
 		} else if candidate != prefix {
 			return nil, fmt.Errorf("mixed-logical-prefixes")
@@ -385,7 +385,12 @@ func readArchive(path string) (*archiveContents, error) {
 		}
 		contents.entries = append(contents.entries, file.Name)
 	}
-	memberDestinations := [...]*[]byte{&contents.members.header, &contents.members.world, &contents.members.tlv, &contents.members.states}
+	memberDestinations := [...]*[]byte{
+		headerMember: &contents.members.header,
+		worldMember:  &contents.members.world,
+		tlvMember:    &contents.members.tlv,
+		statesMember: &contents.members.states,
+	}
 	for kind, entryIndex := range manifest.required {
 		data, err := readRequiredMember(reader.File[entryIndex])
 		if err != nil {
