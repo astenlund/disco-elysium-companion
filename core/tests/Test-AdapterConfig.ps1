@@ -21,16 +21,7 @@ function New-AdapterFixture {
         [Parameter()] [string] $ValidatorModule = "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [System.Text.Json.JsonElement] `$RootElement) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n"
     )
 
-    $adapterRoot = Join-Path $Root "adapters/$Name"
-    [void] [IO.Directory]::CreateDirectory($adapterRoot)
-    [IO.File]::WriteAllText((Join-Path $adapterRoot 'adapter.json'), $AdapterJson, [Text.UTF8Encoding]::new($false))
-    $releaseRoot = Join-Path $adapterRoot 'releases/-9223372036854775808/schema-2'
-    [void] [IO.Directory]::CreateDirectory((Join-Path $releaseRoot "adapters/$Name"))
-    [void] [IO.Directory]::CreateDirectory((Join-Path $releaseRoot 'core'))
-    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/Validate-Digest.psm1"), $ValidatorModule, [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/Build-Digest.ps1"), "`n", [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/tool.exe"), "fixture`n", [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $releaseRoot 'core/DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false))
+    New-AdapterFixtureTree -Root $Root -Name $Name -AdapterJson $AdapterJson -ValidatorModule $ValidatorModule
 }
 
 function Test-StateProfileAdmitsIdentityAndDisposesLease {

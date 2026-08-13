@@ -308,6 +308,33 @@ function Assert-TreeFingerprintEqual {
     Assert-OrdinalEqual -Actual $actualJson -Expected $expectedJson -Message $Message
 }
 
+# Shared adapter-fixture release-tree builder: writes adapter.json verbatim and stages
+# the immutable release layout (validator, Build-Digest stub, optional dump tool,
+# release-local core placeholder) under the fixed Int64.MinValue version root that the
+# per-suite fixture wrappers assume.
+function New-AdapterFixtureTree {
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] [string] $AdapterJson,
+        [Parameter()] [string] $Name = 'example',
+        [Parameter()] [string] $ValidatorModule = "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [System.Text.Json.JsonElement] `$RootElement) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n",
+        [Parameter()] [switch] $OmitDumpTool
+    )
+
+    $adapterRoot = Join-Path $Root "adapters/$Name"
+    [void] [IO.Directory]::CreateDirectory($adapterRoot)
+    [IO.File]::WriteAllText((Join-Path $adapterRoot 'adapter.json'), $AdapterJson, [Text.UTF8Encoding]::new($false))
+    $releaseRoot = Join-Path $adapterRoot 'releases/-9223372036854775808/schema-2'
+    [void] [IO.Directory]::CreateDirectory((Join-Path $releaseRoot "adapters/$Name"))
+    [void] [IO.Directory]::CreateDirectory((Join-Path $releaseRoot 'core'))
+    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/Validate-Digest.psm1"), $ValidatorModule, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/Build-Digest.ps1"), "`n", [Text.UTF8Encoding]::new($false))
+    if (-not $OmitDumpTool) {
+        [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/tool.exe"), "fixture`n", [Text.UTF8Encoding]::new($false))
+    }
+    [IO.File]::WriteAllText((Join-Path $releaseRoot 'core/DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false))
+}
+
 function Invoke-InCompanionModule {
     param(
         [Parameter(Mandatory)] [scriptblock] $ScriptBlock,
@@ -322,4 +349,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree

@@ -566,20 +566,9 @@ function New-AdapterFixture {
         [Parameter()] [string] $SaveDirectory = 'C:\saves'
     )
 
-    $adapterRoot = Join-Path $Root "adapters/$Name"
-    [void] [IO.Directory]::CreateDirectory($adapterRoot)
     $escapedSave = $SaveDirectory.Replace('\', '\\')
     $adapterJson = '{"game":"example","adapterVersion":-9223372036854775808,"saveDirectory":"' + $escapedSave + '","saveGlob":"*.zip","maxSourceBytes":1,"dumpCommand":["{artifactRoot}/adapters/' + $Name + '/tool.exe","{save}","{dump}","{digest}","{adapterVersion}","{sourceDomainId}","{saveName}","{savedAt}","{sourceLength}","{sourceSha256}"],"dumpEntrypointIndex":0,"digestCommand":["pwsh","-NoProfile","-File","{artifactRoot}/adapters/' + $Name + '/Build-Digest.ps1","{dump}","{digest}","{adapterVersion}","{sourceDomainId}","{saveName}","{savedAt}","{sourceLength}","{sourceSha256}"],"digestEntrypointIndex":3,"diffExcludePaths":[],"ambientExtraPaths":[]}'
-    [IO.File]::WriteAllText((Join-Path $adapterRoot 'adapter.json'), $adapterJson, [Text.UTF8Encoding]::new($false))
-    $releaseRoot = Join-Path $adapterRoot 'releases/-9223372036854775808/schema-2'
-    [void] [IO.Directory]::CreateDirectory((Join-Path $releaseRoot "adapters/$Name"))
-    [void] [IO.Directory]::CreateDirectory((Join-Path $releaseRoot 'core'))
-    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/Validate-Digest.psm1"), $ValidatorModule, [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/Build-Digest.ps1"), "`n", [Text.UTF8Encoding]::new($false))
-    if (-not $OmitDumpTool) {
-        [IO.File]::WriteAllText((Join-Path $releaseRoot "adapters/$Name/tool.exe"), "fixture`n", [Text.UTF8Encoding]::new($false))
-    }
-    [IO.File]::WriteAllText((Join-Path $releaseRoot 'core/DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false))
+    New-AdapterFixtureTree -Root $Root -Name $Name -AdapterJson $adapterJson -ValidatorModule $ValidatorModule -OmitDumpTool:$OmitDumpTool
 }
 
 function Get-ReleaseConfigReason {
