@@ -29,17 +29,12 @@ can still fix it in the same session.
 
 ## Section 11 verification fixtures (deferred)
 
-Two Section 11 claims remain un-wired because their fixtures need cross-process
+One Section 11 claim remains un-wired because its fixtures need cross-process
 concurrency or live plumbing beyond the scratch unit harness. Deferred by user
-disposition 2026-08-11; the v2 cutover completed 2026-08-13, so each is now
-unblocked authoring work. (Claim 40 shipped 2026-08-13; see
-QUICK_WINS_HISTORY.md.)
-
-- **Staged wrapper fixture for claim 41 (Turn-context failure injection).** Needs a
-  staged wrapper/acquisition fixture: private attempt A returns
-  `[reset-write:not-consumed]`, a newer save lands, B consumes the newer target, only B
-  reaches stdout, A is discarded; plus the failure-injection boundary matrix.
-  Requires: none.
+disposition 2026-08-11; the v2 cutover completed 2026-08-13, so it is now
+unblocked authoring work. (Claims 40 and 41 shipped 2026-08-13; see
+QUICK_WINS_HISTORY.md. Claim 41's residual halves ride the three reason-taxonomy
+bugs filed in BUGS.md.)
 
 - **Staged acquisition fixture for claim 42 (Acquisition retry taxonomy).** Needs
   baseline-write-failure injection and multi-attempt cross-process declines beyond the

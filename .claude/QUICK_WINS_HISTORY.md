@@ -288,3 +288,25 @@ not to resolve dependencies.
   fail on "Consumer A freezes H2 under the lock", and anchor-count guards catch seam
   drift. The single-process equal-identity retention half remains covered by the
   Watcher `EqualIdentityRetention` selector.
+
+- Staged wrapper fixture for claim 41 (Turn-context failure injection), shipped
+  2026-08-13. The headline transaction fixture (`Test-TurnContext.ps1 -Only
+  WrapperTransactionSelection`, commit `3adc346`) runs the REAL `Get-TurnContext.ps1`
+  end-to-end for the first time in the suite: a runnable stub adapter release (per the
+  Test-Walk recipe), an env-gated one-shot baseline-write failure patched into the
+  staged `Consumption.ps1` that also drops a newer save at the failure point, and
+  assertions that only attempt B's envelope (the newer save) reaches stdout with the
+  baseline settled at B. The failure-injection boundary matrix landed across several
+  commits: envelope-serialize consumption-state preservation (`ce51d1a`, production
+  fix + `EnvelopeSerializeStatePreserved`), wrapper stdout [delivery] class
+  (`e79d424`, production fix + `WrapperDeliveryFailure`), raw emit reason split
+  (`4219dcc`), once-only payload-candidate completion (`c535290`), class-owned
+  `ConsumeResult.detail` registry policing (`4c73236`), and the private-mode /
+  boundary coverage batch (`e5dec33`: private compute path, private
+  cache-target-invalid, cache repair, stale/content-invalid fallbacks, context
+  constructor guards, poisoned-detail no-leak sweep) plus the wrapper
+  `degraded-select` scenario (`3adc346`). Both regression-guard fixtures run under
+  `-Group All`; the claim-verification fixtures are selector-gated per suite
+  convention. The claim's residual halves (per-stage reset-write reasons, the
+  nine-boundary adapter-validator matrix, freshness reason forcing) are filed as the
+  three reason-taxonomy bugs in `BUGS.md` (2026-08-13) and ride their fixes.
