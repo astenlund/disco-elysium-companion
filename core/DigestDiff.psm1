@@ -243,8 +243,6 @@ class TurnContextPayloadCandidate {
     [TurnContextPayloadContext] $Context
     [bool] $CacheDegraded
     [object] $Warnings
-    hidden [bool] $Serialized
-    hidden [bool] $Invalidated
 
     TurnContextPayloadCandidate([CompanionJsonValue] $Diff, [CompanionJsonValue] $State, [TurnContextPayloadContext] $Context) {
         $this.Diff = $Diff
@@ -255,17 +253,11 @@ class TurnContextPayloadCandidate {
     }
 
     [void] Complete([bool] $CacheDegraded, [object] $Warnings) {
-        $this.AssertMutable()
         if ($null -eq $Warnings) { throw [ArgumentNullException]::new('Warnings') }
 
         $this.CacheDegraded = $CacheDegraded
         $this.Warnings = $Warnings
     }
-
-    [void] MarkSerialized() { $this.AssertMutable(); $this.Serialized = $true }
-    [void] Invalidate() { $this.Invalidated = $true; $this.Diff = $null; $this.State = $null; $this.Context = $null; $this.Warnings = $null }
-    hidden [void] AssertUsable() { if ($this.Invalidated) { throw [InvalidOperationException]::new('Turn-context payload candidate is invalid.') } }
-    hidden [void] AssertMutable() { $this.AssertUsable(); if ($this.Serialized) { throw [InvalidOperationException]::new('Turn-context payload candidate was serialized.') } }
 }
 
 class ConsumeResult {

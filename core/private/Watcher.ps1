@@ -46,7 +46,7 @@ class WatcherCurrentReadResult {
     [string] $status
     [AllowNull()] [CompanionJsonValue] $digest
     WatcherCurrentReadResult([string] $Status, [CompanionJsonValue] $Digest) {
-        if ($Status -notin @('valid','absent','core-invalid','adapter-invalid','stale') -or (($Status -eq 'valid') -ne ($null -ne $Digest))) { throw [ArgumentException]::new('Invalid watcher current result.') }
+        if ($Status -notin @('valid','absent','core-invalid','stale') -or (($Status -eq 'valid') -ne ($null -ne $Digest))) { throw [ArgumentException]::new('Invalid watcher current result.') }
         $this.status=$Status; $this.digest=$Digest
     }
 }
