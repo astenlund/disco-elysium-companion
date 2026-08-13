@@ -175,3 +175,14 @@ not to resolve dependencies.
   that the warning vertical lives inside `SourceIdentity.ps1` (a misnamed module
   boundary) was already noted as consolidated in the backlog entry and remains a
   file-naming nit only.
+
+- Save-digest reason-vocabulary single-sourcing, shipped 2026-08-13 (commit `64da26b`,
+  from the v2 review tech-debt list). The copy/dump/digest reason lists now live once
+  as `$script:SaveDigestCopyReasons`/`DumpReasons`/`DigestReasons` beside
+  `SaveDigestStageException` in `DigestDiff.psm1` (digest = dump + the digest-only
+  reasons); the exception's legal-reasons switch reads them at construction
+  (probe-verified that a module class constructor resolves module-scope variables),
+  and `$script:TurnContextReasons` derives its `source` (four pre-copy reasons + the
+  copy list), `dump`, and `digest` classes from the same lists. Reason sets are
+  membership-checked only, so the `source` class's internal reordering is
+  behavior-neutral.
