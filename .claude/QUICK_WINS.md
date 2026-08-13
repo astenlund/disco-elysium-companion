@@ -68,20 +68,6 @@ unblocked authoring work.
   results.
   Requires: a window with the game running (user-scheduled).
 
-## Housekeeping
-
-- **Sweep the pre-migration `.tmp/` debris.** The 2026-08-12 revise sessions left heavy
-  scratch under `.tmp/`: the `revise-payload-*`/`revise-round*`/`build-round*` files and
-  logs, old debug scratch directories (`walk-staged-*`, `fixture-span-*`,
-  `scratch-turn-dbg`, `turn-wrapper-diag`, `state-debug*`, `probe`, `reap-debug`,
-  `replace-probe`, `gate-manual`), and the two cloned editor repos
-  (`disco-elysium-editor`, `upstream-save-editor`). All are disposable; the clones are
-  re-fetchable reference material, so confirm nothing still links to them before
-  deleting. Keep `state-extraction-v2-entry-fence.lock` (permanent fence
-  infrastructure). `.tmp/` is gitignored (the companion was git-ified 2026-08-13), so
-  this is purely disk cleanup with no version-control impact.
-  Requires: none.
-
 ## Version control / repository migration
 
 - **Move the companion from the AppData sibling to `C:\Git\disco-elysium-companion`.**

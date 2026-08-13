@@ -68,3 +68,22 @@ not to resolve dependencies.
   `ed168d8` (87 files, 22484 insertions). Repo-local `user.email a.stenlund@gmail.com` was
   set because the machine's global git config carries only `user.name`. Pushed to a new
   private GitHub repo `astenlund/disco-elysium-companion`.
+
+- Sweep the pre-migration `.tmp/` debris, shipped 2026-08-13 (208M reclaimed, disk-only;
+  `.tmp/` is gitignored). Deleted the enumerated set (revise/build round files and logs,
+  the debug scratch directories, the two re-fetchable editor clones after confirming the
+  only repo references are attributional provenance notes in `knowledge.md`,
+  `state-extraction.md`, and the vendored-from comment in `lua_parser.go`) plus the
+  unenumerated migration-era scratch (task3/task10/task15 artifacts, `verify-*` files
+  including the `verify-save.zip` save-byte work copy, wiring/parse/probe scripts,
+  `go-cache`, `explore`, `sync-gists-skill`) and the 2026-08-13 cutover-morning debug
+  leftovers (`tw.bak`, `amb.log`, `walk-validate-live.ps1`, an orphaned `walk-staged-*`
+  staging dir; no watcher process was running). Kept `state-extraction-v2-entry-fence.lock`
+  (permanent fence) and `nightshift-ambiguity-proposal-2026-08-12.md` (drafted proposal
+  belonging to the nightshift repo, flagged to the user rather than deleted). Finding
+  during the sweep: the on-disk `revise-state.md` belonged to the converged v2 code loop;
+  the Find-LastEventfulSpan plan-revise scratch that
+  `memory/projects/find-last-eventful-span-resume.md` lists as read-order items 1-3 was
+  already gone before the sweep (overwritten by the later v2 loop), and the referenced
+  plan `.claude/plans/2026-08-08-find-last-eventful-span.md` is also absent, so that
+  resume path was already broken independently of this cleanup.
