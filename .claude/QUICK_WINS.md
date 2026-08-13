@@ -29,19 +29,11 @@ can still fix it in the same session.
 
 ## Section 11 verification fixtures (deferred)
 
-One Section 11 claim remains un-wired because its fixtures need cross-process
-concurrency or live plumbing beyond the scratch unit harness. Deferred by user
-disposition 2026-08-11; the v2 cutover completed 2026-08-13, so it is now
-unblocked authoring work. (Claims 40 and 41 shipped 2026-08-13; see
+The three deferred fixture claims (40, 41, 42) all shipped 2026-08-13; see
 QUICK_WINS_HISTORY.md. Claim 41's residual halves ride the three reason-taxonomy
-bugs filed in BUGS.md.)
-
-- **Staged acquisition fixture for claim 42 (Acquisition retry taxonomy).** Needs
-  baseline-write-failure injection and multi-attempt cross-process declines beyond the
-  scratch unit harness. The wrong-envelope-to-`[protocol]` recognition half is already
-  covered by the TurnContext `EnvelopeProtocolRejection` selector and the wrapper
-  terminal selection by `WrapperRetry`.
-  Requires: none.
+bugs in BUGS.md, and claim 42's stability and gate-disappearance retry classes
+ride the post-lock stability-gate bug there. Only the live-claims probe below
+remains, gated on a play session.
 
 - **Execute the two provisional live-claims (section 11 rows 56 and 59).**
   Save-write stability and historical-save immutability passed verification only as PROVISIONAL

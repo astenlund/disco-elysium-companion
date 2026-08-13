@@ -310,3 +310,24 @@ not to resolve dependencies.
   convention. The claim's residual halves (per-stage reset-write reasons, the
   nine-boundary adapter-validator matrix, freshness reason forcing) are filed as the
   three reason-taxonomy bugs in `BUGS.md` (2026-08-13) and ride their fixes.
+
+- Staged acquisition fixture for claim 42 (Acquisition retry taxonomy), shipped
+  2026-08-13. The baseline-write-failure half landed with the claim-41 transaction
+  fixture (commit `3adc346`: the real wrapper's one-shot baseline failure and sole
+  retry). Commit `b8e7e18` added the in-process pass-count matrix (freshness and
+  stale-target consumption outcomes and retryable vanished/changed cycle outcomes
+  draw all three passes; busy and non-retryable outcomes make one initial pass) and
+  the cross-process decline: a competing process holding the real `consume.lock`
+  makes the real wrapper terminate `[turn-context:busy]` / `lock-timeout` /
+  `lockStage consume` with no retry, inside the `WrapperTransactionSelection`
+  selector. Commit `4a3b8f9` fixed a real production bug the two-sample fixture
+  exposed: `Test-FileWriteStable` reported a MISSING candidate as stable because
+  PowerShell swallows the `FileInfo.Length` getter's FileNotFoundException; explicit
+  Exists guards now make both samples throw the typed retryable `vanished` (and the
+  generic catch the non-retryable `unreadable`), covered by the new
+  `FileWriteStableClassification` selector in `Test-Acquisition.ps1` (missing at
+  first sample, deleted-during-delay at second sample, invalid-path unreadable). The
+  pump/flood/tree-kill transport matrix was already covered by
+  `Test-ProcessRunner.ps1`; the typed stability and gate-disappearance retry classes
+  are unreachable through the turn-context path until the post-lock stability-gate
+  bug in `BUGS.md` ships, and their fixtures ride that fix.
