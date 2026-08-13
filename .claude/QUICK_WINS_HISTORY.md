@@ -331,3 +331,16 @@ not to resolve dependencies.
   `Test-ProcessRunner.ps1`; the typed stability and gate-disappearance retry classes
   are unreachable through the turn-context path until the post-lock stability-gate
   bug in `BUGS.md` ships, and their fixtures ride that fix.
+
+- Terminal-result builder in `Invoke-TurnContextAttempt`, shipped 2026-08-13 (commit
+  `6f5f0fd`). The twelve terminal sites in `core/private/TurnContext.ps1` each built
+  their result through the same three-level
+  `New-TurnContextAttemptResult(... New-TurnContextDiagnosticObject(... New-TurnContextDetail ...))`
+  call on one dense line. A nested `New-TurnContextTerminalResult` builder now takes
+  the class, an optional registry reason (or a precomputed detail for the two sites
+  that map consumption outcomes), and the varying identity/lock/envelope atoms;
+  consumption state defaults to `none`, envelope/cacheDegraded/generation/lock default
+  to their empty values, and the attempt's `$OperationalWarnings` binds via dynamic
+  scope. Behavior-preserving; verified by the `TurnContext` test group. Deferred from
+  the 2026-08-13 revise-code run, which judged it too invasive for an inline review
+  fix in a hot path.

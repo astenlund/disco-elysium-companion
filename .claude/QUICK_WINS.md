@@ -61,19 +61,6 @@ remains, gated on a play session.
   path and need re-establishing from the new location before the old path is retired.
   Requires: none.
 
-## Turn-context internals
-
-- **Extract a terminal-result builder in `Invoke-TurnContextAttempt`.** The function
-  (`core/private/TurnContext.ps1`, about 81 lines) constructs its terminal result
-  through the same three-level
-  `New-TurnContextAttemptResult(... New-TurnContextDiagnosticObject(... New-TurnContextDetail ...))`
-  call shape at 12 sites, each a single dense line. A local builder taking the class,
-  reason, consumption state, and the varying identity/lock/envelope atoms would cut
-  the repetition and line noise without changing behavior. Deferred from the
-  2026-08-13 revise-code run (confirmed finding, judged too invasive to ride the
-  review as an inline fix in a hot path).
-  Requires: none.
-
 Implemented quick wins are archived in
 [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md), read only when
 consulted (not at session start) so the active backlog above stays
