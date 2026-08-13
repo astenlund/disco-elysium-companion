@@ -328,8 +328,7 @@ $digest = [ordered]@{
 # Arrange
 $scratchRoot = New-ScratchCompanionRoot -Prefix 'walk-staged'
 $scratchCore = Join-Path $scratchRoot 'core'
-Copy-Item -LiteralPath $coreRoot -Destination $scratchCore -Recurse
-Copy-Item -LiteralPath (Join-Path $coreRoot 'Find-LastEventfulSpan.ps1') -Destination (Join-Path $scratchCore 'Find-LastEventfulSpan.ps1')
+Copy-CompanionCoreTree -Destination $scratchCore -EntryScripts @('Find-LastEventfulSpan.ps1')
 [void] [IO.Directory]::CreateDirectory((Join-Path $scratchRoot 'adapters'))
 $stateBefore = Get-TreeFingerprint -Path (Join-Path $scratchRoot 'state')
 

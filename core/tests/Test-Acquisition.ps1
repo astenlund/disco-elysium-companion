@@ -320,12 +320,8 @@ Export-ModuleMember -Function *
 
 function Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure {
     $root = New-ScratchCompanionRoot -Prefix 'staged-one-shot'
-    $sourceCore = Split-Path $PSScriptRoot -Parent
-    Copy-Item -LiteralPath $sourceCore -Destination $root -Recurse
-    $stagedSource = Join-Path $sourceCore 'Update-CompanionState.ps1'
     $stagedDestination = Join-Path $root 'core/Update-CompanionState.ps1'
-    [IO.File]::Delete($stagedDestination)
-    [IO.File]::Copy($stagedSource, $stagedDestination, $false)
+    Copy-CompanionCoreTree -Destination (Join-Path $root 'core') -EntryScripts @('Update-CompanionState.ps1')
     $adapterDirectory = Join-Path $root 'adapters/bad'
     [void] [IO.Directory]::CreateDirectory($adapterDirectory)
     [IO.File]::WriteAllText((Join-Path $adapterDirectory 'adapter.json'), '{}', [Text.UTF8Encoding]::new($false))
