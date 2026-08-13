@@ -238,16 +238,44 @@ function Test-CycleOutcomeFreezesWarningsAfterResultDisposal {
 }
 
 function Test-StagedOneShotKeepsPreCycleOrdering {
-    $scriptPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Update-CompanionState.ps1'
-    $text = [IO.File]::ReadAllText($scriptPath, [Text.UTF8Encoding]::new($false, $true))
-    $lockIndex = $text.IndexOf('Enter-CompanionCycleLock', [StringComparison]::Ordinal)
-    $confirmationIndex = $text.IndexOf('Get-AdapterConfig -CompanionRoot $root -Adapter $config.AdapterName -Profile Acquisition', [StringComparison]::Ordinal)
-    $candidateIndex = $text.IndexOf('Get-NewestSave -SaveDirectory $config.SaveDirectory -SaveGlob $config.SaveGlob', [StringComparison]::Ordinal)
-    $reaperIndex = $text.LastIndexOf('Invoke-WorkFileReaper -CompanionRoot $root -WarningSink $warnings', [StringComparison]::Ordinal)
-    $cycleIndex = $text.IndexOf('Invoke-CompanionCycle -CompanionRoot $root', [StringComparison]::Ordinal)
-    Assert-True -Condition ($lockIndex -ge 0 -and $lockIndex -lt $confirmationIndex -and $confirmationIndex -lt $candidateIndex -and $candidateIndex -lt $reaperIndex -and $reaperIndex -lt $cycleIndex) -Message 'one-shot orders lock confirmation candidate reaping and cycle allocation'
+    # Behavioral order probe: the staged one-shot runs against stub EntryFence/DigestDiff
+    # modules whose functions append their step to a trace file, so the assertion pins the
+    # executed order rather than the script's source text.
+    $root = New-ScratchCompanionRoot -Prefix 'one-shot-ordering'
+    $core = Join-Path $root 'core'
+    [void] [IO.Directory]::CreateDirectory($core)
+    Copy-Item -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'Update-CompanionState.ps1') -Destination (Join-Path $core 'Update-CompanionState.ps1')
+    $stubEntryFence = @'
+function Enter-CompanionEntryFence { param($CompanionRoot) return [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name Dispose -Value { } -PassThru }
+Export-ModuleMember -Function Enter-CompanionEntryFence
+'@
+    [IO.File]::WriteAllText((Join-Path $core 'EntryFence.psm1'), $stubEntryFence, [Text.UTF8Encoding]::new($false))
+    $stubDigestDiff = @'
+$script:TracePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'trace.txt'
+function Add-TraceStep { param([string] $Step) Add-Content -LiteralPath $script:TracePath -Value $Step }
+function New-DisposableStub { param([hashtable] $Properties = @{}) return [pscustomobject]$Properties | Add-Member -MemberType ScriptMethod -Name Dispose -Value { } -PassThru }
+function Get-AdapterConfig { param($CompanionRoot, $Adapter, $Profile) Add-TraceStep ($(if ([string]::IsNullOrEmpty($Adapter)) { 'config' } else { 'confirmation' })); return New-DisposableStub @{ AdapterName = 'example'; AdapterDirectory = $CompanionRoot; SaveDirectory = $CompanionRoot; SaveGlob = '*.zip'; ConfigReceipt = 'receipt' } }
+function Initialize-CompanionStateDirectories { param($CompanionRoot) }
+function New-CompanionWarningSink { param($Profile) return [pscustomobject]@{} }
+function Invoke-WorkFileReaper { param($CompanionRoot, $WarningSink) Add-TraceStep 'reaper' }
+function Enter-CompanionCycleLock { param($CompanionRoot) Add-TraceStep 'cycle-lock'; return New-DisposableStub }
+function Get-NewestSave { param($SaveDirectory, $SaveGlob) Add-TraceStep 'candidates'; return [pscustomobject]@{ FullName = Join-Path $SaveDirectory 'save.zip' } }
+function Test-FileWriteStable { param($Path) return $true }
+function Invoke-CompanionCycle { param($CompanionRoot, $AdapterDirectory, $AdapterConfig, $SourceSave, $WarningSink) Add-TraceStep 'cycle'; return [pscustomobject]@{ Completed = $true; Warnings = @() } }
+Export-ModuleMember -Function *
+'@
+    [IO.File]::WriteAllText((Join-Path $core 'DigestDiff.psm1'), $stubDigestDiff, [Text.UTF8Encoding]::new($false))
+
+    $child = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $core 'Update-CompanionState.ps1'), '-CompanionRoot', $root) -WorkingDirectory $root
+    Assert-Equal -Actual $child.ExitCode -Expected 0 -Message 'the traced one-shot completes cleanly against the stub modules'
+    $trace = [IO.File]::ReadAllLines((Join-Path $root 'trace.txt'))
+    Assert-OrdinalEqual -Actual ($trace -join ',') -Expected 'config,reaper,cycle-lock,confirmation,candidates,reaper,cycle' -Message 'one-shot executes config, reaping, lock, confirmation, candidate selection, reaping, and cycle allocation in order'
+
+    # Static guard, anchored on function names only: the cycle body never recursively
+    # acquires the caller-owned cycle lock.
     $cycleSource = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'private/Acquisition.ps1'), [Text.UTF8Encoding]::new($false, $true))
     $cycleStart = $cycleSource.IndexOf('function Invoke-CompanionCycle', [StringComparison]::Ordinal)
+    Assert-True -Condition ($cycleStart -ge 0) -Message 'the cycle function is present for the recursive-lock guard'
     $cycleBody = $cycleSource.Substring($cycleStart, $cycleSource.IndexOf('function Invoke-SaveDigest', $cycleStart, [StringComparison]::Ordinal) - $cycleStart)
     Assert-False -Condition $cycleBody.Contains('Enter-CompanionCycleLock', [StringComparison]::Ordinal) -Message 'cycle never recursively acquires its caller-owned lock'
 }
