@@ -16,28 +16,28 @@ function Get-AdapterWalkPolicyId {
 
     $encoding = [Text.UTF8Encoding]::new($false)
     $bytes = [Collections.Generic.List[byte]]::new()
+    $writeUInt32BigEndian = {
+        param([uint32] $Value)
+        $bytes.Add([byte] (($Value -shr 24) -band 0xff)); $bytes.Add([byte] (($Value -shr 16) -band 0xff)); $bytes.Add([byte] (($Value -shr 8) -band 0xff)); $bytes.Add([byte] ($Value -band 0xff))
+    }
     $writeLengthPrefixedUtf8 = {
         param([string] $Text)
         $data = $encoding.GetBytes($Text)
-        $length = [uint32] $data.Length
-        $bytes.Add([byte] (($length -shr 24) -band 0xff)); $bytes.Add([byte] (($length -shr 16) -band 0xff)); $bytes.Add([byte] (($length -shr 8) -band 0xff)); $bytes.Add([byte] ($length -band 0xff))
+        & $writeUInt32BigEndian ([uint32] $data.Length)
         foreach ($byte in $data) { $bytes.Add($byte) }
+    }
+    # A configured array can present as null when absent; the empty policy set is the
+    # hash-neutral form for both members, mirroring the prior join-as-empty behavior.
+    $copySortedOrdinal = {
+        param([AllowNull()] [string[]] $Pointers)
+        $copy = [Collections.Generic.List[string]]::new([string[]] ($Pointers ?? [string[]] @()))
+        $copy.Sort([StringComparer]::Ordinal)
+        return , $copy
     }
 
     & $writeLengthPrefixedUtf8 'companion-walk-policy-v1'
-
-    # A configured array can present as null when absent; the empty policy set is the
-    # hash-neutral form for both members, mirroring the prior join-as-empty behavior.
-    $diffPointers = [Collections.Generic.List[string]]::new()
-    if ($null -ne $DiffExcludePaths) { foreach ($pointer in $DiffExcludePaths) { $diffPointers.Add($pointer) } }
-    $diffPointers.Sort([StringComparer]::Ordinal)
-    $ambientPointers = [Collections.Generic.List[string]]::new()
-    if ($null -ne $AmbientExtraPaths) { foreach ($pointer in $AmbientExtraPaths) { $ambientPointers.Add($pointer) } }
-    $ambientPointers.Sort([StringComparer]::Ordinal)
-
-    foreach ($pointers in @($diffPointers, $ambientPointers)) {
-        $count = [uint32] $pointers.Count
-        $bytes.Add([byte] (($count -shr 24) -band 0xff)); $bytes.Add([byte] (($count -shr 16) -band 0xff)); $bytes.Add([byte] (($count -shr 8) -band 0xff)); $bytes.Add([byte] ($count -band 0xff))
+    foreach ($pointers in @((& $copySortedOrdinal $DiffExcludePaths), (& $copySortedOrdinal $AmbientExtraPaths))) {
+        & $writeUInt32BigEndian ([uint32] $pointers.Count)
         foreach ($pointer in $pointers) { & $writeLengthPrefixedUtf8 $pointer }
     }
 
@@ -89,7 +89,7 @@ function Get-AdapterPointerArray {
         if (-not $pointer.StartsWith('/', [StringComparison]::Ordinal)) { Fail-AdapterConfiguration }
         # Every RFC 6901 escape must be exactly ~0 or ~1; anything else is non-canonical.
         if ($pointer -match '~(?![01])') { Fail-AdapterConfiguration }
-        $tokens = @($pointer.Substring(1).Split('/') | ForEach-Object { $_.Replace('~1', '/').Replace('~0', '~') })
+        $tokens = ConvertFrom-DiffPointer -Pointer $pointer
         if ($tokens.Count -lt 2 -or -not [string]::Equals($tokens[0], 'extra', [StringComparison]::Ordinal)) { Fail-AdapterConfiguration }
         # Reference tokens are object keys beneath /extra; a pure-array-index shape is not valid title grammar.
         for ($index = 1; $index -lt $tokens.Count; $index++) { if ($tokens[$index] -match '^[0-9]+$') { Fail-AdapterConfiguration } }
