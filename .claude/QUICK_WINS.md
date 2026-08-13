@@ -93,11 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `Test-Watcher.ps1` rebuilds the seven-scriptblock `WatcherRuntimeServices` bundle ~19 times;
-  `Test-Walk.ps1` and `Test-AdapterConfig.ps1` repeat fixture constructors; `Test-Acquisition.ps1`
-  couples an ordering test to literal source text; `Test-Build-Digest.ps1` repeats the
-  skill_key_map load; `Test-TurnContext.ps1` `-Only` previously advertised a ghost `ConfigDrift`
-  (now removed).
 - Dump-tool: the TLV projected-key format and the TLV top-level table count (5) are each
   duplicated across `parser/lua_parser.go` and `main.go`; `findVariableStore` materializes a full
   `StringMap` of every table; `validateJSONMember` makes a full extra copy; `archive.go` binds

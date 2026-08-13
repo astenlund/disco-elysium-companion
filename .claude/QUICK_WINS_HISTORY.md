@@ -208,3 +208,31 @@ not to resolve dependencies.
   `MarkSerialized`/`Invalidate` methods and, transitively, the `Serialized`/
   `Invalidated` flags and `AssertUsable`/`AssertMutable` guards that only those
   methods could trip; `Complete` keeps its null-warnings check.
+
+- Test-harness dedupe, shipped 2026-08-13 in four commits (from the v2 review
+  tech-debt list):
+  - `32aed58`: `Test-Watcher.ps1`'s ~19 seven-positional-scriptblock
+    `WatcherRuntimeServices` constructions became named-slot specs through a
+    module-injected `New-WatcherStubServices` factory (defined via
+    `Invoke-InCompanionModule` so the module-private type resolves); every
+    unoverridden slot now throws 'not reached', which strengthened tests that had
+    stubbed unreached slots with `$null`. All watcher `-Only` selectors were run
+    explicitly since the gated blocks do not run under the default pass.
+  - `2efa5c6`: the adapter fixture release-tree mechanics duplicated between
+    `Test-AdapterConfig.ps1` and `Test-Acquisition.ps1` moved to
+    `New-AdapterFixtureTree` in `TestSupport.psm1` (adapter.json verbatim,
+    validator, Build-Digest stub, optional tool.exe, release-local core
+    placeholder); each suite keeps its own thin `New-AdapterFixture` wrapper with
+    its JSON default. Test-Walk's live stub adapter is a different fixture kind
+    (executable mapper) and was left alone.
+  - `d223713`: `Test-StagedOneShotKeepsPreCycleOrdering` no longer scans
+    `Update-CompanionState.ps1` source for literal call lines; it stages the
+    script beside stub EntryFence/DigestDiff modules whose functions append to a
+    trace file and asserts the executed sequence
+    (config,reaper,cycle-lock,confirmation,candidates,reaper,cycle). The
+    recursive-lock guard stays a static scan anchored on function names only.
+  - `be491de`: `Test-Build-Digest.ps1` loads `skill_key_map.json` once into
+    `$script:SkillKeyMap` (three loads before); the map is read-only in every
+    consumer.
+  (The fifth review sub-finding, `Test-TurnContext.ps1`'s ghost `ConfigDrift`
+  selector, was already removed before this pass.)
