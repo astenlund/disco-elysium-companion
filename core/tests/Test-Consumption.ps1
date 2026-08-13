@@ -383,7 +383,14 @@ Invoke-InCompanionModule {
     $emitFailure = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) throw [IO.IOException]::new('stream closed') }
     Assert-Equal -Actual $emitFailure.outcomeClass -Expected 'emit' -Message 'Raw stream failure is classified after serialization but before consumption.'
     Assert-Equal -Actual $emitFailure.consumptionState -Expected 'none' -Message 'Raw stream failure preserves the unconsumed diff.'
+    Assert-OrdinalEqual -Actual $emitFailure.detail -Expected 'stdout-write-failed' -Message 'Raw stdout-write failure carries its exact registry emit reason.'
     Assert-False -Condition ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) -Message 'Raw stream failure leaves the baseline untouched.'
+
+    $serializeEmitFailure = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -SerializePayload { param($Payload) throw [IO.IOException]::new('serialize failed') }
+    Assert-Equal -Actual $serializeEmitFailure.outcomeClass -Expected 'emit' -Message 'Raw payload serialization failure is an emit failure before consumption.'
+    Assert-Equal -Actual $serializeEmitFailure.consumptionState -Expected 'none' -Message 'Raw serialization failure preserves the unconsumed diff.'
+    Assert-OrdinalEqual -Actual $serializeEmitFailure.detail -Expected 'payload-serialize-failed' -Message 'Raw serialization failure carries its exact registry emit reason.'
+    Assert-False -Condition ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) -Message 'Raw serialization failure leaves the baseline untouched.'
 
     $baselineFailure = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteBaseline { param($Root, $Document) throw [IO.IOException]::new('baseline write failed') }
     Assert-Equal -Actual $baselineFailure.outcomeClass -Expected 'reset-write:not-consumed' -Message 'Baseline write failure preserves the emitted diff for the next full read.'

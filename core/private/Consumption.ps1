@@ -55,6 +55,7 @@ function Invoke-CompanionConsumption {
         [AllowNull()] [TurnContextPayloadContext] $Context,
         [Parameter(Mandatory)] [CompanionWarningSink] $WarningSink,
         [Parameter()] [scriptblock] $WriteStdout = { param([string] $Text) [Console]::Out.Write($Text) },
+        [Parameter()] [scriptblock] $SerializePayload = { param($Payload) ConvertTo-CompanionJson -InputObject $Payload -Budget diff },
         [Parameter()] [scriptblock] $EnterConsumeLock = { param([string] $Root) Enter-CompanionConsumeLock -CompanionRoot $Root },
         [Parameter()] [scriptblock] $ReadCurrent = { param([string] $Root, [AdapterCompatibilityConfig] $Config) Read-CompanionCurrent -CompanionRoot $Root -AdapterConfig $Config },
         [Parameter()] [scriptblock] $ReadBaseline = { param([string] $Root) Read-CompanionBaseline -CompanionRoot $Root },
@@ -116,11 +117,16 @@ function Invoke-CompanionConsumption {
         }
         if ($DeliveryMode -ceq 'rawStdout') {
             try {
-                $serializedPayload = ConvertTo-CompanionJson -InputObject $payload.RootElement -Budget diff
+                $serializedPayload = & $SerializePayload $payload.RootElement
+            }
+            catch {
+                return New-ConsumptionResult -OutcomeClass 'emit' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'payload-serialize-failed'
+            }
+            try {
                 & $WriteStdout $serializedPayload
             }
             catch {
-                return New-ConsumptionResult -OutcomeClass 'emit' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'raw-stdout-failed'
+                return New-ConsumptionResult -OutcomeClass 'emit' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'stdout-write-failed'
             }
         }
 
