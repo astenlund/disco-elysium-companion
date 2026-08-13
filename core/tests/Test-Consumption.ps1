@@ -413,6 +413,26 @@ Invoke-InCompanionModule {
     $busy = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -EnterConsumeLock { param($RootPath) throw [TimeoutException]::new('busy') }
     Assert-Equal -Actual $busy.outcomeClass -Expected 'busy' -Message 'Consume-lock contention returns busy without payload or mutation.'
 
+    # ConsumeResult.detail is policed against the class-owned registry: exception
+    # text, paths, command lines, or child-stream fragments can never ride a
+    # consumption result into terminal framing.
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'Exception calling Write: C:\leaky\path --flag' }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'busy' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'baseline-write-failed' }
+    foreach ($legal in @(
+            @{ class = 'busy'; detail = 'consume-lock-busy' },
+            @{ class = 'lock'; detail = 'consume-lock-failed' },
+            @{ class = 'freshness'; detail = 'current-stale' },
+            @{ class = 'freshness'; detail = 'current-missing-or-invalid' },
+            @{ class = 'freshness'; detail = 'source-floor-not-met' },
+            @{ class = 'compute'; detail = 'baseline-read-failed' },
+            @{ class = 'compute'; detail = 'payload-or-diff-failed' },
+            @{ class = 'stale-target'; detail = 'target-precedes-baseline' },
+            @{ class = 'emit'; detail = 'payload-serialize-failed' },
+            @{ class = 'emit'; detail = 'stdout-write-failed' })) {
+        $legalResult = New-ConsumptionResult -OutcomeClass $legal.class -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $legal.detail
+        Assert-OrdinalEqual -Actual $legalResult.detail -Expected $legal.detail -Message "The detail registry admits '$($legal.detail)' for class '$($legal.class)'."
+    }
+
     [IO.File]::WriteAllText((Join-Path $Root 'state/baseline.json'), $DigestJson.Replace('T11:00:00', 'T13:00:00'), [Text.UTF8Encoding]::new($false, $true))
     $stale = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) }
     Assert-Equal -Actual $stale.outcomeClass -Expected 'stale-target' -Message 'A target that precedes the baseline never rewinds it.'

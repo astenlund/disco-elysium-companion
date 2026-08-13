@@ -410,6 +410,9 @@ $consumeOutcome = Invoke-InCompanionModule {
     [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
     [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
     $expectedReason = @{ busy = 'lock-timeout'; lock = 'lock-open-failed'; 'stale-target' = 'target-precedes-baseline'; freshness = 'target-below-floor' }
+    # The injected consumption results carry class-owned registry details; the
+    # ConsumeResult constructor rejects anything else.
+    $consumeDetail = @{ busy = 'consume-lock-busy'; lock = 'consume-lock-failed'; freshness = 'source-floor-not-met'; 'stale-target' = 'target-precedes-baseline' }
     $rows = [Collections.Generic.List[object]]::new()
     $registryChecks = [Collections.Generic.List[object]]::new()
     foreach ($outcome in @('busy', 'lock', 'freshness', 'stale-target')) {
@@ -417,7 +420,7 @@ $consumeOutcome = Invoke-InCompanionModule {
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
             ConfirmConfig = { param($Unused) }
-            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass $outcome -ConsumptionState none -Payload $null -CacheDegraded $false -Detail "$outcome-detail" }
+            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass $outcome -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $consumeDetail[$outcome] }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ outcome = $outcome; resultClass = $res.outcomeClass; detail = $res.diagnostic.detail; lockStage = $res.diagnostic.lockStage })

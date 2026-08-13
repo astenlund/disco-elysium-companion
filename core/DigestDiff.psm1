@@ -13,6 +13,21 @@ $script:TurnContextRefreshAttemptCap = 3
 # ConsumeResult constructor (single source of truth for the 512 limit).
 $script:TurnContextDetailScalarCap = 512
 
+# The class-owned registry of legal ConsumeResult detail literals. The constructor
+# rejects any other value, so exception text, paths, command lines, or child-stream
+# fragments can never ride a consumption result into terminal framing. Success
+# carries a null detail by the tuple rules and owns no literals.
+$script:ConsumeResultDetailRegistry = @{
+    busy = @('consume-lock-busy')
+    lock = @('consume-lock-failed')
+    freshness = @('current-stale', 'current-missing-or-invalid', 'source-floor-not-met')
+    compute = @('baseline-read-failed', 'payload-or-diff-failed')
+    'stale-target' = @('target-precedes-baseline')
+    emit = @('payload-serialize-failed', 'stdout-write-failed')
+    'reset-write:not-consumed' = @('baseline-write-failed')
+    'reset-write:consumed' = @('cache-target-invalid', 'cache-write-failed')
+}
+
 class CompanionContentException : System.Exception {
     CompanionContentException([string] $Message) : base($Message) {}
     CompanionContentException([string] $Message, [System.Exception] $InnerException) : base($Message, $InnerException) {}
@@ -281,6 +296,7 @@ class ConsumeResult {
         $none = $OutcomeClass -in @('busy', 'lock', 'freshness', 'stale-target', 'compute') -and $ConsumptionState -ceq 'none' -and $null -eq $Payload -and -not $CacheDegraded -and -not [string]::IsNullOrEmpty($Detail)
         $emit = $OutcomeClass -ceq 'emit' -and $ConsumptionState -ceq 'none' -and $null -eq $Payload -and -not $CacheDegraded -and -not [string]::IsNullOrEmpty($Detail)
         if (-not ($success -or $notConsumed -or $consumed -or $none -or $emit) -or ($null -ne $Detail -and @($Detail.EnumerateRunes()).Count -gt $script:TurnContextDetailScalarCap)) { throw [ArgumentException]::new('Invalid consumption result.') }
+        if (-not [string]::IsNullOrEmpty($Detail) -and $Detail -cnotin $script:ConsumeResultDetailRegistry[$OutcomeClass]) { throw [ArgumentException]::new('Invalid consumption result.') }
 
         $this.outcomeClass = $OutcomeClass
         $this.consumptionState = $ConsumptionState
