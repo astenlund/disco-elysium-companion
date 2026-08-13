@@ -236,3 +236,39 @@ not to resolve dependencies.
     consumer.
   (The fifth review sub-finding, `Test-TurnContext.ps1`'s ghost `ConfigDrift`
   selector, was already removed before this pass.)
+
+- Dump-tool Go dedupe and dead-export removal, shipped 2026-08-13 (commit `f6457dd`,
+  from the v2 review tech-debt list). The projected-TLV-key grammar moved into the
+  parser package as `parser.ValidProjectedKey` (beside the `keyProjector` that emits
+  it); main.go's two validator call sites dispatch through it. The top-level table
+  count became `expectedTopLevelTableCount` in `limits.go`, shared by
+  `validateTopLevelTables` and the assembled-output `allTables` check.
+  `findVariableStore` now probes candidates through new non-copying
+  `Table.StringEntry`/`Table.EachStringEntry` accessors and calls `StringMap()`
+  exactly once, on the single match. `validateJSONMember` returns the admitted
+  member bytes without the defensive copy (archive member bytes are immutable once
+  read). `archive.go`'s `requiredSuffixes` and `memberDestinations` literals are now
+  keyed by the `memberKind` constants, and the prefix seed compares against
+  `headerMember` instead of raw 0. `LuaParser.R` was unexported to `reader` (no
+  consumer outside the package). Verified with gofmt, `go vet`, and `go test ./...`;
+  the installed immutable release keeps its previously built `dedump.exe` until the
+  next staged release rebuilds it from this source.
+
+- Section graduation note, 2026-08-13: the eleven entries above closed out the
+  "State-extraction-v2 review tech-debt" section deferred from the 2026-08-12
+  `/nightshift:revise-code` pass (which converged with phase 1 and phase 2, all 63
+  dimension cells inactive; confirmed defects were fixed and gate-verified during the
+  review itself). Context that lived inline with that section: the formerly
+  cutover-gated review items all landed with the 2026-08-13 cutover and Task 16
+  verification (12 live/Go section-11 rows wired to genuine live probes and passed,
+  the immutable `releases/2/schema-2` bundle re-staged and installed, the
+  save-read-only probe executed against the activated runtime); and the 2026-08-12
+  hardening batch (evidence-adoption content binding with per-name artifact
+  validators and producing-input fingerprints, smoke-receipt `.next` sibling
+  adoption, `ExecuteSmoke` sibling adoption, the static-hygiene forbidden-token
+  failure, retirement legacy-test wiring, WriteThrough durability for the remaining
+  aux writers) was verified by the passing cutover crash-matrix suite where
+  suite-exercised, with no open tracked bugs (`mapper-reputation-observability`
+  resolved via option-b; the named duplicate-vendor/misspelled/bad-initial clauses
+  are spec-deferred). The only remaining v2-review descendants are the three
+  turn-context fixture entries (claims 40-42) still active in `QUICK_WINS.md`.

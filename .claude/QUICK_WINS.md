@@ -81,31 +81,6 @@ unblocked authoring work.
   path and need re-establishing from the new location before the old path is retired.
   Requires: none.
 
-## State-extraction-v2 review tech-debt (deferred from the 2026-08-12 revise pass)
-
-The full `/nightshift:revise-code` over the schema-v2 state-extraction changeset converged
-(phase 1 and phase 2, all 63 dimension cells inactive). The confirmed defects were fixed and
-gate-verified; the items below are the acknowledged lower-severity duplication / dead-code /
-single-source / dormant-harness findings deferred to this backlog during the review. The
-formerly cutover-gated review items all landed with the 2026-08-13 cutover and Task 16
-verification: the 12 live/Go section-11 rows were wired to genuine live probes and passed,
-the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
-save-read-only probe executed against the activated runtime. Only the 3 turn-context
-fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
-
-- Dump-tool: the TLV projected-key format and the TLV top-level table count (5) are each
-  duplicated across `parser/lua_parser.go` and `main.go`; `findVariableStore` materializes a full
-  `StringMap` of every table; `validateJSONMember` makes a full extra copy; `archive.go` binds
-  `requiredSuffixes` order to the `memberKind` iota; `lua_parser.go` exports the unused cursor
-  field.
- Landed 2026-08-12 since the prior revise pass: evidence-adoption content binding
-  (per-name artifact validators + producing-input fingerprints), smoke-receipt `.next` sibling
-  adoption, `ExecuteSmoke` sibling adoption, the static-hygiene forbidden-token failure, the
-  retirement legacy-test wiring, and WriteThrough durability for the remaining aux writers; all
-  verified by the passing cutover crash-matrix suite where suite-exercised. No open tracked bugs
-  remain (`mapper-reputation-observability` resolved via option-b; the named
-  duplicate-vendor/misspelled/bad-initial clauses are spec-deferred).
-
 Implemented quick wins are archived in
 [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md), read only when
 consulted (not at session start) so the active backlog above stays
