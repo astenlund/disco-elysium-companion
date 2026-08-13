@@ -93,9 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `Consumption.ps1` repeats the `$payload.Complete($bool, $WarningSink.Freeze())` guard four
-  times; `New-ConsumePayload` and `Invoke-CompanionConsumption` copy-paste the source-floor
-  predicate.
 - `DocumentValidation.ps1` `Read-DigestDocument`/`Read-DiffDocument` barrier-validate boolean
   fields the inner implementation already validated; the diff-objectives composite key is built
   twice with a divergence; `Measure-CompanionJsonElement`/`Measure-CompanionJsonValue` hold two

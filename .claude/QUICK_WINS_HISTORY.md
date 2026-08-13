@@ -132,3 +132,14 @@ not to resolve dependencies.
   check's redundant `{0,9}` digit bound (the following `[int]::TryParse` already
   rejects over-range indexes with the same exception); both rewrites probe-verified
   equivalent against boundary cases.
+
+- Consumption complete-guard and source-floor dedupe, shipped 2026-08-13 (commit
+  `61f20e0`, from the v2 review tech-debt list). New `Complete-ConsumePayload` helper
+  replaces the four `if ($payload -is [TurnContextPayloadCandidate]) {
+  $payload.Complete($bool, $WarningSink.Freeze()) }` copies in
+  `Invoke-CompanionConsumption` (the boolean is the cache-degraded flag, now a named
+  parameter); new `Test-ConsumptionMeetsSourceFloor` replaces the copy-pasted
+  comparable-and-at-or-above-floor predicate in `New-ConsumePayload` and the
+  consumption source-floor gate. The target-precedes-baseline comparison behind the
+  `stale-target` outcome deliberately stays separate: there incomparable identities
+  are not a failure, so it is a different predicate, not a third copy.
