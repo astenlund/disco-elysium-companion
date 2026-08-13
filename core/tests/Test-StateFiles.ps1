@@ -106,29 +106,21 @@ Invoke-InCompanionModule {
     $readyPath = Join-Path $Tmp 'reader-ready'
     $releasePath = Join-Path $Tmp 'reader-release'
     $readerProgram = '$share = [System.Enum]::ToObject([IO.FileShare], 7); $handle = [IO.File]::Open($env:COMPANION_TEST_TARGET,[IO.FileMode]::Open,[IO.FileAccess]::Read,$share); try { [IO.File]::WriteAllText($env:COMPANION_TEST_READY,''ready''); while (-not [IO.File]::Exists($env:COMPANION_TEST_RELEASE)) { Start-Sleep -Milliseconds 10 } } finally { $handle.Dispose() }'
-    $readerStart = [Diagnostics.ProcessStartInfo]::new()
-    $readerStart.FileName = 'pwsh'
-    $readerStart.UseShellExecute = $false
-    foreach ($argument in @('-NoProfile', '-Command', $readerProgram)) { $readerStart.ArgumentList.Add($argument) }
-    $readerStart.Environment['COMPANION_TEST_TARGET'] = $target
-    $readerStart.Environment['COMPANION_TEST_READY'] = $readyPath
-    $readerStart.Environment['COMPANION_TEST_RELEASE'] = $releasePath
-    $reader = [Diagnostics.Process]::Start($readerStart)
+    $reader = Start-BoundedPwsh -Arguments @('-Command', $readerProgram) -Environment @{
+        COMPANION_TEST_TARGET = $target
+        COMPANION_TEST_READY = $readyPath
+        COMPANION_TEST_RELEASE = $releasePath
+    }
     try {
-        $wait = [Diagnostics.Stopwatch]::StartNew()
-        while (-not [IO.File]::Exists($readyPath)) {
-            if ($wait.ElapsedMilliseconds -gt 5000) { throw [TimeoutException]::new('Shared reader did not become ready.') }
-            [Threading.Thread]::Sleep(10)
-        }
+        Wait-TestSentinel -Path $readyPath
         Write-CompanionStateBytes -Path $target -Bytes ([byte[]](11, 12))
         Assert-Equal -Actual ([string]::Join(',', [IO.File]::ReadAllBytes($target))) -Expected '11,12' -Message 'Share-friendly reader permits atomic replacement.'
         [IO.File]::WriteAllText($releasePath, 'release')
-        Assert-True -Condition ($reader.WaitForExit(5000)) -Message 'Shared reader exits after release.'
-        Assert-Equal -Actual $reader.ExitCode -Expected 0 -Message 'Shared reader exits cleanly.'
+        $readerResult = Complete-BoundedPwsh -Child $reader -TimeoutMilliseconds 5000
+        Assert-Equal -Actual $readerResult.ExitCode -Expected 0 -Message 'Shared reader exits cleanly.'
     }
     finally {
-        if (-not $reader.HasExited) { $reader.Kill($true); $reader.WaitForExit() }
-        $reader.Dispose()
+        Stop-BoundedPwsh -Child $reader
     }
 
     $cycle = Enter-CompanionCycleLock -CompanionRoot $Root -TimeoutMilliseconds 0

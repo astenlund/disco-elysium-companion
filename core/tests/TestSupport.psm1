@@ -99,17 +99,12 @@ function Assert-ThrowsType {
     throw [System.InvalidOperationException]::new("Assertion failed: expected exception type '$TypeName', but no exception was thrown.")
 }
 
-function Invoke-BoundedPwsh {
+function Start-BoundedPwsh {
     param(
         [Parameter(Mandatory)] [string[]] $Arguments,
-        [Parameter()] [int] $TimeoutMilliseconds = 30000,
         [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
         [Parameter()] [hashtable] $Environment = @{}
     )
-
-    if ($TimeoutMilliseconds -le 0) {
-        throw [System.ArgumentOutOfRangeException]::new('TimeoutMilliseconds')
-    }
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = 'pwsh'
@@ -125,29 +120,98 @@ function Invoke-BoundedPwsh {
     }
 
     $process = [System.Diagnostics.Process]::Start($startInfo)
+
+    return [pscustomobject]@{
+        Process = $process
+        StandardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        StandardErrorTask = $process.StandardError.ReadToEndAsync()
+        Disposed = $false
+    }
+}
+
+function Complete-BoundedPwsh {
+    param(
+        [Parameter(Mandatory)] [pscustomobject] $Child,
+        [Parameter()] [int] $TimeoutMilliseconds = 30000
+    )
+
+    if ($TimeoutMilliseconds -le 0) {
+        Stop-BoundedPwsh -Child $Child
+        throw [System.ArgumentOutOfRangeException]::new('TimeoutMilliseconds')
+    }
+
     try {
-        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
-        $standardErrorTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-            $process.Kill($true)
-            $process.WaitForExit()
-            $null = $standardOutputTask.GetAwaiter().GetResult()
-            $standardError = $standardErrorTask.GetAwaiter().GetResult()
+        if (-not $Child.Process.WaitForExit($TimeoutMilliseconds)) {
+            $Child.Process.Kill($true)
+            $Child.Process.WaitForExit()
+            $null = $Child.StandardOutputTask.GetAwaiter().GetResult()
+            $standardError = $Child.StandardErrorTask.GetAwaiter().GetResult()
             throw [System.TimeoutException]::new("Child pwsh exceeded $TimeoutMilliseconds ms: $standardError")
         }
 
-        $process.WaitForExit()
-        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
-        $standardError = $standardErrorTask.GetAwaiter().GetResult()
+        $Child.Process.WaitForExit()
 
         return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StdOut = $standardOutput
-            StdErr = $standardError
+            ExitCode = $Child.Process.ExitCode
+            StdOut = $Child.StandardOutputTask.GetAwaiter().GetResult()
+            StdErr = $Child.StandardErrorTask.GetAwaiter().GetResult()
         }
     }
     finally {
-        $process.Dispose()
+        $Child.Disposed = $true
+        $Child.Process.Dispose()
+    }
+}
+
+function Stop-BoundedPwsh {
+    param([Parameter(Mandatory)] [pscustomobject] $Child)
+
+    if ($Child.Disposed) {
+        return
+    }
+
+    $Child.Disposed = $true
+    try {
+        if (-not $Child.Process.HasExited) {
+            $Child.Process.Kill($true)
+            $Child.Process.WaitForExit()
+        }
+    }
+    finally {
+        $Child.Process.Dispose()
+    }
+}
+
+function Invoke-BoundedPwsh {
+    param(
+        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter()] [int] $TimeoutMilliseconds = 30000,
+        [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
+        [Parameter()] [hashtable] $Environment = @{}
+    )
+
+    if ($TimeoutMilliseconds -le 0) {
+        throw [System.ArgumentOutOfRangeException]::new('TimeoutMilliseconds')
+    }
+
+    $child = Start-BoundedPwsh -Arguments $Arguments -WorkingDirectory $WorkingDirectory -Environment $Environment
+
+    return Complete-BoundedPwsh -Child $child -TimeoutMilliseconds $TimeoutMilliseconds
+}
+
+function Wait-TestSentinel {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter()] [int] $TimeoutMilliseconds = 5000
+    )
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not [System.IO.File]::Exists($Path)) {
+        if ($stopwatch.ElapsedMilliseconds -gt $TimeoutMilliseconds) {
+            throw [System.TimeoutException]::new("Sentinel '$Path' did not appear within $TimeoutMilliseconds ms.")
+        }
+
+        [System.Threading.Thread]::Sleep(10)
     }
 }
 
@@ -349,4 +413,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
