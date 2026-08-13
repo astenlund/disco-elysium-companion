@@ -104,18 +104,33 @@ function Get-NewestSave {
     return $candidates[0]
 }
 
-function Test-FileWriteStable {
-    param([Parameter(Mandatory)] [string] $Path, [Parameter()] [int] $SampleDelayMilliseconds = 2000, [Parameter()] [Threading.CancellationToken] $CancellationToken = [Threading.CancellationToken]::None)
+function Get-FileWriteSample {
+    param([Parameter(Mandatory)] [string] $Path)
 
-    # Each sample checks Exists explicitly: PowerShell does not reliably surface a
+    # The Exists check is explicit: PowerShell does not reliably surface a
     # property-getter FileNotFoundException from FileInfo.Length, so without the
     # guard a vanished candidate silently sampled as two null lengths and read as
     # stable instead of throwing the typed vanished classification.
+    try {
+        $info = [IO.FileInfo]::new($Path)
+        $info.Refresh()
+        if (-not $info.Exists) { throw [IO.FileNotFoundException]::new('save-source-missing', $Path) }
+
+        return [pscustomobject]@{ Length = $info.Length; LastWriteTimeUtc = $info.LastWriteTimeUtc }
+    }
+    catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) }
+    catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
+}
+
+function Test-FileWriteStable {
+    param([Parameter(Mandatory)] [string] $Path, [Parameter()] [int] $SampleDelayMilliseconds = 2000, [Parameter()] [Threading.CancellationToken] $CancellationToken = [Threading.CancellationToken]::None)
+
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        try { $first = [IO.FileInfo]::new($Path); $first.Refresh(); if (-not $first.Exists) { throw [IO.FileNotFoundException]::new('save-source-missing', $Path) }; $firstLength = $first.Length; $firstTime = $first.LastWriteTimeUtc } catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) } catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
+        $first = Get-FileWriteSample -Path $Path
         if ($CancellationToken.IsCancellationRequested) { return $false }
         [Threading.Tasks.Task]::Delay($SampleDelayMilliseconds, $CancellationToken).GetAwaiter().GetResult()
-        try { $second = [IO.FileInfo]::new($Path); $second.Refresh(); if (-not $second.Exists) { throw [IO.FileNotFoundException]::new('save-source-missing', $Path) }; if ($second.Length -eq $firstLength -and $second.LastWriteTimeUtc -eq $firstTime) { return $true } } catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) } catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
+        $second = Get-FileWriteSample -Path $Path
+        if ($second.Length -eq $first.Length -and $second.LastWriteTimeUtc -eq $first.LastWriteTimeUtc) { return $true }
     }
 
     return $false
