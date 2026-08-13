@@ -44,6 +44,10 @@ $script:CompanionWarningProfiles = @{
     Walk = @('pipeline-cleanup-degraded', 'pipeline-reaper-discovery-limit-exceeded', 'diff-exclude-path-unused', 'walk-max-saves-clamped', 'walk-max-age-hours-clamped')
 }
 
+class CompanionWarningProfileNames : System.Management.Automation.IValidateSetValuesGenerator {
+    [string[]] GetValidValues() { return [string[]] $script:CompanionWarningProfiles.Keys }
+}
+
 function Compare-SourceIdentity {
     param([Parameter(Mandatory)] $Left, [Parameter(Mandatory)] $Right)
 
@@ -86,7 +90,7 @@ function ConvertFrom-SourceIdentity {
 }
 
 function New-CompanionWarningSink {
-    param([Parameter(Mandatory)] [ValidateSet('Cycle', 'GetDiff', 'TurnAttempt', 'TurnOperational', 'Walk')] [string] $Profile)
+    param([Parameter(Mandatory)] [ValidateSet([CompanionWarningProfileNames])] [string] $Profile)
 
     $sink = [CompanionWarningSink]::new([string[]] $script:CompanionWarningProfiles[$Profile])
     return $sink
