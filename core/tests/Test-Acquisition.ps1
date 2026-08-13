@@ -156,12 +156,7 @@ function Test-FileWriteStableRejectsMismatchingSamples {
     $save = Join-Path $root 'save.ntwtf.zip'
     [IO.File]::WriteAllText($save, 'x', [Text.UTF8Encoding]::new($false))
     $writerProgram = 'while ($true) { [IO.File]::AppendAllText($env:COMPANION_WRITE_TARGET, "x"); Start-Sleep -Milliseconds 1 }'
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = 'pwsh'
-    $startInfo.UseShellExecute = $false
-    foreach ($argument in @('-NoProfile', '-Command', $writerProgram)) { $startInfo.ArgumentList.Add($argument) }
-    $startInfo.Environment['COMPANION_WRITE_TARGET'] = $save
-    $writer = [Diagnostics.Process]::Start($startInfo)
+    $writer = Start-BoundedPwsh -Arguments @('-Command', $writerProgram) -Environment @{ COMPANION_WRITE_TARGET = $save }
     try {
         $initialLength = [IO.FileInfo]::new($save).Length
         $wait = [Diagnostics.Stopwatch]::StartNew()
@@ -172,8 +167,7 @@ function Test-FileWriteStableRejectsMismatchingSamples {
         Assert-False -Condition (Test-FileWriteStable -Path $save -SampleDelayMilliseconds 200) -Message 'a continuously growing source is never stable'
     }
     finally {
-        if (-not $writer.HasExited) { $writer.Kill($true); $writer.WaitForExit() }
-        $writer.Dispose()
+        Stop-BoundedPwsh -Child $writer
     }
 }
 
