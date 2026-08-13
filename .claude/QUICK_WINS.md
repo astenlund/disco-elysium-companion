@@ -29,18 +29,11 @@ can still fix it in the same session.
 
 ## Section 11 verification fixtures (deferred)
 
-Three Section 11 claims remain un-wired because their fixtures need cross-process
+Two Section 11 claims remain un-wired because their fixtures need cross-process
 concurrency or live plumbing beyond the scratch unit harness. Deferred by user
 disposition 2026-08-11; the v2 cutover completed 2026-08-13, so each is now
-unblocked authoring work.
-
-- **Concurrent consume-lock fixture for claim 40 (Equal-identity target freeze).**
-  Needs two genuinely concurrent consumers racing on the real `consume.lock` with a
-  pause barrier between freeze-current and publish-baseline, a cross-process /
-  time-ordered concurrency fixture the single-process unit harness cannot drive without
-  simulating the concurrency. The single-process equal-identity retention half is
-  already covered by the Watcher `EqualIdentityRetention` selector.
-  Requires: none.
+unblocked authoring work. (Claim 40 shipped 2026-08-13; see
+QUICK_WINS_HISTORY.md.)
 
 - **Staged wrapper fixture for claim 41 (Turn-context failure injection).** Needs a
   staged wrapper/acquisition fixture: private attempt A returns

@@ -272,3 +272,19 @@ not to resolve dependencies.
   resolved via option-b; the named duplicate-vendor/misspelled/bad-initial clauses
   are spec-deferred). The only remaining v2-review descendants are the three
   turn-context fixture entries (claims 40-42) still active in `QUICK_WINS.md`.
+
+- Concurrent consume-lock fixture for claim 40 (Equal-identity target freeze), shipped
+  2026-08-13 (commit `f61c5ee`, plus enabling commits `52d3b40` TestSupport
+  `Start-BoundedPwsh`/`Complete-BoundedPwsh`/`Stop-BoundedPwsh`/`Wait-TestSentinel` and
+  `1f5b8ea` `New-StagedGetDiffFixture` dedupe). The new
+  `Test-Consumption.ps1 -Only EqualIdentityTargetFreeze` selector runs two real
+  `Get-Diff.ps1` processes contending on the real `consume.lock` in a staged scratch
+  core whose `Consumption.ps1` copy carries env-gated sentinel barriers (pre-lock
+  arrive/park; post-freeze park). Both spec orderings are covered: A parked pre-lock
+  while B publishes baseline H2 (A then freezes H2, emits the empty diff, baseline
+  never rewinds to H1), and H2 landing after A's locked H1 freeze (transition stays
+  pending for B, which reports exactly the H1-to-H2 delta). Falsified deliberately: a
+  temporary freeze-before-lock mutation of the production sequence made the fixture
+  fail on "Consumer A freezes H2 under the lock", and anchor-count guards catch seam
+  drift. The single-process equal-identity retention half remains covered by the
+  Watcher `EqualIdentityRetention` selector.
