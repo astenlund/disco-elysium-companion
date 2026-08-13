@@ -61,6 +61,17 @@ remains, gated on a play session.
   path and need re-establishing from the new location before the old path is retired.
   Requires: none.
 
+## Turn-context internals
+
+- **Decompose Invoke-TurnContextAttempt.** One body of roughly 92 lines
+  (`core/private/TurnContext.ps1`) mixes init/reaper, the refresh retry loop,
+  lock/config/cycle handling, consumption/envelope emission, and terminal-result
+  construction (revise-code confirmed finding, 2026-08-13). Best done AFTER the
+  BUGS.md reason-taxonomy and stability-gate fixes land, since they rework the
+  same terminal sites; decide then whether `New-TurnContextTerminalResult`
+  hoists to file scope as part of the decomposition.
+  Requires: none.
+
 Implemented quick wins are archived in
 [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md), read only when
 consulted (not at session start) so the active backlog above stays
