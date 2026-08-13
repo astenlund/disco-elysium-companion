@@ -54,3 +54,17 @@ not to resolve dependencies.
     handoff-next-sibling-window,aux-writer-durability}.md` entries were already fixed and walked to
     `BUGS_HISTORY.md` in the 2026-08-12 revise pass; the files are historical diagnosis records, so
     reopen checks should verify against current code rather than trusting the file's open wording.
+
+- Git-ify the companion, shipped 2026-08-13: `git init -b main` in the companion root, in
+  place rather than at the entry's suggested `C:\Git\` home; the relocation was split into
+  its own quick win because it changes the Claude/Codex project identity (auto-memory and
+  hooks are keyed to the AppData path) and needs its own acquisition-path verification.
+  `.gitignore` decisions: exclude `state/` (privacy: reputation values and objective state
+  are effectively permanent once in pushed history; churn: autosave-driven writes plus the
+  live `consume.lock`/`cycle.lock`), `.tmp/` (work copies of real save bytes plus scratch),
+  `adapters/disco_elysium/releases/` (binary plus vendored game DBs), `dedump.exe`
+  (rebuildable from the versioned `dump-tool` Go source via `build.ps1`), and the
+  machine-local overlays `CLAUDE.local.md` and `.claude/settings.local.json`. Root commit
+  `ed168d8` (87 files, 22484 insertions). Repo-local `user.email a.stenlund@gmail.com` was
+  set because the machine's global git config carries only `user.name`. Pushed to a new
+  private GitHub repo `astenlund/disco-elysium-companion`.

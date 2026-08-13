@@ -78,30 +78,22 @@ unblocked authoring work.
   (`disco-elysium-editor`, `upstream-save-editor`). All are disposable; the clones are
   re-fetchable reference material, so confirm nothing still links to them before
   deleting. Keep `state-extraction-v2-entry-fence.lock` (permanent fence
-  infrastructure). Best done just before the Git-ify quick win below so the first
-  commit's ignore rules are decided against a clean tree.
+  infrastructure). `.tmp/` is gitignored (the companion was git-ified 2026-08-13), so
+  this is purely disk cleanup with no version-control impact.
   Requires: none.
 
 ## Version control / repository migration
 
-- **Git-ify the companion and push to a new private GitHub repo.** The companion is
-  currently a no-Git workspace (the state-extraction-v2 plan replaces commits with scoped
-  test checkpoints), so `state/` digests, the tooling, and the spoiler-safe design docs live
-  only locally with no version control or off-machine backup. Preferred shape: `git init` in
-  the companion root, add a `.gitignore`, a first subject-only Conventional Commit, create a
-  new PRIVATE GitHub repo, add the remote, and push. Target home `C:\Git\<ProjectName>`
-  (suggest `disco-elysium-companion`).
-  Requires: a `.gitignore` policy decision (exclude `.tmp/`, which holds work copies of real
-  save bytes plus migration scratch, and `adapters/disco_elysium/releases/`, which holds the
-  `dedump.exe` binary and vendored game DBs; decide whether to version `state/` playthrough
-  digests or exclude them, since they contain reputation values and objective state); the
-  state-extraction-v2 cutover completed 2026-08-13 and the migration scaffold is retired, so
-  the first commit's history is clean of it; confirm the move from the AppData sibling to `C:\Git\` breaks
-  nothing (adapter.json's absolute `saveDirectory` should survive, but re-verify no
-  acquisition path relies on `..\SaveGames\` resolving from the new root); a private repo
-  created by the user (push requires explicit direction, per the global git-networking rule).
-  Privacy: the companion holds spoiler-sensitive playthrough-derived state; private only, and
-  consider excluding `state/` to keep it out of git history.
+- **Move the companion from the AppData sibling to `C:\Git\disco-elysium-companion`.**
+  The companion was git-ified in place 2026-08-13 (private GitHub repo
+  `astenlund/disco-elysium-companion`); its preferred long-term home is `C:\Git\`, per
+  the machine convention for repo clones. Before moving, confirm the relocation breaks
+  nothing: `adapter.json`'s absolute `saveDirectory` should survive, but re-verify that
+  no acquisition path relies on `..\SaveGames\` resolving from the companion root. The
+  move also changes the Claude/Codex project identity: the auto-memory directory,
+  session directories, and `SessionStart` hook wiring are keyed to the current AppData
+  path and need re-establishing from the new location before the old path is retired.
+  Requires: none.
 
 ## State-extraction-v2 review tech-debt (deferred from the 2026-08-12 revise pass)
 
