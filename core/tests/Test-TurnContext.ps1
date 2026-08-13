@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeProtocolRejection')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection')]
     [string] $Only = 'All'
 )
 
@@ -251,6 +251,69 @@ if ($Only -eq 'FreshnessRaceNewerConsumed') {
     Assert-OrdinalEqual -Actual $published.consumedFile -Expected 'S2.ntwtf.zip' -Message 'Only the newer S2 reaches consumption.'
     Assert-OrdinalEqual -Actual $published.floorFile -Expected 'B.ntwtf.zip' -Message 'The floor stays pinned at the older S1 established before the race.'
     Assert-True -Condition ([datetime]::Parse($published.consumedSavedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind) -gt [datetime]::Parse($published.floorSavedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)) -Message 'The consumed S2 sits above the S1 floor.'
+
+    Write-TurnContextPassGate
+    exit 0
+}
+
+if ($Only -eq 'EnvelopeSerializeStatePreserved') {
+    # Section 11 row "Turn-context failure injection": attempt-level envelope
+    # serialization failure returns [protocol] while PRESERVING the structured
+    # consumption state (the baseline may already have advanced), with no envelope
+    # and no wrapper retry authorization. The adapter config's game mismatch makes
+    # Convert-TurnContextPayloadToJson's self-validation throw after consumption.
+    $serializeRoot = New-ScratchCompanionRoot -Prefix 'turn-context-envelope-serialize'
+    $serialize = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain)
+        $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+        $stateDoc = Read-DigestDocument -Json $stateJson
+        $config = [AdapterConfig]::new()
+        $config.SourceDomainId = $Domain
+        $config.AdapterVersion = 2L
+        $config.Game = 'other'
+        $config.SaveDirectory = Join-Path $Root 'saves'
+        $config.SaveGlob = '*.ntwtf.zip'
+        $config.AdapterDirectory = $Root
+        $config.Validator = { param($Document) }
+        [IO.Directory]::CreateDirectory($config.SaveDirectory) | Out-Null
+        $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
+        [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
+        [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($case in @(
+                @{ outcome = 'success'; state = 'consumed'; degraded = $false; detail = $null },
+                @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-write-failed' })) {
+            $operations = @{
+                GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+                ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
+                ConfirmConfig = { param($Unused) }
+                Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($case.degraded, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass $case.outcome -ConsumptionState $case.state -Payload $p -CacheDegraded $case.degraded -Detail $case.detail }
+            }
+            $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+            [void] (Assert-TurnContextAttemptResult -Value $res)
+            $rows.Add([pscustomobject]@{
+                    consumptionOutcome = $case.outcome
+                    outcomeClass = $res.outcomeClass
+                    consumptionState = $res.consumptionState
+                    envelopeJson = $res.envelopeJson
+                    cacheDegraded = $res.cacheDegraded
+                    diagnosticState = $res.diagnostic['consumptionState']
+                    diagnosticDetail = $res.diagnostic['detail']
+                })
+        }
+
+        return @($rows)
+    } @($serializeRoot, $turnContextDigestTemplate, $turnContextDomain)
+    foreach ($row in $serialize) {
+        Assert-Equal -Actual $row.outcomeClass -Expected 'protocol' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' maps to the protocol class."
+        Assert-True -Condition ($null -eq $row.envelopeJson -or $row.envelopeJson -eq '') -Message "Envelope serialization failure after '$($row.consumptionOutcome)' emits no envelope."
+        Assert-False -Condition $row.cacheDegraded -Message "Envelope serialization failure after '$($row.consumptionOutcome)' does not fabricate cache degradation."
+        Assert-OrdinalEqual -Actual $row.diagnosticDetail -Expected 'envelope-serialize-failed' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' carries the registry serialize reason."
+    }
+    Assert-Equal -Actual $serialize[0].consumptionState -Expected 'consumed' -Message 'Serialization failure after a consumed consumption preserves consumed.'
+    Assert-Equal -Actual $serialize[0].diagnosticState -Expected 'consumed' -Message 'The diagnostic reports the preserved consumed state.'
+    Assert-Equal -Actual $serialize[1].consumptionState -Expected 'notConsumed' -Message 'Serialization failure after a notConsumed consumption preserves notConsumed.'
+    Assert-Equal -Actual $serialize[1].diagnosticState -Expected 'notConsumed' -Message 'The diagnostic reports the preserved notConsumed state.'
 
     Write-TurnContextPassGate
     exit 0

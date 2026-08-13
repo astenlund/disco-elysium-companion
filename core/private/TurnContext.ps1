@@ -153,7 +153,8 @@ function Test-TurnContextAttemptInvariants {
 
     if (($Class -in @('success', 'reset-write:consumed')) -and ($State -cne 'consumed' -or [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
     if ($Class -ceq 'reset-write:not-consumed' -and ($State -cne 'notConsumed' -or [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
-    if ($Class -notin @('success', 'reset-write:consumed', 'reset-write:not-consumed') -and ($State -cne 'none' -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
+    if ($Class -ceq 'protocol' -and ($State -notin @('none', 'notConsumed', 'consumed') -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
+    if ($Class -notin @('success', 'reset-write:consumed', 'reset-write:not-consumed', 'protocol') -and ($State -cne 'none' -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
     if ($CacheDegraded -ne ($Class -ceq 'reset-write:consumed')) { return $false }
 
     return $true
@@ -319,7 +320,11 @@ function Invoke-TurnContextAttempt {
             $context = [TurnContextPayloadContext]::new($floor, $refreshAttempts -gt 0, $refreshCommitted, $refreshAttempts)
             $consume = if ($Operations.ContainsKey('Consumption')) { & $Operations.Consumption $floor $context $attemptWarnings } else { Invoke-CompanionConsumption -AdapterConfig $AdapterConfig -CompanionRoot $CompanionRoot -DeliveryMode privateResult -SourceFloor $floor -Context $context -WarningSink $attemptWarnings }
             if ($consume.payload -is [TurnContextPayloadCandidate]) {
-                $json = Convert-TurnContextPayloadToJson -Payload $consume.payload -AdapterConfig $AdapterConfig -OperationalWarnings $OperationalWarnings
+                # An envelope serialization failure must not erase the consumption fact:
+                # the baseline may already have advanced, so the protocol diagnostic
+                # carries the structured consumption state instead of resetting to none.
+                try { $json = Convert-TurnContextPayloadToJson -Payload $consume.payload -AdapterConfig $AdapterConfig -OperationalWarnings $OperationalWarnings }
+                catch { return New-TurnContextAttemptResult -OutcomeClass protocol -ConsumptionState $consume.consumptionState -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class protocol -ConsumptionState $consume.consumptionState -Detail (New-TurnContextDetail -Class protocol -Reason envelope-serialize-failed) -SourceIdentity $floor -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
                 $generation = $target.document.RootElement.GetProperty('generatedAt').GetString()
                 # The consumption detail is a coarse stage label (e.g. 'baseline-write-failed')
                 # that is not itself a registry-valid reset-write reason. Map the reset-write
