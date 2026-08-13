@@ -13,20 +13,41 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force
 
+# Test-only factory injected into the module scope (where the WatcherRuntimeServices
+# type is visible): builds a service bundle in which every slot the test does not
+# override throws if reached, so an unexpectedly exercised slot fails loudly instead
+# of silently returning a stub value.
+Invoke-InCompanionModule {
+    function script:New-WatcherStubServices {
+        param(
+            [scriptblock] $ResolveConfig = { param($Token) throw 'not reached' },
+            [scriptblock] $GetCandidates = { param($Config, $Token) throw 'not reached' },
+            [scriptblock] $ReadBookkeeping = { param($Config, $Token) throw 'not reached' },
+            [scriptblock] $ReadCurrent = { param($Config, $Token) throw 'not reached' },
+            [scriptblock] $TestStable = { param($Config, $File, $Token) throw 'not reached' },
+            [scriptblock] $TryAcquireCycleLock = { param($Root, $Token) throw 'not reached' },
+            [scriptblock] $InvokeCycle = { param($Owner, $Config, $File, $Sink, $Token) throw 'not reached' }
+        )
+
+        return [WatcherRuntimeServices]::new($ResolveConfig, $GetCandidates, $ReadBookkeeping, $ReadCurrent, $TestStable, $TryAcquireCycleLock, $InvokeCycle)
+    }
+}
+
 $root = New-ScratchCompanionRoot -Prefix 'watcher'
 $outcome = Invoke-InCompanionModule {
     param($Root)
     $file = Join-Path $Root 'save.ntwtf.zip'
     [IO.File]::WriteAllText($file, 'x', [Text.UTF8Encoding]::new($false, $true))
     [IO.File]::SetLastWriteTimeUtc($file, [datetime]::Parse('2026-08-10T00:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain'; SaveDirectory = $Root; SaveGlob = '*.zip' } },
-        { param($Config,$Token) @([IO.FileInfo]::new($file)) },
-        { param($Config,$Token) [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Json '{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}' -Budget config)) },
-        { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json '{"source":{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}}' -Budget digest)) },
-        { param($Config,$Candidate,$Token) [pscustomobject]@{ status = 'stable'; candidate = $Candidate } },
-        { param($CompanionRoot,$Token) [pscustomobject]@{ status = 'busy'; owner = $null } },
-        { param($Owner,$Config,$Candidate,$Sink,$Token) throw 'not reached' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain'; SaveDirectory = $Root; SaveGlob = '*.zip' } }
+        GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($file)) }
+        ReadBookkeeping = { param($Config,$Token) [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Json '{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}' -Budget config)) }
+        ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json '{"source":{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}}' -Budget digest)) }
+        TestStable = { param($Config,$Candidate,$Token) [pscustomobject]@{ status = 'stable'; candidate = $Candidate } }
+        TryAcquireCycleLock = { param($CompanionRoot,$Token) [pscustomobject]@{ status = 'busy'; owner = $null } }
+    }
+    $services = New-WatcherStubServices @spec
     $first = Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
     $second = Invoke-WatcherPoll -PriorSample $first.sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
     [pscustomobject]@{ first = $first.disposition; second = $second.disposition }
@@ -35,7 +56,8 @@ Assert-Equal -Actual $outcome.first -Expected 'sampled' -Message 'A first comple
 Assert-Equal -Actual $outcome.second -Expected 'quiescent' -Message 'A second equal healthy observation is quiescent.'
 
 $noSaves = Invoke-InCompanionModule {
-    $services = [WatcherRuntimeServices]::new({ param($Token) [pscustomobject]@{} },{ param($Config,$Token) @() },{ param($Config,$Token) $null },{ param($Config,$Token) $null },{ param($Config,$File,$Token) $null },{ param($Root,$Token) $null },{ param($Owner,$Config,$File,$Sink,$Token) $null })
+    $spec = @{ ResolveConfig = { param($Token) [pscustomobject]@{} }; GetCandidates = { param($Config,$Token) @() } }
+    $services = New-WatcherStubServices @spec
     (Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot 'x' -CancellationToken ([Threading.CancellationToken]::None)).disposition
 }
 Assert-Equal -Actual $noSaves -Expected 'no-saves' -Message 'An empty candidate enumeration clears the pending sample.'
@@ -54,14 +76,16 @@ $duplicateBookkeeping = Invoke-InCompanionModule {
     $bookkeepingPath = Join-Path $state 'last-processed.json'
     [IO.File]::WriteAllText($bookkeepingPath, '{"domainId":"domain","domainId":"other","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}', [Text.UTF8Encoding]::new($false, $true))
     $cycles = [Collections.Generic.List[int]]::new()
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config,$Token) @([IO.FileInfo]::new($save)) },
-        { param($Config,$Token) try { [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Path $bookkeepingPath -Budget config)) } catch [CompanionContentException] { [WatcherBookkeepingReadResult]::new('content-invalid', $null) } },
-        { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json '{"source":{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}}' -Budget digest)) },
-        { param($Config,$File,$Token) [pscustomobject]@{ status = 'stable'; candidate = $File } },
-        { param($CompanionRoot,$Token) [pscustomobject]@{ status = 'acquired'; owner = [IO.MemoryStream]::new() } },
-        { param($Owner,$Config,$Candidate,$Sink,$Token) try { $cycles.Add(1); Write-CompanionBookkeeping -CompanionRoot $Root -Document ([ordered]@{ domainId = 'domain'; saveFile = $Candidate.Name; savedAt = $Candidate.LastWriteTimeUtc.ToString('o', [Globalization.CultureInfo]::InvariantCulture) }); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) } finally { $Owner.Dispose() } })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($save)) }
+        ReadBookkeeping = { param($Config,$Token) try { [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Path $bookkeepingPath -Budget config)) } catch [CompanionContentException] { [WatcherBookkeepingReadResult]::new('content-invalid', $null) } }
+        ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json '{"source":{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}}' -Budget digest)) }
+        TestStable = { param($Config,$File,$Token) [pscustomobject]@{ status = 'stable'; candidate = $File } }
+        TryAcquireCycleLock = { param($CompanionRoot,$Token) [pscustomobject]@{ status = 'acquired'; owner = [IO.MemoryStream]::new() } }
+        InvokeCycle = { param($Owner,$Config,$Candidate,$Sink,$Token) try { $cycles.Add(1); Write-CompanionBookkeeping -CompanionRoot $Root -Document ([ordered]@{ domainId = 'domain'; saveFile = $Candidate.Name; savedAt = $Candidate.LastWriteTimeUtc.ToString('o', [Globalization.CultureInfo]::InvariantCulture) }); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) } finally { $Owner.Dispose() } }
+    }
+    $services = New-WatcherStubServices @spec
     $first = Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
     $second = Invoke-WatcherPoll -PriorSample $first.sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
     $bookkeeping = Read-CompanionJson -Path $bookkeepingPath -Budget config
@@ -78,7 +102,7 @@ if ($Only -eq 'DuplicateBookkeepingRewrite') {
 
 $cancelled = Invoke-InCompanionModule {
     $source = [Threading.CancellationTokenSource]::new(); $source.Cancel()
-    $services = [WatcherRuntimeServices]::new({ param($Token) throw 'not reached' },{ param($Config,$Token) @() },{ param($Config,$Token) $null },{ param($Config,$Token) $null },{ param($Config,$File,$Token) $null },{ param($Root,$Token) $null },{ param($Owner,$Config,$File,$Sink,$Token) $null })
+    $services = New-WatcherStubServices
     (Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot 'x' -CancellationToken $source.Token).disposition
 }
 Assert-Equal -Actual $cancelled -Expected 'cancelled' -Message 'Cancellation wins before configuration resolution.'
@@ -98,14 +122,11 @@ Assert-True -Condition $waitCancelled -Message 'The bounded interval wait observ
 
 $cancellationAfterConfig = Invoke-InCompanionModule {
     $source = [Threading.CancellationTokenSource]::new()
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) $source.Cancel(); [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) throw 'Candidate enumeration must not run after cancellation.' },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $File, $Token) throw 'not reached' },
-        { param($Root, $Token) throw 'not reached' },
-        { param($Owner, $Config, $File, $Sink, $Token) throw 'not reached' })
+    $spec = @{
+        ResolveConfig = { param($Token) $source.Cancel(); [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) throw 'Candidate enumeration must not run after cancellation.' }
+    }
+    $services = New-WatcherStubServices @spec
 
     (Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot 'x' -CancellationToken $source.Token).disposition
 }
@@ -114,14 +135,11 @@ Assert-Equal -Actual $cancellationAfterConfig -Expected 'cancelled' -Message 'Ca
 $cancellationAfterCandidates = Invoke-InCompanionModule {
     $source = [Threading.CancellationTokenSource]::new()
     $file = [IO.FileInfo]::new((Join-Path $Root 'save.ntwtf.zip'))
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) $source.Cancel(); @($file) },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $File, $Token) throw 'not reached' },
-        { param($Root, $Token) throw 'not reached' },
-        { param($Owner, $Config, $File, $Sink, $Token) throw 'not reached' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) $source.Cancel(); @($file) }
+    }
+    $services = New-WatcherStubServices @spec
 
     (Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot $Root -CancellationToken $source.Token).disposition
 } @($root)
@@ -136,14 +154,16 @@ $cancellationAfterLockAcquisition = Invoke-InCompanionModule {
     $source = [Threading.CancellationTokenSource]::new()
     $sampleFile = [IO.FileInfo]::new($file)
     $sample = [WatcherSample]::new('domain', $sampleFile.Name, $sampleFile.LastWriteTimeUtc, $sampleFile.Length)
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) @($sampleFile) },
-        { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) },
-        { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) },
-        { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) },
-        { param($Root2, $Token) $lockOwner = Enter-CompanionCycleLock -CompanionRoot $Root2 -TimeoutMilliseconds 0 -CancellationToken $Token; $source.Cancel(); [WatcherCycleLockTryResult]::new('acquired', $lockOwner) },
-        { param($Owner, $Config, $Candidate, $Sink, $Token) throw 'Cycle must not run after the lock-acquired cancellation checkpoint.' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) @($sampleFile) }
+        ReadBookkeeping = { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) }
+        ReadCurrent = { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) }
+        TestStable = { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) }
+        TryAcquireCycleLock = { param($Root2, $Token) $lockOwner = Enter-CompanionCycleLock -CompanionRoot $Root2 -TimeoutMilliseconds 0 -CancellationToken $Token; $source.Cancel(); [WatcherCycleLockTryResult]::new('acquired', $lockOwner) }
+        InvokeCycle = { param($Owner, $Config, $Candidate, $Sink, $Token) throw 'Cycle must not run after the lock-acquired cancellation checkpoint.' }
+    }
+    $services = New-WatcherStubServices @spec
 
     $poll = Invoke-WatcherPoll -PriorSample $sample -Services $services -CompanionRoot $Root -CancellationToken $source.Token
     $reacquire = $null
@@ -160,14 +180,11 @@ if ($Only -eq 'Cancellation') {
 }
 
 $enumerationFailure = Invoke-InCompanionModule {
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) throw [IO.IOException]::new('offline') },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $File, $Token) throw 'not reached' },
-        { param($Root, $Token) throw 'not reached' },
-        { param($Owner, $Config, $File, $Sink, $Token) throw 'not reached' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) throw [IO.IOException]::new('offline') }
+    }
+    $services = New-WatcherStubServices @spec
 
     (Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot 'x' -CancellationToken ([Threading.CancellationToken]::None)).disposition
 }
@@ -177,14 +194,16 @@ $triggerDisposition = Invoke-InCompanionModule {
     param($Root)
     $file = [IO.FileInfo]::new((Join-Path $Root 'save.ntwtf.zip'))
     $sample = [WatcherSample]::new('domain', $file.Name, $file.LastWriteTimeUtc, $file.Length)
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) @($file) },
-        { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) },
-        { param($Config, $Token) [WatcherCurrentReadResult]::new('stale', $null) },
-        { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) },
-        { param($Root, $Token) [WatcherCycleLockTryResult]::new('busy', $null) },
-        { param($Owner, $Config, $Candidate, $Sink, $Token) throw 'Cycle must not run while the lock is busy.' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) @($file) }
+        ReadBookkeeping = { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) }
+        ReadCurrent = { param($Config, $Token) [WatcherCurrentReadResult]::new('stale', $null) }
+        TestStable = { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) }
+        TryAcquireCycleLock = { param($Root, $Token) [WatcherCycleLockTryResult]::new('busy', $null) }
+        InvokeCycle = { param($Owner, $Config, $Candidate, $Sink, $Token) throw 'Cycle must not run while the lock is busy.' }
+    }
+    $services = New-WatcherStubServices @spec
 
     (Invoke-WatcherPoll -PriorSample $sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)).disposition
 } @($root)
@@ -194,14 +213,15 @@ $lockFailure = Invoke-InCompanionModule {
     param($Root)
     $file = [IO.FileInfo]::new((Join-Path $Root 'save.ntwtf.zip'))
     $sample = [WatcherSample]::new('domain', $file.Name, $file.LastWriteTimeUtc, $file.Length)
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) @($file) },
-        { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) },
-        { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) },
-        { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) },
-        { param($Root, $Token) throw [IO.IOException]::new('lock unavailable') },
-        { param($Owner, $Config, $Candidate, $Sink, $Token) throw 'not reached' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) @($file) }
+        ReadBookkeeping = { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) }
+        ReadCurrent = { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) }
+        TestStable = { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) }
+        TryAcquireCycleLock = { param($Root, $Token) throw [IO.IOException]::new('lock unavailable') }
+    }
+    $services = New-WatcherStubServices @spec
 
     (Invoke-WatcherPoll -PriorSample $sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)).disposition
 } @($root)
@@ -211,14 +231,15 @@ $incompleteObservation = Invoke-InCompanionModule {
     param($Root)
     $file = [IO.FileInfo]::new((Join-Path $Root 'save.ntwtf.zip'))
     $sample = [WatcherSample]::new('domain', $file.Name, $file.LastWriteTimeUtc, $file.Length)
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) @($file) },
-        { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) },
-        { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) },
-        { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('unreadable', $null) },
-        { param($Root, $Token) throw 'Lock must not be reached for an incomplete observation.' },
-        { param($Owner, $Config, $Candidate, $Sink, $Token) throw 'not reached' })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) @($file) }
+        ReadBookkeeping = { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) }
+        ReadCurrent = { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) }
+        TestStable = { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('unreadable', $null) }
+        TryAcquireCycleLock = { param($Root, $Token) throw 'Lock must not be reached for an incomplete observation.' }
+    }
+    $services = New-WatcherStubServices @spec
 
     (Invoke-WatcherPoll -PriorSample $sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)).disposition
 } @($root)
@@ -239,14 +260,16 @@ if ($Only -eq 'WatcherSampleIdentity') {
     $identityResult = Invoke-InCompanionModule -ArgumentList @($identityRoot, $file, $t1, $t2) -ScriptBlock {
         param($Root, $File, $T1, $T2)
 
-        $identityServices = [WatcherRuntimeServices]::new(
-            { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-            { param($Config, $Token) @([IO.FileInfo]::new($File)) },
-            { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) },
-            { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) },
-            { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) },
-            { param($Root, $Token) [WatcherCycleLockTryResult]::new('acquired', [System.IO.MemoryStream]::new()) },
-            { param($Owner, $Config, $Candidate, $Sink, $Token) $Owner.Dispose(); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) })
+        $identitySpec = @{
+            ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+            GetCandidates = { param($Config, $Token) @([IO.FileInfo]::new($File)) }
+            ReadBookkeeping = { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) }
+            ReadCurrent = { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) }
+            TestStable = { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) }
+            TryAcquireCycleLock = { param($Root, $Token) [WatcherCycleLockTryResult]::new('acquired', [System.IO.MemoryStream]::new()) }
+            InvokeCycle = { param($Owner, $Config, $Candidate, $Sink, $Token) $Owner.Dispose(); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+        }
+        $identityServices = New-WatcherStubServices @identitySpec
 
         $p0 = Invoke-WatcherPoll -PriorSample $null -Services $identityServices -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
         $p0Size = $p0.sample.size
@@ -279,14 +302,16 @@ $cycleCancellationWarnings = Invoke-InCompanionModule {
     param($Root)
     $file = [IO.FileInfo]::new((Join-Path $Root 'save.ntwtf.zip'))
     $sample = [WatcherSample]::new('domain', $file.Name, $file.LastWriteTimeUtc, $file.Length)
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) @($file) },
-        { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) },
-        { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) },
-        { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) },
-        { param($Root, $Token) [WatcherCycleLockTryResult]::new('acquired', [System.IO.MemoryStream]::new()) },
-        { param($Owner, $Config, $Candidate, $Sink, $Token) $Owner.Dispose(); throw [WatcherCancellationException]::new(@('pipeline-cleanup-degraded')) })
+    $spec = @{
+        ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
+        GetCandidates = { param($Config, $Token) @($file) }
+        ReadBookkeeping = { param($Config, $Token) [WatcherBookkeepingReadResult]::new('absent', $null) }
+        ReadCurrent = { param($Config, $Token) [WatcherCurrentReadResult]::new('absent', $null) }
+        TestStable = { param($Config, $Candidate, $Token) [WatcherStabilityResult]::new('stable', $Candidate) }
+        TryAcquireCycleLock = { param($Root, $Token) [WatcherCycleLockTryResult]::new('acquired', [System.IO.MemoryStream]::new()) }
+        InvokeCycle = { param($Owner, $Config, $Candidate, $Sink, $Token) $Owner.Dispose(); throw [WatcherCancellationException]::new(@('pipeline-cleanup-degraded')) }
+    }
+    $services = New-WatcherStubServices @spec
 
     Invoke-WatcherPoll -PriorSample $sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
 } @($root)
@@ -415,14 +440,7 @@ Assert-Equal -Actual $acceptedCycleTrace -Expected 'config-confirmed,candidate-r
 $coordinatorRecovers = Invoke-InCompanionModule {
     $source = [Threading.CancellationTokenSource]::new()
     $state = [pscustomobject]@{ Calls = 0 }
-    $services = [WatcherRuntimeServices]::new(
-        { param($Token) $state.Calls++; if ($state.Calls -eq 1) { throw [InvalidOperationException]::new('injected') }; $source.Cancel(); [pscustomobject]@{ SourceDomainId = 'domain' } },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $Token) throw 'not reached' },
-        { param($Config, $File, $Token) throw 'not reached' },
-        { param($Root, $Token) throw 'not reached' },
-        { param($Owner, $Config, $File, $Sink, $Token) throw 'not reached' })
+    $services = New-WatcherStubServices -ResolveConfig { param($Token) $state.Calls++; if ($state.Calls -eq 1) { throw [InvalidOperationException]::new('injected') }; $source.Cancel(); [pscustomobject]@{ SourceDomainId = 'domain' } }
 
     Invoke-CompanionWatcher -AdapterName 'adapter' -CompanionRoot 'x' -IntervalSeconds 2 -CancellationToken $source.Token -Services $services
     $state.Calls
@@ -458,14 +476,16 @@ if ($Only -eq 'EqualIdentityRetention') {
         $bookkeepingJson = '{"domainId":"' + $Domain + '","saveFile":"save.ntwtf.zip","savedAt":"' + $T.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"}'
         $currentJson = '{"source":{"domainId":"' + $Domain + '","saveFile":"save.ntwtf.zip","savedAt":"' + $T.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"}}'
         $cycles = [Collections.Generic.List[int]]::new()
-        $services = [WatcherRuntimeServices]::new(
-            { param($Token) [pscustomobject]@{ SourceDomainId = $Domain } },
-            { param($Config,$Token) @([IO.FileInfo]::new($File)) },
-            { param($Config,$Token) [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Json $bookkeepingJson -Budget config)) },
-            { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json $currentJson -Budget digest)) },
-            { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) },
-            { param($Root2,$Token) [WatcherCycleLockTryResult]::new('acquired',[IO.MemoryStream]::new()) },
-            { param($Owner,$Config,$Candidate,$Sink,$Token) $cycles.Add(1); $Owner.Dispose(); [CycleOutcome]::new($true,$true,$false,$true,$true,$null,'stable',$false,$null,$Sink.Freeze()) })
+        $spec = @{
+            ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = $Domain } }
+            GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($File)) }
+            ReadBookkeeping = { param($Config,$Token) [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Json $bookkeepingJson -Budget config)) }
+            ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json $currentJson -Budget digest)) }
+            TestStable = { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) }
+            TryAcquireCycleLock = { param($Root2,$Token) [WatcherCycleLockTryResult]::new('acquired',[IO.MemoryStream]::new()) }
+            InvokeCycle = { param($Owner,$Config,$Candidate,$Sink,$Token) $cycles.Add(1); $Owner.Dispose(); [CycleOutcome]::new($true,$true,$false,$true,$true,$null,'stable',$false,$null,$Sink.Freeze()) }
+        }
+        $services = New-WatcherStubServices @spec
 
         $p0 = Invoke-WatcherPoll -PriorSample $null -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
         # Replace source bytes with H2 preserving name, savedAt, and length: an equal-identity candidate.
@@ -554,23 +574,26 @@ if ($Only -eq 'SerializedCyclePublication') {
 
         # A second watcher skips (busy) rather than waiting on a held lock; lock-path errors map the lock domain.
         $probeSample = [WatcherSample]::new($Domain, 'save.ntwtf.zip', $T, [IO.FileInfo]::new($save).Length)
-        $busyServices = [WatcherRuntimeServices]::new(
-            { param($Token) [pscustomobject]@{ SourceDomainId = $Domain } },
-            { param($Config,$Token) @([IO.FileInfo]::new($save)) },
-            { param($Config,$Token) [WatcherBookkeepingReadResult]::new('absent',$null) },
-            { param($Config,$Token) [WatcherCurrentReadResult]::new('absent',$null) },
-            { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) },
-            { param($Root2,$Token) [WatcherCycleLockTryResult]::new('busy',$null) },
-            { param($Owner,$Config,$Candidate,$Sink,$Token) throw 'Cycle must not run while the lock is busy.' })
+        $busySpec = @{
+            ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = $Domain } }
+            GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($save)) }
+            ReadBookkeeping = { param($Config,$Token) [WatcherBookkeepingReadResult]::new('absent',$null) }
+            ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('absent',$null) }
+            TestStable = { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) }
+            TryAcquireCycleLock = { param($Root2,$Token) [WatcherCycleLockTryResult]::new('busy',$null) }
+            InvokeCycle = { param($Owner,$Config,$Candidate,$Sink,$Token) throw 'Cycle must not run while the lock is busy.' }
+        }
+        $busyServices = New-WatcherStubServices @busySpec
         $busyDisposition = (Invoke-WatcherPoll -PriorSample $probeSample -Services $busyServices -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)).disposition
-        $lockFailServices = [WatcherRuntimeServices]::new(
-            { param($Token) [pscustomobject]@{ SourceDomainId = $Domain } },
-            { param($Config,$Token) @([IO.FileInfo]::new($save)) },
-            { param($Config,$Token) [WatcherBookkeepingReadResult]::new('absent',$null) },
-            { param($Config,$Token) [WatcherCurrentReadResult]::new('absent',$null) },
-            { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) },
-            { param($Root2,$Token) throw [IO.IOException]::new('lock unavailable') },
-            { param($Owner,$Config,$Candidate,$Sink,$Token) throw 'not reached' })
+        $lockFailSpec = @{
+            ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = $Domain } }
+            GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($save)) }
+            ReadBookkeeping = { param($Config,$Token) [WatcherBookkeepingReadResult]::new('absent',$null) }
+            ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('absent',$null) }
+            TestStable = { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) }
+            TryAcquireCycleLock = { param($Root2,$Token) throw [IO.IOException]::new('lock unavailable') }
+        }
+        $lockFailServices = New-WatcherStubServices @lockFailSpec
         $lockFailDisposition = (Invoke-WatcherPoll -PriorSample $probeSample -Services $lockFailServices -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)).disposition
 
         # W publishes H1 while still holding the lock, then releases.
@@ -634,22 +657,26 @@ if ($Only -eq 'AcquisitionDomainIsolation') {
 
         $cycles = [Collections.Generic.List[string]]::new()
         $newBytes = [Collections.Generic.List[string]]::new()
-        $servicesA = [WatcherRuntimeServices]::new(
-            { param($Token) [pscustomobject]@{ SourceDomainId = $domainA } },
-            { param($Config,$Token) @([IO.FileInfo]::new($SaveA)) },
-            { param($Config,$Token) [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Json ('{"domainId":"' + $domainA + '","saveFile":"save.ntwtf.zip","savedAt":"' + $T.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"}') -Budget config)) },
-            { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json ('{"source":{"domainId":"' + $domainA + '","saveFile":"save.ntwtf.zip","savedAt":"' + $T.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"}}') -Budget digest)) },
-            { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) },
-            { param($Root,$Token) [WatcherCycleLockTryResult]::new('acquired',[IO.MemoryStream]::new()) },
-            { param($Owner,$Config,$Candidate,$Sink,$Token) $cycles.Add('domainA'); $Owner.Dispose(); [CycleOutcome]::new($true,$true,$false,$true,$true,$null,'stable',$false,$null,$Sink.Freeze()) })
-        $servicesB = [WatcherRuntimeServices]::new(
-            { param($Token) [pscustomobject]@{ SourceDomainId = $domainB } },
-            { param($Config,$Token) @([IO.FileInfo]::new($SaveB)) },
-            { param($Config,$Token) [WatcherBookkeepingReadResult]::new('absent',$null) },
-            { param($Config,$Token) [WatcherCurrentReadResult]::new('absent',$null) },
-            { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) },
-            { param($Root,$Token) [WatcherCycleLockTryResult]::new('acquired',[IO.MemoryStream]::new()) },
-            { param($Owner,$Config,$Candidate,$Sink,$Token) $cycles.Add('domainB'); $newBytes.Add([IO.File]::ReadAllText($Candidate.FullName)); $Owner.Dispose(); [CycleOutcome]::new($true,$true,$false,$true,$true,$null,'stable',$false,$null,$Sink.Freeze()) })
+        $specA = @{
+            ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = $domainA } }
+            GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($SaveA)) }
+            ReadBookkeeping = { param($Config,$Token) [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Json ('{"domainId":"' + $domainA + '","saveFile":"save.ntwtf.zip","savedAt":"' + $T.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"}') -Budget config)) }
+            ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json ('{"source":{"domainId":"' + $domainA + '","saveFile":"save.ntwtf.zip","savedAt":"' + $T.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"}}') -Budget digest)) }
+            TestStable = { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) }
+            TryAcquireCycleLock = { param($Root,$Token) [WatcherCycleLockTryResult]::new('acquired',[IO.MemoryStream]::new()) }
+            InvokeCycle = { param($Owner,$Config,$Candidate,$Sink,$Token) $cycles.Add('domainA'); $Owner.Dispose(); [CycleOutcome]::new($true,$true,$false,$true,$true,$null,'stable',$false,$null,$Sink.Freeze()) }
+        }
+        $servicesA = New-WatcherStubServices @specA
+        $specB = @{
+            ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = $domainB } }
+            GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($SaveB)) }
+            ReadBookkeeping = { param($Config,$Token) [WatcherBookkeepingReadResult]::new('absent',$null) }
+            ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('absent',$null) }
+            TestStable = { param($Config,$Candidate,$Token) [WatcherStabilityResult]::new('stable',$Candidate) }
+            TryAcquireCycleLock = { param($Root,$Token) [WatcherCycleLockTryResult]::new('acquired',[IO.MemoryStream]::new()) }
+            InvokeCycle = { param($Owner,$Config,$Candidate,$Sink,$Token) $cycles.Add('domainB'); $newBytes.Add([IO.File]::ReadAllText($Candidate.FullName)); $Owner.Dispose(); [CycleOutcome]::new($true,$true,$false,$true,$true,$null,'stable',$false,$null,$Sink.Freeze()) }
+        }
+        $servicesB = New-WatcherStubServices @specB
 
         # Domain A: observe twice, then quiescence under its own bookkeeping.
         $pA0 = Invoke-WatcherPoll -PriorSample $null -Services $servicesA -CompanionRoot $RootA -CancellationToken ([Threading.CancellationToken]::None)
