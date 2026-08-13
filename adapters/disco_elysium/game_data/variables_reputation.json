@@ -1,0 +1,128 @@
+[
+  {
+    "id": 5215,
+    "name": "reputation.misconduct_fines",
+    "initial_value": "False",
+    "description": ""
+  },
+  {
+    "id": 5216,
+    "name": "reputation.communist",
+    "initial_value": 0.0,
+    "description": "Communist counter"
+  },
+  {
+    "id": 5217,
+    "name": "reputation.ultraliberal",
+    "initial_value": 0.0,
+    "description": "Ultraliberal counter"
+  },
+  {
+    "id": 5218,
+    "name": "reputation.revacholian_nationhood",
+    "initial_value": 0.0,
+    "description": "Fascist counter"
+  },
+  {
+    "id": 5219,
+    "name": "reputation.moralist",
+    "initial_value": 0.0,
+    "description": "Moralist counter"
+  },
+  {
+    "id": 5220,
+    "name": "reputation.kim",
+    "initial_value": 0.0,
+    "description": "Kim loves you this much"
+  },
+  {
+    "id": 5221,
+    "name": "reputation.sorry_cop",
+    "initial_value": 0.0,
+    "description": "Sorry cop counter"
+  },
+  {
+    "id": 5222,
+    "name": "reputation.apocalypse_cop",
+    "initial_value": 0.0,
+    "description": "Apocalypse cop counter"
+  },
+  {
+    "id": 5223,
+    "name": "reputation.superstar_cop",
+    "initial_value": 0.0,
+    "description": "Superstar cop counter"
+  },
+  {
+    "id": 5224,
+    "name": "reputation.art_cop",
+    "initial_value": 0.0,
+    "description": "Art cop counter"
+  },
+  {
+    "id": 5225,
+    "name": "reputation.homo_comes_up",
+    "initial_value": 0.0,
+    "description": "how many times has the homo question come up"
+  },
+  {
+    "id": 5226,
+    "name": "reputation.honour",
+    "initial_value": 0.0,
+    "description": "Honour Fag counter"
+  },
+  {
+    "id": 5227,
+    "name": "reputation.coach_physical_instrument",
+    "initial_value": 0.0,
+    "description": "How many times has coach physical instrument adressed you"
+  },
+  {
+    "id": 5228,
+    "name": "reputation.boring_cop",
+    "initial_value": 0.0,
+    "description": "Boring cop counter"
+  },
+  {
+    "id": 5229,
+    "name": "reputation.the_destroyer",
+    "initial_value": 0.0,
+    "description": "you're becoming the destroyer of things"
+  },
+  {
+    "id": 5230,
+    "name": "reputation.torque_dork",
+    "initial_value": 0.0,
+    "description": "how many times you've porned out talked about motor vehicles"
+  },
+  {
+    "id": 5231,
+    "name": "reputation.the_law",
+    "initial_value": 0.0,
+    "description": "how many times you've mentioned you're the law or from the police in dialogue greetings"
+  },
+  {
+    "id": 5232,
+    "name": "reputation.suicide_cop",
+    "initial_value": 0.0,
+    "description": "Suicidal impulse counter."
+  },
+  {
+    "id": 5233,
+    "name": "reputation.ask_for_money",
+    "initial_value": 0.0,
+    "description": "the amount of times you've asked people fer moneys"
+  },
+  {
+    "id": 5234,
+    "name": "reputation.remote_viewer",
+    "initial_value": 0.0,
+    "description": "get 4 to get Remote Viewer afterthought giver dialogue"
+  },
+  {
+    "id": 5235,
+    "name": "reputation.nacromania",
+    "initial_value": 0.0,
+    "description": "Narcomania hate rep tracker"
+  }
+]

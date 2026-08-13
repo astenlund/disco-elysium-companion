@@ -1,0 +1,16 @@
+# Live playthrough state: reputation values and objective state (privacy),
+# plus runtime locks and files that churn on every autosave.
+state/
+
+# Work copies of real save bytes and migration/revise scratch.
+.tmp/
+
+# Adapter release packages: dedump.exe binary plus vendored game DBs.
+adapters/disco_elysium/releases/
+
+# Build artifact; rebuilt from dump-tool sources via build.ps1.
+dedump.exe
+
+# Machine-local instruction/settings overlays.
+CLAUDE.local.md
+.claude/settings.local.json

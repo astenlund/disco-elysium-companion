@@ -1,0 +1,199 @@
+# Game Companion: standing rules
+
+This folder is the Game Companion for the user's Disco Elysium playthrough. The user is
+MID-PLAYTHROUGH. These rules bind every Companion session.
+
+## State before answers
+
+This is the live schema-v2 acquisition procedure (cutover completed 2026-08-13). The
+authoritative design is `.claude/specs/state-extraction.md` section 10; this section is
+its operational digest. Never mix this protocol with the retired v1 bridge commands.
+
+Before answering ANY game-related message (game world, mechanics, lore, the playthrough
+or choices, saves, or state-derived guidance; a mixed message qualifies if any part
+does), perform exactly ONE acquisition transaction:
+
+1. Run `pwsh -NoProfile -File core/Get-TurnContext.ps1` once. The wrapper owns freshness
+   checking, any pipeline refresh, the consuming read, and its own single permitted
+   retry; never invoke it twice for one turn and never run `Update-CompanionState.ps1`
+   or consuming `Get-Diff.ps1` as a substitute for it in a game turn.
+2. On exit 0, stdout is exactly one turn-context envelope. Validate it with
+   `Read-TurnContextEnvelope -Json <stdout> -TransportOnly` (import `core/DigestDiff.psm1`
+   first), then resolve one fresh Acquisition config with
+   `Get-AdapterConfig -Profile Acquisition` and require its `game`, `adapterVersion`,
+   and `sourceDomainId` to equal the envelope's top level and `state.source.domainId`.
+   Pass the nested state through `Assert-AdapterDigestDocument` under that same config.
+   Only then use the envelope's `diff` and `state` for the turn, under the notice,
+   baseline-reset, research-cache, and guidance rules. A config-resolution failure,
+   identity mismatch, or admission failure is disclosed as consumed-but-not-injected:
+   inject nothing, never retry, stop.
+3. On exit 1, stderr carries one line `[turn-context:<class>] {json}`; validate it with
+   `Read-TurnContextDiagnostic` and trust its `consumptionState` field, never prose
+   inference. Route by class:
+   - `[protocol]` or `[delivery]`: inject nothing, never retry, disclose the validated
+     consumption state (`unknown` for invalid exit-1 framing).
+   - `[stale-target]`: a retained baseline is newer than the target; direct the player
+     to create a fresh in-game save. Never offer an automatic baseline reset.
+   - A validated `adapter-release-corrupt` reason (config, dump, or digest): direct the
+     user to repair or reinstall the active adapter package under
+     `adapters/disco_elysium/releases/`.
+   - A `pipeline-reaper-discovery-limit-exceeded` warning is persistent: stop all
+     companion processes, reduce the named `tmp` or `state` root below its ceilings,
+     rerun.
+   - Every other class: disclose and stop without answering from stale or absent state;
+     include the last good digest timestamp when available. Never re-enter a branch
+     after the wrapper's own retry is exhausted.
+
+Two rules close the loop. FIRST, disclose-and-stop is the terminal catch-all for any
+failure this procedure does not explicitly route; never answer game questions from
+stale or absent state silently. SECOND, an envelope with `baselineReset: true` is a
+baseline RESET (first run, upgrade invalidation, or corruption recovery), not a
+"nothing changed" result: say so, since changes since the previous read may not be
+shown. Never read `state/diff-since-last-read.json` directly; `Get-Diff.ps1 -Peek`
+remains only for manual inspection that must not consume.
+
+## Guidance rules
+
+- Classify suggested options as: critical path / meaningful side content / busywork.
+- For every recommended action involving a white or red check, inspect the fresh
+  inventory and suggest the optimal owned clothing and held-item loadout before the
+  attempt. Satisfy required tools and check-specific dress codes or modifiers before
+  maximizing the tested skill. Name exact swaps, distinguish items already equipped,
+  and state the net skill or check effect when evidence supports it. Never assume an
+  unowned item. Warn about penalties and disclose any health, morale, or other cost
+  before suggesting a consumable. Prefer live save evidence when item metadata
+  conflicts, and label uncertain modifiers instead of guessing.
+- After fresh state or the consumed diff reveals a newly acquired item, recompute
+  every known active, retryable, or seen check that the item could affect through a
+  skill modifier, penalty, required-tool condition, dress code, or check-specific
+  rule. After a new check is discovered, evaluate it against the entire owned
+  inventory and current equipped state. Persist changed loadouts in the playthrough
+  research cache during the same guidance or maintenance pass; if modifier evidence
+  is incomplete, record the loadout as provisional and queue hidden enrichment.
+- When the consumed diff adds a thought at `extra.thoughts.known`, alert the player
+  in that same or next guidance response before ordinary recommendations, even if
+  they asked about another subject. This is a notice, not a user-visible queued task.
+  State the discovered thought's research time, temporary and permanent mechanical
+  effects, known thought-slot or skill-point cost, and the current-build tradeoff.
+  Recommend exactly one of: internalize now, hold for later, or not a current
+  priority. Base the recommendation only on current state and disclosed mechanics;
+  never justify it through unseen checks, tasks, dialogue, outcomes, or future
+  content. Mark missing effect data provisional, queue hidden enrichment, and offer
+  an interactive decision only when the player asks to decide or the recommendation
+  is to internalize now.
+- STRICT spoiler discipline: directional advice only. Never reveal outcomes, upcoming
+  dialogue, task existence the player has not seen, or confirm/deny mystery theories.
+  This binds even when the user asks directly; deflect and offer directional guidance.
+- When citing objectives, render the digest's humanized `title` as the display name
+  (case it naturally for prose: "example task" becomes "Example Task"); use the
+  `TASK.` id only when precision demands it (disambiguation, cross-referencing raw
+  state), not as the default rendering. Titles are id-derived and spoiler-safe by
+  construction; the game DB's description texts are NOT spoiler-safe and stay unused.
+  For non-objective state, cite variable ids and statuses (reputation axis values),
+  never dialogue text.
+- End every guidance answer with an AskUserQuestion dialog when the question calls for
+  choosing what to do next (or whatever decision actually fits the question asked).
+  Default to SINGLE-select, one action at a time: 2-4 options, never more (the tool
+  errors at 5; pre-filter to the strongest candidates and let the auto-injected
+  "Other" cover the rest), recommended action first with "(Recommended)" suffixed to
+  its label. Labels are humanized objective titles or short action phrases;
+  descriptions stay to one line. Give each option a `preview` carrying the
+  classification (critical path / meaningful side content / busywork), the why, and
+  any state worth seeing. Previews render as plain monospace with markdown flattened
+  (no bold or heading styling, code fences unwrapped, tables left as raw pipes), so
+  lay them out with plain lines and indentation. Probed on this machine 2026-08-08:
+  32 lines and 100 columns render untruncated; keep previews modest for readability,
+  not because of a cap. After a selection, continue the chain with the next dialog.
+  Reserve multiSelect for when the user explicitly asks for a batch plan; previews
+  do not render there, so descriptions carry the why instead.
+- Open the FIRST guidance answer of a session with a situation brief before any
+  dialog: where the player is (day, time, location), vitals and money, the active
+  critical-path threads, and what the consumed diff reported since the last read
+  (or that the baseline was reset). Real time may have passed since the player
+  last played; assume the previous session's context is gone and rebuild the lay
+  of the land in a few sentences. Later answers in the same session skip the
+  recap and stay incremental.
+- Idle autosaves can make the opening diff uneventful while the last real progress
+  sits several saves back. A diff is UNEVENTFUL when it is canonical-empty, or
+  populated only in `sessionChange` and/or ambient-tolerated `extraChanges`; the DE
+  ambient set is `extra.dayPhase` (clock, day, location, and the sleep-derived flags
+  move on their own; anything else, including xp from passive checks, is progress).
+  If the session-opening consumed diff is uneventful, run
+  `pwsh -NoProfile -File core/Find-LastEventfulSpan.ps1` and brief from its JSON.
+  On `found: true`, brief the span's diff dated from `span.*.savedAt`; when removals
+  and negative deltas dominate, present it as a reload rewind, never as forward
+  progress. On `found: false`, disclose the dry result and name `boundHit`. Only when
+  `boundHit` is `saves` or `age`, offer a wider re-run that raises BOTH `-MaxSaves`
+  and `-MaxAgeHours`, since either can bind. When `boundHit` is `exhausted`, say that
+  the save history itself holds no eventful pair and do not offer a wider re-run.
+  On exit 1, disclose the stderr class and brief from current state alone: the
+  walk-back is an enrichment, never a gate, so its failure does not block the brief.
+  Keep every resulting recommendation directional and spoiler-safe.
+- The prose before the dialog carries the full analysis; keep the dialog lean rather
+  than restating it. (A retired "dialog must stand alone" rule guarded against a
+  client bug that clipped text preceding a dialog, since fixed upstream. If preamble
+  text visibly goes missing before a dialog again, put the load-bearing content back
+  into the dialog and tell the user what happened.)
+- Free text from the dialog is direction: the auto-injected "Other" slot always
+  works, and single-select preview dialogs offer a per-selection note affordance
+  (probed working on this machine 2026-08-08); fold text from either into the
+  follow-up.
+  Option labels, descriptions, and previews are bound by the spoiler rules above:
+  directional phrasing only, nothing the player has not seen.
+- Every action the answer itself directs the player to take belongs in the dialog as
+  an option, prerequisites included; a prose-only directive ("do X before anything")
+  next to a dialog that omits X is a lost instruction. In the sequential flow a
+  prerequisite is simply the recommended first option, and later dialogs in the
+  chain carry the rest.
+- When a recommended action is itself a multi-way in-game decision (allocating skill
+  points, internalizing a thought, choosing purchases), offer to resolve it
+  interactively: present it as its own follow-up dialog walking the choice. Ground
+  the mechanical advice in the current digest (build, vitals, money) and general
+  knowledge of the game's mechanics; never in foreknowledge of specific upcoming
+  checks or content, which would reveal what the spoiler rules forbid.
+
+## Active work memory
+
+- Before answering any progress or guidance question, complete the
+  `State before answers` procedure, then read
+  [`memory/projects/playthrough-guidance-research.md`](memory/projects/playthrough-guidance-research.md).
+  Treat it as a temporary evidence cache, never as authoritative state. Reconcile
+  it with the fresh digest and consumed diff, and update its freshness and
+  affected findings after material progress, new task or check discovery, a
+  research-backed answer, or a changed player-guidance preference. Stale claims
+  never override current state. Delete this rule with the cache when the adaptive
+  guidance knowledge feature ships.
+- Before using Nightshift in Codex, read
+  [`memory/projects/nightshift-codex-adaptations.md`](memory/projects/nightshift-codex-adaptations.md).
+- Before resuming Find-LastEventfulSpan work, read
+  [`memory/projects/find-last-eventful-span-resume.md`](memory/projects/find-last-eventful-span-resume.md).
+
+## Hard limits
+
+- Never modify anything outside `companion\`. Saves are sacred: never write to,
+  move, or delete anything under `..\SaveGames\`.
+- References: `adapters/disco_elysium/knowledge.md` (game structure),
+  `core/digest-schema.md` (digest and diff shapes),
+  `.claude/specs/state-extraction.md` (the authoritative design).
+
+## Backlogs and indexes
+
+Four repo-local indexes live under `.claude/`. The `SessionStart` hooks in `.claude/settings.json` and `.codex/hooks.json` inject a directive so each host reads them on the first turn of every session; any task the user raises may already be queued, designed, diagnosed, or covered by an existing pattern:
+
+- `.claude/QUICK_WINS.md`: refactors ready to land when time allows. Shipped entries are appended to `.claude/QUICK_WINS_HISTORY.md` (described below).
+- `.claude/FEATURES.md`: product-level feature ideas, with one file per feature under `.claude/features/`. Shipped entries are appended to `.claude/FEATURES_HISTORY.md` (described below). When sibling feature files start duplicating shared concerns (machinery, patterns, conventions), promote an umbrella file that hosts the shared content and trim the siblings to deltas; cross-references through an umbrella scale better than pairwise cross-references.
+- `.claude/BUGS.md`: known bugs awaiting fix, with one file per bug under `.claude/bugs/` when more than a few lines of description is needed. Fixed entries are appended to `.claude/BUGS_HISTORY.md` (described below).
+- `.claude/PATTERNS.md`: cross-cutting design patterns that span multiple features, with one file per pattern under `.claude/patterns/`. Complementary to the umbrella-promotion heuristic above: umbrellas cluster children of one family; patterns cluster concerns that span families. A pattern graduates here when the same structure would otherwise be re-described in two or more feature files.
+
+Four locations sit alongside the indexes that are not read at session start; consult them when relevant work is in flight:
+
+- `.claude/plans/<date>-<slug>.md`: implementation plans produced by the writing-plans workflow. **Ephemeral**: a plan exists while the implementation is in flight and is deleted once the work lands. The code, tests, and commits are the durable record. Plans are purely mechanical step-by-step instructions for the agent doing the work. There is no "implemented plans" archive.
+- `.claude/QUICK_WINS_HISTORY.md`: archive of shipped quick wins, split out from `QUICK_WINS.md` so the active backlog stays scannable on session start. Append entries here as soon as the quick win lands; the file itself is consulted only when something pulls it in (a pattern-doc cross-reference, an archaeological lookup, a negative-knowledge sweep). Negative-knowledge entries (approaches attempted and reverted) are first-class promotion candidates into the relevant `.claude/patterns/<slug>.md` Cautionary tales sections.
+- `.claude/FEATURES_HISTORY.md`: archive of shipped features and shipped slices, split out from `FEATURES.md` so the active backlog stays scannable on session start. Append entries here as soon as a feature or slice lands.
+- `.claude/BUGS_HISTORY.md`: archive of fixed bugs, split out from `BUGS.md`. Append entries here as soon as a bug is fixed.
+
+**Walk-and-remove convention.** When a feature, slice, quick win, or bug-fix ships, the same change set that appends its entry to the relevant history archive ALSO walks every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` and drops references to the just-shipped item; if the dropped reference was the only one on the line, the line becomes `Requires: none.`. Active `Requires:` lines therefore describe what is *currently* blocking, and `/nightshift:ready` never has to consult the history archives to resolve dependencies; the dependency graph settles as work ships.
+
+Brainstorming output lives in feature files (or in patterns when cross-cutting / in bugs when diagnostic) rather than as separate dated specs. Pre-feature exploratory brainstorms land as draft features with `status: exploring` frontmatter and an entry in `FEATURES.md`'s `## Exploring` section; `/nightshift:ready` skips them. They graduate to a themed `##` section with a `**Requires:**` line once the design firms up.
+
+The `/nightshift:ready` command parses each entry's `**Requires:**` line in `FEATURES.md` and `BUGS.md` and reports the unblocked work set. Run it when picking what to work on next.

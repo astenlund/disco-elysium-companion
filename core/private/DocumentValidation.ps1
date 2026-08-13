@@ -1,0 +1,93 @@
+function Fail-Document { throw [CompanionDocumentValidationException]::new('Companion document validation failed.') }
+function Test-ElementKind { param($Element, [Text.Json.JsonValueKind] $Kind) if ($Element.ValueKind -ne $Kind) { Fail-Document } }
+function Test-Boolean { param($Element) if ($Element.ValueKind -ne [Text.Json.JsonValueKind]::True -and $Element.ValueKind -ne [Text.Json.JsonValueKind]::False) { Fail-Document } }
+function Test-ExactFields { param($Element, [string[]] $Names) Test-ElementKind $Element Object; $actual = @($Element.EnumerateObject() | ForEach-Object Name); if ($actual.Count -ne $Names.Count) { Fail-Document }; foreach ($name in $Names) { $ignored = [Text.Json.JsonElement]::new(); if (-not $Element.TryGetProperty($name, [ref] $ignored)) { Fail-Document } } }
+function Get-Property { param($Element, [string] $Name) $value = [Text.Json.JsonElement]::new(); if (-not $Element.TryGetProperty($Name, [ref] $value)) { Fail-Document }; return $value }
+function Test-String { param($Element, [bool] $AllowEmpty = $false) Test-ElementKind $Element String; $value = $Element.GetString(); if (-not $AllowEmpty -and [string]::IsNullOrEmpty($value)) { Fail-Document }; return $value }
+function Test-Integer { param($Element, [bool] $Nonnegative = $false, [bool] $Positive = $false) Test-ElementKind $Element Number; $value = 0L; if (-not $Element.TryGetInt64([ref] $value) -or $Element.GetRawText() -notmatch '^-?(0|[1-9][0-9]*)$' -or ($Nonnegative -and $value -lt 0) -or ($Positive -and $value -le 0)) { Fail-Document }; return $value }
+function Test-Decimal { param($Element) Test-ElementKind $Element Number; $value = [decimal]0; if (-not $Element.TryGetDecimal([ref] $value)) { Fail-Document }; return $value }
+function Test-Time { param($Element) $value = Test-String $Element; if ($value -notmatch '^([01][0-9]|2[0-3]):[0-5][0-9]$') { Fail-Document }; return $value }
+function Test-Utc { param($Element, [bool] $AllowNull = $false) if ($AllowNull -and $Element.ValueKind -eq [Text.Json.JsonValueKind]::Null) { return }; $value = Test-String $Element; $parsed = [datetime]::MinValue; if (-not [datetime]::TryParse($value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref] $parsed) -or $parsed.Kind -ne [DateTimeKind]::Utc -or -not [string]::Equals($parsed.ToString('o', [Globalization.CultureInfo]::InvariantCulture), $value, [StringComparison]::Ordinal)) { Fail-Document } }
+function Test-Source { param($Element) Test-ExactFields $Element @('domainId','saveFile','savedAt','byteLength','contentSha256'); if ((Test-String (Get-Property $Element domainId)) -notmatch '^[0-9a-f]{64}$' -or (Test-String (Get-Property $Element contentSha256)) -notmatch '^[0-9a-f]{64}$') { Fail-Document }; $save = Test-String (Get-Property $Element saveFile); if ($save.IndexOfAny([char[]]'\\/') -ge 0) { Fail-Document }; Test-Utc (Get-Property $Element savedAt); Test-Integer (Get-Property $Element byteLength) $false $true }
+function Test-DayTime { param($Element) Test-ExactFields $Element @('day','time'); Test-Integer (Get-Property $Element day); Test-Time (Get-Property $Element time) }
+function Test-UniqueStrings { param($Element) Test-ElementKind $Element Array; $values = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal); foreach ($item in $Element.EnumerateArray()) { if (-not $values.Add((Test-String $item))) { Fail-Document } } }
+function Test-Status { param($Element) if ((Test-String $Element) -notin @('active','done','failed','locked')) { Fail-Document } }
+function Test-Objective { param($Element, [bool] $Subobjective) $fields = @('id','title','status','acquired','resolved','subobjectives'); Test-ExactFields $Element $fields; Test-String (Get-Property $Element id); Test-String (Get-Property $Element title) $true; Test-Status (Get-Property $Element status); Test-DayTime (Get-Property $Element acquired); $resolved = Get-Property $Element resolved; if ($resolved.ValueKind -ne [Text.Json.JsonValueKind]::Null) { Test-DayTime $resolved }; $children = Get-Property $Element subobjectives; if ($Subobjective) { Test-ElementKind $children Null } else { Test-ElementKind $children Array; $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal); foreach ($child in $children.EnumerateArray()) { Test-Objective $child $true; if (-not $ids.Add((Get-Property $child id).GetString())) { Fail-Document } } } }
+function Read-Validated { param([string] $Path, [string] $Json, [string] $Budget) if ($PSBoundParameters.ContainsKey('Path')) { return Read-CompanionJson -Path $Path -Budget $Budget }; return Read-CompanionJson -Json $Json -Budget $Budget }
+function Read-DigestDocument { [CmdletBinding(DefaultParameterSetName='Path')] param([Parameter(Mandatory,Position=0,ParameterSetName='Path')][string]$Path,[Parameter(Mandatory,ParameterSetName='Json')][string]$Json) $document = Read-Validated @PSBoundParameters -Budget digest; try { $root=$document.RootElement; Test-ExactFields $root @('schemaVersion','adapterVersion','game','generatedAt','source','session','character','objectives','inventory','extra'); if ((Test-Integer (Get-Property $root schemaVersion)) -ne (Get-CoreSchemaVersion)) { Fail-Document }; Test-Integer (Get-Property $root adapterVersion); Test-String (Get-Property $root game); Test-Utc (Get-Property $root generatedAt); Test-Source (Get-Property $root source); $session=Get-Property $root session; Test-ExactFields $session @('day','time','location','playtimeNote'); Test-Integer (Get-Property $session day); Test-Time (Get-Property $session time); Test-String (Get-Property $session location); $note=Get-Property $session playtimeNote; if ($note.ValueKind -ne [Text.Json.JsonValueKind]::Null) { Test-String $note $true }; $character=Get-Property $root character; Test-ExactFields $character @('level','xp','unspentPoints','money','vitals','skills'); foreach($name in 'level','xp','unspentPoints'){Test-Integer (Get-Property $character $name) $true}; $money=Get-Property $character money; Test-ExactFields $money @('amount','minorUnits','minorUnitsPerUnit','currency'); $amount=Test-Decimal (Get-Property $money amount); $minor=Test-Integer (Get-Property $money minorUnits); $per=Test-Integer (Get-Property $money minorUnitsPerUnit) $false $true; if ($amount -ne ([decimal]$minor/[decimal]$per)) { Fail-Document }; Test-String (Get-Property $money currency); $vitals=Get-Property $character vitals; Test-ElementKind $vitals Array; $names=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal); foreach($item in $vitals.EnumerateArray()){Test-ExactFields $item @('name','value'); if(-not $names.Add((Test-String (Get-Property $item name)))){Fail-Document}; Test-Integer (Get-Property $item value)}; $skills=Get-Property $character skills; Test-ElementKind $skills Array; $names.Clear(); foreach($item in $skills.EnumerateArray()){Test-ExactFields $item @('name','value','group');if(-not $names.Add((Test-String(Get-Property $item name)))){Fail-Document};Test-Integer(Get-Property $item value);Test-String(Get-Property $item group)}; $objectives=Get-Property $root objectives; Test-ElementKind $objectives Array; $ids=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($item in $objectives.EnumerateArray()){Test-Objective $item $false;if(-not $ids.Add((Get-Property $item id).GetString())){Fail-Document}}; $inventory=Get-Property $root inventory;Test-ExactFields $inventory @('owned','equipped','highlights');$owned=Get-Property $inventory owned;Test-UniqueStrings $owned;$own=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($x in $owned.EnumerateArray()){[void]$own.Add($x.GetString())};foreach($name in 'equipped','highlights'){$items=Get-Property $inventory $name;Test-UniqueStrings $items;foreach($x in $items.EnumerateArray()){if(-not $own.Contains($x.GetString())){Fail-Document}}};Test-ElementKind (Get-Property $root extra) Object; return $document } catch [CompanionDocumentValidationException]{throw} catch { throw } }
+function Test-DiffObjective { param($Element,[string]$Mode) $fields = switch($Mode){added{@('id','status','parentId')} removed{@('id','lastStatus','parentId')} default{@('id','from','to','parentId')}};Test-ExactFields $Element $fields;Test-String(Get-Property $Element id);$parent=Get-Property $Element parentId;if($parent.ValueKind -ne [Text.Json.JsonValueKind]::Null){Test-String $parent};if($Mode -eq 'added'){Test-Status(Get-Property $Element status)}elseif($Mode -eq 'removed'){Test-Status(Get-Property $Element lastStatus)}else{Test-Status(Get-Property $Element from);Test-Status(Get-Property $Element to);if((Get-Property $Element from).GetString() -ceq (Get-Property $Element to).GetString()){Fail-Document}} }
+function Test-Pointer { param([string]$Path) if($Path -notmatch '^/extra(?:/|$)' -or $Path -eq '/extra' -or $Path -match '(?<!~)~(?![01])'){Fail-Document} }
+function Read-DiffDocument { [CmdletBinding(DefaultParameterSetName='Path')] param([Parameter(Mandatory,Position=0,ParameterSetName='Path')][string]$Path,[Parameter(Mandatory,ParameterSetName='Json')][string]$Json) $document=Read-Validated @PSBoundParameters -Budget diff; $root=$document.RootElement; Test-ExactFields $root @('schemaVersion','adapterVersion','game','hasChanges','hasUnrepresentedChanges','baselineGeneratedAt','currentGeneratedAt','currentSource','sessionChange','objectives','character','inventory','extraChanges');if((Test-Integer(Get-Property $root schemaVersion)) -ne (Get-CoreSchemaVersion)){Fail-Document};Test-Integer(Get-Property $root adapterVersion);Test-String(Get-Property $root game);foreach($name in 'hasChanges','hasUnrepresentedChanges'){Test-Boolean(Get-Property $root $name)};Test-Utc(Get-Property $root baselineGeneratedAt) $true;Test-Utc(Get-Property $root currentGeneratedAt);Test-Source(Get-Property $root currentSource);$session=Get-Property $root sessionChange;if($session.ValueKind -ne [Text.Json.JsonValueKind]::Null){Test-ExactFields $session @('from','to','locationChanged');Test-DayTime(Get-Property $session from);Test-DayTime(Get-Property $session to);Test-Boolean(Get-Property $session locationChanged)};$objectives=Get-Property $root objectives;Test-ExactFields $objectives @('added','removed','statusChanged');$keys=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($mode in 'added','removed','statusChanged'){$bucket=Get-Property $objectives $mode;Test-ElementKind $bucket Array;foreach($item in $bucket.EnumerateArray()){Test-DiffObjective $item $mode;$parent=Get-Property $item parentId;$key=if($parent.ValueKind -eq [Text.Json.JsonValueKind]::Null){[char]0}else{$parent.GetString()};$key += [char]0 + (Get-Property $item id).GetString();if(-not $keys.Add($key)){Fail-Document}}};$character=Get-Property $root character;Test-ExactFields $character @('levelDelta','xpDelta','moneyDelta','skillChanges');Test-Integer(Get-Property $character levelDelta);Test-Integer(Get-Property $character xpDelta);Test-Decimal(Get-Property $character moneyDelta);$skills=Get-Property $character skillChanges;Test-ElementKind $skills Array;$names=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($item in $skills.EnumerateArray()){Test-ExactFields $item @('name','from','to');if(-not $names.Add((Test-String(Get-Property $item name)))){Fail-Document};$from=Get-Property $item from;$to=Get-Property $item to;if($from.ValueKind -ne [Text.Json.JsonValueKind]::Null){Test-Integer $from};if($to.ValueKind -ne [Text.Json.JsonValueKind]::Null){Test-Integer $to};if($from.ValueKind -eq [Text.Json.JsonValueKind]::Null -and $to.ValueKind -eq [Text.Json.JsonValueKind]::Null){Fail-Document};if($from.ValueKind -ne [Text.Json.JsonValueKind]::Null -and $to.ValueKind -ne [Text.Json.JsonValueKind]::Null -and $from.GetInt64() -eq $to.GetInt64()){Fail-Document}};$inventory=Get-Property $root inventory;Test-ExactFields $inventory @('gained','lost','equippedChanged');Test-Boolean(Get-Property $inventory equippedChanged);$sets=@{};foreach($name in 'gained','lost'){$items=Get-Property $inventory $name;Test-UniqueStrings $items;$sets[$name]=@($items.EnumerateArray()|ForEach-Object GetString)};foreach($item in $sets.gained){if($sets.lost -ccontains $item){Fail-Document}};$extra=Get-Property $root extraChanges;Test-ElementKind $extra Array;$paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($item in $extra.EnumerateArray()){Test-ExactFields $item @('path','fromPresent','toPresent','from','to');$pointer=Test-String(Get-Property $item path);Test-Pointer $pointer;if(-not $paths.Add($pointer)){Fail-Document};$fromPresent=Get-Property $item fromPresent;$toPresent=Get-Property $item toPresent;Test-Boolean $fromPresent;Test-Boolean $toPresent;if($fromPresent.GetBoolean() -eq $false -and $toPresent.GetBoolean() -eq $false){Fail-Document};if($fromPresent.GetBoolean() -eq $false -and (Get-Property $item from).ValueKind -ne [Text.Json.JsonValueKind]::Null){Fail-Document};if($toPresent.GetBoolean() -eq $false -and (Get-Property $item to).ValueKind -ne [Text.Json.JsonValueKind]::Null){Fail-Document};if($fromPresent.GetBoolean() -and $toPresent.GetBoolean() -and [Text.Json.JsonElement]::DeepEquals((Get-Property $item from),(Get-Property $item to))){Fail-Document}};if((Get-Property $root baselineGeneratedAt).ValueKind -eq [Text.Json.JsonValueKind]::Null){if((Get-Property $root hasChanges).GetBoolean() -or (Get-Property $root hasUnrepresentedChanges).GetBoolean() -or $session.ValueKind -ne [Text.Json.JsonValueKind]::Null -or $keys.Count -ne 0 -or $names.Count -ne 0 -or (Test-Integer(Get-Property $character levelDelta)) -ne 0 -or (Test-Integer(Get-Property $character xpDelta)) -ne 0 -or (Test-Decimal(Get-Property $character moneyDelta)) -ne 0 -or $sets.gained.Count -ne 0 -or $sets.lost.Count -ne 0 -or (Get-Property $inventory equippedChanged).GetBoolean() -or $paths.Count -ne 0){Fail-Document}};return $document }
+
+$script:ReadDigestDocumentImplementation = ${function:Read-DigestDocument}
+function Read-DigestDocument {
+    [CmdletBinding(DefaultParameterSetName = 'Path')]
+    param(
+        [Parameter(Mandatory, Position = 0, ParameterSetName = 'Path')] [string] $Path,
+        [Parameter(Mandatory, ParameterSetName = 'Json')] [string] $Json
+    )
+
+    $values = @(& $script:ReadDigestDocumentImplementation @PSBoundParameters)
+
+    return $values[-1]
+}
+
+$script:ReadDiffDocumentImplementation = ${function:Read-DiffDocument}
+
+function Read-DiffDocument {
+    [CmdletBinding(DefaultParameterSetName = 'Path')]
+    param(
+        [Parameter(Mandatory, Position = 0, ParameterSetName = 'Path')] [string] $Path,
+        [Parameter(Mandatory, ParameterSetName = 'Json')] [string] $Json
+    )
+
+    $values = @(& $script:ReadDiffDocumentImplementation @PSBoundParameters)
+    $document = $values[-1]
+    $root = $document.RootElement
+
+    # Boolean values have two JSON value kinds. The original implementation's exact-field
+    # checks already authorize both kinds; these restate the boolean-kind checks and the
+    # hasChanges cross-state check on the single admitted document so that a diff
+    # admission parses the bytes exactly once instead of once here and once again in the
+    # original implementation.
+    foreach ($name in 'hasChanges', 'hasUnrepresentedChanges') {
+        Test-Boolean (Get-Property $root $name)
+    }
+    $session = Get-Property $root sessionChange
+    if ($session.ValueKind -ne [Text.Json.JsonValueKind]::Null) {
+        Test-Boolean (Get-Property $session locationChanged)
+    }
+    $inventory = Get-Property $root inventory
+    Test-Boolean (Get-Property $inventory equippedChanged)
+    foreach ($change in (Get-Property $root extraChanges).EnumerateArray()) {
+        Test-Boolean (Get-Property $change fromPresent)
+        Test-Boolean (Get-Property $change toPresent)
+    }
+
+    if ($root.GetProperty('baselineGeneratedAt').ValueKind -ne [Text.Json.JsonValueKind]::Null) {
+        $character = $root.GetProperty('character'); $inventory = $root.GetProperty('inventory'); $objectives = $root.GetProperty('objectives')
+        $computed = $root.GetProperty('sessionChange').ValueKind -ne [Text.Json.JsonValueKind]::Null -or $objectives.GetProperty('added').GetArrayLength() -ne 0 -or $objectives.GetProperty('removed').GetArrayLength() -ne 0 -or $objectives.GetProperty('statusChanged').GetArrayLength() -ne 0 -or $character.GetProperty('levelDelta').GetInt64() -ne 0 -or $character.GetProperty('xpDelta').GetInt64() -ne 0 -or $character.GetProperty('moneyDelta').GetDecimal() -ne 0 -or $character.GetProperty('skillChanges').GetArrayLength() -ne 0 -or $inventory.GetProperty('gained').GetArrayLength() -ne 0 -or $inventory.GetProperty('lost').GetArrayLength() -ne 0 -or $inventory.GetProperty('equippedChanged').GetBoolean() -or $root.GetProperty('extraChanges').GetArrayLength() -ne 0
+        if ($computed -ne $root.GetProperty('hasChanges').GetBoolean()) { Fail-Document }
+    }
+    foreach ($bucketName in 'added', 'removed', 'statusChanged') {
+        $previous = $null
+        foreach ($entry in $root.GetProperty('objectives').GetProperty($bucketName).EnumerateArray()) {
+            $parent = $entry.GetProperty('parentId')
+            $key = if ($parent.ValueKind -eq [Text.Json.JsonValueKind]::Null) { [char]0 } else { [char]1 + $parent.GetString() }
+            $key += [char]0 + $entry.GetProperty('id').GetString()
+            if ($null -ne $previous -and [string]::CompareOrdinal($previous, $key) -ge 0) { Fail-Document }
+            $previous = $key
+        }
+    }
+    foreach ($arrayName in 'skillChanges', 'gained', 'lost', 'extraChanges') {
+        $array = switch ($arrayName) { 'skillChanges' { $root.GetProperty('character').GetProperty($arrayName) } 'gained' { $root.GetProperty('inventory').GetProperty($arrayName) } 'lost' { $root.GetProperty('inventory').GetProperty($arrayName) } default { $root.GetProperty($arrayName) } }
+        $field = if ($arrayName -eq 'skillChanges') { 'name' } elseif ($arrayName -eq 'extraChanges') { 'path' } else { $null }
+        $previous = $null
+        foreach ($entry in $array.EnumerateArray()) {
+            $key = if ($null -eq $field) { $entry.GetString() } else { $entry.GetProperty($field).GetString() }
+            if ($null -ne $previous -and [string]::CompareOrdinal($previous, $key) -ge 0) { Fail-Document }
+            $previous = $key
+        }
+    }
+    return $document
+}

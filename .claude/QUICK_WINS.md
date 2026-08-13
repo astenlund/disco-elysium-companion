@@ -1,0 +1,164 @@
+# Quick wins
+
+Refactors ready to land when time allows; not blocking any feature, but
+would improve the codebase meaningfully.
+
+This file is **one of four repo-local indexes** Claude reads on every
+session start (alongside `FEATURES.md`, `BUGS.md`, `PATTERNS.md`). Active
+entries are kept inline, organized under thematic `##` sections you
+invent as work emerges. When a quick win lands, append a shipped-note
+entry to [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md); do not move
+it within this file. Negative-knowledge findings (approaches attempted
+and reverted) are first-class promotion candidates from the history
+into the relevant `.claude/patterns/<slug>.md` Cautionary tales sections.
+
+Capture shorthand: name the refactor, describe the current smell in a
+sentence or two, sketch the preferred shape. A reader should be able to
+start work from the entry alone. Anchor entries on identifiers that
+survive refactors -- symbol names, entry titles, commit hashes, config
+keys -- never on line numbers, plan-phase ordinals, bullet positions,
+or temporal qualifiers ("new", "recent"): a precise locator that rots
+misleads harder than a coarse one that holds.
+
+**After adding a new entry, run `/nightshift:ready`** from the repo root
+to confirm it parses as a quick-wins work item against the real grammar
+in `skills/ready/ready.js`. Quick wins carry no `**Requires:**` line; the
+failure mode to catch is an entry that doesn't parse as a `- ` bullet or
+`###` heading (ready reports it as a prose-only-section notice) while you
+can still fix it in the same session.
+
+## Section 11 verification fixtures (deferred)
+
+Three Section 11 claims remain un-wired because their fixtures need cross-process
+concurrency or live plumbing beyond the scratch unit harness. Deferred by user
+disposition 2026-08-11; the v2 cutover completed 2026-08-13, so each is now
+unblocked authoring work.
+
+- **Concurrent consume-lock fixture for claim 40 (Equal-identity target freeze).**
+  Needs two genuinely concurrent consumers racing on the real `consume.lock` with a
+  pause barrier between freeze-current and publish-baseline, a cross-process /
+  time-ordered concurrency fixture the single-process unit harness cannot drive without
+  simulating the concurrency. The single-process equal-identity retention half is
+  already covered by the Watcher `EqualIdentityRetention` selector.
+  Requires: none.
+
+- **Staged wrapper fixture for claim 41 (Turn-context failure injection).** Needs a
+  staged wrapper/acquisition fixture: private attempt A returns
+  `[reset-write:not-consumed]`, a newer save lands, B consumes the newer target, only B
+  reaches stdout, A is discarded; plus the failure-injection boundary matrix.
+  Requires: none.
+
+- **Staged acquisition fixture for claim 42 (Acquisition retry taxonomy).** Needs
+  baseline-write-failure injection and multi-attempt cross-process declines beyond the
+  scratch unit harness. The wrong-envelope-to-`[protocol]` recognition half is already
+  covered by the TurnContext `EnvelopeProtocolRejection` selector and the wrapper
+  terminal selection by `WrapperRetry`.
+  Requires: none.
+
+- **Execute the two provisional live-claims (section 11 rows 56 and 59).**
+  Save-write stability and historical-save immutability passed verification only as PROVISIONAL
+  because their preconditions need the game RUNNING (and, for immutability, cloud sync
+  enabled): observe at least one live autosave pass the two-sample stability gate with
+  zero unzip failures across a session producing 5+ saves, and confirm older matching
+  candidates keep hash/size/mtime across later saves in every save mode. The probe
+  selectors live in `core/tests/Test-Section11LiveProbes.ps1` (`Section11-56` /
+  `Section11-59`), which is deliberately outside the `-Group All` dispatcher because its
+  probes touch the real SaveGames; run them directly during a play session and then
+  replace the spec's two `(live-claim: deferred 2026-08-11)` markers with the probe
+  results.
+  Requires: a window with the game running (user-scheduled).
+
+## Housekeeping
+
+- **Sweep the pre-migration `.tmp/` debris.** The 2026-08-12 revise sessions left heavy
+  scratch under `.tmp/`: the `revise-payload-*`/`revise-round*`/`build-round*` files and
+  logs, old debug scratch directories (`walk-staged-*`, `fixture-span-*`,
+  `scratch-turn-dbg`, `turn-wrapper-diag`, `state-debug*`, `probe`, `reap-debug`,
+  `replace-probe`, `gate-manual`), and the two cloned editor repos
+  (`disco-elysium-editor`, `upstream-save-editor`). All are disposable; the clones are
+  re-fetchable reference material, so confirm nothing still links to them before
+  deleting. Keep `state-extraction-v2-entry-fence.lock` (permanent fence
+  infrastructure). Best done just before the Git-ify quick win below so the first
+  commit's ignore rules are decided against a clean tree.
+  Requires: none.
+
+## Version control / repository migration
+
+- **Git-ify the companion and push to a new private GitHub repo.** The companion is
+  currently a no-Git workspace (the state-extraction-v2 plan replaces commits with scoped
+  test checkpoints), so `state/` digests, the tooling, and the spoiler-safe design docs live
+  only locally with no version control or off-machine backup. Preferred shape: `git init` in
+  the companion root, add a `.gitignore`, a first subject-only Conventional Commit, create a
+  new PRIVATE GitHub repo, add the remote, and push. Target home `C:\Git\<ProjectName>`
+  (suggest `disco-elysium-companion`).
+  Requires: a `.gitignore` policy decision (exclude `.tmp/`, which holds work copies of real
+  save bytes plus migration scratch, and `adapters/disco_elysium/releases/`, which holds the
+  `dedump.exe` binary and vendored game DBs; decide whether to version `state/` playthrough
+  digests or exclude them, since they contain reputation values and objective state); the
+  state-extraction-v2 cutover completed 2026-08-13 and the migration scaffold is retired, so
+  the first commit's history is clean of it; confirm the move from the AppData sibling to `C:\Git\` breaks
+  nothing (adapter.json's absolute `saveDirectory` should survive, but re-verify no
+  acquisition path relies on `..\SaveGames\` resolving from the new root); a private repo
+  created by the user (push requires explicit direction, per the global git-networking rule).
+  Privacy: the companion holds spoiler-sensitive playthrough-derived state; private only, and
+  consider excluding `state/` to keep it out of git history.
+
+## State-extraction-v2 review tech-debt (deferred from the 2026-08-12 revise pass)
+
+The full `/nightshift:revise-code` over the schema-v2 state-extraction changeset converged
+(phase 1 and phase 2, all 63 dimension cells inactive). The confirmed defects were fixed and
+gate-verified; the items below are the acknowledged lower-severity duplication / dead-code /
+single-source / dormant-harness findings deferred to this backlog during the review. The
+formerly cutover-gated review items all landed with the 2026-08-13 cutover and Task 16
+verification: the 12 live/Go section-11 rows were wired to genuine live probes and passed,
+the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
+save-read-only probe executed against the activated runtime. Only the 3 turn-context
+fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
+
+- `AdapterConfig.ps1` pierces the `AdapterValidatorLease` cache key directly and re-imports the
+  validator module on every watcher poll (no amortization across polls of one release).
+- `Get-AdapterWalkPolicyId` duplicates a 4-byte big-endian writer and a copy-plus-ordinal-sort
+  normalization; `Get-AdapterPointerArray` hand-rolls the RFC 6901 pointer tokenizer that
+  `ConvertFrom-DiffPointer` already provides.
+- `StateFiles.ps1`/`Acquisition.ps1` duplicate the four authoritative state-file names and the
+  work-lease naming regex instead of deriving from `$script:StateFileTargets` / the writer.
+- `Consumption.ps1` repeats the `$payload.Complete($bool, $WarningSink.Freeze())` guard four
+  times; `New-ConsumePayload` and `Invoke-CompanionConsumption` copy-paste the source-floor
+  predicate.
+- `DocumentValidation.ps1` `Read-DigestDocument`/`Read-DiffDocument` barrier-validate boolean
+  fields the inner implementation already validated; the diff-objectives composite key is built
+  twice with a divergence; `Measure-CompanionJsonElement`/`Measure-CompanionJsonValue` hold two
+  verbatim accounting copies; the JSON-serializable value-type set is enumerated twice and
+  disagrees.
+- `New-CompanionWarningSink` `ValidateSet` hardcodes the profile names instead of sourcing them
+  from the registry dictionary; the warning vertical lives inside `SourceIdentity.ps1` (a
+  misnamed module boundary; already centrally consolidated).
+- The save-digest dump/digest reason vocabulary is duplicated between the `SaveDigestStageException`
+  C# legal-reasons switch and `$script:TurnContextReasons`.
+- The source-identity VALIDATION grammar (domainId sha256, saveFile no-separator, savedAt UTC) is
+  hand-rolled in `WalkProtocol`/`TurnContext`/`DocumentValidation` (construction is centralized).
+- `WatcherCurrentReadResult`'s `adapter-invalid` status is dead (no producer emits it);
+  `TurnContextPayloadCandidate.MarkSerialized`/`Invalidate` are dead code.
+- `Test-Watcher.ps1` rebuilds the seven-scriptblock `WatcherRuntimeServices` bundle ~19 times;
+  `Test-Walk.ps1` and `Test-AdapterConfig.ps1` repeat fixture constructors; `Test-Acquisition.ps1`
+  couples an ordering test to literal source text; `Test-Build-Digest.ps1` repeats the
+  skill_key_map load; `Test-TurnContext.ps1` `-Only` previously advertised a ghost `ConfigDrift`
+  (now removed).
+- Dump-tool: the TLV projected-key format and the TLV top-level table count (5) are each
+  duplicated across `parser/lua_parser.go` and `main.go`; `findVariableStore` materializes a full
+  `StringMap` of every table; `validateJSONMember` makes a full extra copy; `archive.go` binds
+  `requiredSuffixes` order to the `memberKind` iota; `lua_parser.go` exports the unused cursor
+  field.
+ Landed 2026-08-12 since the prior revise pass: evidence-adoption content binding
+  (per-name artifact validators + producing-input fingerprints), smoke-receipt `.next` sibling
+  adoption, `ExecuteSmoke` sibling adoption, the static-hygiene forbidden-token failure, the
+  retirement legacy-test wiring, and WriteThrough durability for the remaining aux writers; all
+  verified by the passing cutover crash-matrix suite where suite-exercised. No open tracked bugs
+  remain (`mapper-reputation-observability` resolved via option-b; the named
+  duplicate-vendor/misspelled/bad-initial clauses are spec-deferred).
+
+Implemented quick wins are archived in
+[`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md), read only when
+consulted (not at session start) so the active backlog above stays
+scannable. When a quick win lands, append its entry there rather
+than to this file.

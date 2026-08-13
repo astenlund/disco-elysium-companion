@@ -1,0 +1,79 @@
+# Bugs (history)
+
+Fixed bugs, archived from `BUGS.md` so the active list stays scannable
+on session start. **Archaeological**: read only when consulted, not at
+session start. When a bug is fixed, append its entry here rather than
+to the active file.
+
+The bug breakout file at `bugs/<slug>.md` (when present) stays in place
+as the historical diagnosis record; the entry here is a brief
+description of the fix and the commit it landed in.
+
+## Cross-reference resolution
+
+`/nightshift:ready` does **not** scan this file. When a bug is fixed, every other
+`**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is
+edited at the same time to drop the now-satisfied reference (mirror of
+the `FEATURES.md` convention). The active `Requires:` lines therefore
+describe what is *currently* blocking; this file is purely
+archaeological.
+
+## Entries
+
+- Watcher repeat-processed an unchanged save after PowerShell 7.6 JSON reads converted
+  ISO timestamps to `DateTime`, then string parameter binding discarded fractional
+  ticks and UTC kind. All shared JSON read and canonical-value paths now use
+  `-DateKind String`; exact provenance and date-like array regressions plus an idle
+  watcher probe cover the fix (no-git workspace, 2026-08-08).
+- The Disco Elysium mapper reported healing-item charges as Health and Morale. Vitals
+  now use the current `characterSheet.endurance.value` and `.volition.value`; a
+  discriminating adapter fixture, four fail-closed source cases, isolated version-reset
+  coverage, and live full/damaged Morale saves cover the correction (no-git workspace,
+  2026-08-09).
+- Crash-killed test harnesses leaked scratch roots under `.tmp` indefinitely (2,467
+  dirs; `Register-EngineEvent PowerShell.Exiting` cleanup fires only on orderly exit).
+  Added module-private `Clear-StaleScratchRoots` in `core/tests/TestSupport.psm1`,
+  invoked from `New-ScratchCompanionRoot`, which sweeps only exact scratch-shape dirs
+  (`<prefix>-<pid>-<32hex>`) directly under `.tmp` whose embedded PID is no longer live;
+  reparse points, live-PID roots, and migration artifacts are never touched. Verified:
+  `.tmp` went 2,533 to 58 dirs with all 19 durable artifacts preserved (no-git
+  workspace, 2026-08-11).
+- Verification evidence was accepted without freshness or provenance binding
+  (`bugs/evidence-adoption.md`). The evidence-adoption path now binds to the fresh
+  checkpoint state so adopted evidence cannot be taken out of context. Folded into the
+  full state-extraction-v2 revise pass (2026-08-12).
+- The cutover helper could not resume after two mutation-before-checkpoint crashes
+  (`bugs/cutover-resume-stalls.md`). Both resume-stall windows now adopt the 
+  checkpoint-owned intermediate state. Folded into the revise pass (2026-08-12).
+- Null-detail turn-context warnings could not round-trip through the envelope
+  (`bugs/warning-detail-null-roundtrip.md`). Null-detail warning records now survive the
+  sink freeze and envelope serialization as JSON null. Folded into the revise pass
+  (2026-08-12).
+- The turn-context staging diagnostic rejected a `[pscustomobject]` sourceIdentity
+  (`bugs/turn-context-sourceidentity-kind.md`). The diagnostic now renders the identity
+  through the shared source-identity helpers, and the wrapper terminal paths reuse
+  `New-TurnContextDiagnosticObject`. Folded into the revise pass (2026-08-12).
+- Walk result receipts used `[datetime]` savedAt while the span serialized `'o'` strings
+  (`bugs/walk-savedat-type-mismatch.md`). Walk receipts and spans now share one UTC `'o'`
+  identity render via `ConvertTo-WalkIdentity`. Folded into the revise pass (2026-08-12).
+- `CompanionJsonValue` had no `Dispose` while `Invoke-CompanionCycle` disposes documents
+  (`bugs/companion-json-value-dispose.md`). The value wrapper gained a no-op `Dispose`
+  so the cycle document cleanup path is safe. Folded into the revise pass (2026-08-12).
+- The handoff atomic writer had an unresumable `.next` sibling crash window
+  (`bugs/handoff-next-sibling-window.md`). The handoff publication now reconciles the
+  sibling on resume. Folded into the revise pass (2026-08-12).
+- Auxiliary writers lacked power-loss durability (`bugs/aux-writer-durability.md`). The
+  aux checkpoint writers now use WriteThrough + Flush before the atomic replace. Folded
+  into the revise pass (2026-08-12).
+- The mapper did not sort thought arrays (`bugs/mapper-thought-sorting.md`). Thought
+  arrays are now ordinal-sorted before emission (matching the DE extra validator).
+  Folded into the revise pass (2026-08-12).
+- Reputation mapping was not fixture-observable for section-11 claim 11
+  (`bugs/mapper-reputation-observability.md`). Resolved 2026-08-12 via the documented
+  option-b narrowing: `section11-11` is now wired to a genuine
+  `Test-Build-Digest.ps1#MapperReputationSemantics` selector that asserts all ten digest
+  paths against distinct sentinel store values plus the wrong-kind rejection; the
+  misspelled-entry / duplicate-vendor / bad-initial-value clauses are spec-deferred (no
+  vendored-DB or mapper-source fixture seam exists in the fixed mapper CLI). Wired
+  alongside `section11-12` (thought-sorting) to `MapperThoughtOrdering`, advancing the
+  section-11 registry 60 -> 62/77.

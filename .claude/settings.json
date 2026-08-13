@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:'Before responding to the first user turn of this session, read .claude/QUICK_WINS.md, .claude/FEATURES.md, .claude/BUGS.md, and .claude/PATTERNS.md. These index the repo refactor backlog, feature ideas, known bugs, and cross-cutting design patterns. Implementation plans live under .claude/plans/<date>-<slug>.md (ephemeral; only present while work is in flight). Read those on demand, not at session start. Any task the user raises may already be queued, designed, diagnosed, or covered. When the user asks what to work on next, run /nightshift:ready to parse the **Requires:** line on each entry into an unblocked work set.'}}));\""
+          }
+        ]
+      }
+    ]
+  }
+}

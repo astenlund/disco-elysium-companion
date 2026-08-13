@@ -1,0 +1,40 @@
+{
+  "_description": "Maps between save file keys, internal skill type codes, and human-readable display names. Essential for building a save editor that knows how to reference skills across all save file sections.",
+  "abilities": [
+    {"save_key": "intellect", "skill_type": "INT", "display_name": "Intellect", "skills": ["logic", "encyclopedia", "rhetoric", "drama", "conceptualization", "visualCalculus"]},
+    {"save_key": "psyche",    "skill_type": "PSY", "display_name": "Psyche",    "skills": ["volition", "inlandEmpire", "empathy", "authority", "suggestion", "espritDeCorps"]},
+    {"save_key": "fysique",   "skill_type": "FYS", "display_name": "Fysique",   "skills": ["endurance", "painThreshold", "physicalInstrument", "shivers", "electrochemistry", "halfLight"]},
+    {"save_key": "motorics",  "skill_type": "MOT", "display_name": "Motorics",  "skills": ["handEyeCoordination", "perception", "reaction", "savoirFaire", "interfacing", "composure"]}
+  ],
+  "skills": [
+    {"save_key": "logic",                "skill_type": "LOGIC",                "display_name": "Logic",                 "ability": "INT"},
+    {"save_key": "encyclopedia",         "skill_type": "ENCYCLOPEDIA",         "display_name": "Encyclopedia",          "ability": "INT"},
+    {"save_key": "rhetoric",             "skill_type": "RHETORIC",             "display_name": "Rhetoric",              "ability": "INT"},
+    {"save_key": "drama",                "skill_type": "DRAMA",                "display_name": "Drama",                 "ability": "INT"},
+    {"save_key": "conceptualization",    "skill_type": "CONCEPTUALIZATION",    "display_name": "Conceptualization",     "ability": "INT"},
+    {"save_key": "visualCalculus",       "skill_type": "VISUAL_CALCULUS",      "display_name": "Visual Calculus",       "ability": "INT"},
+    {"save_key": "volition",             "skill_type": "VOLITION",             "display_name": "Volition",              "ability": "PSY"},
+    {"save_key": "inlandEmpire",         "skill_type": "INLAND_EMPIRE",        "display_name": "Inland Empire",         "ability": "PSY"},
+    {"save_key": "empathy",              "skill_type": "EMPATHY",              "display_name": "Empathy",               "ability": "PSY"},
+    {"save_key": "authority",            "skill_type": "AUTHORITY",            "display_name": "Authority",             "ability": "PSY"},
+    {"save_key": "suggestion",           "skill_type": "SUGGESTION",           "display_name": "Suggestion",            "ability": "PSY"},
+    {"save_key": "espritDeCorps",        "skill_type": "ESPRIT_DE_CORPS",      "display_name": "Esprit de Corps",       "ability": "PSY"},
+    {"save_key": "endurance",            "skill_type": "ENDURANCE",            "display_name": "Endurance",             "ability": "FYS"},
+    {"save_key": "painThreshold",        "skill_type": "PAIN_THRESHOLD",       "display_name": "Pain Threshold",        "ability": "FYS"},
+    {"save_key": "physicalInstrument",   "skill_type": "PHYSICAL_INSTRUMENT",  "display_name": "Physical Instrument",   "ability": "FYS"},
+    {"save_key": "shivers",              "skill_type": "SHIVERS",              "display_name": "Shivers",               "ability": "FYS"},
+    {"save_key": "electrochemistry",     "skill_type": "ELECTROCHEMISTRY",     "display_name": "Electrochemistry",      "ability": "FYS"},
+    {"save_key": "halfLight",            "skill_type": "HALF_LIGHT",           "display_name": "Half Light",            "ability": "FYS"},
+    {"save_key": "handEyeCoordination",  "skill_type": "HE_COORDINATION",      "display_name": "Hand/Eye Coordination", "ability": "MOT"},
+    {"save_key": "perception",           "skill_type": "PERCEPTION",           "display_name": "Perception",            "ability": "MOT"},
+    {"save_key": "reaction",             "skill_type": "REACTION",             "display_name": "Reaction Speed",        "ability": "MOT"},
+    {"save_key": "savoirFaire",          "skill_type": "SAVOIR_FAIRE",         "display_name": "Savoir Faire",          "ability": "MOT"},
+    {"save_key": "interfacing",          "skill_type": "INTERFACING",          "display_name": "Interfacing",           "ability": "MOT"},
+    {"save_key": "composure",            "skill_type": "COMPOSURE",            "display_name": "Composure",             "ability": "MOT"}
+  ],
+  "equipment_slots": ["PANTS", "JACKET", "SHIRT", "NECK", "SHOES", "HELDLEFT", "HELDRIGHT", "GLOVES", "HAT", "GLASSES"],
+  "inventory_categories": ["TOOLS", "CLOTHES", "PAWNABLES", "READING"],
+  "modifier_cause_types": ["ABILITY", "THOUGHT", "INVENTORY_ITEM"],
+  "thought_states": ["UNKNOWN", "COOKING", "FIXED", "FORGOTTEN"],
+  "healing_pool_types": ["ENDURANCE", "VOLITION"]
+}
