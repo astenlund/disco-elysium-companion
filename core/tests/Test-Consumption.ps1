@@ -13,29 +13,58 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force
 
+function New-StagedGetDiffFixture {
+    param(
+        [Parameter(Mandatory)] [string] $Prefix,
+        [Parameter(Mandatory)] [string] $DigestJson,
+        [Parameter()] [switch] $SeedCurrent
+    )
+
+    $fixtureRoot = New-ScratchCompanionRoot -Prefix $Prefix
+    $fixtureCore = Join-Path $fixtureRoot 'core'
+    [IO.Directory]::CreateDirectory($fixtureCore) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'adapters')) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $fixtureRoot '.tmp')) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../EntryFence.psm1') -Destination (Join-Path $fixtureCore 'EntryFence.psm1')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Destination (Join-Path $fixtureCore 'DigestDiff.psm1')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../private') -Destination (Join-Path $fixtureCore 'private') -Recurse
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../Get-Diff.ps1') -Destination (Join-Path $fixtureCore 'Get-Diff.ps1')
+    $fixtureAdapter = Join-Path $fixtureRoot 'adapters/example'
+    $fixtureRelease = Join-Path $fixtureAdapter 'releases/2/schema-2/adapters/example'
+    $fixtureSaves = Join-Path $fixtureRoot 'saves'
+    [IO.Directory]::CreateDirectory($fixtureRelease) | Out-Null
+    [IO.Directory]::CreateDirectory($fixtureSaves) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fixtureRelease 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param(`$Root) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
+    $adapterDocument = [ordered]@{ game = 'example'; adapterVersion = 2L; saveDirectory = $fixtureSaves; saveGlob = '*.ntwtf.zip'; diffExcludePaths = @() }
+    [IO.File]::WriteAllText((Join-Path $fixtureAdapter 'adapter.json'), (ConvertTo-CompanionJson -InputObject $adapterDocument -Budget config), [Text.UTF8Encoding]::new($false, $true))
+    $domainBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($fixtureSaves + [char]0 + '*.ntwtf.zip')
+    $domain = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($domainBytes)).ToLowerInvariant()
+    $fixtureDigest = $DigestJson.Replace('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', $domain)
+    $fixtureState = Join-Path $fixtureRoot 'state'
+    if ($SeedCurrent) {
+        [IO.Directory]::CreateDirectory($fixtureState) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $fixtureState 'current.json'), $fixtureDigest, [Text.UTF8Encoding]::new($false, $true))
+    }
+
+    return [pscustomobject]@{
+        Root = $fixtureRoot
+        Core = $fixtureCore
+        State = $fixtureState
+        Saves = $fixtureSaves
+        Digest = $fixtureDigest
+        GetDiff = Join-Path $fixtureCore 'Get-Diff.ps1'
+    }
+}
+
 $root = New-ScratchCompanionRoot -Prefix 'consumption'
 $state = Join-Path $root 'state'
 [IO.Directory]::CreateDirectory($state) | Out-Null
 $digestJson = '{"schemaVersion":2,"adapterVersion":2,"game":"example","generatedAt":"2026-08-10T12:00:00.0000000Z","source":{"domainId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","saveFile":"B.ntwtf.zip","savedAt":"2026-08-10T11:00:00.0000000Z","byteLength":1,"contentSha256":"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"},"session":{"day":1,"time":"08:09","location":"place","playtimeNote":null},"character":{"level":1,"xp":0,"unspentPoints":0,"money":{"amount":1.25,"minorUnits":125,"minorUnitsPerUnit":100,"currency":"real"},"vitals":[{"name":"health","value":1}],"skills":[{"name":"Logic","value":1,"group":"Intellect"}]},"objectives":[{"id":"TASK.example","title":"example","status":"active","acquired":{"day":1,"time":"08:09"},"resolved":null,"subobjectives":[]}],"inventory":{"owned":["item"],"equipped":["item"],"highlights":[]},"extra":{}}'
 [IO.File]::WriteAllText((Join-Path $state 'current.json'), $digestJson, [Text.UTF8Encoding]::new($false, $true))
 
-$stagedRoot = New-ScratchCompanionRoot -Prefix 'staged-get-diff'
-$stagedCore = Join-Path $stagedRoot 'core'
-[IO.Directory]::CreateDirectory($stagedCore) | Out-Null
-[IO.Directory]::CreateDirectory((Join-Path $stagedRoot 'adapters')) | Out-Null
-[IO.Directory]::CreateDirectory((Join-Path $stagedRoot '.tmp')) | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../EntryFence.psm1') -Destination (Join-Path $stagedCore 'EntryFence.psm1')
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Destination (Join-Path $stagedCore 'DigestDiff.psm1')
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../private') -Destination (Join-Path $stagedCore 'private') -Recurse
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../Get-Diff.ps1') -Destination (Join-Path $stagedCore 'Get-Diff.ps1')
-$stagedAdapter = Join-Path $stagedRoot 'adapters/example'
-$stagedRelease = Join-Path $stagedAdapter 'releases/2/schema-2/adapters/example'
-$stagedSaves = Join-Path $stagedRoot 'saves'
-[IO.Directory]::CreateDirectory($stagedRelease) | Out-Null
-[IO.Directory]::CreateDirectory($stagedSaves) | Out-Null
-[IO.File]::WriteAllText((Join-Path $stagedRelease 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param(`$Root) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
-$stagedAdapterDocument = [ordered]@{ game = 'example'; adapterVersion = 2L; saveDirectory = $stagedSaves; saveGlob = '*.ntwtf.zip'; diffExcludePaths = @() }
-[IO.File]::WriteAllText((Join-Path $stagedAdapter 'adapter.json'), (ConvertTo-CompanionJson -InputObject $stagedAdapterDocument -Budget config), [Text.UTF8Encoding]::new($false, $true))
+$stagedFixture = New-StagedGetDiffFixture -Prefix 'staged-get-diff' -DigestJson $digestJson
+$stagedRoot = $stagedFixture.Root
+$stagedCore = $stagedFixture.Core
 $stagedResult = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $stagedCore 'Get-Diff.ps1')) -WorkingDirectory $stagedRoot
 Assert-Equal -Actual $stagedResult.ExitCode -Expected 1 -Message 'Staged Get-Diff runs only after its exact bytes are copied into a core-shaped scratch root.'
 Assert-True -Condition $stagedResult.StdErr.Contains('[missing-current]', [StringComparison]::Ordinal) -Message 'Staged Get-Diff resolves its copied core module and classifies absent current state.'
@@ -59,9 +88,7 @@ foreach ($result in @($statePresentMissing, $statePresentMissingPeek)) {
     Assert-Equal -Actual $result.StdOut -Expected '' -Message 'State-present current-absent Get-Diff emits no payload.'
 }
 Assert-False -Condition ([IO.File]::Exists((Join-Path $stagedState 'consume.lock'))) -Message 'State-present current-absent Get-Diff does not create the consume lock.'
-$sourceDomainBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($stagedSaves + [char]0 + '*.ntwtf.zip')
-$sourceDomain = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($sourceDomainBytes)).ToLowerInvariant()
-$stagedDigest = $digestJson.Replace('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', $sourceDomain)
+$stagedDigest = $stagedFixture.Digest
 $stagedCurrent = Join-Path $stagedState 'current.json'
 [IO.File]::WriteAllText($stagedCurrent, $stagedDigest, [Text.UTF8Encoding]::new($false, $true))
 $currentBeforePeek = [IO.File]::ReadAllBytes($stagedCurrent)
@@ -169,29 +196,9 @@ if ($Only -eq 'ConsumptionLock') {
 }
 
 if ($Only -eq 'ResetOnRead') {
-    $resetRoot = New-ScratchCompanionRoot -Prefix 'reset-on-read'
-    $resetCore = Join-Path $resetRoot 'core'
-    [IO.Directory]::CreateDirectory($resetCore) | Out-Null
-    [IO.Directory]::CreateDirectory((Join-Path $resetRoot 'adapters')) | Out-Null
-    [IO.Directory]::CreateDirectory((Join-Path $resetRoot '.tmp')) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../EntryFence.psm1') -Destination (Join-Path $resetCore 'EntryFence.psm1')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Destination (Join-Path $resetCore 'DigestDiff.psm1')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../private') -Destination (Join-Path $resetCore 'private') -Recurse
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../Get-Diff.ps1') -Destination (Join-Path $resetCore 'Get-Diff.ps1')
-    $resetAdapter = Join-Path $resetRoot 'adapters/example'
-    $resetRelease = Join-Path $resetAdapter 'releases/2/schema-2/adapters/example'
-    $resetSaves = Join-Path $resetRoot 'saves'
-    [IO.Directory]::CreateDirectory($resetRelease) | Out-Null
-    [IO.Directory]::CreateDirectory($resetSaves) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $resetRelease 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param(`$Root) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
-    $resetAdapterDocument = [ordered]@{ game = 'example'; adapterVersion = 2L; saveDirectory = $resetSaves; saveGlob = '*.ntwtf.zip'; diffExcludePaths = @() }
-    [IO.File]::WriteAllText((Join-Path $resetAdapter 'adapter.json'), (ConvertTo-CompanionJson -InputObject $resetAdapterDocument -Budget config), [Text.UTF8Encoding]::new($false, $true))
-    $resetDomainBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($resetSaves + [char]0 + '*.ntwtf.zip')
-    $resetDomain = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($resetDomainBytes)).ToLowerInvariant()
-    $resetDigest = $digestJson.Replace('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', $resetDomain)
-    $resetState = Join-Path $resetRoot 'state'
-    [IO.Directory]::CreateDirectory($resetState) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $resetState 'current.json'), $resetDigest, [Text.UTF8Encoding]::new($false, $true))
+    $resetFixture = New-StagedGetDiffFixture -Prefix 'reset-on-read' -DigestJson $digestJson -SeedCurrent
+    $resetRoot = $resetFixture.Root
+    $resetCore = $resetFixture.Core
 
     $first = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $resetCore 'Get-Diff.ps1')) -WorkingDirectory $resetRoot
     Assert-Equal -Actual $first.ExitCode -Expected 0 -Message 'Reset-on-read first consuming run consumes the current snapshot.'
@@ -413,27 +420,11 @@ if ($Only -eq 'CacheInterleaving') {
 
 # Preflight must distinguish a corrupt or unreadable current from version staleness;
 # only a genuinely version-stale current keeps the stale-current remediation.
-$preflightRoot = New-ScratchCompanionRoot -Prefix 'preflight-current-class'
-$preflightCore = Join-Path $preflightRoot 'core'
-[IO.Directory]::CreateDirectory($preflightCore) | Out-Null
-[IO.Directory]::CreateDirectory((Join-Path $preflightRoot 'adapters')) | Out-Null
-[IO.Directory]::CreateDirectory((Join-Path $preflightRoot '.tmp')) | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../EntryFence.psm1') -Destination (Join-Path $preflightCore 'EntryFence.psm1')
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Destination (Join-Path $preflightCore 'DigestDiff.psm1')
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../private') -Destination (Join-Path $preflightCore 'private') -Recurse
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../Get-Diff.ps1') -Destination (Join-Path $preflightCore 'Get-Diff.ps1')
-$preflightAdapter = Join-Path $preflightRoot 'adapters/example'
-$preflightRelease = Join-Path $preflightAdapter 'releases/2/schema-2/adapters/example'
-$preflightSaves = Join-Path $preflightRoot 'saves'
-[IO.Directory]::CreateDirectory($preflightRelease) | Out-Null
-[IO.Directory]::CreateDirectory($preflightSaves) | Out-Null
-[IO.File]::WriteAllText((Join-Path $preflightRelease 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param(`$Root) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
-$preflightAdapterDocument = [ordered]@{ game = 'example'; adapterVersion = 2L; saveDirectory = $preflightSaves; saveGlob = '*.ntwtf.zip'; diffExcludePaths = @() }
-[IO.File]::WriteAllText((Join-Path $preflightAdapter 'adapter.json'), (ConvertTo-CompanionJson -InputObject $preflightAdapterDocument -Budget config), [Text.UTF8Encoding]::new($false, $true))
-$preflightDomainBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($preflightSaves + [char]0 + '*.ntwtf.zip')
-$preflightDomain = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($preflightDomainBytes)).ToLowerInvariant()
-$preflightDigest = $digestJson.Replace('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', $preflightDomain)
-$preflightState = Join-Path $preflightRoot 'state'
+$preflightFixture = New-StagedGetDiffFixture -Prefix 'preflight-current-class' -DigestJson $digestJson
+$preflightRoot = $preflightFixture.Root
+$preflightCore = $preflightFixture.Core
+$preflightDigest = $preflightFixture.Digest
+$preflightState = $preflightFixture.State
 [IO.Directory]::CreateDirectory($preflightState) | Out-Null
 $preflightCurrent = Join-Path $preflightState 'current.json'
 
