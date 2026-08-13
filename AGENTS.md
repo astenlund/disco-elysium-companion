@@ -166,6 +166,14 @@ remains only for manual inspection that must not consume.
 - Before using Nightshift in Codex, read
   [`memory/projects/nightshift-codex-adaptations.md`](memory/projects/nightshift-codex-adaptations.md).
 
+## Engineering conventions
+
+- When a test needs staging or fixture logic that already exists in another test
+  file, extract it into `core/tests/TestSupport.psm1` and call it from both files
+  instead of copying the recipe inline; mirroring a sibling's fixture inline is how
+  test-suite duplication is born. (Promoted from the 2026-08-13 revise-code
+  authoring retrospective: all eight confirmed findings were this class.)
+
 ## Hard limits
 
 - Never modify anything outside `companion\`. Saves are sacred: never write to,
