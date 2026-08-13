@@ -222,10 +222,7 @@ if ($Only -eq 'AmbientWalkPast') {
     # companion root (Split-Path $PSScriptRoot -Parent) is the stub root and its
     # module import resolves beside it; the adapter package lives under the stub
     # adapter's release root at {artifactRoot}.
-    Copy-Item -LiteralPath (Join-Path $coreRoot 'Find-LastEventfulSpan.ps1') -Destination (Join-Path $stubCore 'Find-LastEventfulSpan.ps1')
-    Copy-Item -LiteralPath (Join-Path $coreRoot 'DigestDiff.psm1') -Destination (Join-Path $stubCore 'DigestDiff.psm1')
-    Copy-Item -LiteralPath (Join-Path $coreRoot 'EntryFence.psm1') -Destination (Join-Path $stubCore 'EntryFence.psm1')
-    Copy-Item -LiteralPath (Join-Path $coreRoot 'private') -Destination (Join-Path $stubCore 'private') -Recurse
+    Copy-CompanionCoreTree -Destination $stubCore -EntryScripts @('Find-LastEventfulSpan.ps1')
 
     # The walk resolves {artifactRoot} beneath the stub adapter's release root. The
     # packaged stub mapper keeps the companion-shaped ..\..\core\DigestDiff.psm1

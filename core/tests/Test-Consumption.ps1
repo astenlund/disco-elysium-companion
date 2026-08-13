@@ -22,13 +22,9 @@ function New-StagedGetDiffFixture {
 
     $fixtureRoot = New-ScratchCompanionRoot -Prefix $Prefix
     $fixtureCore = Join-Path $fixtureRoot 'core'
-    [IO.Directory]::CreateDirectory($fixtureCore) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'adapters')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $fixtureRoot '.tmp')) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../EntryFence.psm1') -Destination (Join-Path $fixtureCore 'EntryFence.psm1')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Destination (Join-Path $fixtureCore 'DigestDiff.psm1')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../private') -Destination (Join-Path $fixtureCore 'private') -Recurse
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../Get-Diff.ps1') -Destination (Join-Path $fixtureCore 'Get-Diff.ps1')
+    Copy-CompanionCoreTree -Destination $fixtureCore -EntryScripts @('Get-Diff.ps1')
     $fixtureAdapter = Join-Path $fixtureRoot 'adapters/example'
     $fixtureRelease = Join-Path $fixtureAdapter 'releases/2/schema-2/adapters/example'
     $fixtureSaves = Join-Path $fixtureRoot 'saves'

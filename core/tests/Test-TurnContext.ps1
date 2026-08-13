@@ -555,12 +555,8 @@ if ($Only -eq 'WrapperTransactionSelection') {
     $txAdapter = Join-Path $txRoot 'adapters/stub'
     $txPkgCore = Join-Path $txAdapter 'releases/2/schema-2/core'
     $txPkgAdapter = Join-Path $txAdapter 'releases/2/schema-2/adapters/stub'
-    foreach ($txDir in @($txCore, $txSaves, $txPkgCore, $txPkgAdapter, (Join-Path $txRoot '.tmp'))) { [void] [IO.Directory]::CreateDirectory($txDir) }
-    $txSource = Split-Path $PSScriptRoot -Parent
-    Copy-Item -LiteralPath (Join-Path $txSource 'Get-TurnContext.ps1') -Destination (Join-Path $txCore 'Get-TurnContext.ps1')
-    Copy-Item -LiteralPath (Join-Path $txSource 'DigestDiff.psm1') -Destination (Join-Path $txCore 'DigestDiff.psm1')
-    Copy-Item -LiteralPath (Join-Path $txSource 'EntryFence.psm1') -Destination (Join-Path $txCore 'EntryFence.psm1')
-    Copy-Item -LiteralPath (Join-Path $txSource 'private') -Destination (Join-Path $txCore 'private') -Recurse
+    foreach ($txDir in @($txSaves, $txPkgCore, $txPkgAdapter, (Join-Path $txRoot '.tmp'))) { [void] [IO.Directory]::CreateDirectory($txDir) }
+    Copy-CompanionCoreTree -Destination $txCore -EntryScripts @('Get-TurnContext.ps1')
 
     $txDump = @'
 param([string] $Save, [string] $Dump)

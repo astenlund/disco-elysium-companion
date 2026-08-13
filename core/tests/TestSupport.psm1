@@ -215,6 +215,20 @@ function Wait-TestSentinel {
     }
 }
 
+function Copy-CompanionCoreTree {
+    param(
+        [Parameter(Mandatory)] [string] $Destination,
+        [Parameter()] [string[]] $EntryScripts = @()
+    )
+
+    [void] [System.IO.Directory]::CreateDirectory($Destination)
+    $coreRoot = Split-Path $PSScriptRoot -Parent
+    foreach ($name in @('DigestDiff.psm1', 'EntryFence.psm1') + $EntryScripts) {
+        Copy-Item -LiteralPath (Join-Path $coreRoot $name) -Destination (Join-Path $Destination $name)
+    }
+    Copy-Item -LiteralPath (Join-Path $coreRoot 'private') -Destination (Join-Path $Destination 'private') -Recurse
+}
+
 function Register-ScratchCleanup {
     if ($script:CleanupRegistered) {
         return
@@ -413,4 +427,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
