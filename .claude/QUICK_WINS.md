@@ -93,8 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `AdapterConfig.ps1` pierces the `AdapterValidatorLease` cache key directly and re-imports the
-  validator module on every watcher poll (no amortization across polls of one release).
 - `Get-AdapterWalkPolicyId` duplicates a 4-byte big-endian writer and a copy-plus-ordinal-sort
   normalization; `Get-AdapterPointerArray` hand-rolls the RFC 6901 pointer tokenizer that
   `ConvertFrom-DiffPointer` already provides.

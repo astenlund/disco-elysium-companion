@@ -91,3 +91,20 @@ not to resolve dependencies.
   shipped and is live in the guidance rules); the resume memory and its `AGENTS.md`
   pointer were retired, and the stranded nightshift phase-advance wording proposal was
   deleted as not worth pursuing.
+
+- Validator-lease piercing and per-poll re-import, shipped 2026-08-13 (commit `23b0f3c`,
+  from the v2 review tech-debt list). `Acquire-AdapterValidatorLease` now returns the
+  lease carrying the validated callable (`AdapterValidatorLease.Command`, nulled on
+  dispose), so `Get-AdapterConfig` no longer reads `$script:AdapterValidatorCache`
+  outside the lock or re-derives the cache key. Import amortization: a new
+  `WatcherValidatorWarmHold` on the default `WatcherRuntimeServices` bundle keeps one
+  extra lease on the most recently resolved validator path (adopted after each
+  successful poll resolve, swapped on release-path change, disposed in
+  `Invoke-CompanionWatcher`'s terminal finally), so per-poll snapshot disposal never
+  hits refcount zero and one release imports once per watcher run instead of once per
+  poll. The spec's at-zero-unload teardown and poison semantics are untouched; the
+  warm hold is documented as a lifecycle paragraph in spec section 8 (adoption failure
+  never gates a poll, nothing reads callables through the hold). Custom test-built
+  service bundles carry no hold and forgo amortization. New `WarmHold` selector in
+  `Test-AdapterConfig.ps1` pins hold-resident module retention, reuse without
+  re-import, failed-adoption inertness, and unload on hold disposal.
