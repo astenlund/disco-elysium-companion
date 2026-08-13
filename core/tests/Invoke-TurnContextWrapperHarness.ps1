@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail')]
+    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select')]
     [string] $Scenario,
 
     [Parameter(Mandatory)]
@@ -29,13 +29,13 @@ $tracePath = Join-Path $ScratchRoot 'attempt-trace.txt'
 $modulePath = Join-Path $harnessCore 'DigestDiff.psm1'
 $module = @'
 function New-TestResult {
-    param([Parameter(Mandatory)] [string] $OutcomeClass, [Parameter(Mandatory)] [string] $ConsumptionState, [Parameter(Mandatory)] [string] $EnvelopeJson)
+    param([Parameter(Mandatory)] [string] $OutcomeClass, [Parameter(Mandatory)] [string] $ConsumptionState, [Parameter(Mandatory)] [string] $EnvelopeJson, [bool] $CacheDegraded = $false)
 
     return [pscustomobject]@{
         outcomeClass = $OutcomeClass
         consumptionState = $ConsumptionState
         envelopeJson = $EnvelopeJson
-        cacheDegraded = $false
+        cacheDegraded = $CacheDegraded
         diagnostic = [ordered]@{
             outcomeClass = $OutcomeClass
             consumptionState = $ConsumptionState
@@ -80,6 +80,9 @@ function Invoke-TurnContextAttempt {
         [Console]::SetOut($brokenWriter)
 
         return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}'
+    }
+    if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'degraded-select') {
+        return New-TestResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}' -CacheDegraded $true
     }
     if ($attempt -eq 1) {
         return New-TestResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -EnvelopeJson '{"attempt":"A"}'

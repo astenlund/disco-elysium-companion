@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection')]
     [string] $Only = 'All'
 )
 
@@ -80,6 +80,12 @@ Assert-Equal -Actual $retryTerminal.ExitCode -Expected 1 -Message 'A terminal se
 Assert-Equal -Actual $retryTerminal.StdOut -Expected '' -Message 'A terminal retry result emits no turn-context payload.'
 Assert-True -Condition $retryTerminal.StdErr.StartsWith('[turn-context:freshness] ', [StringComparison]::Ordinal) -Message 'The second terminal outcome uses the typed terminal transport.'
 Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $retryTerminalRoot 'attempt-trace.txt')).Trim()) -Expected "1`n2" -Message 'The retry-terminal wrapper trace proves that no third attempt occurs.'
+$degradedRoot = New-ScratchCompanionRoot -Prefix 'turn-context-degraded-select'
+$degradedSelect = Invoke-BoundedPwsh -Arguments @('-File', $wrapperHarness, '-Scenario', 'degraded-select', '-ScratchRoot', $degradedRoot, '-StagedWrapperPath', (Join-Path $PSScriptRoot '../Get-TurnContext.ps1')) -WorkingDirectory $degradedRoot
+Assert-Equal -Actual $degradedSelect.ExitCode -Expected 0 -Message 'A cache-degraded consumed reset is selected as a successful delivery.'
+Assert-OrdinalEqual -Actual $degradedSelect.StdOut -Expected '{"attempt":"A"}' -Message 'The degraded consumed envelope is the one the wrapper transports.'
+Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $degradedRoot 'attempt-trace.txt')).Trim()) -Expected '1' -Message 'A reset-write:consumed result never authorizes a second consuming attempt.'
+
 if ($Only -eq 'WrapperRetry') {
     Write-Output 'PASS: turn context'
     exit 0
@@ -477,6 +483,105 @@ $successDetailNull = Invoke-InCompanionModule {
     return ($parsed.RootElement.GetProperty('detail').ValueKind -eq [Text.Json.JsonValueKind]::Null)
 }
 Assert-True -Condition $successDetailNull -Message 'A success diagnostic serializes its null detail as JSON null and round-trips through the diagnostic reader.'
+
+if ($Only -eq 'WrapperTransactionSelection') {
+    # Section 11 host-transaction-selection through the REAL wrapper and core: a
+    # genuine acquisition whose first attempt fails its baseline write one-shot
+    # (reset-write:not-consumed) and drops a newer save at the failure point. The
+    # wrapper's sole retry must consume the newer target, only attempt B's envelope
+    # may reach stdout, and attempt A's envelope is discarded.
+    $txRoot = New-ScratchCompanionRoot -Prefix 'turn-context-transaction'
+    $txCore = Join-Path $txRoot 'core'
+    $txSaves = Join-Path $txRoot 'saves'
+    $txAdapter = Join-Path $txRoot 'adapters/stub'
+    $txPkgCore = Join-Path $txAdapter 'releases/2/schema-2/core'
+    $txPkgAdapter = Join-Path $txAdapter 'releases/2/schema-2/adapters/stub'
+    foreach ($txDir in @($txCore, $txSaves, $txPkgCore, $txPkgAdapter, (Join-Path $txRoot '.tmp'))) { [void] [IO.Directory]::CreateDirectory($txDir) }
+    $txSource = Split-Path $PSScriptRoot -Parent
+    Copy-Item -LiteralPath (Join-Path $txSource 'Get-TurnContext.ps1') -Destination (Join-Path $txCore 'Get-TurnContext.ps1')
+    Copy-Item -LiteralPath (Join-Path $txSource 'DigestDiff.psm1') -Destination (Join-Path $txCore 'DigestDiff.psm1')
+    Copy-Item -LiteralPath (Join-Path $txSource 'EntryFence.psm1') -Destination (Join-Path $txCore 'EntryFence.psm1')
+    Copy-Item -LiteralPath (Join-Path $txSource 'private') -Destination (Join-Path $txCore 'private') -Recurse
+
+    $txDump = @'
+param([string] $Save, [string] $Dump)
+[System.IO.File]::Copy($Save, $Dump, $true)
+'@
+    [IO.File]::WriteAllText((Join-Path $txPkgAdapter 'stub-dump.ps1'), $txDump.TrimStart("`r", "`n"), [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::WriteAllText((Join-Path $txPkgCore 'DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::WriteAllText((Join-Path $txPkgAdapter 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [object] `$Document) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
+    $txDigest = @'
+param([string] $DumpPath, [string] $OutPath, [string] $AdapterVersion, [string] $SourceDomainId, [string] $SaveName, [string] $SavedAt, [string] $SourceLength, [string] $SourceSha256)
+$digest = [ordered]@{
+    schemaVersion = 2; adapterVersion = [long] $AdapterVersion; game = 'stubgame'
+    generatedAt = [DateTime]::UtcNow.ToString('o')
+    source = [ordered]@{ domainId = $SourceDomainId; saveFile = $SaveName; savedAt = $SavedAt; byteLength = [long] $SourceLength; contentSha256 = $SourceSha256 }
+    session = [ordered]@{ day = 1; time = '08:00'; location = 'loc'; playtimeNote = $null }
+    character = [ordered]@{ level = 1; xp = 0; unspentPoints = 0
+        money = [ordered]@{ amount = 1.0; minorUnits = 100; minorUnitsPerUnit = 100; currency = 'x' }
+        vitals = @(); skills = @() }
+    objectives = @(); inventory = [ordered]@{ owned = @(); equipped = @(); highlights = @() }
+    extra = [ordered]@{}
+}
+[System.IO.File]::WriteAllText($OutPath, ($digest | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
+'@
+    [IO.File]::WriteAllText((Join-Path $txPkgAdapter 'Build-Digest.ps1'), $txDigest.TrimStart("`r", "`n"), [Text.UTF8Encoding]::new($false, $true))
+    $txConfig = [ordered]@{
+        game = 'stubgame'
+        adapterVersion = 2L
+        saveDirectory = $txSaves
+        saveGlob = 's-*.zip'
+        maxSourceBytes = 1048576
+        dumpCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/stub-dump.ps1', '{save}', '{dump}')
+        dumpEntrypointIndex = 3
+        digestCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/Build-Digest.ps1', '-DumpPath', '{dump}', '-OutPath', '{digest}', '-AdapterVersion', '{adapterVersion}', '-SourceDomainId', '{sourceDomainId}', '-SaveName', '{saveName}', '-SavedAt', '{savedAt}', '-SourceLength', '{sourceLength}', '-SourceSha256', '{sourceSha256}')
+        digestEntrypointIndex = 3
+        diffExcludePaths = @()
+        ambientExtraPaths = @()
+    }
+    [IO.File]::WriteAllText((Join-Path $txAdapter 'adapter.json'), (Invoke-InCompanionModule { param($Config) ConvertTo-CompanionJson -InputObject $Config -Budget config } @(, $txConfig)), [Text.UTF8Encoding]::new($false, $true))
+
+    $txSaveA = Join-Path $txSaves 's-a.zip'
+    [IO.File]::WriteAllText($txSaveA, 'save-a', [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::SetLastWriteTimeUtc($txSaveA, [DateTime]::UtcNow.AddMinutes(-5))
+
+    # One-shot env-gated failure at the staged baseline-write call site: the first
+    # consuming attempt records the marker, drops the newer save, and throws.
+    $txConsumptionPath = Join-Path $txCore 'private/Consumption.ps1'
+    $txConsumptionSource = [IO.File]::ReadAllText($txConsumptionPath, [Text.UTF8Encoding]::new($false, $true))
+    $txAnchor = '            & $WriteBaseline $CompanionRoot $target'
+    Assert-Equal -Actual ([regex]::Matches($txConsumptionSource, [regex]::Escape($txAnchor)).Count) -Expected 1 -Message 'Transaction fixture finds one baseline-write call site.'
+    $txInjection = @(
+        '            if (-not [string]::IsNullOrEmpty($env:COMPANION_TEST_BASELINE_FAIL_MARKER) -and -not [IO.File]::Exists($env:COMPANION_TEST_BASELINE_FAIL_MARKER)) {'
+        '                [IO.File]::WriteAllText($env:COMPANION_TEST_BASELINE_FAIL_MARKER, ''failed'')'
+        '                $injectedNewerSave = Join-Path $env:COMPANION_TEST_NEWER_SAVE_DIR ''s-b.zip'''
+        '                [IO.File]::WriteAllText($injectedNewerSave, ''save-b'')'
+        '                [IO.File]::SetLastWriteTimeUtc($injectedNewerSave, [IO.File]::GetLastWriteTimeUtc((Join-Path $env:COMPANION_TEST_NEWER_SAVE_DIR ''s-a.zip'')).AddMinutes(2))'
+        '                throw [IO.IOException]::new(''injected baseline write failure'')'
+        '            }'
+    ) -join "`n"
+    [IO.File]::WriteAllText($txConsumptionPath, $txConsumptionSource.Replace($txAnchor, "$txInjection`n$txAnchor", [StringComparison]::Ordinal), [Text.UTF8Encoding]::new($false, $true))
+
+    $txMarker = Join-Path $txRoot '.tmp/baseline-fail-marker'
+    $txResult = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $txCore 'Get-TurnContext.ps1')) -WorkingDirectory $txRoot -TimeoutMilliseconds 240000 -Environment @{
+        COMPANION_TEST_BASELINE_FAIL_MARKER = $txMarker
+        COMPANION_TEST_NEWER_SAVE_DIR = $txSaves
+    }
+    Assert-True -Condition ([IO.File]::Exists($txMarker)) -Message 'Attempt A genuinely reached and failed its baseline write.'
+    Assert-Equal -Actual $txResult.ExitCode -Expected 0 -Message 'The wrapper transaction completes successfully on its sole retry.'
+    Assert-Equal -Actual $txResult.StdErr -Expected '' -Message 'A selected retry envelope has no terminal stderr record.'
+    $txEnvelope = Invoke-InCompanionModule { param($Json) Read-TurnContextEnvelope -Json $Json -TransportOnly } @($txResult.StdOut)
+    $txState = $txEnvelope.RootElement.GetProperty('state')
+    Assert-OrdinalEqual -Actual $txState.GetProperty('source').GetProperty('saveFile').GetString() -Expected 's-b.zip' -Message 'Only the newer save landed mid-transaction reaches stdout.'
+    Assert-OrdinalEqual -Actual $txEnvelope.RootElement.GetProperty('sourceFloor').GetProperty('saveFile').GetString() -Expected 's-b.zip' -Message 'Attempt B re-establishes its floor at the newer save.'
+    Assert-True -Condition $txEnvelope.RootElement.GetProperty('baselineReset').GetBoolean() -Message 'The consumed retry is a baseline reset (attempt A never advanced the baseline).'
+    Assert-False -Condition $txEnvelope.RootElement.GetProperty('cacheDegraded').GetBoolean() -Message 'The consumed retry carries no cache degradation.'
+    $txBaseline = Read-DigestDocument -Path (Join-Path $txRoot 'state/baseline.json')
+    Assert-OrdinalEqual -Actual $txBaseline.RootElement.GetProperty('source').GetProperty('saveFile').GetString() -Expected 's-b.zip' -Message 'The transaction settles the baseline at the newer save.'
+
+    Write-Output 'PASS: turn context'
+    exit 0
+}
 
 # The live wrapper is an entry script and must honor the migration entry fence
 # before any configuration or state work: a maintenance sentinel without the exact
