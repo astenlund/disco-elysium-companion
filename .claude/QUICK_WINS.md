@@ -93,8 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- The source-identity VALIDATION grammar (domainId sha256, saveFile no-separator, savedAt UTC) is
-  hand-rolled in `WalkProtocol`/`TurnContext`/`DocumentValidation` (construction is centralized).
 - `WatcherCurrentReadResult`'s `adapter-invalid` status is dead (no producer emits it);
   `TurnContextPayloadCandidate.MarkSerialized`/`Invalidate` are dead code.
 - `Test-Watcher.ps1` rebuilds the seven-scriptblock `WatcherRuntimeServices` bundle ~19 times;

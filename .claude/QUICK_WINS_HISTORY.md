@@ -186,3 +186,15 @@ not to resolve dependencies.
   copy list), `dump`, and `digest` classes from the same lists. Reason sets are
   membership-checked only, so the `source` class's internal reordering is
   behavior-neutral.
+
+- Source-identity validation-grammar centralization, shipped 2026-08-13 (commit
+  `db405d6`, from the v2 review tech-debt list). `DocumentValidation.ps1` now owns
+  `Test-Sha256Hex`, `Test-SourceIdentityGrammar` (domainId sha256, saveFile without
+  path separators, savedAt canonical UTC), and `Test-SourceIdentityFields` (the
+  exact three-field shape plus grammar). `Test-Source` (the five-field digest
+  source), the WalkProtocol span from/to validation, and
+  `Get-TurnContextIdentity` all dispatch through them instead of hand-rolling the
+  regex/separator/UTC checks. `Get-TurnContextIdentity`'s failure surface is
+  unchanged: the helper's `CompanionDocumentValidationException` falls through the
+  existing generic catch and re-emerges as the same
+  `TurnContextProtocolException('Invalid source identity.')`.
