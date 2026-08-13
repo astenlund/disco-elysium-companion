@@ -108,3 +108,12 @@ not to resolve dependencies.
   service bundles carry no hold and forgo amortization. New `WarmHold` selector in
   `Test-AdapterConfig.ps1` pins hold-resident module retention, reuse without
   re-import, failed-adoption inertness, and unload on hold disposal.
+
+- Walk-policy writer and pointer-tokenizer dedupe, shipped 2026-08-13 (commit `79f93d6`,
+  from the v2 review tech-debt list). `Get-AdapterWalkPolicyId` now shares one
+  `$writeUInt32BigEndian` scriptblock between the length prefix and the set counts, and
+  one `$copySortedOrdinal` scriptblock for the null-tolerant copy-plus-ordinal-sort of
+  both policy sets; `Get-AdapterPointerArray` calls `ConvertFrom-DiffPointer` instead of
+  hand-rolling the RFC 6901 tokenizer. Byte-layout equivalence of the walkPolicyId hash
+  was probe-verified against a verbatim replica of the prior algorithm (populated and
+  empty inputs) since the id is persisted and compared by the walk protocol.
