@@ -353,6 +353,15 @@ Invoke-InCompanionModule {
     Assert-False -Condition $candidate.CacheDegraded -Message 'Private payload starts with no cache degradation.'
     Assert-Equal -Actual @($candidate.Warnings).Count -Expected 0 -Message 'Private payload starts with no warnings.'
 
+    # An attempt may complete a candidate exactly once (CacheDegraded plus the final
+    # warning collection); any later completion is a rejected mutation, covering the
+    # post-serialization mutation probe by the same guard.
+    $completedCandidate = New-ConsumePayload -DeliveryMode privateResult -Diff $diff -State $digest -Context $context
+    $completedCandidate.Complete($true, @())
+    Assert-True -Condition $completedCandidate.CacheDegraded -Message 'The single completion records cache degradation.'
+    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { $completedCandidate.Complete($false, @()) }
+    Assert-True -Condition $completedCandidate.CacheDegraded -Message 'A rejected second completion leaves the first completion intact.'
+
     Assert-ThrowsType -TypeName 'CompanionDiffSemanticException' -Action { New-ConsumePayload -DeliveryMode rawStdout -Diff $diff -State $digest -Context $context }
     Assert-ThrowsType -TypeName 'CompanionDiffSemanticException' -Action { New-ConsumePayload -DeliveryMode privateResult -Diff $diff }
     $belowFloor = @{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T13:00:00.0000000Z' }

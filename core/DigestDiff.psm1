@@ -243,6 +243,7 @@ class TurnContextPayloadCandidate {
     [TurnContextPayloadContext] $Context
     [bool] $CacheDegraded
     [object] $Warnings
+    hidden [bool] $CompletedOnce
 
     TurnContextPayloadCandidate([CompanionJsonValue] $Diff, [CompanionJsonValue] $State, [TurnContextPayloadContext] $Context) {
         $this.Diff = $Diff
@@ -250,11 +251,17 @@ class TurnContextPayloadCandidate {
         $this.Context = $Context
         $this.CacheDegraded = $false
         $this.Warnings = @()
+        $this.CompletedOnce = $false
     }
 
     [void] Complete([bool] $CacheDegraded, [object] $Warnings) {
         if ($null -eq $Warnings) { throw [ArgumentNullException]::new('Warnings') }
+        # One completion per candidate: the attempt fixes CacheDegraded and the final
+        # warning collection before serialization, and every later call (including
+        # post-serialization) is a rejected mutation.
+        if ($this.CompletedOnce) { throw [InvalidOperationException]::new('Payload candidate is already complete.') }
 
+        $this.CompletedOnce = $true
         $this.CacheDegraded = $CacheDegraded
         $this.Warnings = $Warnings
     }
