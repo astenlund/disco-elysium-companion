@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Import-Module (Join-Path $root 'core/DigestDiff.psm1') -Force
 $mapper = Join-Path $PSScriptRoot 'Build-Digest.ps1'
+$script:SkillKeyMap = Get-Content -Raw (Join-Path $PSScriptRoot 'game_data/skill_key_map.json') | ConvertFrom-Json -AsHashtable
 $scratch = Join-Path $root ('.tmp/build-digest-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 
@@ -34,9 +35,8 @@ function New-Variables {
 }
 
 function New-ValidDump {
-    $map = Get-Content -Raw (Join-Path $PSScriptRoot 'game_data/skill_key_map.json') | ConvertFrom-Json -AsHashtable
     $sheet = [ordered]@{ gainedItems = @(); equippedItems = @(); gainedThoughts = @(); cookingThoughts = @(); fixedThoughts = @(); forgottenThoughts = @() }
-    foreach ($skill in $map.skills) {
+    foreach ($skill in $script:SkillKeyMap.skills) {
         $sheet[$skill.save_key] = @{ skillType = $skill.skill_type; abilityType = $skill.ability; value = 1 }
     }
 
@@ -113,7 +113,7 @@ function Test-MapperCharacterClosure {
 }
 
 function Test-MapperSkillCompleteness {
-    $skillMap = Get-Content -Raw (Join-Path $PSScriptRoot 'game_data/skill_key_map.json') | ConvertFrom-Json -AsHashtable
+    $skillMap = $script:SkillKeyMap
 
     $valid = Invoke-Mapper (New-ValidDump)
     Assert ($valid.ExitCode -eq 0) 'the positive fixture supplies exactly one source object for every vendored skill type'
@@ -292,8 +292,7 @@ function Test-MapperPublication {
     $badSeenCheck.world.failedWhiteChecksHolder.SeenWhiteCheckCache['check'] = @{ isOnlySeen = 'true' }
     Assert-MapperFailedWithoutPublication -Dump $badSeenCheck -Message 'string seen-check Boolean is rejected without coercion'
 
-    $skillMap = Get-Content -Raw (Join-Path $PSScriptRoot 'game_data/skill_key_map.json') | ConvertFrom-Json -AsHashtable
-    foreach ($skill in $skillMap.skills) {
+    foreach ($skill in $script:SkillKeyMap.skills) {
         $badSkill = New-ValidDump
         $badSkill.world.characterSheet[$skill.save_key].value = '1'
         Assert-MapperFailedWithoutPublication -Dump $badSkill -Message "string $($skill.skill_type) skill value is rejected without coercion"
