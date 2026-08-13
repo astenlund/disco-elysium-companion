@@ -66,7 +66,7 @@ function Read-WalkResultDocument {
         if ($found) {
             Test-ElementKind $boundHit Null
             Test-ExactFields $span @('from', 'to')
-            foreach ($name in 'from', 'to') { Test-ExactFields (Get-Property $span $name) @('domainId', 'saveFile', 'savedAt'); $identity = Get-Property $span $name; if ((Test-String (Get-Property $identity domainId)) -notmatch '^[0-9a-f]{64}$') { Fail-Document }; $save = Test-String (Get-Property $identity saveFile); if ($save.IndexOfAny([char[]]'\\/') -ge 0) { Fail-Document }; Test-Utc (Get-Property $identity savedAt) }
+            foreach ($name in 'from', 'to') { Test-SourceIdentityFields (Get-Property $span $name) }
             $from = Get-Property $span from; $to = Get-Property $span to
             if (-not [string]::Equals((Get-Property $from domainId).GetString(), $AdapterConfig.SourceDomainId, [StringComparison]::Ordinal) -or -not [string]::Equals((Get-Property $to domainId).GetString(), $AdapterConfig.SourceDomainId, [StringComparison]::Ordinal)) { Fail-Document }
             $comparison = Compare-SourceIdentity -Left (ConvertFrom-SourceIdentity -Element $from) -Right (ConvertFrom-SourceIdentity -Element $to)

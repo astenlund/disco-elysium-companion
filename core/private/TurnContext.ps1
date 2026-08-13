@@ -86,11 +86,7 @@ function Get-TurnContextIdentity {
     param([Parameter(Mandatory)] [Text.Json.JsonElement] $Element)
 
     try {
-        Test-ExactFields $Element @('domainId', 'saveFile', 'savedAt')
-        $domainId = Test-String (Get-Property $Element domainId)
-        $saveFile = Test-String (Get-Property $Element saveFile)
-        Test-Utc (Get-Property $Element savedAt)
-        if ($domainId -notmatch '^[0-9a-f]{64}$' -or $saveFile.IndexOfAny([char[]]'\\/') -ge 0) { throw [TurnContextProtocolException]::new('Invalid source identity.') }
+        Test-SourceIdentityFields $Element
 
         return ConvertFrom-SourceIdentity -Element $Element
     }
