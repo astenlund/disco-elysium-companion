@@ -170,17 +170,19 @@ function Write-TurnContextPassGate {
 $turnContextDigestTemplate = '{"schemaVersion":2,"adapterVersion":2,"game":"example","generatedAt":"GEN","source":{"domainId":"DOM","saveFile":"FILE","savedAt":"SAVE","byteLength":1,"contentSha256":"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"},"session":{"day":1,"time":"08:09","location":"place","playtimeNote":null},"character":{"level":1,"xp":0,"unspentPoints":0,"money":{"amount":1.25,"minorUnits":125,"minorUnitsPerUnit":100,"currency":"real"},"vitals":[{"name":"health","value":1}],"skills":[{"name":"Logic","value":1,"group":"Intellect"}]},"objectives":[{"id":"TASK.example","title":"example","status":"active","acquired":{"day":1,"time":"08:09"},"resolved":null,"subobjectives":[]}],"inventory":{"owned":["item"],"equipped":["item"],"highlights":[]},"extra":{}}'
 $turnContextDomain = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 
-if ($Only -eq 'TurnContextPairing') {
-    $pairingRoot = New-ScratchCompanionRoot -Prefix 'turn-context-pairing'
-    $pairing = Invoke-InCompanionModule {
-        param($Root, $Template, $Domain)
-        $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
-        $stateDoc = Read-DigestDocument -Json $stateJson
-        $diffDoc = New-EmptyDiff -Target $stateDoc
+# The attempt-fixture setup (AdapterConfig plus one staged save at the canonical
+# timestamp) is shared by every in-module attempt block below; the module-private
+# [AdapterConfig] type forces construction inside module scope, so this helper
+# builds the objects there and hands them back for each block to consume.
+function New-TurnContextAttemptFixture {
+    param([Parameter(Mandatory)] [string] $Root, [Parameter()] [string] $Game = 'example')
+
+    return Invoke-InCompanionModule {
+        param($Root, $Game, $Domain)
         $config = [AdapterConfig]::new()
         $config.SourceDomainId = $Domain
         $config.AdapterVersion = 2L
-        $config.Game = 'example'
+        $config.Game = $Game
         $config.SaveDirectory = Join-Path $Root 'saves'
         $config.SaveGlob = '*.ntwtf.zip'
         $config.AdapterDirectory = $Root
@@ -189,14 +191,27 @@ if ($Only -eq 'TurnContextPairing') {
         $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
         [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
         [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+
+        return [pscustomobject]@{ Config = $config; SavePath = $savePath }
+    } @($Root, $Game, $turnContextDomain)
+}
+
+if ($Only -eq 'TurnContextPairing') {
+    $pairingRoot = New-ScratchCompanionRoot -Prefix 'turn-context-pairing'
+    $pairingFixture = New-TurnContextAttemptFixture -Root $pairingRoot
+    $pairing = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain, $Config, $SavePath)
+        $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+        $stateDoc = Read-DigestDocument -Json $stateJson
+        $diffDoc = New-EmptyDiff -Target $stateDoc
         $operations = @{
-            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff $diffDoc -State $stateDoc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
         }
-        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
-        $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $config -ExpectedCacheDegraded $false
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $Config -ExpectedCacheDegraded $false
         $e = $envDoc.RootElement; $diff = $e.GetProperty('diff'); $st = $e.GetProperty('state'); $floor = $e.GetProperty('sourceFloor')
         $src = $st.GetProperty('source')
         [pscustomobject]@{
@@ -223,7 +238,7 @@ if ($Only -eq 'TurnContextPairing') {
             srcSavedAt = $src.GetProperty('savedAt').GetString()
             srcDomain = $src.GetProperty('domainId').GetString()
         }
-    } @($pairingRoot, $turnContextDigestTemplate, $turnContextDomain)
+    } @($pairingRoot, $turnContextDigestTemplate, $turnContextDomain, $pairingFixture.Config, $pairingFixture.SavePath)
     Assert-Equal -Actual $pairing.outcomeClass -Expected 'success' -Message 'A fresh bridge attempt emits a producer-valid success envelope.'
     Assert-OrdinalEqual -Actual $pairing.topSet -Expected 'adapterVersion,baselineReset,cacheDegraded,diff,game,refresh,sourceFloor,state,turnContextVersion,warnings' -Message 'A successful bridge envelope carries exactly the 7.5 top-level field set.'
     Assert-Equal -Actual $pairing.diffAdapter -Expected $pairing.topAdapter -Message 'Nested diff adapter equals the envelope top-level adapter.'
@@ -246,33 +261,22 @@ if ($Only -eq 'TurnContextPairing') {
 
 if ($Only -eq 'FreshnessRaceNewerConsumed') {
     $publishedRoot = New-ScratchCompanionRoot -Prefix 'turn-context-race-published'
+    $publishedFixture = New-TurnContextAttemptFixture -Root $publishedRoot
     $published = Invoke-InCompanionModule {
-        param($Root, $Template, $Domain)
+        param($Root, $Template, $Domain, $Config, $SavePath)
         $s1Json = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
         $s2Json = $Template.Replace('GEN', '2026-08-10T14:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'S2.ntwtf.zip').Replace('SAVE', '2026-08-10T13:00:00.0000000Z')
         $s1Doc = Read-DigestDocument -Json $s1Json
         $s2Doc = Read-DigestDocument -Json $s2Json
         $diff2 = New-EmptyDiff -Target $s2Doc
-        $config = [AdapterConfig]::new()
-        $config.SourceDomainId = $Domain
-        $config.AdapterVersion = 2L
-        $config.Game = 'example'
-        $config.SaveDirectory = Join-Path $Root 'saves'
-        $config.SaveGlob = '*.ntwtf.zip'
-        $config.AdapterDirectory = $Root
-        $config.Validator = { param($Document) }
-        [IO.Directory]::CreateDirectory($config.SaveDirectory) | Out-Null
-        $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
-        [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
-        [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
         $operations = @{
-            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $s1Doc } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff $diff2 -State $s2Doc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
         }
-        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
-        $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $config -ExpectedCacheDegraded $false
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $Config -ExpectedCacheDegraded $false
         $e = $envDoc.RootElement; $src = $e.GetProperty('state').GetProperty('source'); $floor = $e.GetProperty('sourceFloor')
         [pscustomobject]@{
             outcomeClass = $res.outcomeClass
@@ -281,7 +285,7 @@ if ($Only -eq 'FreshnessRaceNewerConsumed') {
             floorFile = $floor.GetProperty('saveFile').GetString()
             floorSavedAt = $floor.GetProperty('savedAt').GetString()
         }
-    } @($publishedRoot, $turnContextDigestTemplate, $turnContextDomain)
+    } @($publishedRoot, $turnContextDigestTemplate, $turnContextDomain, $publishedFixture.Config, $publishedFixture.SavePath)
     Assert-Equal -Actual $published.outcomeClass -Expected 'success' -Message 'A serialized publish of a newer save is consumed in the same turn.'
     Assert-OrdinalEqual -Actual $published.consumedFile -Expected 'S2.ntwtf.zip' -Message 'Only the newer S2 reaches consumption.'
     Assert-OrdinalEqual -Actual $published.floorFile -Expected 'B.ntwtf.zip' -Message 'The floor stays pinned at the older S1 established before the race.'
@@ -299,33 +303,22 @@ if ($Only -eq 'FreshnessRaceNewerConsumed') {
 # config's game mismatch makes Convert-TurnContextPayloadToJson's self-validation
 # throw after consumption.
 $serializeRoot = New-ScratchCompanionRoot -Prefix 'turn-context-envelope-serialize'
+$serializeFixture = New-TurnContextAttemptFixture -Root $serializeRoot -Game 'other'
 $serialize = Invoke-InCompanionModule {
-    param($Root, $Template, $Domain)
+    param($Root, $Template, $Domain, $Config, $SavePath)
     $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
     $stateDoc = Read-DigestDocument -Json $stateJson
-    $config = [AdapterConfig]::new()
-    $config.SourceDomainId = $Domain
-    $config.AdapterVersion = 2L
-    $config.Game = 'other'
-    $config.SaveDirectory = Join-Path $Root 'saves'
-    $config.SaveGlob = '*.ntwtf.zip'
-    $config.AdapterDirectory = $Root
-    $config.Validator = { param($Document) }
-    [IO.Directory]::CreateDirectory($config.SaveDirectory) | Out-Null
-    $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
-    [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
     $rows = [Collections.Generic.List[object]]::new()
     foreach ($case in @(
             @{ outcome = 'success'; state = 'consumed'; degraded = $false; detail = $null },
             @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-write-failed' })) {
         $operations = @{
-            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($case.degraded, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass $case.outcome -ConsumptionState $case.state -Payload $p -CacheDegraded $case.degraded -Detail $case.detail }
         }
-        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         [void] (Assert-TurnContextAttemptResult -Value $res)
         $rows.Add([pscustomobject]@{
                 consumptionOutcome = $case.outcome
@@ -339,7 +332,7 @@ $serialize = Invoke-InCompanionModule {
     }
 
     return @($rows)
-} @($serializeRoot, $turnContextDigestTemplate, $turnContextDomain)
+} @($serializeRoot, $turnContextDigestTemplate, $turnContextDomain, $serializeFixture.Config, $serializeFixture.SavePath)
 foreach ($row in $serialize) {
     Assert-Equal -Actual $row.outcomeClass -Expected 'protocol' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' maps to the protocol class."
     Assert-True -Condition ($null -eq $row.envelopeJson -or $row.envelopeJson -eq '') -Message "Envelope serialization failure after '$($row.consumptionOutcome)' emits no envelope."
@@ -399,22 +392,11 @@ if ($Only -eq 'EnvelopeProtocolRejection') {
 }
 
 $consumeOutcomeRoot = New-ScratchCompanionRoot -Prefix 'turn-context-consume-outcome'
+$consumeOutcomeFixture = New-TurnContextAttemptFixture -Root $consumeOutcomeRoot
 $consumeOutcome = Invoke-InCompanionModule {
-    param($Root, $Template, $Domain)
+    param($Root, $Template, $Domain, $Config, $SavePath)
     $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
     $stateDoc = Read-DigestDocument -Json $stateJson
-    $config = [AdapterConfig]::new()
-    $config.SourceDomainId = $Domain
-    $config.AdapterVersion = 2L
-    $config.Game = 'example'
-    $config.SaveDirectory = Join-Path $Root 'saves'
-    $config.SaveGlob = '*.ntwtf.zip'
-    $config.AdapterDirectory = $Root
-    $config.Validator = { param($Document) }
-    [IO.Directory]::CreateDirectory($config.SaveDirectory) | Out-Null
-    $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
-    [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
     $expectedReason = @{ busy = 'lock-timeout'; lock = 'lock-open-failed'; 'stale-target' = 'target-precedes-baseline'; freshness = 'target-below-floor' }
     # The injected consumption results carry class-owned registry details; the
     # ConsumeResult constructor rejects anything else.
@@ -423,12 +405,12 @@ $consumeOutcome = Invoke-InCompanionModule {
     $registryChecks = [Collections.Generic.List[object]]::new()
     foreach ($outcome in @('busy', 'lock', 'freshness', 'stale-target')) {
         $operations = @{
-            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass $outcome -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $consumeDetail[$outcome] }
         }
-        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ outcome = $outcome; resultClass = $res.outcomeClass; detail = $res.diagnostic.detail; lockStage = $res.diagnostic.lockStage })
 
         # Prove the (class, reason, lockStage) combination is registry-valid through
@@ -445,7 +427,7 @@ $consumeOutcome = Invoke-InCompanionModule {
         $registryChecks.Add($round.Materialized['outcomeClass'])
     }
     return [pscustomobject]@{ rows = @($rows); registry = @($registryChecks) }
-} @($consumeOutcomeRoot, $turnContextDigestTemplate, $turnContextDomain)
+} @($consumeOutcomeRoot, $turnContextDigestTemplate, $turnContextDomain, $consumeOutcomeFixture.Config, $consumeOutcomeFixture.SavePath)
 $consumeOutcomeExpectedReason = @{ busy = 'lock-timeout'; lock = 'lock-open-failed'; 'stale-target' = 'target-precedes-baseline'; freshness = 'target-below-floor' }
 foreach ($row in $consumeOutcome.rows) {
     Assert-Equal -Actual $row.resultClass -Expected $row.outcome -Message "A consumption '$($row.outcome)' outcome propagates its own class through the final pass."
@@ -459,22 +441,11 @@ Assert-Equal -Actual @($consumeOutcome.registry).Count -Expected 4 -Message 'Eve
 # (The typed stability and gate-disappearance classes are unreachable through the
 # turn-context path until the post-lock stability gate ships; see BUGS.md.)
 $retryTaxonomyRoot = New-ScratchCompanionRoot -Prefix 'turn-context-retry-taxonomy'
+$retryTaxonomyFixture = New-TurnContextAttemptFixture -Root $retryTaxonomyRoot
 $retryTaxonomy = Invoke-InCompanionModule {
-    param($Root, $Template, $Domain)
+    param($Root, $Template, $Domain, $Config, $SavePath)
     $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
     $stateDoc = Read-DigestDocument -Json $stateJson
-    $config = [AdapterConfig]::new()
-    $config.SourceDomainId = $Domain
-    $config.AdapterVersion = 2L
-    $config.Game = 'example'
-    $config.SaveDirectory = Join-Path $Root 'saves'
-    $config.SaveGlob = '*.ntwtf.zip'
-    $config.AdapterDirectory = $Root
-    $config.Validator = { param($Document) }
-    [IO.Directory]::CreateDirectory($config.SaveDirectory) | Out-Null
-    $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
-    [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
     $rows = [Collections.Generic.List[object]]::new()
 
     foreach ($case in @(
@@ -483,12 +454,12 @@ $retryTaxonomy = Invoke-InCompanionModule {
             @{ name = 'busy'; detail = 'consume-lock-busy'; expectedCalls = 1; expectedClass = 'busy' })) {
         $consumptions = [Collections.Generic.List[int]]::new()
         $operations = @{
-            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $consumptions.Add(1); New-ConsumptionResult -OutcomeClass $case.name -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail }
         }
-        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ name = $case.name; calls = $consumptions.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; expectedClass = $case.expectedClass })
     }
 
@@ -497,17 +468,17 @@ $retryTaxonomy = Invoke-InCompanionModule {
             @{ name = 'cycle-permanent'; disposition = 'unreadable'; retryable = $false; detail = 'source-unreadable'; expectedCalls = 1 })) {
         $cycles = [Collections.Generic.List[int]]::new()
         $operations = @{
-            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null } }
             ConfirmConfig = { param($Unused) }
             Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($false, $false, $false, $false, $false, 'source', $case.disposition, $case.retryable, $case.detail, $Sink.Freeze()) }
         }
-        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ name = $case.name; calls = $cycles.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; expectedClass = 'refresh' })
     }
 
     return @($rows)
-} @($retryTaxonomyRoot, $turnContextDigestTemplate, $turnContextDomain)
+} @($retryTaxonomyRoot, $turnContextDigestTemplate, $turnContextDomain, $retryTaxonomyFixture.Config, $retryTaxonomyFixture.SavePath)
 foreach ($row in $retryTaxonomy) {
     Assert-Equal -Actual $row.calls -Expected $row.expectedCalls -Message "The '$($row.name)' outcome drives exactly $($row.expectedCalls) pass(es) within the three-pass budget."
     Assert-Equal -Actual $row.class -Expected $row.expectedClass -Message "The '$($row.name)' outcome terminates as '$($row.expectedClass)'."
