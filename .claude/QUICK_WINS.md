@@ -93,11 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `DocumentValidation.ps1` `Read-DigestDocument`/`Read-DiffDocument` barrier-validate boolean
-  fields the inner implementation already validated; the diff-objectives composite key is built
-  twice with a divergence; `Measure-CompanionJsonElement`/`Measure-CompanionJsonValue` hold two
-  verbatim accounting copies; the JSON-serializable value-type set is enumerated twice and
-  disagrees.
 - `New-CompanionWarningSink` `ValidateSet` hardcodes the profile names instead of sourcing them
   from the registry dictionary; the warning vertical lives inside `SourceIdentity.ps1` (a
   misnamed module boundary; already centrally consolidated).

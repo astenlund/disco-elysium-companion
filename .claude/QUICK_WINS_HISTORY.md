@@ -143,3 +143,24 @@ not to resolve dependencies.
   consumption source-floor gate. The target-precedes-baseline comparison behind the
   `stale-target` outcome deliberately stays separate: there incomparable identities
   are not a failure, so it is a different predicate, not a third copy.
+
+- DocumentValidation/CompanionJson double-validation and accounting dedupe, shipped
+  2026-08-13 (commit `fcb4280`, from the v2 review tech-debt list). Four sub-findings:
+  (1) the `Read-DiffDocument` barrier wrapper's boolean re-checks (hasChanges,
+  hasUnrepresentedChanges, locationChanged, equippedChanged, fromPresent/toPresent)
+  duplicated validations the inner implementation had already run on the same admitted
+  document; removed. (2) The diff-objectives composite (parentId, id) key was built in
+  two places with a real divergence: the inner uniqueness check used `parent + NUL +
+  id` with no null-parent disambiguator while the wrapper's ordering check prefixed
+  non-null parents with `[char]1`. Extracted `Get-DiffObjectiveKey` using the
+  disambiguated form for both; the only behavior delta is that a pathological document
+  whose parentId begins with NUL no longer collides with a null-parent sibling in the
+  uniqueness set, which is the correct reading of a composite key. (3)
+  `Measure-CompanionJsonElement`/`Measure-CompanionJsonValue` accounting constants are
+  now the named vocabulary `Add-CompanionJsonContainerCharge`/`TextCharge`/
+  `ScalarCharge`. (4) The JSON-serializable number-type set was enumerated in
+  `Write-CompanionJsonValue` and approximated as `[ValueType]` in
+  `Measure-CompanionJsonValue` (the measurer admitted datetime/guid/char that the
+  writer then rejected); both now dispatch through `Test-CompanionJsonNumber` over
+  `$script:CompanionJsonNumberTypes`, so a non-JSON scalar fails at measurement with
+  the same `CompanionJsonParseException` the writer would have thrown.
