@@ -454,6 +454,65 @@ foreach ($row in $consumeOutcome.rows) {
 Assert-True -Condition (@($consumeOutcome.rows | Where-Object { $_.outcome -in @('busy', 'lock') -and $_.lockStage -cne 'consume' }).Count -eq 0) -Message 'Busy and lock final-pass diagnostics carry the consume lock stage.'
 Assert-Equal -Actual @($consumeOutcome.registry).Count -Expected 4 -Message 'Every consume outcome reason round-trips through Read-TurnContextDiagnostic.'
 
+# Section 11 "Acquisition retry taxonomy": only retryable failures draw the extra
+# passes inside the three-pass budget; permanent failures make one initial pass.
+# (The typed stability and gate-disappearance classes are unreachable through the
+# turn-context path until the post-lock stability gate ships; see BUGS.md.)
+$retryTaxonomyRoot = New-ScratchCompanionRoot -Prefix 'turn-context-retry-taxonomy'
+$retryTaxonomy = Invoke-InCompanionModule {
+    param($Root, $Template, $Domain)
+    $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+    $stateDoc = Read-DigestDocument -Json $stateJson
+    $config = [AdapterConfig]::new()
+    $config.SourceDomainId = $Domain
+    $config.AdapterVersion = 2L
+    $config.Game = 'example'
+    $config.SaveDirectory = Join-Path $Root 'saves'
+    $config.SaveGlob = '*.ntwtf.zip'
+    $config.AdapterDirectory = $Root
+    $config.Validator = { param($Document) }
+    [IO.Directory]::CreateDirectory($config.SaveDirectory) | Out-Null
+    $savePath = Join-Path $config.SaveDirectory 'B.ntwtf.zip'
+    [IO.File]::WriteAllText($savePath, 'x', [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::SetLastWriteTimeUtc($savePath, [datetime]::Parse('2026-08-10T11:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+    $rows = [Collections.Generic.List[object]]::new()
+
+    foreach ($case in @(
+            @{ name = 'freshness'; detail = 'source-floor-not-met'; expectedCalls = 3; expectedClass = 'freshness' },
+            @{ name = 'stale-target'; detail = 'target-precedes-baseline'; expectedCalls = 3; expectedClass = 'stale-target' },
+            @{ name = 'busy'; detail = 'consume-lock-busy'; expectedCalls = 1; expectedClass = 'busy' })) {
+        $consumptions = [Collections.Generic.List[int]]::new()
+        $operations = @{
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
+            ConfirmConfig = { param($Unused) }
+            Consumption = { param($Floor, $Ctx, $Sink) $consumptions.Add(1); New-ConsumptionResult -OutcomeClass $case.name -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail }
+        }
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $rows.Add([pscustomobject]@{ name = $case.name; calls = $consumptions.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; expectedClass = $case.expectedClass })
+    }
+
+    foreach ($case in @(
+            @{ name = 'cycle-retryable'; disposition = 'vanished'; retryable = $true; detail = 'source-vanished'; expectedCalls = 3 },
+            @{ name = 'cycle-permanent'; disposition = 'unreadable'; retryable = $false; detail = 'source-unreadable'; expectedCalls = 1 })) {
+        $cycles = [Collections.Generic.List[int]]::new()
+        $operations = @{
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($savePath)) }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null } }
+            ConfirmConfig = { param($Unused) }
+            Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($false, $false, $false, $false, $false, 'source', $case.disposition, $case.retryable, $case.detail, $Sink.Freeze()) }
+        }
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $rows.Add([pscustomobject]@{ name = $case.name; calls = $cycles.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; expectedClass = 'refresh' })
+    }
+
+    return @($rows)
+} @($retryTaxonomyRoot, $turnContextDigestTemplate, $turnContextDomain)
+foreach ($row in $retryTaxonomy) {
+    Assert-Equal -Actual $row.calls -Expected $row.expectedCalls -Message "The '$($row.name)' outcome drives exactly $($row.expectedCalls) pass(es) within the three-pass budget."
+    Assert-Equal -Actual $row.class -Expected $row.expectedClass -Message "The '$($row.name)' outcome terminates as '$($row.expectedClass)'."
+}
+
 # A populated sourceIdentity must serialize through the real writer and round-trip
 # through the diagnostic reader: a bare [pscustomobject] sourceIdentity is not an
 # IDictionary that ConvertTo-CompanionJson can write, and a null generation
@@ -578,6 +637,22 @@ $digest = [ordered]@{
     Assert-False -Condition $txEnvelope.RootElement.GetProperty('cacheDegraded').GetBoolean() -Message 'The consumed retry carries no cache degradation.'
     $txBaseline = Read-DigestDocument -Path (Join-Path $txRoot 'state/baseline.json')
     Assert-OrdinalEqual -Actual $txBaseline.RootElement.GetProperty('source').GetProperty('saveFile').GetString() -Expected 's-b.zip' -Message 'The transaction settles the baseline at the newer save.'
+
+    # Cross-process decline: a competing process holds the real consume.lock, so the
+    # fresh-target attempt declines busy at the consume stage and the wrapper
+    # terminates without a retry (the one-shot patch is inert without its env vars).
+    $txLock = [IO.FileStream]::new((Join-Path $txRoot 'state/consume.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $txBusy = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $txCore 'Get-TurnContext.ps1')) -WorkingDirectory $txRoot -TimeoutMilliseconds 240000
+        Assert-Equal -Actual $txBusy.ExitCode -Expected 1 -Message 'A cross-process consume-lock hold declines the turn-context attempt.'
+        Assert-Equal -Actual $txBusy.StdOut -Expected '' -Message 'A busy decline emits no envelope.'
+        Assert-True -Condition $txBusy.StdErr.StartsWith('[turn-context:busy] ', [StringComparison]::Ordinal) -Message 'The cross-process decline reports the busy class.'
+        Assert-True -Condition $txBusy.StdErr.Contains('"lockStage":"consume"', [StringComparison]::Ordinal) -Message 'The cross-process decline carries the consume lock stage.'
+        Assert-True -Condition $txBusy.StdErr.Contains('lock-timeout', [StringComparison]::Ordinal) -Message 'The cross-process decline carries the lock-timeout reason.'
+    }
+    finally {
+        $txLock.Dispose()
+    }
 
     Write-Output 'PASS: turn context'
     exit 0
