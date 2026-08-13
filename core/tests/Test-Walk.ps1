@@ -212,12 +212,8 @@ if ($Only -eq 'AmbientWalkPast') {
     $stubCore = Join-Path $stubRoot 'core'
     $stubSaves = Join-Path $stubRoot 'saves'
     $stubAdapter = Join-Path $stubRoot 'adapters/stub'
-    $stubPkgCore = Join-Path $stubAdapter 'releases/2/schema-2/core'
-    $stubPkgAdapter = Join-Path $stubAdapter 'releases/2/schema-2/adapters/stub'
     [void] [IO.Directory]::CreateDirectory($stubCore)
     [void] [IO.Directory]::CreateDirectory($stubSaves)
-    [void] [IO.Directory]::CreateDirectory($stubPkgCore)
-    [void] [IO.Directory]::CreateDirectory($stubPkgAdapter)
     # The walk entry script runs from a scratch core sibling so its default
     # companion root (Split-Path $PSScriptRoot -Parent) is the stub root and its
     # module import resolves beside it; the adapter package lives under the stub
@@ -228,13 +224,6 @@ if ($Only -eq 'AmbientWalkPast') {
     # packaged stub mapper keeps the companion-shaped ..\..\core\DigestDiff.psm1
     # import so the in-release relative path is exercised, but it builds its digest
     # with built-ins only, so the release-local module is an empty placeholder.
-    $packagedDump = @'
-param([string] $Save, [string] $Dump)
-[System.IO.File]::Copy($Save, $Dump, $true)
-'@
-    [IO.File]::WriteAllText((Join-Path $stubPkgAdapter 'stub-dump.ps1'), $packagedDump.TrimStart("`r", "`n"), [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::WriteAllText((Join-Path $stubPkgCore 'DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::WriteAllText((Join-Path $stubPkgAdapter 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [object] `$Document) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
     $packagedDigest = @'
 param([string] $DumpPath, [string] $OutPath, [string] $AdapterVersion, [string] $SourceDomainId, [string] $SaveName, [string] $SavedAt, [string] $SourceLength, [string] $SourceSha256)
 Import-Module "$PSScriptRoot\..\..\core\DigestDiff.psm1" -Force -DisableNameChecking
@@ -255,7 +244,7 @@ $digest = [ordered]@{
 }
 [System.IO.File]::WriteAllText($OutPath, ($digest | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
 '@
-    [IO.File]::WriteAllText((Join-Path $stubPkgAdapter 'Build-Digest.ps1'), $packagedDigest.TrimStart("`r", "`n"), [Text.UTF8Encoding]::new($false, $true))
+    Install-StubAdapterRelease -AdapterDirectory $stubAdapter -DigestScript $packagedDigest
 
     $stubConfigPath = Join-Path $stubAdapter 'adapter.json'
 
@@ -274,19 +263,7 @@ $digest = [ordered]@{
     }
     $newConfig = {
         param($SaveDir, [string[]] $DiffExclude, [string[]] $Ambient)
-        [ordered]@{
-            game = 'stubgame'
-            adapterVersion = 2L
-            saveDirectory = $SaveDir
-            saveGlob = 's-*.zip'
-            maxSourceBytes = 1048576
-            dumpCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/stub-dump.ps1', '{save}', '{dump}')
-            dumpEntrypointIndex = 3
-            digestCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/Build-Digest.ps1', '-DumpPath', '{dump}', '-OutPath', '{digest}', '-AdapterVersion', '{adapterVersion}', '-SourceDomainId', '{sourceDomainId}', '-SaveName', '{saveName}', '-SavedAt', '{savedAt}', '-SourceLength', '{sourceLength}', '-SourceSha256', '{sourceSha256}')
-            digestEntrypointIndex = 3
-            diffExcludePaths = $DiffExclude
-            ambientExtraPaths = $Ambient
-        }
+        New-StubAdapterCommandConfig -SaveDirectory $SaveDir -DiffExcludePaths $DiffExclude -AmbientExtraPaths $Ambient
     }
     $writeConfig = {
         param($Config, $Path)

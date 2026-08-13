@@ -524,47 +524,10 @@ if ($Only -eq 'WrapperTransactionSelection') {
     $txCore = Join-Path $txRoot 'core'
     $txSaves = Join-Path $txRoot 'saves'
     $txAdapter = Join-Path $txRoot 'adapters/stub'
-    $txPkgCore = Join-Path $txAdapter 'releases/2/schema-2/core'
-    $txPkgAdapter = Join-Path $txAdapter 'releases/2/schema-2/adapters/stub'
-    foreach ($txDir in @($txSaves, $txPkgCore, $txPkgAdapter, (Join-Path $txRoot '.tmp'))) { [void] [IO.Directory]::CreateDirectory($txDir) }
+    foreach ($txDir in @($txSaves, (Join-Path $txRoot '.tmp'))) { [void] [IO.Directory]::CreateDirectory($txDir) }
     Copy-CompanionCoreTree -Destination $txCore -EntryScripts @('Get-TurnContext.ps1')
-
-    $txDump = @'
-param([string] $Save, [string] $Dump)
-[System.IO.File]::Copy($Save, $Dump, $true)
-'@
-    [IO.File]::WriteAllText((Join-Path $txPkgAdapter 'stub-dump.ps1'), $txDump.TrimStart("`r", "`n"), [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::WriteAllText((Join-Path $txPkgCore 'DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::WriteAllText((Join-Path $txPkgAdapter 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [object] `$Document) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
-    $txDigest = @'
-param([string] $DumpPath, [string] $OutPath, [string] $AdapterVersion, [string] $SourceDomainId, [string] $SaveName, [string] $SavedAt, [string] $SourceLength, [string] $SourceSha256)
-$digest = [ordered]@{
-    schemaVersion = 2; adapterVersion = [long] $AdapterVersion; game = 'stubgame'
-    generatedAt = [DateTime]::UtcNow.ToString('o')
-    source = [ordered]@{ domainId = $SourceDomainId; saveFile = $SaveName; savedAt = $SavedAt; byteLength = [long] $SourceLength; contentSha256 = $SourceSha256 }
-    session = [ordered]@{ day = 1; time = '08:00'; location = 'loc'; playtimeNote = $null }
-    character = [ordered]@{ level = 1; xp = 0; unspentPoints = 0
-        money = [ordered]@{ amount = 1.0; minorUnits = 100; minorUnitsPerUnit = 100; currency = 'x' }
-        vitals = @(); skills = @() }
-    objectives = @(); inventory = [ordered]@{ owned = @(); equipped = @(); highlights = @() }
-    extra = [ordered]@{}
-}
-[System.IO.File]::WriteAllText($OutPath, ($digest | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
-'@
-    [IO.File]::WriteAllText((Join-Path $txPkgAdapter 'Build-Digest.ps1'), $txDigest.TrimStart("`r", "`n"), [Text.UTF8Encoding]::new($false, $true))
-    $txConfig = [ordered]@{
-        game = 'stubgame'
-        adapterVersion = 2L
-        saveDirectory = $txSaves
-        saveGlob = 's-*.zip'
-        maxSourceBytes = 1048576
-        dumpCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/stub-dump.ps1', '{save}', '{dump}')
-        dumpEntrypointIndex = 3
-        digestCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/Build-Digest.ps1', '-DumpPath', '{dump}', '-OutPath', '{digest}', '-AdapterVersion', '{adapterVersion}', '-SourceDomainId', '{sourceDomainId}', '-SaveName', '{saveName}', '-SavedAt', '{savedAt}', '-SourceLength', '{sourceLength}', '-SourceSha256', '{sourceSha256}')
-        digestEntrypointIndex = 3
-        diffExcludePaths = @()
-        ambientExtraPaths = @()
-    }
+    Install-StubAdapterRelease -AdapterDirectory $txAdapter
+    $txConfig = New-StubAdapterCommandConfig -SaveDirectory $txSaves
     [IO.File]::WriteAllText((Join-Path $txAdapter 'adapter.json'), (Invoke-InCompanionModule { param($Config) ConvertTo-CompanionJson -InputObject $Config -Budget config } @(, $txConfig)), [Text.UTF8Encoding]::new($false, $true))
 
     $txSaveA = Join-Path $txSaves 's-a.zip'

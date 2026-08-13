@@ -229,6 +229,67 @@ function Copy-CompanionCoreTree {
     Copy-Item -LiteralPath (Join-Path $coreRoot 'private') -Destination (Join-Path $Destination 'private') -Recurse
 }
 
+function Install-StubAdapterRelease {
+    param(
+        [Parameter(Mandatory)] [string] $AdapterDirectory,
+        [Parameter()] [string] $DigestScript
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('DigestScript')) {
+        $DigestScript = @'
+param([string] $DumpPath, [string] $OutPath, [string] $AdapterVersion, [string] $SourceDomainId, [string] $SaveName, [string] $SavedAt, [string] $SourceLength, [string] $SourceSha256)
+$digest = [ordered]@{
+    schemaVersion = 2; adapterVersion = [long] $AdapterVersion; game = 'stubgame'
+    generatedAt = [DateTime]::UtcNow.ToString('o')
+    source = [ordered]@{ domainId = $SourceDomainId; saveFile = $SaveName; savedAt = $SavedAt; byteLength = [long] $SourceLength; contentSha256 = $SourceSha256 }
+    session = [ordered]@{ day = 1; time = '08:00'; location = 'loc'; playtimeNote = $null }
+    character = [ordered]@{ level = 1; xp = 0; unspentPoints = 0
+        money = [ordered]@{ amount = 1.0; minorUnits = 100; minorUnitsPerUnit = 100; currency = 'x' }
+        vitals = @(); skills = @() }
+    objectives = @(); inventory = [ordered]@{ owned = @(); equipped = @(); highlights = @() }
+    extra = [ordered]@{}
+}
+[System.IO.File]::WriteAllText($OutPath, ($digest | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
+'@
+    }
+
+    $packageCore = Join-Path $AdapterDirectory 'releases/2/schema-2/core'
+    $packageAdapter = Join-Path $AdapterDirectory 'releases/2/schema-2/adapters/stub'
+    [void] [System.IO.Directory]::CreateDirectory($packageCore)
+    [void] [System.IO.Directory]::CreateDirectory($packageAdapter)
+    $dumpScript = @'
+param([string] $Save, [string] $Dump)
+[System.IO.File]::Copy($Save, $Dump, $true)
+'@
+    $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    [System.IO.File]::WriteAllText((Join-Path $packageAdapter 'stub-dump.ps1'), $dumpScript.TrimStart("`r", "`n"), $encoding)
+    [System.IO.File]::WriteAllText((Join-Path $packageCore 'DigestDiff.psm1'), "`n", $encoding)
+    [System.IO.File]::WriteAllText((Join-Path $packageAdapter 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [object] `$Document) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", $encoding)
+    [System.IO.File]::WriteAllText((Join-Path $packageAdapter 'Build-Digest.ps1'), $DigestScript.TrimStart("`r", "`n"), $encoding)
+}
+
+function New-StubAdapterCommandConfig {
+    param(
+        [Parameter(Mandatory)] [string] $SaveDirectory,
+        [Parameter()] [string[]] $DiffExcludePaths = @(),
+        [Parameter()] [string[]] $AmbientExtraPaths = @()
+    )
+
+    return [ordered]@{
+        game = 'stubgame'
+        adapterVersion = 2L
+        saveDirectory = $SaveDirectory
+        saveGlob = 's-*.zip'
+        maxSourceBytes = 1048576
+        dumpCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/stub-dump.ps1', '{save}', '{dump}')
+        dumpEntrypointIndex = 3
+        digestCommand = @('pwsh', '-NoProfile', '-File', '{artifactRoot}/adapters/stub/Build-Digest.ps1', '-DumpPath', '{dump}', '-OutPath', '{digest}', '-AdapterVersion', '{adapterVersion}', '-SourceDomainId', '{sourceDomainId}', '-SaveName', '{saveName}', '-SavedAt', '{savedAt}', '-SourceLength', '{sourceLength}', '-SourceSha256', '{sourceSha256}')
+        digestEntrypointIndex = 3
+        diffExcludePaths = $DiffExcludePaths
+        ambientExtraPaths = $AmbientExtraPaths
+    }
+}
+
 function Register-ScratchCleanup {
     if ($script:CleanupRegistered) {
         return
@@ -427,4 +488,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
