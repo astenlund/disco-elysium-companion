@@ -193,6 +193,17 @@ function Read-CompanionJson {
     }
 }
 
+# The one authoritative JSON-serializable number-type set; the writer and the measurer
+# both dispatch through Test-CompanionJsonNumber so they cannot drift apart.
+$script:CompanionJsonNumberTypes = @([byte], [sbyte], [int16], [uint16], [int], [uint32], [long], [uint64], [single], [double], [decimal])
+function Test-CompanionJsonNumber {
+    param([Parameter(Mandatory)] $Value)
+
+    foreach ($type in $script:CompanionJsonNumberTypes) { if ($Value -is $type) { return $true } }
+
+    return $false
+}
+
 function Write-CompanionJsonValue {
     param([Parameter(Mandatory)] [Text.Json.Utf8JsonWriter] $Writer, [AllowNull()] $Value)
 
@@ -200,8 +211,7 @@ function Write-CompanionJsonValue {
     if ($Value -is [Text.Json.JsonElement]) { $Value.WriteTo($Writer); return }
     if ($Value -is [string]) { $Writer.WriteStringValue($Value); return }
     if ($Value -is [bool]) { $Writer.WriteBooleanValue($Value); return }
-    if ($Value -is [byte] -or $Value -is [sbyte] -or $Value -is [int16] -or $Value -is [uint16] -or $Value -is [int] -or $Value -is [uint32] -or $Value -is [long] -or $Value -is [uint64]) { $Writer.WriteNumberValue($Value); return }
-    if ($Value -is [single] -or $Value -is [double] -or $Value -is [decimal]) { $Writer.WriteNumberValue($Value); return }
+    if (Test-CompanionJsonNumber -Value $Value) { $Writer.WriteNumberValue($Value); return }
     if ($Value -is [Collections.IDictionary]) {
         $Writer.WriteStartObject()
         foreach ($entry in $Value.GetEnumerator()) { $Writer.WritePropertyName([string] $entry.Key); Write-CompanionJsonValue -Writer $Writer -Value $entry.Value }
@@ -227,46 +237,52 @@ function Add-CompanionJsonCharge {
     }
 }
 
+# The one accounting vocabulary shared by both measurers: a container opens and closes
+# for two tokens, text (a property name or string value) is one token plus its UTF-8
+# byte count, and any other scalar is one token.
+function Add-CompanionJsonContainerCharge { param([Parameter(Mandatory)] $Charge) Add-CompanionJsonCharge -Charge $Charge -Tokens 2 -TextBytes 0 }
+function Add-CompanionJsonTextCharge { param([Parameter(Mandatory)] $Charge, [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text) Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes $script:CompanionJsonUtf8.GetByteCount($Text) }
+function Add-CompanionJsonScalarCharge { param([Parameter(Mandatory)] $Charge) Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes 0 }
+
 function Measure-CompanionJsonElement {
     param([Parameter(Mandatory)] [Text.Json.JsonElement] $Element, [Parameter(Mandatory)] $Charge)
 
     switch ($Element.ValueKind) {
         Object {
-            Add-CompanionJsonCharge -Charge $Charge -Tokens 2 -TextBytes 0
+            Add-CompanionJsonContainerCharge -Charge $Charge
             foreach ($property in $Element.EnumerateObject()) {
-                Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes $script:CompanionJsonUtf8.GetByteCount($property.Name)
+                Add-CompanionJsonTextCharge -Charge $Charge -Text $property.Name
                 Measure-CompanionJsonElement -Element $property.Value -Charge $Charge
             }
             return
         }
         Array {
-            Add-CompanionJsonCharge -Charge $Charge -Tokens 2 -TextBytes 0
+            Add-CompanionJsonContainerCharge -Charge $Charge
             foreach ($item in $Element.EnumerateArray()) { Measure-CompanionJsonElement -Element $item -Charge $Charge }
             return
         }
-        String { Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes $script:CompanionJsonUtf8.GetByteCount($Element.GetString()); return }
-        default { Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes 0; return }
+        String { Add-CompanionJsonTextCharge -Charge $Charge -Text $Element.GetString(); return }
+        default { Add-CompanionJsonScalarCharge -Charge $Charge; return }
     }
 }
 
 function Measure-CompanionJsonValue {
     param([AllowNull()] $Value, [Parameter(Mandatory)] $Charge)
 
-    if ($null -eq $Value) { Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes 0; return }
+    if ($null -eq $Value) { Add-CompanionJsonScalarCharge -Charge $Charge; return }
     if ($Value -is [Text.Json.JsonElement]) { Measure-CompanionJsonElement -Element $Value -Charge $Charge; return }
-    if ($Value -is [string]) { Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes $script:CompanionJsonUtf8.GetByteCount($Value); return }
-    if ($Value -is [bool] -or $Value -is [ValueType]) { Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes 0; return }
+    if ($Value -is [string]) { Add-CompanionJsonTextCharge -Charge $Charge -Text $Value; return }
+    if ($Value -is [bool] -or (Test-CompanionJsonNumber -Value $Value)) { Add-CompanionJsonScalarCharge -Charge $Charge; return }
     if ($Value -is [Collections.IDictionary]) {
-        Add-CompanionJsonCharge -Charge $Charge -Tokens 2 -TextBytes 0
+        Add-CompanionJsonContainerCharge -Charge $Charge
         foreach ($entry in $Value.GetEnumerator()) {
-            $key = [string] $entry.Key
-            Add-CompanionJsonCharge -Charge $Charge -Tokens 1 -TextBytes $script:CompanionJsonUtf8.GetByteCount($key)
+            Add-CompanionJsonTextCharge -Charge $Charge -Text ([string] $entry.Key)
             Measure-CompanionJsonValue -Value $entry.Value -Charge $Charge
         }
         return
     }
     if ($Value -is [Collections.IEnumerable]) {
-        Add-CompanionJsonCharge -Charge $Charge -Tokens 2 -TextBytes 0
+        Add-CompanionJsonContainerCharge -Charge $Charge
         foreach ($item in $Value) { Measure-CompanionJsonValue -Value $item -Charge $Charge }
         return
     }
