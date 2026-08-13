@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('retry-success', 'retry-terminal')]
+    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail')]
     [string] $Scenario,
 
     [Parameter(Mandatory)]
@@ -68,6 +68,19 @@ function Invoke-TurnContextAttempt {
     $tracePath = Join-Path $CompanionRoot 'attempt-trace.txt'
     $attempt = if (Test-Path -LiteralPath $tracePath) { 2 } else { 1 }
     [IO.File]::AppendAllText($tracePath, "$attempt`n", [Text.UTF8Encoding]::new($false, $true))
+    if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'stdout-fail') {
+        # A parent-side broken stdout pipe is NOT observable here: .NET's Windows
+        # console stream silently swallows ERROR_NO_DATA/ERROR_BROKEN_PIPE. Swap in
+        # a writer over a disposed stream instead, so the wrapper's single envelope
+        # write genuinely throws at delivery time.
+        $brokenStream = [IO.MemoryStream]::new()
+        $brokenWriter = [IO.StreamWriter]::new($brokenStream)
+        $brokenWriter.AutoFlush = $true
+        $brokenStream.Dispose()
+        [Console]::SetOut($brokenWriter)
+
+        return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}'
+    }
     if ($attempt -eq 1) {
         return New-TestResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -EnvelopeJson '{"attempt":"A"}'
     }
@@ -89,6 +102,18 @@ function Read-TurnContextEnvelope {
 
 function Read-TurnContextDiagnostic {
     param([string] $Json, [string] $ExpectedClass)
+}
+
+function New-TurnContextDetail {
+    param([string] $Class, [string] $Reason, $Atoms)
+
+    return $Reason
+}
+
+function New-TurnContextDiagnosticObject {
+    param([string] $Class, [string] $ConsumptionState, $Detail, $SourceIdentity, $GenerationTimestamp, $LockStage, $OperationalWarnings)
+
+    return [ordered]@{ outcomeClass = $Class; consumptionState = $ConsumptionState; lockStage = $null; sourceIdentity = $null; generationTimestamp = $null; detail = $Detail; warnings = @() }
 }
 
 function ConvertTo-CompanionJson {

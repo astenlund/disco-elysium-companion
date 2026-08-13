@@ -50,7 +50,11 @@ try {
     }
     if ($selected.outcomeClass -in @('success', 'reset-write:consumed')) {
         [void] (Read-TurnContextEnvelope -Json $selected.envelopeJson -AdapterConfig $config -ExpectedCacheDegraded $selected.cacheDegraded)
-        [Console]::Out.Write($selected.envelopeJson)
+        # A failed stdout write is a delivery failure, not a protocol defect: the
+        # baseline has already advanced, so the terminal diagnostic preserves the
+        # consumed state and the host discards any partial envelope bytes.
+        try { [Console]::Out.Write($selected.envelopeJson) }
+        catch { Write-TurnContextTerminal (New-TurnContextDiagnosticObject -Class 'delivery' -ConsumptionState $selected.consumptionState -Detail (New-TurnContextDetail -Class delivery -Reason stdout-write-failed) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $operational) }
         exit 0
     }
     $diagnosticJson = ConvertTo-CompanionJson -InputObject $selected.diagnostic -Budget config

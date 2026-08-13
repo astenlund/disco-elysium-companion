@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection')]
     [string] $Only = 'All'
 )
 
@@ -81,6 +81,34 @@ Assert-Equal -Actual $retryTerminal.StdOut -Expected '' -Message 'A terminal ret
 Assert-True -Condition $retryTerminal.StdErr.StartsWith('[turn-context:freshness] ', [StringComparison]::Ordinal) -Message 'The second terminal outcome uses the typed terminal transport.'
 Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $retryTerminalRoot 'attempt-trace.txt')).Trim()) -Expected "1`n2" -Message 'The retry-terminal wrapper trace proves that no third attempt occurs.'
 if ($Only -eq 'WrapperRetry') {
+    Write-Output 'PASS: turn context'
+    exit 0
+}
+
+if ($Only -eq 'WrapperDeliveryFailure') {
+    # Section 11 row "Turn-context failure injection": the wrapper's one stdout write
+    # fails after a consumed attempt (the harness swaps Console.Out for a writer over
+    # a disposed stream; a broken pipe is silently swallowed by .NET on Windows). The
+    # wrapper must report [delivery]/stdout-write-failed with the consumed state
+    # preserved and must not start another attempt.
+    $deliveryRoot = New-ScratchCompanionRoot -Prefix 'turn-context-delivery'
+    $delivery = Invoke-BoundedPwsh -Arguments @('-File', $wrapperHarness, '-Scenario', 'stdout-fail', '-ScratchRoot', $deliveryRoot, '-StagedWrapperPath', (Join-Path $PSScriptRoot '../Get-TurnContext.ps1')) -WorkingDirectory $deliveryRoot
+    Assert-Equal -Actual $delivery.ExitCode -Expected 1 -Message 'A failed envelope delivery is a terminal wrapper failure.'
+    Assert-True -Condition $delivery.StdErr.StartsWith('[turn-context:delivery] ', [StringComparison]::Ordinal) -Message 'A failed stdout write reports the delivery class.'
+    Assert-True -Condition $delivery.StdErr.Contains('"detail":"stdout-write-failed"', [StringComparison]::Ordinal) -Message 'The delivery diagnostic carries the stdout-write-failed reason.'
+    Assert-True -Condition $delivery.StdErr.Contains('"consumptionState":"consumed"', [StringComparison]::Ordinal) -Message 'The delivery diagnostic preserves the consumed baseline advancement.'
+    Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $deliveryRoot 'attempt-trace.txt')).Trim()) -Expected '1' -Message 'A delivery failure authorizes no retry.'
+
+    # The real diagnostic validator admits the delivery class with the consumed state
+    # (the host trusts this consumptionState per the acquisition protocol).
+    $deliveryDiagnostic = Invoke-InCompanionModule {
+        $diagnostic = New-TurnContextDiagnosticObject -Class 'delivery' -ConsumptionState 'consumed' -Detail (New-TurnContextDetail -Class delivery -Reason stdout-write-failed) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+        $json = ConvertTo-CompanionJson -InputObject $diagnostic -Budget config
+
+        return (Read-TurnContextDiagnostic -Json $json -ExpectedClass delivery).Materialized['detail']
+    }
+    Assert-OrdinalEqual -Actual $deliveryDiagnostic -Expected 'stdout-write-failed' -Message 'Read-TurnContextDiagnostic admits the delivery/consumed diagnostic.'
+
     Write-Output 'PASS: turn context'
     exit 0
 }
