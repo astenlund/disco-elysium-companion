@@ -107,11 +107,15 @@ function Get-NewestSave {
 function Test-FileWriteStable {
     param([Parameter(Mandatory)] [string] $Path, [Parameter()] [int] $SampleDelayMilliseconds = 2000, [Parameter()] [Threading.CancellationToken] $CancellationToken = [Threading.CancellationToken]::None)
 
+    # Each sample checks Exists explicitly: PowerShell does not reliably surface a
+    # property-getter FileNotFoundException from FileInfo.Length, so without the
+    # guard a vanished candidate silently sampled as two null lengths and read as
+    # stable instead of throwing the typed vanished classification.
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        try { $first = [IO.FileInfo]::new($Path); $first.Refresh(); $firstLength = $first.Length; $firstTime = $first.LastWriteTimeUtc } catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) } catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
+        try { $first = [IO.FileInfo]::new($Path); $first.Refresh(); if (-not $first.Exists) { throw [IO.FileNotFoundException]::new('save-source-missing', $Path) }; $firstLength = $first.Length; $firstTime = $first.LastWriteTimeUtc } catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) } catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
         if ($CancellationToken.IsCancellationRequested) { return $false }
         [Threading.Tasks.Task]::Delay($SampleDelayMilliseconds, $CancellationToken).GetAwaiter().GetResult()
-        try { $second = [IO.FileInfo]::new($Path); $second.Refresh(); if ($second.Length -eq $firstLength -and $second.LastWriteTimeUtc -eq $firstTime) { return $true } } catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) } catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
+        try { $second = [IO.FileInfo]::new($Path); $second.Refresh(); if (-not $second.Exists) { throw [IO.FileNotFoundException]::new('save-source-missing', $Path) }; if ($second.Length -eq $firstLength -and $second.LastWriteTimeUtc -eq $firstTime) { return $true } } catch [IO.FileNotFoundException] { throw [SaveSourceException]::new('vanished', 'save-source-vanished', $_.Exception) } catch { throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $_.Exception) }
     }
 
     return $false

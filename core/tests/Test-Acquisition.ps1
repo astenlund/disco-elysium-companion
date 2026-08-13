@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'SaveCandidates', 'FileWriteStable', 'FileWriteStableUnstable', 'FileWriteStableCancellation', 'MissingSource', 'CopyFidelityReasons', 'CopyFidelitySizeLimit', 'AdapterFailureReason', 'OutcomeClosure', 'OutcomeFreeze', 'StagedOneShot', 'ScratchDefault', 'CopyFailure', 'AdapterFailures', 'CurrentReadFailure', 'CurrentWriteFailure', 'CacheWriteFailure', 'BookkeepingFailure', 'GuardDiscard', 'BaselineFallback', 'Cancellation', 'CheckpointCancellation', 'CurrentWriteCancellation', 'CheckpointPropagation', 'SaveCandidatesEnumerationFailure', 'PackageMemberRemediation')]
+    [ValidateSet('All', 'SaveCandidates', 'FileWriteStable', 'FileWriteStableUnstable', 'FileWriteStableCancellation', 'FileWriteStableClassification', 'MissingSource','CopyFidelityReasons', 'CopyFidelitySizeLimit', 'AdapterFailureReason', 'OutcomeClosure', 'OutcomeFreeze', 'StagedOneShot', 'ScratchDefault', 'CopyFailure', 'AdapterFailures', 'CurrentReadFailure', 'CurrentWriteFailure', 'CacheWriteFailure', 'BookkeepingFailure', 'GuardDiscard', 'BaselineFallback', 'Cancellation', 'CheckpointCancellation', 'CurrentWriteCancellation', 'CheckpointPropagation', 'SaveCandidatesEnumerationFailure', 'PackageMemberRemediation')]
     [string] $Only = 'All'
 )
 
@@ -191,6 +191,50 @@ function Test-FileWriteStableCancellationReturnsFalse {
     }
 }
 
+function Test-FileWriteStableClassifiesSamplingFailures {
+    # Section 11 "Acquisition retry taxonomy": a candidate that disappears at either
+    # of the two metadata samples classifies retryable vanished; any other sampling
+    # failure classifies non-retryable unreadable.
+    $root = New-ScratchCompanionRoot -Prefix 'stability-classify'
+
+    $missingThrew = $false
+    try {
+        [void] (Test-FileWriteStable -Path (Join-Path $root 'never-created.zip') -SampleDelayMilliseconds 1)
+    }
+    catch {
+        $missingThrew = $true
+        Assert-Equal -Actual $_.Exception.SourceDisposition -Expected 'vanished' -Message 'a candidate missing at the first sample classifies vanished'
+        Assert-OrdinalEqual -Actual $_.Exception.Message -Expected 'save-source-vanished' -Message 'the first-sample vanish carries its typed reason'
+    }
+    Assert-True -Condition $missingThrew -Message 'a missing candidate never returns a stability verdict'
+
+    $racedSave = Join-Path $root 'raced.ntwtf.zip'
+    [IO.File]::WriteAllText($racedSave, 'x', [Text.UTF8Encoding]::new($false))
+    $deleter = Start-BoundedPwsh -Arguments @('-Command', 'Start-Sleep -Milliseconds 500; [IO.File]::Delete($env:COMPANION_TEST_RACED_SAVE)') -Environment @{ COMPANION_TEST_RACED_SAVE = $racedSave }
+    $racedThrew = $false
+    try {
+        [void] (Test-FileWriteStable -Path $racedSave -SampleDelayMilliseconds 6000)
+    }
+    catch {
+        $racedThrew = $true
+        Assert-Equal -Actual $_.Exception.SourceDisposition -Expected 'vanished' -Message 'a candidate removed during the sample delay classifies vanished at the second sample'
+    }
+    finally {
+        Stop-BoundedPwsh -Child $deleter
+    }
+    Assert-True -Condition $racedThrew -Message 'a candidate removed between samples never returns a stability verdict'
+
+    $invalidThrew = $false
+    try {
+        [void] (Test-FileWriteStable -Path (Join-Path $root "denied`0.zip") -SampleDelayMilliseconds 1)
+    }
+    catch {
+        $invalidThrew = $true
+        Assert-Equal -Actual $_.Exception.SourceDisposition -Expected 'unreadable' -Message 'a non-vanish sampling failure classifies non-retryable unreadable'
+        Assert-OrdinalEqual -Actual $_.Exception.Message -Expected 'save-source-unreadable' -Message 'the unreadable sample carries its typed reason'
+    }
+    Assert-True -Condition $invalidThrew -Message 'an unreadable candidate never returns a stability verdict'
+}
 
 function Test-CycleOutcomeRejectsIllegalCombinations {
     Invoke-InCompanionModule -ScriptBlock {
@@ -680,7 +724,7 @@ function Test-PackageMemberRemediation {
 }
 
 $tests = [ordered]@{
-    SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}
+    SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; FileWriteStableClassification = ${function:Test-FileWriteStableClassifiesSamplingFailures}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}
 }
 
 if ($Only -eq 'All') {
