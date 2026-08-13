@@ -93,8 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `WatcherCurrentReadResult`'s `adapter-invalid` status is dead (no producer emits it);
-  `TurnContextPayloadCandidate.MarkSerialized`/`Invalidate` are dead code.
 - `Test-Watcher.ps1` rebuilds the seven-scriptblock `WatcherRuntimeServices` bundle ~19 times;
   `Test-Walk.ps1` and `Test-AdapterConfig.ps1` repeat fixture constructors; `Test-Acquisition.ps1`
   couples an ordering test to literal source text; `Test-Build-Digest.ps1` repeats the

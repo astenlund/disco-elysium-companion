@@ -198,3 +198,13 @@ not to resolve dependencies.
   unchanged: the helper's `CompanionDocumentValidationException` falls through the
   existing generic catch and re-emerges as the same
   `TurnContextProtocolException('Invalid source identity.')`.
+
+- Dead watcher status and payload-candidate scaffolding removal, shipped 2026-08-13
+  (commit `1b96154`, from the v2 review tech-debt list). `WatcherCurrentReadResult`
+  dropped `adapter-invalid` from its legal status set (no producer ever emitted it;
+  the default watcher `readCurrent` closure maps everything non-valid/absent/stale
+  to `core-invalid`, and the spec's "adapter-invalid" mentions are freshness-condition
+  prose, not this enum). `TurnContextPayloadCandidate` dropped the never-called
+  `MarkSerialized`/`Invalidate` methods and, transitively, the `Serialized`/
+  `Invalidated` flags and `AssertUsable`/`AssertMutable` guards that only those
+  methods could trip; `Complete` keeps its null-warnings check.
