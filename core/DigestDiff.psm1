@@ -109,6 +109,13 @@ class SaveCandidateLimitException : CompanionContentException {
     SaveCandidateLimitException([string] $Message) : base($Message) {}
 }
 
+# The one authoritative save-digest stage reason vocabulary. SaveDigestStageException
+# validates against these lists, and the turn-context reason table in TurnContext.ps1
+# derives its copy/dump/digest entries from them.
+$script:SaveDigestCopyReasons = @('work-setup-failed', 'source-size-limit-exceeded', 'source-vanished', 'source-changed', 'source-unreadable')
+$script:SaveDigestDumpReasons = @('command-start-failed', 'adapter-release-corrupt', 'command-timeout', 'command-transport-failed', 'command-exit-nonzero', 'promised-output-missing')
+$script:SaveDigestDigestReasons = $script:SaveDigestDumpReasons + @('document-invalid', 'adapter-validator-infrastructure-failed', 'schema-version-mismatch', 'adapter-version-mismatch', 'game-mismatch', 'source-domain-mismatch', 'source-receipt-mismatch')
+
 class SaveDigestStageException : CompanionContentException {
     [string] $Stage
     [string] $SourceDisposition
@@ -117,9 +124,9 @@ class SaveDigestStageException : CompanionContentException {
 
     SaveDigestStageException([string] $Stage, [string] $Disposition, [string] $Reason, [object] $Atoms, [System.Exception] $InnerException) : base('save-digest-stage-failed', $InnerException) {
         $legalReasons = switch ($Stage) {
-            'copy' { @('work-setup-failed', 'source-size-limit-exceeded', 'source-vanished', 'source-changed', 'source-unreadable') }
-            'dump' { @('command-start-failed', 'adapter-release-corrupt', 'command-timeout', 'command-transport-failed', 'command-exit-nonzero', 'promised-output-missing') }
-            'digest' { @('command-start-failed', 'adapter-release-corrupt', 'command-timeout', 'command-transport-failed', 'command-exit-nonzero', 'promised-output-missing', 'document-invalid', 'adapter-validator-infrastructure-failed', 'schema-version-mismatch', 'adapter-version-mismatch', 'game-mismatch', 'source-domain-mismatch', 'source-receipt-mismatch') }
+            'copy' { $script:SaveDigestCopyReasons }
+            'dump' { $script:SaveDigestDumpReasons }
+            'digest' { $script:SaveDigestDigestReasons }
             default { throw [ArgumentException]::new('Invalid save digest stage.') }
         }
         if ($Disposition -notin @('stable', 'vanished', 'changed', 'unreadable')) { throw [ArgumentException]::new('Invalid save digest source disposition.') }
