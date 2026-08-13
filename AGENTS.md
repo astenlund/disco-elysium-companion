@@ -165,8 +165,6 @@ remains only for manual inspection that must not consume.
   guidance knowledge feature ships.
 - Before using Nightshift in Codex, read
   [`memory/projects/nightshift-codex-adaptations.md`](memory/projects/nightshift-codex-adaptations.md).
-- Before resuming Find-LastEventfulSpan work, read
-  [`memory/projects/find-last-eventful-span-resume.md`](memory/projects/find-last-eventful-span-resume.md).
 
 ## Hard limits
 

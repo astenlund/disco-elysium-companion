@@ -86,4 +86,8 @@ not to resolve dependencies.
   `memory/projects/find-last-eventful-span-resume.md` lists as read-order items 1-3 was
   already gone before the sweep (overwritten by the later v2 loop), and the referenced
   plan `.claude/plans/2026-08-08-find-last-eventful-span.md` is also absent, so that
-  resume path was already broken independently of this cleanup.
+  resume path was already broken independently of this cleanup. Resolution (user,
+  2026-08-13): the plan-hardening loop is obsolete (`core/Find-LastEventfulSpan.ps1`
+  shipped and is live in the guidance rules); the resume memory and its `AGENTS.md`
+  pointer were retired, and the stranded nightshift phase-advance wording proposal was
+  deleted as not worth pursuing.
