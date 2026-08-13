@@ -279,6 +279,17 @@ function Invoke-TurnContextAttempt {
         [Parameter()] [hashtable] $Operations = @{}
     )
 
+    # Terminal-result builder: -Reason builds the registry detail for -Class, a
+    # precomputed -Detail passes through. Reads the enclosing attempt's
+    # $OperationalWarnings via dynamic scope.
+    function New-TurnContextTerminalResult {
+        param([Parameter(Mandatory)] [string] $Class, [string] $ConsumptionState = 'none', [AllowNull()] [string] $Reason, [AllowNull()] [string] $Detail, [AllowNull()] $SourceIdentity, [AllowNull()] [string] $GenerationTimestamp, [AllowNull()] [string] $LockStage, [AllowNull()] [string] $EnvelopeJson, [bool] $CacheDegraded = $false)
+
+        $detailValue = if ([string]::IsNullOrEmpty($Reason)) { $Detail } else { New-TurnContextDetail -Class $Class -Reason $Reason }
+
+        return New-TurnContextAttemptResult -OutcomeClass $Class -ConsumptionState $ConsumptionState -EnvelopeJson $EnvelopeJson -CacheDegraded $CacheDegraded -Diagnostic (New-TurnContextDiagnosticObject -Class $Class -ConsumptionState $ConsumptionState -Detail $detailValue -SourceIdentity $SourceIdentity -GenerationTimestamp $GenerationTimestamp -LockStage $LockStage -OperationalWarnings $OperationalWarnings)
+    }
+
     $attemptWarnings = New-CompanionWarningSink -Profile TurnAttempt
     $selected = $null
     $target = $null
@@ -290,9 +301,9 @@ function Invoke-TurnContextAttempt {
         Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $OperationalWarnings
         for ($pass = 0; $pass -lt $script:TurnContextRefreshAttemptCap; $pass++) {
             try { $candidates = if ($Operations.ContainsKey('GetSaveCandidates')) { & $Operations.GetSaveCandidates $AdapterConfig } else { Get-SaveCandidates -SaveDirectory $AdapterConfig.SaveDirectory -SaveGlob $AdapterConfig.SaveGlob } }
-            catch [SaveCandidateLimitException] { return New-TurnContextAttemptResult -OutcomeClass source -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class source -ConsumptionState none -Detail (New-TurnContextDetail -Class source -Reason candidate-limit-exceeded) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
-            catch { return New-TurnContextAttemptResult -OutcomeClass source -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class source -ConsumptionState none -Detail (New-TurnContextDetail -Class source -Reason save-enumeration-failed) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
-            if (@($candidates).Count -eq 0) { return New-TurnContextAttemptResult -OutcomeClass 'no-saves' -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class 'no-saves' -ConsumptionState none -Detail (New-TurnContextDetail -Class 'no-saves' -Reason no-matching-saves) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
+            catch [SaveCandidateLimitException] { return New-TurnContextTerminalResult -Class source -Reason candidate-limit-exceeded }
+            catch { return New-TurnContextTerminalResult -Class source -Reason save-enumeration-failed }
+            if (@($candidates).Count -eq 0) { return New-TurnContextTerminalResult -Class 'no-saves' -Reason no-matching-saves }
             $selected = @($candidates)[0]
             $identity = New-SourceIdentity -DomainId $AdapterConfig.SourceDomainId -SaveFile $selected.Name -SavedAt $selected.LastWriteTimeUtc
             if ($null -eq $floor -or (Compare-SourceIdentity -Left $identity -Right $floor).order -gt 0) { $floor = $identity }
@@ -300,10 +311,10 @@ function Invoke-TurnContextAttempt {
             $fresh = $current.outcome -ceq 'valid' -and (Compare-SourceIdentity -Left $current.document.Materialized['source'] -Right $floor).order -ge 0
             if (-not $fresh) {
                 if ($current.outcome -in @('absent', 'content-invalid', 'stale')) { Add-CompanionWarning -Sink $attemptWarnings -Code pipeline-current-self-healed -Detail $null }
-                try { $cycleLock = Enter-CompanionCycleLock -CompanionRoot $CompanionRoot } catch [TimeoutException] { return New-TurnContextAttemptResult -OutcomeClass busy -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class busy -ConsumptionState none -Detail (New-TurnContextDetail -Class busy -Reason lock-timeout) -SourceIdentity $floor -GenerationTimestamp $null -LockStage cycle -OperationalWarnings $OperationalWarnings) } catch { return New-TurnContextAttemptResult -OutcomeClass lock -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class lock -ConsumptionState none -Detail (New-TurnContextDetail -Class lock -Reason lock-open-failed) -SourceIdentity $floor -GenerationTimestamp $null -LockStage cycle -OperationalWarnings $OperationalWarnings) }
+                try { $cycleLock = Enter-CompanionCycleLock -CompanionRoot $CompanionRoot } catch [TimeoutException] { return New-TurnContextTerminalResult -Class busy -Reason lock-timeout -SourceIdentity $floor -LockStage cycle } catch { return New-TurnContextTerminalResult -Class lock -Reason lock-open-failed -SourceIdentity $floor -LockStage cycle }
                 try {
                     try { if ($Operations.ContainsKey('ConfirmConfig')) { & $Operations.ConfirmConfig $AdapterConfig } else { Confirm-TurnContextAdapterConfig -AdapterConfig $AdapterConfig } }
-                    catch [AdapterConfigurationException] { return New-TurnContextAttemptResult -OutcomeClass config -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class config -ConsumptionState none -Detail (New-TurnContextDetail -Class config -Reason adapter-config-changed) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
+                    catch [AdapterConfigurationException] { return New-TurnContextTerminalResult -Class config -Reason adapter-config-changed }
                     $cycleWarnings = New-CompanionWarningSink -Profile Cycle
                     Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $cycleWarnings
                     $cycle = if ($Operations.ContainsKey('Cycle')) { & $Operations.Cycle $selected $cycleWarnings } else { Invoke-CompanionCycle -CompanionRoot $CompanionRoot -AdapterDirectory $AdapterConfig.AdapterDirectory -AdapterConfig $AdapterConfig -SourceSave $selected -WarningSink $cycleWarnings }
@@ -312,7 +323,7 @@ function Invoke-TurnContextAttempt {
                     $refreshCommitted = $refreshCommitted -or $cycle.CurrentCommitted
                 }
                 finally { $cycleLock.Dispose() }
-                if (-not $cycle.Completed -and -not ($cycle.Retryable -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1))) { return New-TurnContextAttemptResult -OutcomeClass refresh -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class refresh -ConsumptionState none -Detail (New-TurnContextDetail -Class refresh -Reason current-commit-failed) -SourceIdentity $floor -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
+                if (-not $cycle.Completed -and -not ($cycle.Retryable -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1))) { return New-TurnContextTerminalResult -Class refresh -Reason current-commit-failed -SourceIdentity $floor }
                 if (-not $cycle.Completed) { continue }
             }
             $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
@@ -324,7 +335,7 @@ function Invoke-TurnContextAttempt {
                 # the baseline may already have advanced, so the protocol diagnostic
                 # carries the structured consumption state instead of resetting to none.
                 try { $json = Convert-TurnContextPayloadToJson -Payload $consume.payload -AdapterConfig $AdapterConfig -OperationalWarnings $OperationalWarnings }
-                catch { return New-TurnContextAttemptResult -OutcomeClass protocol -ConsumptionState $consume.consumptionState -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class protocol -ConsumptionState $consume.consumptionState -Detail (New-TurnContextDetail -Class protocol -Reason envelope-serialize-failed) -SourceIdentity $floor -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
+                catch { return New-TurnContextTerminalResult -Class protocol -ConsumptionState $consume.consumptionState -Reason envelope-serialize-failed -SourceIdentity $floor }
                 $generation = $target.document.RootElement.GetProperty('generatedAt').GetString()
                 # The consumption detail is a coarse stage label (e.g. 'baseline-write-failed')
                 # that is not itself a registry-valid reset-write reason. Map the reset-write
@@ -335,7 +346,7 @@ function Invoke-TurnContextAttempt {
                     'reset-write:consumed' { if ($consume.detail -ceq 'cache-target-invalid') { New-TurnContextDetail -Class 'reset-write:consumed' -Reason cache-target-invalid } else { New-TurnContextDetail -Class 'reset-write:consumed' -Reason cache-replace-failed } }
                     default { $null }
                 }
-                return New-TurnContextAttemptResult -OutcomeClass $consume.outcomeClass -ConsumptionState $consume.consumptionState -EnvelopeJson $json -CacheDegraded $consume.cacheDegraded -Diagnostic (New-TurnContextDiagnosticObject -Class $consume.outcomeClass -ConsumptionState $consume.consumptionState -Detail $resultDetail -SourceIdentity $floor -GenerationTimestamp $generation -LockStage $null -OperationalWarnings $OperationalWarnings)
+                return New-TurnContextTerminalResult -Class $consume.outcomeClass -ConsumptionState $consume.consumptionState -Detail $resultDetail -SourceIdentity $floor -GenerationTimestamp $generation -EnvelopeJson $json -CacheDegraded $consume.cacheDegraded
             }
             if ($consume.outcomeClass -in @('freshness', 'stale-target') -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1)) { continue }
             $consumptionDetail = switch ($consume.outcomeClass) {
@@ -346,9 +357,9 @@ function Invoke-TurnContextAttempt {
                 default { New-TurnContextDetail -Class compute -Reason diff-compute-failed }
             }
             $consumptionLockStage = if ($consume.outcomeClass -in @('busy', 'lock')) { 'consume' } else { $null }
-            return New-TurnContextAttemptResult -OutcomeClass $consume.outcomeClass -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class $consume.outcomeClass -ConsumptionState none -Detail $consumptionDetail -SourceIdentity $floor -GenerationTimestamp $null -LockStage $consumptionLockStage -OperationalWarnings $OperationalWarnings)
+            return New-TurnContextTerminalResult -Class $consume.outcomeClass -Detail $consumptionDetail -SourceIdentity $floor -LockStage $consumptionLockStage
         }
-        return New-TurnContextAttemptResult -OutcomeClass freshness -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class freshness -ConsumptionState none -Detail (New-TurnContextDetail -Class freshness -Reason target-below-floor) -SourceIdentity $floor -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings)
+        return New-TurnContextTerminalResult -Class freshness -Reason target-below-floor -SourceIdentity $floor
     }
-    catch { return New-TurnContextAttemptResult -OutcomeClass protocol -ConsumptionState none -EnvelopeJson $null -CacheDegraded $false -Diagnostic (New-TurnContextDiagnosticObject -Class protocol -ConsumptionState none -Detail (New-TurnContextDetail -Class protocol -Reason envelope-invalid) -SourceIdentity $floor -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings) }
+    catch { return New-TurnContextTerminalResult -Class protocol -Reason envelope-invalid -SourceIdentity $floor }
 }
