@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'MissingCurrent', 'PeekNonMutation', 'FirstRunClassification', 'MoneyCompatibility', 'StaleBaselineRecovery', 'ConsumptionLock', 'ResetOnRead', 'BaselineReadClassification', 'CacheInterleaving')]
+    [ValidateSet('All', 'MissingCurrent', 'PeekNonMutation', 'FirstRunClassification', 'MoneyCompatibility', 'StaleBaselineRecovery', 'ConsumptionLock', 'EqualIdentityTargetFreeze', 'ResetOnRead', 'BaselineReadClassification', 'CacheInterleaving')]
     [string] $Only = 'All'
 )
 
@@ -191,6 +191,102 @@ if ($Only -eq 'ConsumptionLock') {
         Assert-Equal -Actual $afterRelease.outcomeClass -Expected 'success' -Message 'After release the same entry point can acquire the lock and consume normally.'
         Assert-True -Condition ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) -Message 'Post-release consumption advances the baseline.'
     } @($root, $digestJson)
+    Write-Output 'PASS: consumption'
+    exit 0
+}
+
+if ($Only -eq 'EqualIdentityTargetFreeze') {
+    # Section 11 "Equal-identity target freeze": two real consumer processes contend on
+    # the real consume.lock. The staged copy gains env-gated sentinel barriers at the two
+    # claim-relevant points (before lock acquisition; after the locked target freeze); a
+    # consumer launched without the env vars runs the production sequence untouched.
+    $lockAnchor = '        $lease = & $EnterConsumeLock $CompanionRoot'
+    $freezeAnchor = '        $target = $current.document'
+    $lockBarrier = @(
+        '        if (-not [string]::IsNullOrEmpty($env:COMPANION_TEST_LOCK_ARRIVE)) { [IO.File]::WriteAllText($env:COMPANION_TEST_LOCK_ARRIVE, ''arrive'') }'
+        '        if (-not [string]::IsNullOrEmpty($env:COMPANION_TEST_LOCK_READY)) { [IO.File]::WriteAllText($env:COMPANION_TEST_LOCK_READY, ''ready''); while (-not [IO.File]::Exists($env:COMPANION_TEST_LOCK_RELEASE)) { Start-Sleep -Milliseconds 10 } }'
+    ) -join "`n"
+    $freezeBarrier = '        if (-not [string]::IsNullOrEmpty($env:COMPANION_TEST_FREEZE_READY)) { [IO.File]::WriteAllText($env:COMPANION_TEST_FREEZE_READY, ''ready''); while (-not [IO.File]::Exists($env:COMPANION_TEST_FREEZE_RELEASE)) { Start-Sleep -Milliseconds 10 } }'
+    $newBarrierFixture = {
+        param($Prefix)
+
+        $fixture = New-StagedGetDiffFixture -Prefix $Prefix -DigestJson $digestJson -SeedCurrent
+        $consumptionPath = Join-Path $fixture.Core 'private/Consumption.ps1'
+        $consumptionSource = [IO.File]::ReadAllText($consumptionPath, [Text.UTF8Encoding]::new($false, $true))
+        Assert-Equal -Actual ([regex]::Matches($consumptionSource, [regex]::Escape($lockAnchor)).Count) -Expected 1 -Message 'Freeze fixture finds one consume-lock acquisition seam.'
+        Assert-Equal -Actual ([regex]::Matches($consumptionSource, [regex]::Escape($freezeAnchor)).Count) -Expected 1 -Message 'Freeze fixture finds one locked target-freeze seam.'
+        $patched = $consumptionSource.Replace($lockAnchor, "$lockBarrier`n$lockAnchor", [StringComparison]::Ordinal).Replace($freezeAnchor, "$freezeAnchor`n$freezeBarrier", [StringComparison]::Ordinal)
+        [IO.File]::WriteAllText($consumptionPath, $patched, [Text.UTF8Encoding]::new($false, $true))
+
+        return $fixture
+    }
+
+    # Ordering 1: A parks before the lock, H2 force-refreshes the same identity, B
+    # consumes H2 into the baseline, then A resumes, freezes H2 under the lock, and the
+    # baseline never transitions from H2 back to H1.
+    $order1 = & $newBarrierFixture 'freeze-order1'
+    $order1Ready = Join-Path $order1.Root '.tmp/lock-ready'
+    $order1Release = Join-Path $order1.Root '.tmp/lock-release'
+    $consumerA = Start-BoundedPwsh -Arguments @('-File', $order1.GetDiff) -WorkingDirectory $order1.Root -Environment @{
+        COMPANION_TEST_LOCK_READY = $order1Ready
+        COMPANION_TEST_LOCK_RELEASE = $order1Release
+    }
+    try {
+        Wait-TestSentinel -Path $order1Ready -TimeoutMilliseconds 20000
+        [IO.File]::WriteAllText((Join-Path $order1.State 'current.json'), $order1.Digest.Replace('"xp":0', '"xp":5'), [Text.UTF8Encoding]::new($false, $true))
+        $consumerB = Invoke-BoundedPwsh -Arguments @('-File', $order1.GetDiff) -WorkingDirectory $order1.Root
+        Assert-Equal -Actual $consumerB.ExitCode -Expected 0 -Message 'Consumer B consumes receipt H2 while A is parked before the lock.'
+        $baselineAfterB = Read-DigestDocument -Path (Join-Path $order1.State 'baseline.json')
+        Assert-Equal -Actual $baselineAfterB.RootElement.GetProperty('character').GetProperty('xp').GetInt64() -Expected ([long] 5) -Message 'Consumer B publishes baseline H2.'
+        Assert-False -Condition $consumerA.Process.HasExited -Message 'Consumer A is still parked at the lock barrier after B completes.'
+        [IO.File]::WriteAllText($order1Release, 'release')
+        $resultA = Complete-BoundedPwsh -Child $consumerA -TimeoutMilliseconds 20000
+        Assert-Equal -Actual $resultA.ExitCode -Expected 0 -Message 'Resumed consumer A succeeds after acquiring the released lock.'
+        $diffA = Read-DiffDocument -Json $resultA.StdOut
+        Assert-False -Condition $diffA.RootElement.GetProperty('hasChanges').GetBoolean() -Message 'Consumer A freezes H2 under the lock and emits the empty diff.'
+        Assert-Equal -Actual $diffA.RootElement.GetProperty('baselineGeneratedAt').ValueKind -Expected ([Text.Json.JsonValueKind]::String) -Message 'Consumer A consumes against the H2 baseline, not a reset.'
+        $baselineAfterA = Read-DigestDocument -Path (Join-Path $order1.State 'baseline.json')
+        Assert-Equal -Actual $baselineAfterA.RootElement.GetProperty('character').GetProperty('xp').GetInt64() -Expected ([long] 5) -Message 'Baseline never transitions from H2 back to H1.'
+    }
+    finally {
+        Stop-BoundedPwsh -Child $consumerA
+    }
+
+    # Converse ordering: H2 lands after A's locked H1 freeze, B arrives at the held
+    # lock, and the H1-to-H2 transition is left pending for B rather than lost.
+    $order2 = & $newBarrierFixture 'freeze-order2'
+    $order2FreezeReady = Join-Path $order2.Root '.tmp/freeze-ready'
+    $order2FreezeRelease = Join-Path $order2.Root '.tmp/freeze-release'
+    $order2Arrive = Join-Path $order2.Root '.tmp/b-arrive'
+    $consumerA2 = Start-BoundedPwsh -Arguments @('-File', $order2.GetDiff) -WorkingDirectory $order2.Root -Environment @{
+        COMPANION_TEST_FREEZE_READY = $order2FreezeReady
+        COMPANION_TEST_FREEZE_RELEASE = $order2FreezeRelease
+    }
+    $consumerB2 = $null
+    try {
+        Wait-TestSentinel -Path $order2FreezeReady -TimeoutMilliseconds 20000
+        [IO.File]::WriteAllText((Join-Path $order2.State 'current.json'), $order2.Digest.Replace('"xp":0', '"xp":5'), [Text.UTF8Encoding]::new($false, $true))
+        $consumerB2 = Start-BoundedPwsh -Arguments @('-File', $order2.GetDiff) -WorkingDirectory $order2.Root -Environment @{ COMPANION_TEST_LOCK_ARRIVE = $order2Arrive }
+        Wait-TestSentinel -Path $order2Arrive -TimeoutMilliseconds 20000
+        Assert-False -Condition $consumerA2.Process.HasExited -Message 'Consumer A still holds the lock at its freeze barrier when B arrives.'
+        [IO.File]::WriteAllText($order2FreezeRelease, 'release')
+        $resultA2 = Complete-BoundedPwsh -Child $consumerA2 -TimeoutMilliseconds 20000
+        Assert-Equal -Actual $resultA2.ExitCode -Expected 0 -Message 'Consumer A completes its locked H1 consumption.'
+        $diffA2 = Read-DiffDocument -Json $resultA2.StdOut
+        Assert-Equal -Actual $diffA2.RootElement.GetProperty('baselineGeneratedAt').ValueKind -Expected ([Text.Json.JsonValueKind]::Null) -Message 'Consumer A resets the absent baseline from its frozen H1 target.'
+        $resultB2 = Complete-BoundedPwsh -Child $consumerB2 -TimeoutMilliseconds 20000
+        Assert-Equal -Actual $resultB2.ExitCode -Expected 0 -Message 'Consumer B consumes after the held lock is released.'
+        $diffB2 = Read-DiffDocument -Json $resultB2.StdOut
+        Assert-True -Condition $diffB2.RootElement.GetProperty('hasChanges').GetBoolean() -Message 'The H1-to-H2 transition stays pending for B instead of being lost.'
+        Assert-Equal -Actual $diffB2.RootElement.GetProperty('character').GetProperty('xpDelta').GetInt64() -Expected ([long] 5) -Message 'Consumer B reports exactly the H1-to-H2 change.'
+        $baselineAfterB2 = Read-DigestDocument -Path (Join-Path $order2.State 'baseline.json')
+        Assert-Equal -Actual $baselineAfterB2.RootElement.GetProperty('character').GetProperty('xp').GetInt64() -Expected ([long] 5) -Message 'The equal-identity race settles the baseline at H2.'
+    }
+    finally {
+        Stop-BoundedPwsh -Child $consumerA2
+        if ($null -ne $consumerB2) { Stop-BoundedPwsh -Child $consumerB2 }
+    }
+
     Write-Output 'PASS: consumption'
     exit 0
 }
