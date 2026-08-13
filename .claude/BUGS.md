@@ -49,7 +49,24 @@ otherwise sits in the backlog until the next readiness pass surfaces it.
 
 ## Open
 
-No open bugs. (The reputation-mapping observability entry was resolved 2026-08-12 via the
+### Turn-context refresh skips the post-lock re-enumerate and stability gate
+
+Spec section 7.5 step 3 (`.claude/specs/state-extraction.md`, the "refresh acquires
+`cycle.lock`, re-enumerates and stability-gates after acquisition" sentence) requires
+the turn-context refresh to re-select the save after taking `cycle.lock` and to pass
+it through `Test-FileWriteStable`. `Invoke-TurnContextAttempt` instead feeds
+`Invoke-CompanionCycle` the save selected before the lock and never calls
+`Test-FileWriteStable` (the function is invoked only by the watcher,
+`Update-CompanionState.ps1`, and `Find-LastEventfulSpan.ps1`). Consequences: a save
+still being written when the cycle starts is processed without the stability gate,
+and the section 11 "Acquisition retry taxonomy" claim's typed `stability` /
+gate-disappearance retry classes are unreachable through the wrapper, so their
+fixture coverage is deferred to this fix. Found 2026-08-13 while authoring the
+claim-42 fixtures.
+
+**Requires:** none.
+
+(The reputation-mapping observability entry was resolved 2026-08-12 via the
 documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its
 diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md)
 remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value
