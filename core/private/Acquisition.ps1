@@ -1,5 +1,12 @@
 $script:SaveCandidateEntryLimit = 65536
 $script:SaveCandidateNameByteLimit = 16777216
+# Canonical work-file naming, owned by the writer (Invoke-SaveDigest / Get-SaveDigestNonce):
+# stems are 'work-cycle' or 'work-walk-<nonnegative canonical decimal>', every group member is
+# '<stem>-<32-lowercase-hex nonce>...', and the reaper in StateFiles.ps1 matches leases with
+# the composed pattern below.
+$script:WorkNoncePattern = '[0-9a-f]{32}'
+$script:WorkWalkIndexPattern = '(?:0|[1-9][0-9]*)'
+$script:WorkLeaseNamePattern = '^work-(?:cycle|walk-' + $script:WorkWalkIndexPattern + ')-' + $script:WorkNoncePattern + '\.lease$'
 
 function Assert-CycleOutcome {
     param([Parameter(Mandatory)] [CycleOutcome] $Outcome)
@@ -324,7 +331,7 @@ function Invoke-CompanionCycle {
 function Invoke-SaveDigest {
     param([Parameter(Mandatory)] [string] $AdapterDirectory, [Parameter(Mandatory)] [AdapterConfig] $AdapterConfig, [Parameter(Mandatory)] [IO.FileInfo] $SourceSave, [Parameter(Mandatory)] [string] $WorkFileStem, [Parameter(Mandatory)] [CompanionWarningSink] $WarningSink, [Parameter()] [Threading.CancellationToken] $CancellationToken = [Threading.CancellationToken]::None)
 
-    if (-not ($WorkFileStem -ceq 'work-cycle' -or $WorkFileStem -cmatch '^work-walk-(?:0|[1-9][0-9]{0,9})$')) { throw [ArgumentException]::new('Invalid work file stem.') }
+    if (-not ($WorkFileStem -ceq 'work-cycle' -or $WorkFileStem -cmatch ('^work-walk-' + $script:WorkWalkIndexPattern + '$'))) { throw [ArgumentException]::new('Invalid work file stem.') }
     if ($WorkFileStem -cne 'work-cycle') {
         $walkIndex = 0
         if (-not [int]::TryParse($WorkFileStem.Substring('work-walk-'.Length), [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref] $walkIndex)) { throw [ArgumentException]::new('Invalid work file stem.') }

@@ -1,4 +1,5 @@
-$script:StateFileTargets = @('current.json', 'baseline.json', 'diff-since-last-read.json', 'last-processed.json')
+$script:StateFileNames = [ordered]@{ Current = 'current.json'; Baseline = 'baseline.json'; DiffCache = 'diff-since-last-read.json'; Bookkeeping = 'last-processed.json' }
+$script:StateFileTargets = @($script:StateFileNames.Values)
 $script:StateTempReaperPattern = '^(?:' + (@($script:StateFileTargets | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) }) -join '|') + ')\.json\.[0-9a-f]{32}\.tmp$'
 $script:StateTempAge = [TimeSpan]::FromHours(1)
 $script:StateReaperMaximumEntries = 65536
@@ -132,13 +133,13 @@ function Read-CompanionStateDigest {
 function Read-CompanionBaseline {
     param([Parameter(Mandatory)] [string] $CompanionRoot)
 
-    return (Read-CompanionStateDigest -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name 'baseline.json'))
+    return (Read-CompanionStateDigest -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.Baseline))
 }
 
 function Read-CompanionCurrent {
     param([Parameter(Mandatory)] [string] $CompanionRoot, [AllowNull()] [AdapterCompatibilityConfig] $AdapterConfig, [switch] $PrefilterOnly)
 
-    $read = Read-CompanionStateDigest -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name 'current.json')
+    $read = Read-CompanionStateDigest -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.Current)
     if ($read.outcome -cne 'valid') { return $read }
     $document = $read.document
     if ($null -eq $AdapterConfig) { return [pscustomobject]@{ outcome = 'valid'; document = $document } }
@@ -162,10 +163,10 @@ function ConvertTo-CompanionStateDocument {
     return $Document
 }
 
-function Write-CompanionCurrent { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name 'current.json') -Document (ConvertTo-CompanionStateDocument -Document $Document) -Budget digest }
-function Write-CompanionBaseline { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name 'baseline.json') -Document (ConvertTo-CompanionStateDocument -Document $Document) -Budget digest }
-function Write-CompanionDiffCache { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name 'diff-since-last-read.json') -Document (ConvertTo-CompanionStateDocument -Document $Document) -Budget diff }
-function Write-CompanionBookkeeping { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name 'last-processed.json') -Document $Document -Budget config }
+function Write-CompanionCurrent { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.Current) -Document (ConvertTo-CompanionStateDocument -Document $Document) -Budget digest }
+function Write-CompanionBaseline { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.Baseline) -Document (ConvertTo-CompanionStateDocument -Document $Document) -Budget digest }
+function Write-CompanionDiffCache { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.DiffCache) -Document (ConvertTo-CompanionStateDocument -Document $Document) -Budget diff }
+function Write-CompanionBookkeeping { param([Parameter(Mandatory)][string]$CompanionRoot, [Parameter(Mandatory)]$Document) Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.Bookkeeping) -Document $Document -Budget config }
 
 function Invoke-WorkFileReaper {
     param(
@@ -199,7 +200,7 @@ function Invoke-WorkFileReaper {
                 continue
             }
             $leasedMemberNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-            $leases = @($entries | Where-Object { $_ -is [IO.FileInfo] -and $_.Name -cmatch '^work-(?:cycle-[0-9a-f]{32}|walk-(?:0|[1-9][0-9]*)-[0-9a-f]{32})\.lease$' })
+            $leases = @($entries | Where-Object { $_ -is [IO.FileInfo] -and $_.Name -cmatch $script:WorkLeaseNamePattern })
             foreach ($lease in $leases) {
                 $groupPrefix = $lease.Name.Substring(0, $lease.Name.Length - '.lease'.Length) + '-'
                 [void] $leasedMemberNames.Add($lease.Name)
