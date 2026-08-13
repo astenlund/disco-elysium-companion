@@ -493,6 +493,98 @@ Invoke-InCompanionModule {
     $rejectingConfig.Validator = { param($RootElement) throw [AdapterDigestValidationException]::new('baseline invalid') }
     $adapterInvalidBaseline = Invoke-CompanionConsumption -AdapterConfig $rejectingConfig -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'valid'; document = $digest } } -ReadBaseline { param($RootPath) [pscustomobject]@{ outcome = 'valid'; document = $digest } }
     Assert-Equal -Actual $adapterInvalidBaseline.outcomeClass -Expected 'success' -Message 'Adapter-invalid baseline is reset rather than treated as infrastructure failure.'
+
+    # Section 11 "Turn-context failure injection" coverage: private candidate
+    # construction failure before baseline mutation. The context's floor exceeds the
+    # target, so New-ConsumePayload rejects the candidate inside the compute stage.
+    [IO.File]::Delete((Join-Path $Root 'state/baseline.json'))
+    $newerFloor = @{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'C.ntwtf.zip'; savedAt = '2026-08-10T13:00:00.0000000Z' }
+    $computeContext = [TurnContextPayloadContext]::new($newerFloor, $false, $false, 0)
+    $privateCompute = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode privateResult -Context $computeContext -WarningSink (New-CompanionWarningSink -Profile GetDiff)
+    Assert-Equal -Actual $privateCompute.outcomeClass -Expected 'compute' -Message 'Private candidate construction failure is a compute failure before baseline mutation.'
+    Assert-Equal -Actual $privateCompute.consumptionState -Expected 'none' -Message 'Private candidate construction failure never marks the target consumed.'
+    Assert-OrdinalEqual -Actual $privateCompute.detail -Expected 'payload-or-diff-failed' -Message 'Private candidate construction failure carries the registry compute reason.'
+    Assert-False -Condition ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) -Message 'Private candidate construction failure leaves the baseline unchanged.'
+
+    # Private-mode fresh-validation-machinery failure: the post-baseline cache
+    # target's infrastructure failure carries the exact cache-target-invalid reason
+    # (never the pre-baseline compute class) on a consumed private candidate.
+    $privateContext = [TurnContextPayloadContext]::new($digest.Materialized['source'], $false, $false, 0)
+    $privateCacheReads = [Collections.Generic.List[int]]::new()
+    $privateCacheTarget = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode privateResult -Context $privateContext -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent {
+        param($RootPath, $Config)
+        $privateCacheReads.Add(1)
+        if ($privateCacheReads.Count -eq 1) { return [pscustomobject]@{ outcome = 'valid'; document = $digest } }
+
+        return [pscustomobject]@{ outcome = 'infrastructure-failure'; document = $null }
+    }
+    Assert-Equal -Actual $privateCacheTarget.outcomeClass -Expected 'reset-write:consumed' -Message 'Private fresh cache-target infrastructure failure reports after baseline advancement.'
+    Assert-Equal -Actual $privateCacheTarget.consumptionState -Expected 'consumed' -Message 'Private fresh cache-target infrastructure failure keeps the consumed state.'
+    Assert-True -Condition $privateCacheTarget.cacheDegraded -Message 'Private fresh cache-target infrastructure failure marks cache degradation.'
+    Assert-OrdinalEqual -Actual $privateCacheTarget.detail -Expected 'cache-target-invalid' -Message 'The fresh validation machinery uses exactly cache-target-invalid, never a compute reason.'
+    Assert-True -Condition ($privateCacheTarget.payload -is [TurnContextPayloadCandidate]) -Message 'A degraded private result still carries a valid payload candidate.'
+    Assert-True -Condition ([Text.Json.JsonElement]::DeepEquals($privateCacheTarget.payload.State.RootElement, $digest.RootElement)) -Message 'The private candidate state retains the exact consumed document.'
+
+    # A later ordinary acquisition repairs the diagnostic cache after a degraded
+    # cache write.
+    [IO.File]::Delete((Join-Path $Root 'state/baseline.json'))
+    [IO.File]::Delete((Join-Path $Root 'state/diff-since-last-read.json'))
+    $degradedWrite = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteCache { param($RootPath, $Document) throw [IO.IOException]::new('cache write failed') }
+    Assert-Equal -Actual $degradedWrite.outcomeClass -Expected 'reset-write:consumed' -Message 'The degraded cache write advances the baseline without a cache file.'
+    Assert-False -Condition ([IO.File]::Exists((Join-Path $Root 'state/diff-since-last-read.json'))) -Message 'The failed cache write leaves no diagnostic cache.'
+    $repair = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) }
+    Assert-Equal -Actual $repair.outcomeClass -Expected 'success' -Message 'A later ordinary acquisition succeeds after cache degradation.'
+    $repairedCache = Read-DiffDocument -Path (Join-Path $Root 'state/diff-since-last-read.json')
+    Assert-False -Condition $repairedCache.RootElement.GetProperty('hasChanges').GetBoolean() -Message 'The later acquisition repairs the diagnostic cache.'
+
+    # The stale and content-invalid fresh-sample classifications (schema, adapter,
+    # and game mismatches all funnel into stale) take the canonical-empty fallback
+    # and still succeed; the absent variant is covered above.
+    foreach ($freshOutcome in @('stale', 'content-invalid')) {
+        $fallbackReads = [Collections.Generic.List[int]]::new()
+        $variantSink = New-CompanionWarningSink -Profile GetDiff
+        $variant = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink $variantSink -WriteStdout { param($Text) } -ReadCurrent {
+            param($RootPath, $Config)
+            $fallbackReads.Add(1)
+            if ($fallbackReads.Count -eq 1) { return [pscustomobject]@{ outcome = 'valid'; document = $digest } }
+
+            return [pscustomobject]@{ outcome = $freshOutcome; document = $null }
+        }
+        Assert-Equal -Actual $variant.outcomeClass -Expected 'success' -Message "A '$freshOutcome' fresh cache sample takes the fallback and still succeeds."
+        Assert-True -Condition (@($variantSink.Freeze() | Where-Object { $_.code -ceq 'consume-cache-fallback' }).Count -eq 1) -Message "A '$freshOutcome' fresh cache sample records the canonical-empty fallback warning."
+    }
+
+    # Private payloads are typed candidates whose nested documents retain the exact
+    # validated representations; the context constructor rejects every invalid shape.
+    $typedContext = [TurnContextPayloadContext]::new($digest.Materialized['source'], $false, $false, 0)
+    $typedCandidate = New-ConsumePayload -DeliveryMode privateResult -Diff $diff -State $digest -Context $typedContext
+    Assert-True -Condition ($typedCandidate -is [TurnContextPayloadCandidate]) -Message 'A private payload is a TurnContextPayloadCandidate.'
+    Assert-True -Condition ([Text.Json.JsonElement]::DeepEquals($typedCandidate.Diff.RootElement, $diff.RootElement)) -Message 'The private candidate diff retains the exact validated representation.'
+    Assert-True -Condition ([Text.Json.JsonElement]::DeepEquals($typedCandidate.State.RootElement, $digest.RootElement)) -Message 'The private candidate state retains the exact validated representation.'
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { [TurnContextPayloadContext]::new($null, $false, $false, 0) }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { [TurnContextPayloadContext]::new($digest.Materialized['source'], $true, $false, -1) }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { [TurnContextPayloadContext]::new($digest.Materialized['source'], $true, $false, 4) }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { [TurnContextPayloadContext]::new($digest.Materialized['source'], $true, $false, 0) }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { [TurnContextPayloadContext]::new($digest.Materialized['source'], $false, $false, 1) }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { [TurnContextPayloadContext]::new($digest.Materialized['source'], $false, $true, 0) }
+
+    # Poisoned failure injections at every private write boundary: the inspected
+    # ConsumeResult.detail stays the exact class-owned registry literal and never
+    # carries exception text, paths, or command-line fragments.
+    $poison = 'POISON C:\secret --cmd'
+    [IO.File]::Delete((Join-Path $Root 'state/baseline.json'))
+    $poisonCases = [ordered]@{
+        'payload-serialize-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -SerializePayload { param($Payload) throw [IO.IOException]::new($poison) })
+        'stdout-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) throw [IO.IOException]::new($poison) })
+        'baseline-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteBaseline { param($RootPath, $Document) throw [IO.IOException]::new($poison) })
+        'cache-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteCache { param($RootPath, $Document) throw [IO.IOException]::new($poison) })
+    }
+    foreach ($expectedDetail in $poisonCases.Keys) {
+        $poisoned = $poisonCases[$expectedDetail]
+        Assert-OrdinalEqual -Actual $poisoned.detail -Expected $expectedDetail -Message "The '$expectedDetail' boundary reports its exact registry detail under a poisoned exception."
+        Assert-False -Condition $poisoned.detail.Contains('POISON', [StringComparison]::Ordinal) -Message "The '$expectedDetail' boundary never leaks exception text into the detail."
+        Assert-True -Condition (@($poisoned.detail.EnumerateRunes()).Count -le 512) -Message "The '$expectedDetail' detail respects the 512-scalar cap."
+    }
 } @($root, $digestJson)
 
 if ($Only -eq 'CacheInterleaving') {
