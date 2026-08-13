@@ -93,9 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `New-CompanionWarningSink` `ValidateSet` hardcodes the profile names instead of sourcing them
-  from the registry dictionary; the warning vertical lives inside `SourceIdentity.ps1` (a
-  misnamed module boundary; already centrally consolidated).
 - The save-digest dump/digest reason vocabulary is duplicated between the `SaveDigestStageException`
   C# legal-reasons switch and `$script:TurnContextReasons`.
 - The source-identity VALIDATION grammar (domainId sha256, saveFile no-separator, savedAt UTC) is

@@ -164,3 +164,14 @@ not to resolve dependencies.
   writer then rejected); both now dispatch through `Test-CompanionJsonNumber` over
   `$script:CompanionJsonNumberTypes`, so a non-JSON scalar fails at measurement with
   the same `CompanionJsonParseException` the writer would have thrown.
+
+- Warning-sink profile ValidateSet registry sourcing, shipped 2026-08-13 (commit
+  `24d618d`, from the v2 review tech-debt list). `New-CompanionWarningSink` now uses
+  `[ValidateSet([CompanionWarningProfileNames])]` where the class implements
+  `IValidateSetValuesGenerator` over `$script:CompanionWarningProfiles.Keys`, so
+  adding a profile to the registry automatically extends the parameter validation.
+  Probe-verified that the generator resolves the module-scope registry at binding
+  time (valid profile admitted, unknown profile rejected). The companion observation
+  that the warning vertical lives inside `SourceIdentity.ps1` (a misnamed module
+  boundary) was already noted as consolidated in the backlog entry and remains a
+  file-naming nit only.
