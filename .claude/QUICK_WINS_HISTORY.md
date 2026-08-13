@@ -117,3 +117,18 @@ not to resolve dependencies.
   hand-rolling the RFC 6901 tokenizer. Byte-layout equivalence of the walkPolicyId hash
   was probe-verified against a verbatim replica of the prior algorithm (populated and
   empty inputs) since the id is persisted and compared by the walk protocol.
+
+- State-file-name and work-lease-grammar single-sourcing, shipped 2026-08-13 (commit
+  `3c7dda7`, from the v2 review tech-debt list). `$script:StateFileNames` (ordered map
+  Current/Baseline/DiffCache/Bookkeeping) is now the one authority in `StateFiles.ps1`;
+  `$script:StateFileTargets` derives from its values and every read/write helper plus
+  the watcher's `readBookkeeping` closure (previously a hardcoded
+  `state/last-processed.json` join) references the map through
+  `Get-CompanionStatePath`. The work-file naming grammar moved beside its writer in
+  `Acquisition.ps1` (`$script:WorkNoncePattern`, `$script:WorkWalkIndexPattern`,
+  composed `$script:WorkLeaseNamePattern`); the reaper's lease regex and the
+  `Invoke-SaveDigest` stem validation both derive from it. The composed lease pattern
+  factors the shared nonce suffix out of the old alternation and drops the stem
+  check's redundant `{0,9}` digit bound (the following `[int]::TryParse` already
+  rejects over-range indexes with the same exception); both rewrites probe-verified
+  equivalent against boundary cases.

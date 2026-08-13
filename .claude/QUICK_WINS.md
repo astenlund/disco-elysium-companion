@@ -93,8 +93,6 @@ the immutable `releases/2/schema-2` bundle was re-staged and installed, and the
 save-read-only probe executed against the activated runtime. Only the 3 turn-context
 fixture rows (claims 40-42, the deferred entries at the top of this file) remain.
 
-- `StateFiles.ps1`/`Acquisition.ps1` duplicate the four authoritative state-file names and the
-  work-lease naming regex instead of deriving from `$script:StateFileTargets` / the writer.
 - `Consumption.ps1` repeats the `$payload.Complete($bool, $WarningSink.Freeze())` guard four
   times; `New-ConsumePayload` and `Invoke-CompanionConsumption` copy-paste the source-floor
   predicate.
