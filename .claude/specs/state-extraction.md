@@ -2926,6 +2926,23 @@ the same helper on its exact provisional instance before returning
 immutable release path creates a separate entry and never refreshes an existing one in
 place.
 
+The watcher amortizes validator imports across polls of one release. Each default
+watcher service bundle owns one run-scoped warm hold, created empty with the bundle;
+custom service bundles without a hold (the test seam) simply forgo amortization. After
+every successful poll configuration resolution the poll offers the snapshot's validator
+path to the hold: an empty hold acquires one extra lease on that path; a hold on a
+different path acquires the new path's lease and then releases the prior one; a hold on
+the same path is left unchanged. Acquisition failure, including a poisoned entry, leaves
+the hold unchanged and never fails the poll: the hold is an import-cost optimization,
+never a gate, and no consumer ever reads a callable through it, so a hold lagging the
+active release merely retains the prior module until the next successful adoption or the
+run's end. The watcher run releases the hold exactly once, in terminal cleanup after the
+poll loop exits for any reason; process exit remains only a backstop. With the hold
+resident, per-poll snapshot disposal leaves the entry's count above zero, so one release
+imports once per watcher run rather than once per poll, while an adapter release change
+swaps the hold and lets the prior release unload through the ordinary zero-count
+teardown.
+
 Every successful configuration snapshot is disposable. Its complete ownership sites
 are the watcher poll or cycle, one-shot invocation, `Get-Diff.ps1` invocation,
 `Get-TurnContext.ps1` wrapper transaction and its short post-lock confirmation snapshot,

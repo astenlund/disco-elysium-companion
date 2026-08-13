@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'StateProfile', 'ProfileFailures', 'CommandGrammar', 'ConfigAdmission', 'ValidatorFaultBoundary', 'ValidatorBoundaryMatrix', 'DuplicateSurfaceMatrix', 'AmbientExtraPaths', 'WalkPolicyFraming', 'LeaseOrder', 'EntrypointMatrix')]
+    [ValidateSet('All', 'StateProfile', 'ProfileFailures', 'CommandGrammar', 'ConfigAdmission', 'ValidatorFaultBoundary', 'ValidatorBoundaryMatrix', 'DuplicateSurfaceMatrix', 'AmbientExtraPaths', 'WalkPolicyFraming', 'LeaseOrder', 'EntrypointMatrix', 'WarmHold')]
     [string] $Only = 'All'
 )
 
@@ -274,6 +274,37 @@ function Test-AdapterEntrypointValidationRejections {
     Assert-True -Condition $result.Admitted -Message 'an in-root index-0 executable and an in-root index-3 script are admitted'
 }
 
+function Test-WatcherWarmHoldAmortizesValidatorImports {
+    $root = New-ScratchCompanionRoot -Prefix 'adapter-warm-hold'
+    New-AdapterFixture -Root $root
+    $counts = Invoke-InCompanionModule -ArgumentList @($root) -ScriptBlock {
+        param($Root)
+
+        $loadedValidators = { @(Get-Module | Where-Object { $_.Path -like '*Validate-Digest.psm1' }).Count }
+        $before = & $loadedValidators
+        $hold = [WatcherValidatorWarmHold]::new()
+        try {
+            $config = Get-AdapterConfig -CompanionRoot $Root -Profile StateCompatibility
+            try { $hold.Adopt($config.ValidatorPath) } finally { $config.Dispose() }
+            $held = & $loadedValidators
+            $second = Get-AdapterConfig -CompanionRoot $Root -Profile StateCompatibility
+            $second.Dispose()
+            $reheld = & $loadedValidators
+            $hold.Adopt((Join-Path $Root 'missing/Validate-Digest.psm1'))
+            $afterFailedAdopt = & $loadedValidators
+        }
+        finally {
+            $hold.Dispose()
+        }
+
+        return [pscustomobject]@{ Before = $before; Held = $held; Reheld = $reheld; AfterFailedAdopt = $afterFailedAdopt; Released = (& $loadedValidators) }
+    }
+    Assert-Equal -Actual $counts.Held -Expected ($counts.Before + 1) -Message 'the warm hold keeps the validator module loaded after its snapshot is disposed'
+    Assert-Equal -Actual $counts.Reheld -Expected ($counts.Before + 1) -Message 'a later snapshot of the same release rides the hold instead of re-importing'
+    Assert-Equal -Actual $counts.AfterFailedAdopt -Expected ($counts.Before + 1) -Message 'a failed adoption leaves the existing hold unchanged'
+    Assert-Equal -Actual $counts.Released -Expected $counts.Before -Message 'disposing the hold unloads the validator module'
+}
+
 $tests = [ordered]@{
     StateProfile = ${function:Test-StateProfileAdmitsIdentityAndDisposesLease}
     ProfileFailures = ${function:Test-ProfileSplitAndConfigurationFailures}
@@ -286,6 +317,7 @@ $tests = [ordered]@{
     WalkPolicyFraming = ${function:Test-WalkPolicyIdFramesPolicyOrderInsensitively}
     LeaseOrder = ${function:Test-AcquisitionValidationFailsBeforeValidatorImport}
     EntrypointMatrix = ${function:Test-AdapterEntrypointValidationRejections}
+    WarmHold = ${function:Test-WatcherWarmHoldAmortizesValidatorImports}
 }
 
 if ($Only -eq 'All') {

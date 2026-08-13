@@ -69,8 +69,33 @@ class WatcherCycleLockTryResult {
     }
 }
 
+class WatcherValidatorWarmHold : System.IDisposable {
+    hidden [AllowNull()] [IDisposable] $Lease
+    hidden [AllowNull()] [string] $Path
+
+    [void] Adopt([string] $ValidatorPath) {
+        if ($null -ne $this.Lease -and [string]::Equals($this.Path, $ValidatorPath, [StringComparison]::Ordinal)) { return }
+        $acquired = $null
+        # The hold is an import-cost optimization, never a gate: a failed acquisition
+        # (including a poisoned entry) leaves the hold unchanged and the poll unaffected.
+        try { $acquired = Acquire-AdapterValidatorLease -ValidatorPath $ValidatorPath } catch { return }
+        if ($null -ne $this.Lease) { $this.Lease.Dispose() }
+        $this.Lease = $acquired
+        $this.Path = $ValidatorPath
+    }
+
+    [void] Dispose() {
+        if ($null -ne $this.Lease) {
+            $this.Lease.Dispose()
+            $this.Lease = $null
+            $this.Path = $null
+        }
+    }
+}
+
 class WatcherRuntimeServices {
     [scriptblock] $ResolveConfig; [scriptblock] $GetCandidates; [scriptblock] $ReadBookkeeping; [scriptblock] $ReadCurrent; [scriptblock] $TestStable; [scriptblock] $TryAcquireCycleLock; [scriptblock] $InvokeCycle
+    [AllowNull()] [IDisposable] $WarmHold
     WatcherRuntimeServices([scriptblock] $ResolveConfig, [scriptblock] $GetCandidates, [scriptblock] $ReadBookkeeping, [scriptblock] $ReadCurrent, [scriptblock] $TestStable, [scriptblock] $TryAcquireCycleLock, [scriptblock] $InvokeCycle) {
         if ($null -eq $ResolveConfig -or $null -eq $GetCandidates -or $null -eq $ReadBookkeeping -or $null -eq $ReadCurrent -or $null -eq $TestStable -or $null -eq $TryAcquireCycleLock -or $null -eq $InvokeCycle) { throw [ArgumentNullException]::new('Watcher service.') }
         $this.ResolveConfig=$ResolveConfig; $this.GetCandidates=$GetCandidates; $this.ReadBookkeeping=$ReadBookkeeping; $this.ReadCurrent=$ReadCurrent; $this.TestStable=$TestStable; $this.TryAcquireCycleLock=$TryAcquireCycleLock; $this.InvokeCycle=$InvokeCycle
@@ -146,7 +171,10 @@ finally {
 }
 '@).Replace('@ADAPTER@', $adapterLiteral).Replace('@ROOT@', $rootLiteral))
 
-    return [WatcherRuntimeServices]::new($resolveConfig, $getCandidates, $readBookkeeping, $readCurrent, $testStable, $tryAcquireCycleLock, $invokeCycle)
+    $services = [WatcherRuntimeServices]::new($resolveConfig, $getCandidates, $readBookkeeping, $readCurrent, $testStable, $tryAcquireCycleLock, $invokeCycle)
+    $services.WarmHold = [WatcherValidatorWarmHold]::new()
+
+    return $services
 }
 
 function Test-WatcherSampleEqual { param([AllowNull()][WatcherSample]$Left,[WatcherSample]$Right) return $null -ne $Left -and [string]::Equals($Left.domainId,$Right.domainId,[StringComparison]::Ordinal) -and [string]::Equals($Left.name,$Right.name,[StringComparison]::Ordinal) -and $Left.savedAt -eq $Right.savedAt -and $Left.size -eq $Right.size }
@@ -182,6 +210,7 @@ function Invoke-WatcherPoll {
     $config=$null
     try {
         try { $config=& $Services.ResolveConfig $CancellationToken } catch { if ($CancellationToken.IsCancellationRequested) { return [WatcherPollResult]::new($null,'cancelled',@(),$null) }; return [WatcherPollResult]::new($null,'config-failed',@(),$null) }
+        if ($null -ne $Services.WarmHold -and $config -is [AdapterCompatibilityConfig]) { $Services.WarmHold.Adopt($config.ValidatorPath) }
         if ($CancellationToken.IsCancellationRequested) { return [WatcherPollResult]::new($null,'cancelled',@(),$null) }
         try { $candidates=@(& $Services.GetCandidates $config $CancellationToken) } catch [SaveCandidateLimitException] { return [WatcherPollResult]::new($null,'candidate-limit-exceeded',@(),$null) } catch { if ($CancellationToken.IsCancellationRequested) { return [WatcherPollResult]::new($null,'cancelled',@(),$null) }; return [WatcherPollResult]::new($null,'enumeration-failed',@(),$null) }
         if ($CancellationToken.IsCancellationRequested) { return [WatcherPollResult]::new($null,'cancelled',@(),$null) }
@@ -231,5 +260,8 @@ function Wait-WatcherInterval { param([int]$IntervalSeconds,[Parameter(Mandatory
 function Invoke-CompanionWatcher {
     param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$AdapterName,[Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$CompanionRoot,[int]$IntervalSeconds=30,[Parameter(Mandatory)][Threading.CancellationToken]$CancellationToken,[WatcherRuntimeServices]$Services)
     if($null -eq $Services){$Services=New-WatcherRuntimeServices -AdapterName $AdapterName -CompanionRoot $CompanionRoot}; $prior=$null
-    while(-not $CancellationToken.IsCancellationRequested){ try { $result=Invoke-WatcherPoll -PriorSample $prior -Services $Services -CompanionRoot $CompanionRoot -CancellationToken $CancellationToken; $prior=$result.sample; if($result.disposition -eq 'cancelled'){return}; Wait-WatcherInterval -IntervalSeconds $IntervalSeconds -CancellationToken $CancellationToken } catch [WatcherCancellationException] { return } catch { $prior=$null; if($CancellationToken.IsCancellationRequested){return}; try { Wait-WatcherInterval -IntervalSeconds $IntervalSeconds -CancellationToken $CancellationToken } catch [WatcherCancellationException] { return } } }
+    try {
+        while(-not $CancellationToken.IsCancellationRequested){ try { $result=Invoke-WatcherPoll -PriorSample $prior -Services $Services -CompanionRoot $CompanionRoot -CancellationToken $CancellationToken; $prior=$result.sample; if($result.disposition -eq 'cancelled'){return}; Wait-WatcherInterval -IntervalSeconds $IntervalSeconds -CancellationToken $CancellationToken } catch [WatcherCancellationException] { return } catch { $prior=$null; if($CancellationToken.IsCancellationRequested){return}; try { Wait-WatcherInterval -IntervalSeconds $IntervalSeconds -CancellationToken $CancellationToken } catch [WatcherCancellationException] { return } } }
+    }
+    finally { if ($null -ne $Services.WarmHold) { $Services.WarmHold.Dispose() } }
 }

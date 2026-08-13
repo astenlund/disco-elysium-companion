@@ -38,13 +38,15 @@ class AdapterConfigurationException : CompanionContentException {
 
 class AdapterValidatorLease : System.IDisposable {
     hidden [string] $CacheKey
+    hidden [object] $Command
     hidden [bool] $Disposed
 
-    AdapterValidatorLease([string] $CacheKey) { $this.CacheKey = $CacheKey }
+    AdapterValidatorLease([string] $CacheKey, [object] $Command) { $this.CacheKey = $CacheKey; $this.Command = $Command }
 
     [void] Dispose() {
         if (-not $this.Disposed) {
             $this.Disposed = $true
+            $this.Command = $null
             Release-AdapterValidatorLease -CacheKey $this.CacheKey
         }
     }

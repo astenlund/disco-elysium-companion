@@ -162,7 +162,7 @@ function Acquire-AdapterValidatorLease {
             $entry = $script:AdapterValidatorCache[$key]
             if ($entry.State -ne 'loaded') { throw [AdapterConfigurationException]::new('adapter-release-corrupt') }
             $entry.Count++
-            return [AdapterValidatorLease]::new($key)
+            return [AdapterValidatorLease]::new($key, $entry.Command)
         }
         $module = $null
         try {
@@ -173,7 +173,7 @@ function Acquire-AdapterValidatorLease {
             if ($exports.Count -ne 1 -or -not [string]::Equals($exports[0], 'Assert-AdapterDigestSemantics', [StringComparison]::Ordinal)) { throw [InvalidOperationException]::new() }
             $command = $module.ExportedCommands['Assert-AdapterDigestSemantics']
             $script:AdapterValidatorCache[$key] = [pscustomobject]@{ State = 'loaded'; Count = 1; Module = $module; Command = $command }
-            return [AdapterValidatorLease]::new($key)
+            return [AdapterValidatorLease]::new($key, $command)
         }
         catch {
             if ($null -ne $module -and -not (Invoke-AdapterValidatorTeardown -Module $module)) { $script:AdapterValidatorCache[$key] = [pscustomobject]@{ State = 'poisoned' } }
@@ -260,8 +260,7 @@ function Get-AdapterConfig {
         }
         $lease = Acquire-AdapterValidatorLease -ValidatorPath $validatorPath
         try {
-            $entry = $script:AdapterValidatorCache[[IO.Path]::GetFullPath($validatorPath)]
-            $config.Lease = $lease; $config.Validator = $entry.Command
+            $config.Lease = $lease; $config.Validator = $lease.Command
 
             return $config
         }
