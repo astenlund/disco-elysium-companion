@@ -52,6 +52,19 @@ Apply adapter-owned palette and artwork data with graceful terminal color
 degradation. This follows adapter catalog and theme-contract design rather than
 blocking a neutral single-adapter shell.
 
+Terminal bitmap images extend this slice beyond ASCII/Unicode motifs (idea
+captured 2026-08-15). Target terminal graphics generally with protocol
+detection: sixel (Windows Terminal 1.22+), kitty graphics protocol, iTerm2
+inline images, degrading to the existing ASCII/Unicode motif fallback when no
+protocol is available. Assets are user-provided or agent-fetched online;
+SteamGridDB is the natural fetch target and its category set (grid, hero,
+logo, icon at standard sizes) is the model for a per-adapter asset convention,
+so a user dropping in files and the agent fetching them land in the same
+slots. Placement is deliberately open: both branding surfaces (landing screen,
+header, empty states) and contextual art (portraits, location or item imagery
+tied to game state) are in the design space; contextual art must respect the
+spoiler projection boundary if it keys off game state.
+
 ### Per-question model effort control
 
 Expose a temporary stronger-reasoning action that reverts after one question.
@@ -130,6 +143,9 @@ TUI.
   digest commands, so each new game brings its own look; the app carries a
   neutral fallback theme for adapters that ship none. Terminal constraints
   apply (palette degrades gracefully from truecolor to 256/16 colors).
+  Bitmap artwork via terminal graphics protocols layers on top of this;
+  see the Per-adapter theming candidate slice for the captured design
+  notes (protocol detection, asset sourcing, placement).
 
 ## Why a TUI and not an Electron-style app
 
