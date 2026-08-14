@@ -220,6 +220,33 @@ Invoke-InCompanionModule {
     Invoke-WorkFileReaper -CompanionRoot $Root -WarningSink $tmpOverflowSink -TmpOnly
     Assert-Equal -Actual $tmpOverflowSink.Freeze().Count -Expected 1 -Message 'Tmp cap-plus-one produces one root-local warning.'
     Assert-True -Condition ([IO.File]::Exists($overflowStateTemp)) -Message 'TmpOnly cap overflow does not touch state.'
+
+    # Typed stage classification: every failure escaping the atomic writer names the
+    # exact stage (serialize, temp-write, replace) with the original as InnerException.
+    $stageProbe = {
+        param([scriptblock] $Action)
+        try { & $Action } catch [CompanionStateWriteException] { return $_.Exception.Stage }
+
+        return $null
+    }
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateBytes -Path $target -Bytes ([byte[]](1)) -CreateStream { param($Temp) throw [IO.IOException]::new('create failed') } }) -Expected 'temp-write' -Message 'Create-stream failure classifies as the temp-write stage.'
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateBytes -Path $target -Bytes ([byte[]](1)) -WriteBytes { param($Stream, $Value) throw [IO.IOException]::new('write failed') } }) -Expected 'temp-write' -Message 'Byte-write failure classifies as the temp-write stage.'
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateBytes -Path $target -Bytes ([byte[]](1)) -FlushStream { param($Stream) throw [IO.IOException]::new('flush failed') } }) -Expected 'temp-write' -Message 'Flush failure classifies as the temp-write stage.'
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateBytes -Path $target -Bytes ([byte[]](1)) -Replace { param($Temp, $TargetPath, $Backup) throw [UnauthorizedAccessException]::new('denied') } }) -Expected 'replace' -Message 'Replacement failure classifies as the replace stage.'
+    $missingTarget = Join-Path $State 'never-existed.json'
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateBytes -Path $missingTarget -Bytes ([byte[]](1)) -Move { param($Temp, $TargetPath) throw [IO.IOException]::new('move failed') } }) -Expected 'replace' -Message 'First-write move failure classifies as the replace stage.'
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateJson -Path $target -Document ([ordered]@{ bad = { 1 } }) -Budget config }) -Expected 'serialize' -Message 'Serialization failure classifies as the serialize stage.'
+    # Real-IO stage proof with no injected seams: a directory squatting on the target
+    # path makes the atomic move itself fail (the target-exists probe sees no FILE, so
+    # the writer takes the Move branch and the move onto a directory throws).
+    $squatTarget = Join-Path $State 'squat.json'
+    [void] ([IO.Directory]::CreateDirectory($squatTarget))
+    Assert-OrdinalEqual -Actual (& $stageProbe { Write-CompanionStateBytes -Path $squatTarget -Bytes ([byte[]](1)) }) -Expected 'replace' -Message 'A real move onto a squatting directory classifies as the replace stage without seams.'
+    [IO.Directory]::Delete($squatTarget)
+    $innerPreserved = $null
+    try { Write-CompanionStateBytes -Path $target -Bytes ([byte[]](1)) -CreateStream { param($Temp) throw [IO.IOException]::new('inner marker') } }
+    catch [CompanionStateWriteException] { $innerPreserved = $_.Exception.InnerException.Message }
+    Assert-OrdinalEqual -Actual $innerPreserved -Expected 'inner marker' -Message 'The stage exception wraps the original failure as InnerException.'
 } @($root, $state, $tmp)
 
 Write-Output 'PASS: state files'

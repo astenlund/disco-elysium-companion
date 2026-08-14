@@ -47,37 +47,43 @@ function Write-CompanionStateBytes {
     $backupOwned = $false
     $backup = $null
     try {
-        $stream = & $CreateStream $temp
-        $tempOwned = $true
         try {
-            & $WriteBytes $stream $Bytes
-            & $FlushStream $stream
+            $stream = & $CreateStream $temp
+            $tempOwned = $true
+            try {
+                & $WriteBytes $stream $Bytes
+                & $FlushStream $stream
+            }
+            finally {
+                & $CloseStream $stream
+            }
         }
-        finally {
-            & $CloseStream $stream
-        }
+        catch { throw [CompanionStateWriteException]::new('temp-write', $_.Exception) }
 
         $targetExists = [IO.File]::Exists($target)
         if ($targetExists) {
             $backup = Join-Path $directory ("$([IO.Path]::GetFileName($target)).$([Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()).bak")
         }
-        foreach ($attempt in 1..5) {
-            try {
-                if ($targetExists) {
-                    & $Replace $temp $target $backup
-                    $backupOwned = $true
+        try {
+            foreach ($attempt in 1..5) {
+                try {
+                    if ($targetExists) {
+                        & $Replace $temp $target $backup
+                        $backupOwned = $true
+                    }
+                    else {
+                        & $Move $temp $target
+                    }
+                    $tempOwned = $false
+                    break
                 }
-                else {
-                    & $Move $temp $target
+                catch [IO.IOException] {
+                    if (-not (Test-SharingViolation -Exception $_.Exception) -or $attempt -eq 5) { throw }
+                    & $Delay (40 * $attempt)
                 }
-                $tempOwned = $false
-                break
-            }
-            catch [IO.IOException] {
-                if (-not (Test-SharingViolation -Exception $_.Exception) -or $attempt -eq 5) { throw }
-                & $Delay (40 * $attempt)
             }
         }
+        catch { throw [CompanionStateWriteException]::new('replace', $_.Exception) }
     }
     finally {
         if ($tempOwned) {
@@ -92,8 +98,11 @@ function Write-CompanionStateBytes {
 function Write-CompanionStateJson {
     param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] $Document, [Parameter(Mandatory)] [string] $Budget)
 
-    $json = ConvertTo-CompanionJson -InputObject $Document -Budget $Budget
-    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json)
+    try {
+        $json = ConvertTo-CompanionJson -InputObject $Document -Budget $Budget
+        $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json)
+    }
+    catch { throw [CompanionStateWriteException]::new('serialize', $_.Exception) }
     Write-CompanionStateBytes -Path $Path -Bytes $bytes
 }
 

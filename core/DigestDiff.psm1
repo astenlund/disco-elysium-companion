@@ -51,6 +51,19 @@ class AdapterConfigurationException : CompanionContentException {
     AdapterConfigurationException([string] $Message, [System.Exception] $InnerException) : base($Message, $InnerException) {}
 }
 
+# A failed durable state write, classified by stage. Deliberately NOT a
+# CompanionContentException: write failures are infrastructure and must never be
+# swallowed by a content-invalid fallback. Consumers (consumption reset-write
+# classification, the cycle cache phase) map Stage to the registry literal.
+class CompanionStateWriteException : System.Exception {
+    [string] $Stage
+
+    CompanionStateWriteException([string] $Stage, [System.Exception] $InnerException) : base("State write failed at stage '$Stage'.", $InnerException) {
+        if ($Stage -cnotin @('serialize', 'temp-write', 'replace')) { throw [System.ArgumentException]::new('Invalid state write stage.') }
+        $this.Stage = $Stage
+    }
+}
+
 class AdapterValidatorLease : System.IDisposable {
     hidden [string] $CacheKey
     hidden [object] $Command
