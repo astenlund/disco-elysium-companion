@@ -285,10 +285,7 @@ function Assert-AdapterDigestDocument {
         catch { throw [AdapterValidatorInfrastructureException]::new('Adapter validator invocation failed.', $_.Exception) }
         if ($result.Count -ne 0) { throw [AdapterConfigurationException]::new('adapter-release-corrupt') }
     }
-    catch [AdapterDigestValidationException] { throw }
-    catch [AdapterValidatorInfrastructureException] { throw }
-    catch [AdapterConfigurationException] { throw }
-    catch [CompanionContentException] { throw }
+    catch [AdapterDigestValidationException], [AdapterValidatorInfrastructureException], [AdapterConfigurationException], [CompanionContentException] { throw }
     catch { throw [AdapterValidatorInfrastructureException]::new('Adapter digest validation machinery failed.', $_.Exception) }
 }
 
