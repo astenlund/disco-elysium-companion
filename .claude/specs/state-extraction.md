@@ -22,6 +22,35 @@ The user is mid-playthrough. All tooling and documentation must obey spoiler dis
 no dialogue text, no plot-revealing variable names in anything the tooling prints during
 normal operation or in the docs themselves. Structural and mechanical examples only.
 
+## Operating context
+
+Rigor profile inputs (judgment boundaries recorded with their basis; derivation per
+the deterministic rule in the nightshift revise skill's `rigor.js`):
+
+- Deployment environment and operational criticality: local, single-machine tooling
+  invoked by the companion assistant during live play sessions; no external deployment,
+  no service surface. Criticality is session-level (a broken pipeline blocks guidance
+  for the current sitting, nothing beyond it). Uplift judged NOT fired.
+- Audience: personal use (one player, one machine). Baseline tier: low.
+- Failure consequence and data or security sensitivity: a lost or duplicated diff
+  breaks the never-loss/duplicate-show guidance contract that the whole design exists
+  to uphold, and the input saves are sacred read-only originals; data is local and
+  personal with no security exposure. Uplift judged FIRED on failure consequence.
+- Concurrency and compatibility risk: watcher, one-shot, and consuming readers
+  interleave under `cycle.lock`/`consume.lock`; schema and adapter versions evolve in
+  lockstep across core and mappers. Uplift judged FIRED.
+- Reversibility and recovery cost: state files self-heal from the save history (the
+  pipeline can always re-derive current state); only baseline continuity is at stake
+  and is protected by the typed reset rules. Uplift judged NOT fired.
+- Expected feature lifetime: playthrough-scoped bridge components (the turn-context
+  wrapper is explicitly temporary) over a durable game-agnostic core. Uplift judged
+  NOT fired.
+
+Derived profile (`rigor.js "personal use" 2`): tier HIGH; validation, recovery,
+compatibility, observability, and proof effort all high. This matches the engineered
+shape of the design (typed failure taxonomies, atomic replacement, lock protocols,
+exhaustive verification claims in section 11).
+
 ## 2. Hard constraints
 
 - The Disco Elysium directory (`C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium`)
@@ -4953,3 +4982,4 @@ Standing rules for future Companion sessions:
 - revise-spec stamp refreshed 2026-08-09 at no-git, scope: adapter version examples, content: de90bff5, reason: fresh-eyes reconciliation (all current DE examples and section labels now identify adapter version 2)
 - revise-spec graduated 2026-08-09 21:40 at no-git, scope: whole file, content: 0a7fe7de
 - revise-spec refreshed 2026-08-11 at no-git, scope: whole file, content: 3f50f612, reason: handover disposition (two provisional live-claims deferred to 2026-08-11; cutover-gated, no probe possible without the running game)
+- revise-spec refreshed 2026-08-13 23:45 at 18394a3, scope: whole file, content: e96a52ce, reason: operating-context grounding (rigor profile derived at revise-plan shift start; personal use + 2 fired uplifts = tier high)
