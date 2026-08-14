@@ -77,3 +77,26 @@ archaeological.
   vendored-DB or mapper-source fixture seam exists in the fixed mapper CLI). Wired
   alongside `section11-12` (thought-sorting) to `MapperThoughtOrdering`, advancing the
   section-11 registry 60 -> 62/77.
+- Reset-write failures collapsed to two hard-coded details while five registry stage
+  reasons had no producers. The atomic writer now throws typed stages (the
+  `CompanionStateWriteException` landed by `feat(state-files): classify atomic write
+  failures by typed stage`), and consumption threads baseline serialize/temp-write/
+  replace and cache target/compare/serialize/temp-write/replace details through the
+  attempt unchanged (`fix(consumption): thread stage-distinct reset-write reasons`,
+  2026-08-14).
+- `adapter-validator-infrastructure-failed` had zero producers; validator machinery
+  crashes were laundered into content-invalid fallbacks or the blanket protocol catch.
+  `Assert-AdapterDigestDocument` now throws a typed infrastructure exception that every
+  spec boundary maps to its registry owner, with the watcher keeping its skip-the-poll
+  rule (`fix(turn-context): classify adapter-validator infrastructure failures`,
+  2026-08-14).
+- The locked target read exposed three ad-hoc freshness details and the attempt
+  hard-coded `target-below-floor`. `Read-CompanionCurrent` now classifies all nine
+  registry freshness reasons, threaded through consumption, the attempt, and the
+  `Get-Diff.ps1` advisory prefilter (`fix(consumption): widen locked-read freshness
+  reasons to the registry`, 2026-08-14).
+- The turn-context refresh fed the pre-lock save selection to the cycle and never
+  called `Test-FileWriteStable`, leaving the spec's stability and gate-disappearance
+  retry classes unreachable. The attempt now re-enumerates, raises the floor, and
+  stability-gates inside `cycle.lock` (`fix(turn-context): re-enumerate and
+  stability-gate after cycle lock`, 2026-08-14).
