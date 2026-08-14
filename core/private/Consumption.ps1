@@ -46,6 +46,14 @@ function New-ConsumptionResult {
     return [ConsumeResult]::new($OutcomeClass, $ConsumptionState, $Payload, $CacheDegraded, $Detail)
 }
 
+function Complete-ConsumedResetResult {
+    param([Parameter(Mandatory)] $Payload, [Parameter(Mandatory)] $WarningSink, [Parameter(Mandatory)] [string] $Detail)
+
+    Complete-ConsumePayload -Payload $Payload -CacheDegraded $true -WarningSink $WarningSink
+
+    return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $Payload -CacheDegraded $true -Detail $Detail
+}
+
 function Invoke-CompanionConsumption {
     param(
         [Parameter(Mandatory)] [AdapterCompatibilityConfig] $AdapterConfig,
@@ -162,9 +170,7 @@ function Invoke-CompanionConsumption {
         if ($null -eq $fresh -or $fresh.outcome -notin @('valid', 'absent', 'content-invalid', 'stale')) {
             # Fresh-validation machinery failure after baseline advancement: exactly
             # cache-target-invalid, never a pre-baseline compute class (7.3 step 4).
-            Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
-
-            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-target-invalid'
+            return Complete-ConsumedResetResult -Payload $payload -WarningSink $WarningSink -Detail 'cache-target-invalid'
         }
         try {
             if ($fresh.outcome -ceq 'valid') {
@@ -176,18 +182,13 @@ function Invoke-CompanionConsumption {
             }
         }
         catch {
-            Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
-
-            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-compare-failed'
+            return Complete-ConsumedResetResult -Payload $payload -WarningSink $WarningSink -Detail 'cache-compare-failed'
         }
         try {
             & $WriteCache $CompanionRoot $cache
         }
         catch {
-            $detail = Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'cache'
-            Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
-
-            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail $detail
+            return Complete-ConsumedResetResult -Payload $payload -WarningSink $WarningSink -Detail (Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'cache')
         }
 
         Complete-ConsumePayload -Payload $payload -CacheDegraded $false -WarningSink $WarningSink
