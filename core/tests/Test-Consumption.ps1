@@ -413,7 +413,7 @@ Invoke-InCompanionModule {
     # text, paths, command lines, or child-stream fragments can never ride a
     # consumption result into terminal framing.
     Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'Exception calling Write: C:\leaky\path --flag' }
-    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'busy' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'baseline-write-failed' }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'busy' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'baseline-serialize-failed' }
     foreach ($legal in @(
             @{ class = 'busy'; detail = 'consume-lock-busy' },
             @{ class = 'lock'; detail = 'consume-lock-failed' },
@@ -572,8 +572,8 @@ Invoke-InCompanionModule {
     $poisonCases = [ordered]@{
         'payload-serialize-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -SerializePayload { param($Payload) throw [IO.IOException]::new($poison) })
         'stdout-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) throw [IO.IOException]::new($poison) })
-        'baseline-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteBaseline { param($RootPath, $Document) throw [IO.IOException]::new($poison) })
-        'cache-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteCache { param($RootPath, $Document) throw [IO.IOException]::new($poison) })
+        'baseline-temp-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteBaseline { param($RootPath, $Document) throw [IO.IOException]::new($poison) })
+        'cache-temp-write-failed' = (Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteCache { param($RootPath, $Document) throw [IO.IOException]::new($poison) })
     }
     foreach ($expectedDetail in $poisonCases.Keys) {
         $poisoned = $poisonCases[$expectedDetail]
@@ -581,6 +581,44 @@ Invoke-InCompanionModule {
         Assert-False -Condition $poisoned.detail.Contains('POISON', [StringComparison]::Ordinal) -Message "The '$expectedDetail' boundary never leaks exception text into the detail."
         Assert-True -Condition (@($poisoned.detail.EnumerateRunes()).Count -le 512) -Message "The '$expectedDetail' detail respects the 512-scalar cap."
     }
+
+    # Section 11 "Turn-context failure injection", reset-write stage split: baseline
+    # serialization, temp-write, and replacement fail separately, and every
+    # post-baseline cache stage (fresh validation, comparison, serialization,
+    # temp write, replacement) carries its exact registry literal.
+    [void] ([IO.Directory]::CreateDirectory((Join-Path $Root 'state')))
+    foreach ($case in @(
+            @{ stage = 'serialize'; detail = 'baseline-serialize-failed' },
+            @{ stage = 'temp-write'; detail = 'baseline-temp-write-failed' },
+            @{ stage = 'replace'; detail = 'baseline-replace-failed' })) {
+        if ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) { [IO.File]::Delete((Join-Path $Root 'state/baseline.json')) }
+        $staged = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteBaseline { param($RootPath, $Document) throw [CompanionStateWriteException]::new($case.stage, [IO.IOException]::new('injected')) }
+        Assert-Equal -Actual $staged.outcomeClass -Expected 'reset-write:not-consumed' -Message "A baseline $($case.stage) failure keeps the not-consumed reset class."
+        Assert-Equal -Actual $staged.consumptionState -Expected 'notConsumed' -Message "A baseline $($case.stage) failure never marks the diff consumed."
+        Assert-OrdinalEqual -Actual $staged.detail -Expected $case.detail -Message "A baseline $($case.stage) failure carries its exact stage literal."
+    }
+    foreach ($case in @(
+            @{ stage = 'serialize'; detail = 'cache-serialize-failed' },
+            @{ stage = 'temp-write'; detail = 'cache-temp-write-failed' },
+            @{ stage = 'replace'; detail = 'cache-replace-failed' })) {
+        $staged = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -WriteCache { param($RootPath, $Document) throw [CompanionStateWriteException]::new($case.stage, [IO.IOException]::new('injected')) }
+        Assert-Equal -Actual $staged.outcomeClass -Expected 'reset-write:consumed' -Message "A cache $($case.stage) failure keeps the consumed reset class."
+        Assert-True -Condition $staged.cacheDegraded -Message "A cache $($case.stage) failure marks cache degradation."
+        Assert-OrdinalEqual -Actual $staged.detail -Expected $case.detail -Message "A cache $($case.stage) failure carries its exact stage literal."
+    }
+    # Cache comparison failure: the second (fresh) read returns a money-incompatible
+    # digest, so Compare-Digests throws after baseline advancement.
+    $compareReads = [Collections.Generic.List[int]]::new()
+    $incompatibleFresh = Read-DigestDocument -Json $DigestJson.Replace('"currency":"real"', '"currency":"dollar"')
+    $compareFailure = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -ReadCurrent {
+        param($RootPath, $Config)
+        $compareReads.Add(1)
+        if ($compareReads.Count -eq 1) { return [pscustomobject]@{ outcome = 'valid'; document = $digest; reason = $null } }
+
+        return [pscustomobject]@{ outcome = 'valid'; document = $incompatibleFresh; reason = $null }
+    }
+    Assert-Equal -Actual $compareFailure.outcomeClass -Expected 'reset-write:consumed' -Message 'A cache comparison failure reports after baseline advancement.'
+    Assert-OrdinalEqual -Actual $compareFailure.detail -Expected 'cache-compare-failed' -Message 'A cache comparison failure carries the compare literal.'
 } @($root, $digestJson)
 
 if ($Only -eq 'CacheInterleaving') {

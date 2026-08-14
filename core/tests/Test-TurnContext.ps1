@@ -311,7 +311,7 @@ $serialize = Invoke-InCompanionModule {
     $rows = [Collections.Generic.List[object]]::new()
     foreach ($case in @(
             @{ outcome = 'success'; state = 'consumed'; degraded = $false; detail = $null },
-            @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-write-failed' })) {
+            @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-temp-write-failed' })) {
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
@@ -435,6 +435,38 @@ foreach ($row in $consumeOutcome.rows) {
 }
 Assert-True -Condition (@($consumeOutcome.rows | Where-Object { $_.outcome -in @('busy', 'lock') -and $_.lockStage -cne 'consume' }).Count -eq 0) -Message 'Busy and lock final-pass diagnostics carry the consume lock stage.'
 Assert-Equal -Actual @($consumeOutcome.registry).Count -Expected 4 -Message 'Every consume outcome reason round-trips through Read-TurnContextDiagnostic.'
+
+# Reset-write stage passthrough: the attempt's diagnostic detail is exactly the
+# consumption detail, validated against the class-owned registry.
+$resetDetailRoot = New-ScratchCompanionRoot -Prefix 'turn-context-reset-details'
+$resetDetailFixture = New-TurnContextAttemptFixture -Root $resetDetailRoot
+$resetDetails = Invoke-InCompanionModule {
+    param($Root, $Template, $Domain, $Config, $SavePath)
+    $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+    $stateDoc = Read-DigestDocument -Json $stateJson
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($case in @(
+            @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-serialize-failed' },
+            @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-replace-failed' },
+            @{ outcome = 'reset-write:consumed'; state = 'consumed'; degraded = $true; detail = 'cache-compare-failed' },
+            @{ outcome = 'reset-write:consumed'; state = 'consumed'; degraded = $true; detail = 'cache-serialize-failed' },
+            @{ outcome = 'reset-write:consumed'; state = 'consumed'; degraded = $true; detail = 'cache-temp-write-failed' },
+            @{ outcome = 'reset-write:consumed'; state = 'consumed'; degraded = $true; detail = 'cache-replace-failed' })) {
+        $operations = @{
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
+            ConfirmConfig = { param($Unused) }
+            Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($case.degraded, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass $case.outcome -ConsumptionState $case.state -Payload $p -CacheDegraded $case.degraded -Detail $case.detail }
+        }
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $rows.Add([pscustomobject]@{ detail = $case.detail; class = $res.outcomeClass; diagnosticDetail = $res.diagnostic['detail'] })
+    }
+
+    return @($rows)
+} @($resetDetailRoot, $turnContextDigestTemplate, $turnContextDomain, $resetDetailFixture.Config, $resetDetailFixture.SavePath)
+foreach ($row in $resetDetails) {
+    Assert-OrdinalEqual -Actual $row.diagnosticDetail -Expected $row.detail -Message "The '$($row.detail)' consumption detail passes through to the attempt diagnostic unchanged."
+}
 
 # Section 11 "Acquisition retry taxonomy": only retryable failures draw the extra
 # passes inside the three-pass budget; permanent failures make one initial pass.

@@ -134,31 +134,52 @@ function Invoke-CompanionConsumption {
             & $WriteBaseline $CompanionRoot $target
         }
         catch {
+            # Untyped failures can only come from an injected seam (the production
+            # writer always throws typed stages); temp-write is the least-asserting
+            # stage claim for them.
+            $stage = if ($_.Exception -is [CompanionStateWriteException]) { $_.Exception.Stage } else { 'temp-write' }
+            $detail = switch ($stage) { 'serialize' { 'baseline-serialize-failed' } 'replace' { 'baseline-replace-failed' } default { 'baseline-temp-write-failed' } }
             Complete-ConsumePayload -Payload $payload -CacheDegraded $false -WarningSink $WarningSink
 
-            return New-ConsumptionResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -Payload $payload -CacheDegraded $false -Detail 'baseline-write-failed'
+            return New-ConsumptionResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -Payload $payload -CacheDegraded $false -Detail $detail
         }
 
         try {
             $fresh = & $ReadCurrent $CompanionRoot $AdapterConfig
-            if ($fresh.outcome -eq 'valid') {
+        }
+        catch {
+            $fresh = $null
+        }
+        if ($null -eq $fresh -or $fresh.outcome -notin @('valid', 'absent', 'content-invalid', 'stale')) {
+            # Fresh-validation machinery failure after baseline advancement: exactly
+            # cache-target-invalid, never a pre-baseline compute class (7.3 step 4).
+            Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
+
+            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-target-invalid'
+        }
+        try {
+            if ($fresh.outcome -ceq 'valid') {
                 $cache = Compare-Digests -Baseline $target -Target $fresh.document -AdapterConfig $AdapterConfig -WarningSink $WarningSink
             }
-            elseif ($fresh.outcome -in @('absent', 'content-invalid', 'stale')) {
+            else {
                 Add-CompanionWarning -Sink $WarningSink -Code 'consume-cache-fallback' -Detail $null
                 $cache = New-EmptyDiff -Target $target
             }
-            else {
-                Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
-
-                return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-target-invalid'
-            }
-            & $WriteCache $CompanionRoot $cache
         }
         catch {
             Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
 
-            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-write-failed'
+            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail 'cache-compare-failed'
+        }
+        try {
+            & $WriteCache $CompanionRoot $cache
+        }
+        catch {
+            $stage = if ($_.Exception -is [CompanionStateWriteException]) { $_.Exception.Stage } else { 'temp-write' }
+            $detail = switch ($stage) { 'serialize' { 'cache-serialize-failed' } 'replace' { 'cache-replace-failed' } default { 'cache-temp-write-failed' } }
+            Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
+
+            return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail $detail
         }
 
         Complete-ConsumePayload -Payload $payload -CacheDegraded $false -WarningSink $WarningSink

@@ -337,13 +337,12 @@ function Invoke-TurnContextAttempt {
                 try { $json = Convert-TurnContextPayloadToJson -Payload $consume.payload -AdapterConfig $AdapterConfig -OperationalWarnings $OperationalWarnings }
                 catch { return New-TurnContextTerminalResult -Class protocol -ConsumptionState $consume.consumptionState -Reason envelope-serialize-failed -SourceIdentity $floor }
                 $generation = $target.document.RootElement.GetProperty('generatedAt').GetString()
-                # The consumption detail is a coarse stage label (e.g. 'baseline-write-failed')
-                # that is not itself a registry-valid reset-write reason. Map the reset-write
-                # outcome to a registry-valid detail so the produced diagnostic passes
-                # Read-TurnContextDiagnostic; success carries null detail.
+                # Consumption reset-write details are registry literals; New-TurnContextDetail
+                # re-validates them, so a non-registry detail throws into the protocol
+                # catch-all instead of reaching the diagnostic. Success carries null detail.
                 $resultDetail = switch ($consume.outcomeClass) {
-                    'reset-write:not-consumed' { New-TurnContextDetail -Class 'reset-write:not-consumed' -Reason baseline-temp-write-failed }
-                    'reset-write:consumed' { if ($consume.detail -ceq 'cache-target-invalid') { New-TurnContextDetail -Class 'reset-write:consumed' -Reason cache-target-invalid } else { New-TurnContextDetail -Class 'reset-write:consumed' -Reason cache-replace-failed } }
+                    'reset-write:not-consumed' { New-TurnContextDetail -Class 'reset-write:not-consumed' -Reason $consume.detail }
+                    'reset-write:consumed' { New-TurnContextDetail -Class 'reset-write:consumed' -Reason $consume.detail }
                     default { $null }
                 }
                 return New-TurnContextTerminalResult -Class $consume.outcomeClass -ConsumptionState $consume.consumptionState -Detail $resultDetail -SourceIdentity $floor -GenerationTimestamp $generation -EnvelopeJson $json -CacheDegraded $consume.cacheDegraded

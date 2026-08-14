@@ -24,8 +24,8 @@ $script:ConsumeResultDetailRegistry = @{
     compute = @('baseline-read-failed', 'payload-or-diff-failed')
     'stale-target' = @('target-precedes-baseline')
     emit = @('payload-serialize-failed', 'stdout-write-failed')
-    'reset-write:not-consumed' = @('baseline-write-failed')
-    'reset-write:consumed' = @('cache-target-invalid', 'cache-write-failed')
+    'reset-write:not-consumed' = @('baseline-serialize-failed', 'baseline-temp-write-failed', 'baseline-replace-failed')
+    'reset-write:consumed' = @('cache-target-invalid', 'cache-compare-failed', 'cache-serialize-failed', 'cache-temp-write-failed', 'cache-replace-failed')
 }
 
 class CompanionContentException : System.Exception {
