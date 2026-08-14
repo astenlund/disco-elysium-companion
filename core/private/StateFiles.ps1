@@ -183,10 +183,11 @@ function Read-CompanionCurrent {
     if ($null -ne $staleReason) { return [pscustomobject]@{ outcome = 'stale'; document = $null; reason = $staleReason } }
     if (-not $PrefilterOnly) {
         try { Assert-AdapterDigestDocument -Document $document -AdapterConfig $AdapterConfig }
-        catch [AdapterValidatorInfrastructureException] { return [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } }
-        catch [AdapterConfigurationException] { return [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } }
-        catch [CompanionContentException] { return [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } }
-        catch { return [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } }
+        catch {
+            if ($_.Exception -is [CompanionContentException] -and -not (Test-ValidatorInfrastructureFailure -Exception $_.Exception)) { return [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } }
+
+            return [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' }
+        }
     }
 
     return [pscustomobject]@{ outcome = 'valid'; document = $document; reason = $null }

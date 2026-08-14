@@ -368,11 +368,7 @@ function Invoke-TurnContextAttempt {
                 # Consumption reset-write details are registry literals; New-TurnContextDetail
                 # re-validates them, so a non-registry detail throws into the protocol
                 # catch-all instead of reaching the diagnostic. Success carries null detail.
-                $resultDetail = switch ($consume.outcomeClass) {
-                    'reset-write:not-consumed' { New-TurnContextDetail -Class 'reset-write:not-consumed' -Reason $consume.detail }
-                    'reset-write:consumed' { New-TurnContextDetail -Class 'reset-write:consumed' -Reason $consume.detail }
-                    default { $null }
-                }
+                $resultDetail = if ($consume.outcomeClass -in @('reset-write:not-consumed', 'reset-write:consumed')) { New-TurnContextDetail -Class $consume.outcomeClass -Reason $consume.detail } else { $null }
                 return New-TurnContextTerminalResult -Class $consume.outcomeClass -ConsumptionState $consume.consumptionState -Detail $resultDetail -SourceIdentity $floor -GenerationTimestamp $generation -EnvelopeJson $json -CacheDegraded $consume.cacheDegraded
             }
             if ($consume.outcomeClass -in @('freshness', 'stale-target') -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1)) { continue }

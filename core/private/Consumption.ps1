@@ -101,13 +101,10 @@ function Invoke-CompanionConsumption {
             try {
                 Assert-AdapterDigestDocument -Document $baseline -AdapterConfig $AdapterConfig
             }
-            catch [AdapterValidatorInfrastructureException] {
-                return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
-            }
-            catch [AdapterConfigurationException] {
-                return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
-            }
-            catch [CompanionContentException] {
+            catch {
+                if (-not ($_.Exception -is [CompanionContentException]) -or (Test-ValidatorInfrastructureFailure -Exception $_.Exception)) {
+                    return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
+                }
                 $baselineRead = [pscustomobject]@{ outcome = 'content-invalid'; document = $null }
                 $baseline = $null
             }

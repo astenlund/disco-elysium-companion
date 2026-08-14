@@ -305,7 +305,7 @@ function Invoke-CompanionCycle {
                 $cacheWritten = $true
             }
             catch {
-                $cacheDetail = if ($_.Exception -is [AdapterValidatorInfrastructureException] -or $_.Exception -is [AdapterConfigurationException]) { 'adapter-validator-infrastructure-failed' }
+                $cacheDetail = if (Test-ValidatorInfrastructureFailure -Exception $_.Exception) { 'adapter-validator-infrastructure-failed' }
                 elseif ($_.Exception -is [CompanionDiffCompatibilityException]) { 'diff-compatibility-failed' }
                 elseif ($_.Exception -is [CompanionDiffSemanticException]) { 'diff-validation-failed' }
                 elseif ($_.Exception -is [CompanionStateWriteException]) { Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'cache' }

@@ -291,6 +291,14 @@ function Assert-AdapterDigestDocument {
     catch [CompanionContentException] { throw }
     catch { throw [AdapterValidatorInfrastructureException]::new('Adapter digest validation machinery failed.', $_.Exception) }
 }
+
+function Test-ValidatorInfrastructureFailure {
+    param([Parameter(Mandatory)] [System.Exception] $Exception)
+
+    # An AdapterConfigurationException raised at a validation boundary is machinery,
+    # not document content; both types classify as validator infrastructure.
+    return $Exception -is [AdapterValidatorInfrastructureException] -or $Exception -is [AdapterConfigurationException]
+}
 function Read-AdapterDigestDocument {
     [CmdletBinding(DefaultParameterSetName = 'Path')]
     param([Parameter(Mandatory, Position = 0, ParameterSetName = 'Path')] [string] $Path, [Parameter(Mandatory, ParameterSetName = 'Json')] [string] $Json, [Parameter(Mandatory)] [AdapterCompatibilityConfig] $AdapterConfig)
