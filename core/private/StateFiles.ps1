@@ -149,17 +149,32 @@ function Read-CompanionCurrent {
     param([Parameter(Mandatory)] [string] $CompanionRoot, [AllowNull()] [AdapterCompatibilityConfig] $AdapterConfig, [switch] $PrefilterOnly)
 
     $read = Read-CompanionStateDigest -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:StateFileNames.Current)
-    if ($read.outcome -cne 'valid') { return $read }
+    if ($read.outcome -cne 'valid') {
+        $reason = switch ($read.outcome) {
+            'absent' { 'target-missing' }
+            'content-invalid' { 'target-invalid' }
+            default { 'target-unreadable' }
+        }
+
+        return [pscustomobject]@{ outcome = $read.outcome; document = $null; reason = $reason }
+    }
     $document = $read.document
-    if ($null -eq $AdapterConfig) { return [pscustomobject]@{ outcome = 'valid'; document = $document } }
+    if ($null -eq $AdapterConfig) { return [pscustomobject]@{ outcome = 'valid'; document = $document; reason = $null } }
     $root = $document.RootElement
-    $compatible = $root.GetProperty('schemaVersion').GetInt64() -eq (Get-CoreSchemaVersion) -and $root.GetProperty('adapterVersion').GetInt64() -eq $AdapterConfig.AdapterVersion -and [string]::Equals($root.GetProperty('game').GetString(), $AdapterConfig.Game, [StringComparison]::Ordinal) -and [string]::Equals($root.GetProperty('source').GetProperty('domainId').GetString(), $AdapterConfig.SourceDomainId, [StringComparison]::Ordinal)
-    if (-not $compatible) { return [pscustomobject]@{ outcome = 'stale'; document = $null } }
+    # Reason precedence mirrors the historical compatible-check order: schema,
+    # adapter, game, domain. The schema branch is defense-in-depth only, because
+    # Read-DigestDocument already rejects a foreign schemaVersion as content-invalid.
+    $staleReason = if ($root.GetProperty('schemaVersion').GetInt64() -ne (Get-CoreSchemaVersion)) { 'target-schema-stale' }
+    elseif ($root.GetProperty('adapterVersion').GetInt64() -ne $AdapterConfig.AdapterVersion) { 'target-adapter-stale' }
+    elseif (-not [string]::Equals($root.GetProperty('game').GetString(), $AdapterConfig.Game, [StringComparison]::Ordinal)) { 'target-game-mismatch' }
+    elseif (-not [string]::Equals($root.GetProperty('source').GetProperty('domainId').GetString(), $AdapterConfig.SourceDomainId, [StringComparison]::Ordinal)) { 'target-domain-mismatch' }
+    else { $null }
+    if ($null -ne $staleReason) { return [pscustomobject]@{ outcome = 'stale'; document = $null; reason = $staleReason } }
     if (-not $PrefilterOnly) {
-        try { Assert-AdapterDigestDocument -Document $document -AdapterConfig $AdapterConfig } catch [CompanionContentException] { return [pscustomobject]@{ outcome = 'content-invalid'; document = $null } }
+        try { Assert-AdapterDigestDocument -Document $document -AdapterConfig $AdapterConfig } catch [CompanionContentException] { return [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } }
     }
 
-    return [pscustomobject]@{ outcome = 'valid'; document = $document }
+    return [pscustomobject]@{ outcome = 'valid'; document = $document; reason = $null }
 }
 
 function ConvertTo-CompanionStateDocument {

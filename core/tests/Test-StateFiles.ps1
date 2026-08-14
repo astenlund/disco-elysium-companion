@@ -34,6 +34,24 @@ Invoke-InCompanionModule {
         return (Read-CompanionCurrent -CompanionRoot $Root -AdapterConfig $config -PrefilterOnly).outcome
     } @($Root)
     Assert-Equal -Actual $staleOutcome -Expected 'stale' -Message 'Current prefilter identifies version-stale state before full admission.'
+    # Freshness reason classification: every non-valid read names its registry reason.
+    Assert-OrdinalEqual -Actual (Read-CompanionCurrent -CompanionRoot (Join-Path $Root 'no-such')).reason -Expected 'target-missing' -Message 'An absent current carries target-missing.'
+    $reasonProbe = Invoke-InCompanionModule {
+        param($Root)
+        $config = [AdapterCompatibilityConfig]::new()
+        $config.AdapterVersion = 2
+        $config.Game = 'example'
+        $config.SourceDomainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        $rows = [ordered]@{}
+        $rows['adapter'] = Read-CompanionCurrent -CompanionRoot $Root -AdapterConfig ([AdapterCompatibilityConfig]@{ AdapterVersion = 9; Game = 'example'; SourceDomainId = $config.SourceDomainId }) -PrefilterOnly
+        $rows['game'] = Read-CompanionCurrent -CompanionRoot $Root -AdapterConfig ([AdapterCompatibilityConfig]@{ AdapterVersion = 2; Game = 'other'; SourceDomainId = $config.SourceDomainId }) -PrefilterOnly
+        $rows['domain'] = Read-CompanionCurrent -CompanionRoot $Root -AdapterConfig ([AdapterCompatibilityConfig]@{ AdapterVersion = 2; Game = 'example'; SourceDomainId = ('f' * 64) }) -PrefilterOnly
+
+        return $rows
+    } @($Root)
+    Assert-OrdinalEqual -Actual $reasonProbe['adapter'].reason -Expected 'target-adapter-stale' -Message 'An adapter-version mismatch carries target-adapter-stale.'
+    Assert-OrdinalEqual -Actual $reasonProbe['game'].reason -Expected 'target-game-mismatch' -Message 'A game mismatch carries target-game-mismatch.'
+    Assert-OrdinalEqual -Actual $reasonProbe['domain'].reason -Expected 'target-domain-mismatch' -Message 'A domain mismatch carries target-domain-mismatch.'
     $baselinePath = Join-Path $State 'baseline.json'
     [IO.File]::Delete($baselinePath)
     [IO.Directory]::CreateDirectory($baselinePath) | Out-Null

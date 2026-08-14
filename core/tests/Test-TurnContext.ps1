@@ -135,7 +135,7 @@ $passOutcome = Invoke-InCompanionModule {
     $cycles = [Collections.Generic.List[int]]::new()
     $operations = @{
         GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($save)) }
-        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
         ConfirmConfig = { param($Unused) }
         Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
@@ -153,7 +153,7 @@ $driftOutcome = Invoke-InCompanionModule {
     $calls = [Collections.Generic.List[string]]::new()
     $operations = @{
         GetSaveCandidates = { param($Unused) @($save) }
-        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
         ConfirmConfig = { param($Unused) throw [AdapterConfigurationException]::new('changed') }
         Cycle = { param($UnusedSave, $Sink) $calls.Add('cycle'); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
@@ -206,7 +206,7 @@ if ($Only -eq 'TurnContextPairing') {
         $diffDoc = New-EmptyDiff -Target $stateDoc
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff $diffDoc -State $stateDoc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
         }
@@ -271,7 +271,7 @@ if ($Only -eq 'FreshnessRaceNewerConsumed') {
         $diff2 = New-EmptyDiff -Target $s2Doc
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $s1Doc } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $s1Doc; reason = $null } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff $diff2 -State $s2Doc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
         }
@@ -314,7 +314,7 @@ $serialize = Invoke-InCompanionModule {
             @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-temp-write-failed' })) {
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($case.degraded, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass $case.outcome -ConsumptionState $case.state -Payload $p -CacheDegraded $case.degraded -Detail $case.detail }
         }
@@ -400,13 +400,13 @@ $consumeOutcome = Invoke-InCompanionModule {
     $expectedReason = @{ busy = 'lock-timeout'; lock = 'lock-open-failed'; 'stale-target' = 'target-precedes-baseline'; freshness = 'target-below-floor' }
     # The injected consumption results carry class-owned registry details; the
     # ConsumeResult constructor rejects anything else.
-    $consumeDetail = @{ busy = 'consume-lock-busy'; lock = 'consume-lock-failed'; freshness = 'source-floor-not-met'; 'stale-target' = 'target-precedes-baseline' }
+    $consumeDetail = @{ busy = 'consume-lock-busy'; lock = 'consume-lock-failed'; freshness = 'target-below-floor'; 'stale-target' = 'target-precedes-baseline' }
     $rows = [Collections.Generic.List[object]]::new()
     $registryChecks = [Collections.Generic.List[object]]::new()
     foreach ($outcome in @('busy', 'lock', 'freshness', 'stale-target')) {
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass $outcome -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $consumeDetail[$outcome] }
         }
@@ -468,6 +468,24 @@ foreach ($row in $resetDetails) {
     Assert-OrdinalEqual -Actual $row.diagnosticDetail -Expected $row.detail -Message "The '$($row.detail)' consumption detail passes through to the attempt diagnostic unchanged."
 }
 
+# The attempt's terminal freshness diagnostic carries the last observed target
+# reason, not a hard-coded below-floor.
+$freshnessThreadRoot = New-ScratchCompanionRoot -Prefix 'turn-context-freshness-thread'
+$freshnessThreadFixture = New-TurnContextAttemptFixture -Root $freshnessThreadRoot
+$freshnessThread = Invoke-InCompanionModule {
+    param($Root, $Config, $SavePath)
+    $operations = @{
+        GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } }
+        ConfirmConfig = { param($Unused) }
+        Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+
+    return Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+} @($freshnessThreadRoot, $freshnessThreadFixture.Config, $freshnessThreadFixture.SavePath)
+Assert-Equal -Actual $freshnessThread.outcomeClass -Expected 'freshness' -Message 'Exhausted invalid-target passes terminate as freshness.'
+Assert-OrdinalEqual -Actual $freshnessThread.diagnostic['detail'] -Expected 'target-invalid' -Message 'The terminal freshness diagnostic threads the observed target reason.'
+
 # Section 11 "Acquisition retry taxonomy": only retryable failures draw the extra
 # passes inside the three-pass budget; permanent failures make one initial pass.
 # (The typed stability and gate-disappearance classes are unreachable through the
@@ -481,13 +499,13 @@ $retryTaxonomy = Invoke-InCompanionModule {
     $rows = [Collections.Generic.List[object]]::new()
 
     foreach ($case in @(
-            @{ name = 'freshness'; detail = 'source-floor-not-met'; expectedCalls = 3; expectedClass = 'freshness' },
+            @{ name = 'freshness'; detail = 'target-below-floor'; expectedCalls = 3; expectedClass = 'freshness' },
             @{ name = 'stale-target'; detail = 'target-precedes-baseline'; expectedCalls = 3; expectedClass = 'stale-target' },
             @{ name = 'busy'; detail = 'consume-lock-busy'; expectedCalls = 1; expectedClass = 'busy' })) {
         $consumptions = [Collections.Generic.List[int]]::new()
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $consumptions.Add(1); New-ConsumptionResult -OutcomeClass $case.name -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail }
         }
@@ -501,7 +519,7 @@ $retryTaxonomy = Invoke-InCompanionModule {
         $cycles = [Collections.Generic.List[int]]::new()
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
             ConfirmConfig = { param($Unused) }
             Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($false, $false, $false, $false, $false, 'source', $case.disposition, $case.retryable, $case.detail, $Sink.Freeze()) }
         }

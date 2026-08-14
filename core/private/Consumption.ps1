@@ -76,12 +76,19 @@ function Invoke-CompanionConsumption {
     try {
         $current = & $ReadCurrent $CompanionRoot $AdapterConfig
         if ($current.outcome -ne 'valid') {
-            $detail = if ($current.outcome -eq 'stale') { 'current-stale' } else { 'current-missing-or-invalid' }
-            return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $detail
+            return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $current.reason
         }
         $target = $current.document
-        if ($null -ne $SourceFloor -and -not (Test-ConsumptionMeetsSourceFloor -Document $target -Floor $SourceFloor)) {
-            return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'source-floor-not-met'
+        if ($null -ne $SourceFloor) {
+            $floorRelation = $null
+            try { $floorRelation = Compare-SourceIdentity -Left (Get-ConsumptionSourceIdentity -Document $target) -Right $SourceFloor }
+            catch { }
+            if ($null -eq $floorRelation -or -not $floorRelation.comparable) {
+                return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'target-identity-invalid'
+            }
+            if ($floorRelation.order -lt 0) {
+                return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'target-below-floor'
+            }
         }
 
         $baselineRead = & $ReadBaseline $CompanionRoot

@@ -417,9 +417,15 @@ Invoke-InCompanionModule {
     foreach ($legal in @(
             @{ class = 'busy'; detail = 'consume-lock-busy' },
             @{ class = 'lock'; detail = 'consume-lock-failed' },
-            @{ class = 'freshness'; detail = 'current-stale' },
-            @{ class = 'freshness'; detail = 'current-missing-or-invalid' },
-            @{ class = 'freshness'; detail = 'source-floor-not-met' },
+            @{ class = 'freshness'; detail = 'target-missing' },
+            @{ class = 'freshness'; detail = 'target-unreadable' },
+            @{ class = 'freshness'; detail = 'target-invalid' },
+            @{ class = 'freshness'; detail = 'target-schema-stale' },
+            @{ class = 'freshness'; detail = 'target-adapter-stale' },
+            @{ class = 'freshness'; detail = 'target-game-mismatch' },
+            @{ class = 'freshness'; detail = 'target-domain-mismatch' },
+            @{ class = 'freshness'; detail = 'target-identity-invalid' },
+            @{ class = 'freshness'; detail = 'target-below-floor' },
             @{ class = 'compute'; detail = 'baseline-read-failed' },
             @{ class = 'compute'; detail = 'payload-or-diff-failed' },
             @{ class = 'stale-target'; detail = 'target-precedes-baseline' },
@@ -437,16 +443,44 @@ Invoke-InCompanionModule {
     $floor = @{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'C.ntwtf.zip'; savedAt = '2026-08-10T13:00:00.0000000Z' }
     $freshness = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -SourceFloor $floor -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) }
     Assert-Equal -Actual $freshness.outcomeClass -Expected 'freshness' -Message 'A target below the caller source floor is rejected before baseline mutation.'
+    Assert-OrdinalEqual -Actual $freshness.detail -Expected 'target-below-floor' -Message 'A below-floor target carries target-below-floor.'
     Assert-False -Condition ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) -Message 'Source-floor rejection leaves baseline absent.'
 
-    $missingTarget = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'absent'; document = $null } }
+    $missingTarget = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
     Assert-Equal -Actual $missingTarget.outcomeClass -Expected 'freshness' -Message 'Missing authoritative target is returned before any baseline read or mutation.'
+    Assert-OrdinalEqual -Actual $missingTarget.detail -Expected 'target-missing' -Message 'A missing locked target carries target-missing.'
 
-    $invalidTarget = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'content-invalid'; document = $null } }
+    $invalidTarget = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } }
     Assert-Equal -Actual $invalidTarget.outcomeClass -Expected 'freshness' -Message 'Content-invalid authoritative target is returned before baseline mutation.'
+    Assert-OrdinalEqual -Actual $invalidTarget.detail -Expected 'target-invalid' -Message 'A content-invalid locked target carries target-invalid.'
 
-    $staleCurrent = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'stale'; document = $null } }
+    $staleCurrent = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'stale'; document = $null; reason = 'target-schema-stale' } }
     Assert-Equal -Actual $staleCurrent.outcomeClass -Expected 'freshness' -Message 'Version-stale authoritative target is returned before baseline mutation.'
+    Assert-OrdinalEqual -Actual $staleCurrent.detail -Expected 'target-schema-stale' -Message 'A version-stale locked target carries its forced stale reason.'
+
+    # Section 11: force the shared locked target read to return every freshness
+    # reason; the legal tuple is (freshness, none, null payload, false cacheDegraded,
+    # matching detail) for each.
+    foreach ($case in @(
+            @{ outcome = 'absent'; reason = 'target-missing' },
+            @{ outcome = 'infrastructure-failure'; reason = 'target-unreadable' },
+            @{ outcome = 'content-invalid'; reason = 'target-invalid' },
+            @{ outcome = 'stale'; reason = 'target-schema-stale' },
+            @{ outcome = 'stale'; reason = 'target-adapter-stale' },
+            @{ outcome = 'stale'; reason = 'target-game-mismatch' },
+            @{ outcome = 'stale'; reason = 'target-domain-mismatch' })) {
+        $forced = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = $case.outcome; document = $null; reason = $case.reason } }
+        Assert-Equal -Actual $forced.outcomeClass -Expected 'freshness' -Message "A forced '$($case.reason)' read keeps the freshness class."
+        Assert-Equal -Actual $forced.consumptionState -Expected 'none' -Message "A forced '$($case.reason)' read consumes nothing."
+        Assert-True -Condition ($null -eq $forced.payload) -Message "A forced '$($case.reason)' read carries no payload."
+        Assert-False -Condition $forced.cacheDegraded -Message "A forced '$($case.reason)' read degrades no cache."
+        Assert-OrdinalEqual -Actual $forced.detail -Expected $case.reason -Message "A forced '$($case.reason)' read carries the matching detail."
+    }
+    # target-identity-invalid: the floor's domain differs, so identities are incomparable.
+    $alienFloor = @{ domainId = ('f' * 64); saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' }
+    $identityInvalid = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -SourceFloor $alienFloor -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'valid'; document = $digest; reason = $null } }
+    Assert-Equal -Actual $identityInvalid.outcomeClass -Expected 'freshness' -Message 'An incomparable floor identity is a freshness failure.'
+    Assert-OrdinalEqual -Actual $identityInvalid.detail -Expected 'target-identity-invalid' -Message 'An incomparable floor identity carries target-identity-invalid.'
 
     $baselineInfrastructure = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadBaseline { param($RootPath) [pscustomobject]@{ outcome = 'infrastructure-failure'; document = $null } }
     Assert-Equal -Actual $baselineInfrastructure.outcomeClass -Expected 'compute' -Message 'Baseline infrastructure failures never become resettable content failures.'
@@ -690,14 +724,14 @@ $preflightCurrent = Join-Path $preflightState 'current.json'
 $contentInvalid = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $preflightCore 'Get-Diff.ps1')) -WorkingDirectory $preflightRoot
 Assert-Equal -Actual $contentInvalid.ExitCode -Expected 1 -Message 'Content-invalid current fails preflight.'
 Assert-False -Condition $contentInvalid.StdErr.Contains('[stale-current]', [StringComparison]::Ordinal) -Message 'Content-invalid current is not reported as version staleness.'
-Assert-True -Condition $contentInvalid.StdErr.Contains('[freshness]', [StringComparison]::Ordinal) -Message 'Content-invalid current maps to the freshness class.'
+Assert-True -Condition $contentInvalid.StdErr.Contains('[freshness] target-invalid', [StringComparison]::Ordinal) -Message 'Content-invalid current maps to freshness with target-invalid.'
 
 [IO.File]::Delete($preflightCurrent)
 [IO.Directory]::CreateDirectory($preflightCurrent) | Out-Null
 $infrastructure = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $preflightCore 'Get-Diff.ps1')) -WorkingDirectory $preflightRoot
 Assert-Equal -Actual $infrastructure.ExitCode -Expected 1 -Message 'Infrastructure-failure current fails preflight.'
 Assert-False -Condition $infrastructure.StdErr.Contains('[stale-current]', [StringComparison]::Ordinal) -Message 'Infrastructure-failure current is not reported as version staleness.'
-Assert-True -Condition $infrastructure.StdErr.Contains('[freshness]', [StringComparison]::Ordinal) -Message 'Infrastructure-failure current maps to the freshness class.'
+Assert-True -Condition $infrastructure.StdErr.Contains('[freshness] target-unreadable', [StringComparison]::Ordinal) -Message 'Infrastructure-failure current maps to freshness with target-unreadable.'
 
 [IO.Directory]::Delete($preflightCurrent, $true)
 [IO.File]::WriteAllText($preflightCurrent, $preflightDigest.Replace('"adapterVersion":2', '"adapterVersion":9'), [Text.UTF8Encoding]::new($false, $true))

@@ -53,7 +53,7 @@ try {
         Write-GetDiffFailure -Class 'stale-current' -Detail 'run-update-companion-state'
     }
     if ($advisory.outcome -ne 'valid') {
-        Write-GetDiffFailure -Class 'freshness' -Detail 'current-missing-or-invalid'
+        Write-GetDiffFailure -Class 'freshness' -Detail $advisory.reason
     }
 
     if ($Peek) {

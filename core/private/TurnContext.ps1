@@ -295,6 +295,7 @@ function Invoke-TurnContextAttempt {
     $target = $null
     $floor = $null
     $refreshAttempts = 0
+    $lastFreshnessReason = 'target-below-floor'
     $refreshCommitted = $false
     try {
         Initialize-CompanionStateDirectories -CompanionRoot $CompanionRoot
@@ -327,7 +328,8 @@ function Invoke-TurnContextAttempt {
                 if (-not $cycle.Completed) { continue }
             }
             $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
-            if ($target.outcome -ne 'valid' -or (Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) { continue }
+            if ($target.outcome -ne 'valid') { $lastFreshnessReason = $target.reason; continue }
+            if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) { $lastFreshnessReason = 'target-below-floor'; continue }
             $context = [TurnContextPayloadContext]::new($floor, $refreshAttempts -gt 0, $refreshCommitted, $refreshAttempts)
             $consume = if ($Operations.ContainsKey('Consumption')) { & $Operations.Consumption $floor $context $attemptWarnings } else { Invoke-CompanionConsumption -AdapterConfig $AdapterConfig -CompanionRoot $CompanionRoot -DeliveryMode privateResult -SourceFloor $floor -Context $context -WarningSink $attemptWarnings }
             if ($consume.payload -is [TurnContextPayloadCandidate]) {
@@ -352,13 +354,13 @@ function Invoke-TurnContextAttempt {
                 'busy' { New-TurnContextDetail -Class busy -Reason lock-timeout }
                 'lock' { New-TurnContextDetail -Class lock -Reason lock-open-failed }
                 'stale-target' { New-TurnContextDetail -Class 'stale-target' -Reason target-precedes-baseline }
-                'freshness' { New-TurnContextDetail -Class freshness -Reason target-below-floor }
+                'freshness' { New-TurnContextDetail -Class freshness -Reason $consume.detail }
                 default { New-TurnContextDetail -Class compute -Reason diff-compute-failed }
             }
             $consumptionLockStage = if ($consume.outcomeClass -in @('busy', 'lock')) { 'consume' } else { $null }
             return New-TurnContextTerminalResult -Class $consume.outcomeClass -Detail $consumptionDetail -SourceIdentity $floor -LockStage $consumptionLockStage
         }
-        return New-TurnContextTerminalResult -Class freshness -Reason target-below-floor -SourceIdentity $floor
+        return New-TurnContextTerminalResult -Class freshness -Reason $lastFreshnessReason -SourceIdentity $floor
     }
     catch { return New-TurnContextTerminalResult -Class protocol -Reason envelope-invalid -SourceIdentity $floor }
 }
