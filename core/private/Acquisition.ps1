@@ -308,7 +308,7 @@ function Invoke-CompanionCycle {
                 $cacheDetail = if ($_.Exception -is [AdapterValidatorInfrastructureException] -or $_.Exception -is [AdapterConfigurationException]) { 'adapter-validator-infrastructure-failed' }
                 elseif ($_.Exception -is [CompanionDiffCompatibilityException]) { 'diff-compatibility-failed' }
                 elseif ($_.Exception -is [CompanionDiffSemanticException]) { 'diff-validation-failed' }
-                elseif ($_.Exception -is [CompanionStateWriteException]) { switch ($_.Exception.Stage) { 'serialize' { 'cache-serialize-failed' } 'replace' { 'cache-replace-failed' } default { 'cache-temp-write-failed' } } }
+                elseif ($_.Exception -is [CompanionStateWriteException]) { Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'cache' }
                 else { 'diff-compute-failed' }
 
                 return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $true -GuardDiscarded $false -CacheWritten $false -BookkeepingWritten $false -FailurePhase 'cache' -SourceDisposition 'stable' -Retryable $false -Detail $cacheDetail -WarningSink $WarningSink
@@ -325,7 +325,7 @@ function Invoke-CompanionCycle {
             }
         }
         catch {
-            $bookkeepingDetail = if ($_.Exception -is [CompanionStateWriteException]) { switch ($_.Exception.Stage) { 'serialize' { 'bookkeeping-serialize-failed' } 'replace' { 'bookkeeping-replace-failed' } default { 'bookkeeping-temp-write-failed' } } } else { 'bookkeeping-temp-write-failed' }
+            $bookkeepingDetail = Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'bookkeeping'
 
             return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $currentCommitted -GuardDiscarded $guardDiscarded -CacheWritten $cacheWritten -BookkeepingWritten $false -FailurePhase 'bookkeeping' -SourceDisposition 'stable' -Retryable $false -Detail $bookkeepingDetail -WarningSink $WarningSink
         }

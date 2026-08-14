@@ -150,11 +150,7 @@ function Invoke-CompanionConsumption {
             & $WriteBaseline $CompanionRoot $target
         }
         catch {
-            # Untyped failures can only come from an injected seam (the production
-            # writer always throws typed stages); temp-write is the least-asserting
-            # stage claim for them.
-            $stage = if ($_.Exception -is [CompanionStateWriteException]) { $_.Exception.Stage } else { 'temp-write' }
-            $detail = switch ($stage) { 'serialize' { 'baseline-serialize-failed' } 'replace' { 'baseline-replace-failed' } default { 'baseline-temp-write-failed' } }
+            $detail = Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'baseline'
             Complete-ConsumePayload -Payload $payload -CacheDegraded $false -WarningSink $WarningSink
 
             return New-ConsumptionResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -Payload $payload -CacheDegraded $false -Detail $detail
@@ -191,8 +187,7 @@ function Invoke-CompanionConsumption {
             & $WriteCache $CompanionRoot $cache
         }
         catch {
-            $stage = if ($_.Exception -is [CompanionStateWriteException]) { $_.Exception.Stage } else { 'temp-write' }
-            $detail = switch ($stage) { 'serialize' { 'cache-serialize-failed' } 'replace' { 'cache-replace-failed' } default { 'cache-temp-write-failed' } }
+            $detail = Get-StateWriteFailureDetail -Exception $_.Exception -Prefix 'cache'
             Complete-ConsumePayload -Payload $payload -CacheDegraded $true -WarningSink $WarningSink
 
             return New-ConsumptionResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -Payload $payload -CacheDegraded $true -Detail $detail

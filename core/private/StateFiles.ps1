@@ -106,6 +106,17 @@ function Write-CompanionStateJson {
     Write-CompanionStateBytes -Path $Path -Bytes $bytes
 }
 
+function Get-StateWriteFailureDetail {
+    param([Parameter(Mandatory)] [System.Exception] $Exception, [Parameter(Mandatory)] [string] $Prefix)
+
+    # Untyped failures can only come from an injected test seam (the production
+    # writer always throws typed stages); temp-write is the least-asserting
+    # stage claim for them.
+    $stage = if ($Exception -is [CompanionStateWriteException]) { $Exception.Stage } else { 'temp-write' }
+
+    return "$Prefix-$stage-failed"
+}
+
 function Enter-CompanionStateLock {
     param([Parameter(Mandatory)] [string] $CompanionRoot, [Parameter(Mandatory)] [ValidateSet('cycle.lock', 'consume.lock')] [string] $Name, [Parameter(Mandatory)] [int] $TimeoutMilliseconds, [Parameter()] [Threading.CancellationToken] $CancellationToken = [Threading.CancellationToken]::None)
 
