@@ -79,6 +79,7 @@ function Read-TurnContextEnvelope {
         return $document
     }
     catch [TurnContextProtocolException] { throw }
+    catch [AdapterValidatorInfrastructureException] { throw }
     catch { throw [TurnContextProtocolException]::new('Turn-context envelope is invalid.') }
 }
 
@@ -309,6 +310,7 @@ function Invoke-TurnContextAttempt {
             $identity = New-SourceIdentity -DomainId $AdapterConfig.SourceDomainId -SaveFile $selected.Name -SavedAt $selected.LastWriteTimeUtc
             if ($null -eq $floor -or (Compare-SourceIdentity -Left $identity -Right $floor).order -gt 0) { $floor = $identity }
             $current = if ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
+            if ($current.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
             $fresh = $current.outcome -ceq 'valid' -and (Compare-SourceIdentity -Left $current.document.Materialized['source'] -Right $floor).order -ge 0
             if (-not $fresh) {
                 if ($current.outcome -in @('absent', 'content-invalid', 'stale')) { Add-CompanionWarning -Sink $attemptWarnings -Code pipeline-current-self-healed -Detail $null }
@@ -328,6 +330,7 @@ function Invoke-TurnContextAttempt {
                 if (-not $cycle.Completed) { continue }
             }
             $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
+            if ($target.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
             if ($target.outcome -ne 'valid') { $lastFreshnessReason = $target.reason; continue }
             if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) { $lastFreshnessReason = 'target-below-floor'; continue }
             $context = [TurnContextPayloadContext]::new($floor, $refreshAttempts -gt 0, $refreshCommitted, $refreshAttempts)
@@ -337,6 +340,7 @@ function Invoke-TurnContextAttempt {
                 # the baseline may already have advanced, so the protocol diagnostic
                 # carries the structured consumption state instead of resetting to none.
                 try { $json = Convert-TurnContextPayloadToJson -Payload $consume.payload -AdapterConfig $AdapterConfig -OperationalWarnings $OperationalWarnings }
+                catch [AdapterValidatorInfrastructureException] { return New-TurnContextTerminalResult -Class protocol -ConsumptionState $consume.consumptionState -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
                 catch { return New-TurnContextTerminalResult -Class protocol -ConsumptionState $consume.consumptionState -Reason envelope-serialize-failed -SourceIdentity $floor }
                 $generation = $target.document.RootElement.GetProperty('generatedAt').GetString()
                 # Consumption reset-write details are registry literals; New-TurnContextDetail
@@ -355,7 +359,10 @@ function Invoke-TurnContextAttempt {
                 'lock' { New-TurnContextDetail -Class lock -Reason lock-open-failed }
                 'stale-target' { New-TurnContextDetail -Class 'stale-target' -Reason target-precedes-baseline }
                 'freshness' { New-TurnContextDetail -Class freshness -Reason $consume.detail }
-                default { New-TurnContextDetail -Class compute -Reason diff-compute-failed }
+                default {
+                    $computeReason = if ($consume.detail -ceq 'payload-or-diff-failed') { 'diff-compute-failed' } else { $consume.detail }
+                    New-TurnContextDetail -Class compute -Reason $computeReason
+                }
             }
             $consumptionLockStage = if ($consume.outcomeClass -in @('busy', 'lock')) { 'consume' } else { $null }
             return New-TurnContextTerminalResult -Class $consume.outcomeClass -Detail $consumptionDetail -SourceIdentity $floor -LockStage $consumptionLockStage

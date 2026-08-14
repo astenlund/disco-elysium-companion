@@ -21,7 +21,7 @@ $script:ConsumeResultDetailRegistry = @{
     busy = @('consume-lock-busy')
     lock = @('consume-lock-failed')
     freshness = @('target-missing', 'target-unreadable', 'target-invalid', 'target-schema-stale', 'target-adapter-stale', 'target-game-mismatch', 'target-domain-mismatch', 'target-identity-invalid', 'target-below-floor')
-    compute = @('baseline-read-failed', 'payload-or-diff-failed')
+    compute = @('baseline-read-failed', 'payload-or-diff-failed', 'adapter-validator-infrastructure-failed')
     'stale-target' = @('target-precedes-baseline')
     emit = @('payload-serialize-failed', 'stdout-write-failed')
     'reset-write:not-consumed' = @('baseline-serialize-failed', 'baseline-temp-write-failed', 'baseline-replace-failed')
@@ -62,6 +62,14 @@ class CompanionStateWriteException : System.Exception {
         if ($Stage -cnotin @('serialize', 'temp-write', 'replace')) { throw [System.ArgumentException]::new('Invalid state write stage.') }
         $this.Stage = $Stage
     }
+}
+
+# Unexpected adapter-validator machinery failure (invocation crash, disposed or
+# corrupt validator plumbing). NOT a CompanionContentException: it must never take
+# a content-invalid fallback anywhere. Each boundary maps it to the registry owner
+# defined in the spec's class-to-reason registry paragraph.
+class AdapterValidatorInfrastructureException : System.Exception {
+    AdapterValidatorInfrastructureException([string] $Message, [System.Exception] $InnerException) : base($Message, $InnerException) {}
 }
 
 class AdapterValidatorLease : System.IDisposable {

@@ -421,6 +421,31 @@ Assert-OrdinalEqual -Actual $serviceIndependence.A -Expected 'receipt-alpha' -Me
 Assert-OrdinalEqual -Actual $serviceIndependence.B -Expected 'receipt-beta' -Message 'Two default service bundles resolve their own companion root independently.'
 Assert-OrdinalEqual -Actual $serviceIndependence.Calls -Expected 'alpha|root-a,beta|root-b' -Message 'Each default service bundle binds its own adapter and root to config resolution without shared mutable state.'
 
+# Spec: a watcher trigger validator-infrastructure failure skips the poll. The real
+# read closure must rethrow the typed infrastructure failure so Invoke-WatcherPoll's
+# current-read catch reports current-read-failed without cycling.
+$validatorInfraProbe = Invoke-InCompanionModule {
+    $source = [Threading.CancellationTokenSource]::new()
+    $originalRead = ${function:Read-CompanionCurrent}
+    try {
+        function Read-CompanionCurrent {
+            param($CompanionRoot, $AdapterConfig)
+
+            return [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' }
+        }
+
+        $bundle = New-WatcherRuntimeServices -AdapterName 'example' -CompanionRoot 'root-x'
+        $thrown = $null
+        try { [void] (& $bundle.ReadCurrent ([pscustomobject]@{}) $source.Token) } catch { $thrown = $_.Exception.GetType().Name }
+        return $thrown
+    }
+    finally {
+        ${function:Read-CompanionCurrent} = $originalRead
+        $source.Dispose()
+    }
+}
+Assert-OrdinalEqual -Actual $validatorInfraProbe -Expected 'AdapterValidatorInfrastructureException' -Message 'The watcher current-read closure rethrows validator infrastructure so the poll skips as current-read-failed instead of treating current as core-invalid.'
+
 $acceptedCycleTrace = Invoke-InCompanionModule {
     $trace = [Collections.Generic.List[string]]::new()
     $script:WatcherCycleTraceHook = { param($Step) $trace.Add($Step) }

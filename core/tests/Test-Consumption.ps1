@@ -482,6 +482,38 @@ Invoke-InCompanionModule {
     Assert-Equal -Actual $identityInvalid.outcomeClass -Expected 'freshness' -Message 'An incomparable floor identity is a freshness failure.'
     Assert-OrdinalEqual -Actual $identityInvalid.detail -Expected 'target-identity-invalid' -Message 'An incomparable floor identity carries target-identity-invalid.'
 
+    # Section 11 adapter-validator infrastructure boundaries (consumption side).
+    # Locked-final target: a validator-infrastructure read is pre-mutation compute.
+    $lockedInfra = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } }
+    Assert-Equal -Actual $lockedInfra.outcomeClass -Expected 'compute' -Message 'Locked-target validator infrastructure failure is pre-mutation compute.'
+    Assert-Equal -Actual $lockedInfra.consumptionState -Expected 'none' -Message 'Locked-target validator infrastructure failure consumes nothing.'
+    Assert-OrdinalEqual -Actual $lockedInfra.detail -Expected 'adapter-validator-infrastructure-failed' -Message 'Locked-target validator infrastructure failure carries the registry reason.'
+    # Baseline admission: an infrastructure throw from the validator is compute, not
+    # a content-invalid baseline reset.
+    if ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) { [IO.File]::Delete((Join-Path $Root 'state/baseline.json')) }
+    $infraConfig = [AdapterCompatibilityConfig]::new()
+    $infraConfig.AdapterVersion = 2
+    $infraConfig.Game = 'example'
+    $infraConfig.SourceDomainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    $infraConfig.DiffExcludePaths = @()
+    $infraConfig.Validator = { param($RootElement) throw [InvalidOperationException]::new('validator machinery broke') }
+    $baselineInfra = Invoke-CompanionConsumption -AdapterConfig $infraConfig -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -ReadCurrent { param($RootPath, $Config) [pscustomobject]@{ outcome = 'valid'; document = $digest; reason = $null } } -ReadBaseline { param($RootPath) [pscustomobject]@{ outcome = 'valid'; document = $digest } }
+    Assert-Equal -Actual $baselineInfra.outcomeClass -Expected 'compute' -Message 'Baseline validator infrastructure failure never takes the content-invalid reset.'
+    Assert-OrdinalEqual -Actual $baselineInfra.detail -Expected 'adapter-validator-infrastructure-failed' -Message 'Baseline validator infrastructure failure carries the registry reason.'
+    Assert-False -Condition ([IO.File]::Exists((Join-Path $Root 'state/baseline.json'))) -Message 'Baseline validator infrastructure failure leaves baseline unwritten.'
+    # Post-baseline fresh cache target: validator-infrastructure retains
+    # reset-write:consumed / cache-target-invalid.
+    $freshInfraReads = [Collections.Generic.List[int]]::new()
+    $freshInfra = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) } -ReadCurrent {
+        param($RootPath, $Config)
+        $freshInfraReads.Add(1)
+        if ($freshInfraReads.Count -eq 1) { return [pscustomobject]@{ outcome = 'valid'; document = $digest; reason = $null } }
+
+        return [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' }
+    }
+    Assert-Equal -Actual $freshInfra.outcomeClass -Expected 'reset-write:consumed' -Message 'Post-baseline validator infrastructure keeps the consumed reset class.'
+    Assert-OrdinalEqual -Actual $freshInfra.detail -Expected 'cache-target-invalid' -Message 'Post-baseline validator infrastructure retains cache-target-invalid.'
+
     $baselineInfrastructure = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -ReadBaseline { param($RootPath) [pscustomobject]@{ outcome = 'infrastructure-failure'; document = $null } }
     Assert-Equal -Actual $baselineInfrastructure.outcomeClass -Expected 'compute' -Message 'Baseline infrastructure failures never become resettable content failures.'
 
@@ -653,6 +685,19 @@ Invoke-InCompanionModule {
     }
     Assert-Equal -Actual $compareFailure.outcomeClass -Expected 'reset-write:consumed' -Message 'A cache comparison failure reports after baseline advancement.'
     Assert-OrdinalEqual -Actual $compareFailure.detail -Expected 'cache-compare-failed' -Message 'A cache comparison failure carries the compare literal.'
+
+    # The validator invocation wrapper: untyped validator throws surface as
+    # AdapterValidatorInfrastructureException; content rejections pass through.
+    $wrapConfig = [AdapterCompatibilityConfig]::new()
+    $wrapConfig.AdapterVersion = 2
+    $wrapConfig.Game = 'example'
+    $wrapConfig.SourceDomainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    $wrapConfig.Validator = { param($RootElement) throw [InvalidOperationException]::new('machinery') }
+    Assert-ThrowsType -TypeName 'AdapterValidatorInfrastructureException' -Action { Assert-AdapterDigestDocument -Document $digest -AdapterConfig $wrapConfig }
+    $wrapConfig.Validator = { param($RootElement) throw [AdapterDigestValidationException]::new('content rejected') }
+    Assert-ThrowsType -TypeName 'AdapterDigestValidationException' -Action { Assert-AdapterDigestDocument -Document $digest -AdapterConfig $wrapConfig }
+    $wrapConfig.Validator = { param($RootElement) throw [AdapterConfigurationException]::new('validator config broke') }
+    Assert-ThrowsType -TypeName 'AdapterValidatorInfrastructureException' -Action { Assert-AdapterDigestDocument -Document $digest -AdapterConfig $wrapConfig }
 } @($root, $digestJson)
 
 if ($Only -eq 'CacheInterleaving') {
@@ -744,5 +789,14 @@ $liveSecurityRoot = New-ScratchCompanionRoot -Prefix 'live-adapter-guard'
 $liveSecurity = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $PSScriptRoot '../Get-Diff.ps1'), '-Adapter', '..\evil', '-CompanionRoot', $liveSecurityRoot) -WorkingDirectory $liveSecurityRoot
 Assert-Equal -Actual $liveSecurity.ExitCode -Expected 1 -Message 'A traversal -Adapter is rejected as a configuration failure.'
 Assert-True -Condition $liveSecurity.StdErr.StartsWith('get-diff: [config]', [StringComparison]::Ordinal) -Message 'A traversal -Adapter maps to the config class before adapter resolution.'
+
+# The Get-Diff advisory prefilter maps a validator-infrastructure current read to
+# [compute] with the registry reason, never to freshness or stale-current.
+$advisoryInfraFixture = New-StagedGetDiffFixture -Prefix 'advisory-validator-infra' -DigestJson $digestJson -SeedCurrent
+$advisoryValidator = Join-Path $advisoryInfraFixture.Root 'adapters/example/releases/2/schema-2/adapters/example/Validate-Digest.psm1'
+[IO.File]::WriteAllText($advisoryValidator, "function Assert-AdapterDigestSemantics { param(`$Root) throw [InvalidOperationException]::new('validator machinery broke') }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", [Text.UTF8Encoding]::new($false, $true))
+$advisoryInfra = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $advisoryInfraFixture.Core 'Get-Diff.ps1')) -WorkingDirectory $advisoryInfraFixture.Root
+Assert-Equal -Actual $advisoryInfra.ExitCode -Expected 1 -Message 'Validator infrastructure at the advisory read fails Get-Diff.'
+Assert-True -Condition $advisoryInfra.StdErr.Contains('[compute] adapter-validator-infrastructure-failed', [StringComparison]::Ordinal) -Message 'The advisory validator-infrastructure read maps to compute with the registry reason.'
 
 Write-Output 'PASS: consumption'

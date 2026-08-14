@@ -90,12 +90,15 @@ function Test-ValidatorFaultBoundary {
 
         $sentinel = [InvalidOperationException]::new('unexpected validator fault')
         $config.Validator = { param($Unused) throw $sentinel }
-        try { Assert-AdapterDigestDocument -Document $document -AdapterConfig $config } catch { $sameException = [object]::ReferenceEquals($_.Exception, $sentinel) }
-        return [pscustomobject]@{ ExpectedType = $expectedType; SameException = $sameException }
+        $faultType = $null
+        $innerIsSentinel = $false
+        try { Assert-AdapterDigestDocument -Document $document -AdapterConfig $config } catch { $faultType = $_.Exception.GetType().Name; $innerIsSentinel = [object]::ReferenceEquals($_.Exception.InnerException, $sentinel) }
+        return [pscustomobject]@{ ExpectedType = $expectedType; FaultType = $faultType; InnerIsSentinel = $innerIsSentinel }
     }
 
     Assert-Equal -Actual $result.ExpectedType -Expected 'AdapterDigestValidationException' -Message 'Expected semantic rejections retain their typed exception.'
-    Assert-True -Condition $result.SameException -Message 'Unexpected validator faults escape unchanged.'
+    Assert-Equal -Actual $result.FaultType -Expected 'AdapterValidatorInfrastructureException' -Message 'Unexpected validator faults classify as validator infrastructure.'
+    Assert-True -Condition $result.InnerIsSentinel -Message 'The infrastructure wrapper preserves the original fault as InnerException.'
 }
 
 function Test-ValidatorBoundaryMatrix {

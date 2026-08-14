@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'SaveCandidates', 'FileWriteStable', 'FileWriteStableUnstable', 'FileWriteStableCancellation', 'FileWriteStableClassification', 'MissingSource','CopyFidelityReasons', 'CopyFidelitySizeLimit', 'AdapterFailureReason', 'OutcomeClosure', 'OutcomeFreeze', 'StagedOneShot', 'ScratchDefault', 'CopyFailure', 'AdapterFailures', 'CurrentReadFailure', 'CurrentWriteFailure', 'CacheWriteFailure', 'BookkeepingFailure', 'GuardDiscard', 'BaselineFallback', 'Cancellation', 'CheckpointCancellation', 'CurrentWriteCancellation', 'CheckpointPropagation', 'SaveCandidatesEnumerationFailure', 'PackageMemberRemediation')]
+    [ValidateSet('All', 'SaveCandidates', 'FileWriteStable', 'FileWriteStableUnstable', 'FileWriteStableCancellation', 'FileWriteStableClassification', 'MissingSource','CopyFidelityReasons', 'CopyFidelitySizeLimit', 'AdapterFailureReason', 'OutcomeClosure', 'OutcomeFreeze', 'StagedOneShot', 'ScratchDefault', 'CopyFailure', 'AdapterFailures', 'CurrentReadFailure', 'CurrentWriteFailure', 'CacheWriteFailure', 'BookkeepingFailure', 'GuardDiscard', 'BaselineFallback', 'Cancellation', 'CheckpointCancellation', 'CurrentWriteCancellation', 'CheckpointPropagation', 'SaveCandidatesEnumerationFailure', 'PackageMemberRemediation', 'CacheClassification', 'DigestInfrastructure')]
     [string] $Only = 'All'
 )
 
@@ -237,8 +237,8 @@ function Test-CycleOutcomeRejectsIllegalCombinations {
             @($false, $false, $false, $false, $false, 'initialize', 'not-checked', $false, 'cycle-initialize-failed'), @($false, $false, $false, $false, $false, 'source', 'vanished', $true, 'source-vanished'),
             @($false, $false, $false, $false, $false, 'source', 'changed', $true, 'source-changed'), @($false, $false, $false, $false, $false, 'source', 'unreadable', $false, 'source-unreadable'),
             @($false, $false, $false, $false, $false, 'dump', 'stable', $false, 'command-timeout'), @($false, $false, $false, $false, $false, 'digest', 'stable', $false, 'document-invalid'),
-            @($false, $false, $false, $false, $false, 'commit', 'stable', $false, 'current-write-failed'), @($false, $true, $false, $false, $false, 'cache', 'stable', $false, 'cycle-cache'),
-            @($false, $true, $false, $true, $false, 'bookkeeping', 'stable', $false, 'cycle-bookkeeping'), @($false, $false, $true, $false, $false, 'bookkeeping', 'stable', $false, 'cycle-bookkeeping')
+            @($false, $false, $false, $false, $false, 'commit', 'stable', $false, 'current-write-failed'), @($false, $true, $false, $false, $false, 'cache', 'stable', $false, 'diff-compute-failed'),
+            @($false, $true, $false, $true, $false, 'bookkeeping', 'stable', $false, 'bookkeeping-temp-write-failed'), @($false, $false, $true, $false, $false, 'bookkeeping', 'stable', $false, 'bookkeeping-temp-write-failed')
         )
         foreach ($row in $rows) {
             $outcome = [CycleOutcome]::new($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $row[6], $row[7], $row[8], @())
@@ -368,6 +368,96 @@ function Test-CycleMapsInjectedAdapterStageFailures {
             Assert-OrdinalEqual -Actual $outcome.FailurePhase -Expected $innerStage -Message 'adapter failure preserves its stage'
             Assert-False -Condition $outcome.Retryable -Message 'adapter failures are not retryable'
         }
+    }
+}
+
+function Test-CycleClassifiesCachePhaseFailures {
+    $root = New-ScratchCompanionRoot -Prefix 'cycle-cache-classify'
+    Invoke-InCompanionModule -ArgumentList @($root) -ScriptBlock {
+        param($innerRoot)
+        $config = [AdapterConfig]::new()
+        $config.AdapterDirectory = $innerRoot
+        foreach ($case in @(
+                @{ inject = { throw [AdapterValidatorInfrastructureException]::new('validator broke', $null) }; detail = 'adapter-validator-infrastructure-failed' },
+                @{ inject = { throw [AdapterConfigurationException]::new('validator config broke') }; detail = 'adapter-validator-infrastructure-failed' },
+                @{ inject = { throw [CompanionDiffCompatibilityException]::new('units differ') }; detail = 'diff-compatibility-failed' },
+                @{ inject = { throw [CompanionDiffSemanticException]::new('diff mismatch') }; detail = 'diff-validation-failed' },
+                @{ inject = { throw [InvalidOperationException]::new('generic differ break') }; detail = 'diff-compute-failed' },
+                @{ inject = { throw [CompanionStateWriteException]::new('serialize', [IO.IOException]::new('x')) }; detail = 'cache-serialize-failed' },
+                @{ inject = { throw [CompanionStateWriteException]::new('temp-write', [IO.IOException]::new('x')) }; detail = 'cache-temp-write-failed' },
+                @{ inject = { throw [CompanionStateWriteException]::new('replace', [IO.IOException]::new('x')) }; detail = 'cache-replace-failed' })) {
+            $sink = New-CompanionWarningSink -Profile Cycle
+            $operations = @{
+                SaveDigest = { [SaveDigestResult]::new() }
+                ReadCurrent = { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+                WriteCurrent = { }
+                ReadBaseline = { [pscustomobject]@{ outcome = 'absent'; document = $null } }
+                CompareDiff = $case.inject
+            }
+            $outcome = Invoke-CompanionCycle -CompanionRoot $innerRoot -AdapterDirectory $innerRoot -AdapterConfig $config -SourceSave ([IO.FileInfo]::new((Join-Path $innerRoot 'source.zip'))) -WarningSink $sink -Operations $operations
+            Assert-OrdinalEqual -Actual ([string] $outcome.FailurePhase) -Expected 'cache' -Message "cache-phase injection '$($case.detail)' maps to the cache phase"
+            Assert-True -Condition $outcome.CurrentCommitted -Message "cache-phase injection '$($case.detail)' preserves the committed current"
+            Assert-OrdinalEqual -Actual ([string] $outcome.Detail) -Expected $case.detail -Message "cache-phase injection maps to '$($case.detail)'"
+        }
+        # Commit guard: a validator-infrastructure current read is a commit-phase
+        # current-read-failed, exactly like an infrastructure-failure read.
+        $guardSink = New-CompanionWarningSink -Profile Cycle
+        $guardOutcome = Invoke-CompanionCycle -CompanionRoot $innerRoot -AdapterDirectory $innerRoot -AdapterConfig $config -SourceSave ([IO.FileInfo]::new((Join-Path $innerRoot 'source.zip'))) -WarningSink $guardSink -Operations @{
+            SaveDigest = { [SaveDigestResult]::new() }
+            ReadCurrent = { [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } }
+        }
+        Assert-OrdinalEqual -Actual ([string] $guardOutcome.FailurePhase) -Expected 'commit' -Message 'commit-guard validator infrastructure maps to the commit phase'
+        Assert-OrdinalEqual -Actual ([string] $guardOutcome.Detail) -Expected 'current-read-failed' -Message 'commit-guard validator infrastructure retains current-read-failed'
+        # Bookkeeping phase: the sibling classification (same registry-owner pattern
+        # as the cache phase; the bookkeeping-* literals gain their producers here).
+        foreach ($case in @(
+                @{ inject = { throw [CompanionStateWriteException]::new('serialize', [IO.IOException]::new('x')) }; detail = 'bookkeeping-serialize-failed' },
+                @{ inject = { throw [CompanionStateWriteException]::new('temp-write', [IO.IOException]::new('x')) }; detail = 'bookkeeping-temp-write-failed' },
+                @{ inject = { throw [CompanionStateWriteException]::new('replace', [IO.IOException]::new('x')) }; detail = 'bookkeeping-replace-failed' })) {
+            $sink = New-CompanionWarningSink -Profile Cycle
+            $operations = @{
+                SaveDigest = { [SaveDigestResult]::new() }
+                ReadCurrent = { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+                WriteCurrent = { }
+                ReadBaseline = { [pscustomobject]@{ outcome = 'absent'; document = $null } }
+                CompareDiff = { [ordered]@{} }
+                WriteCache = { }
+                WriteBookkeeping = $case.inject
+            }
+            $outcome = Invoke-CompanionCycle -CompanionRoot $innerRoot -AdapterDirectory $innerRoot -AdapterConfig $config -SourceSave ([IO.FileInfo]::new((Join-Path $innerRoot 'source.zip'))) -WarningSink $sink -Operations $operations
+            Assert-OrdinalEqual -Actual ([string] $outcome.FailurePhase) -Expected 'bookkeeping' -Message "bookkeeping injection '$($case.detail)' maps to the bookkeeping phase"
+            Assert-OrdinalEqual -Actual ([string] $outcome.Detail) -Expected $case.detail -Message "bookkeeping injection maps to '$($case.detail)'"
+        }
+    }
+}
+
+function Test-SaveDigestClassifiesValidatorInfrastructure {
+    $root = New-ScratchCompanionRoot -Prefix 'digest-admit-infra'
+    $adapterDirectory = Join-Path $root 'adapters/stub'
+    Install-StubAdapterRelease -AdapterDirectory $adapterDirectory
+    $saves = Join-Path $root 'saves'
+    [void] [IO.Directory]::CreateDirectory($saves)
+    $save = Join-Path $saves 's-a.zip'
+    [IO.File]::WriteAllText($save, 'save-bytes', [Text.UTF8Encoding]::new($false, $true))
+    Invoke-InCompanionModule -ArgumentList @($root, $adapterDirectory, $save) -ScriptBlock {
+        param($innerRoot, $innerAdapterDirectory, $innerSave)
+        $commands = New-StubAdapterCommandConfig -SaveDirectory (Split-Path $innerSave -Parent)
+        $config = [AdapterConfig]::new()
+        $config.AdapterDirectory = $innerAdapterDirectory
+        $config.ArtifactRoot = Join-Path $innerAdapterDirectory 'releases/2/schema-2'
+        $config.Game = 'stubgame'
+        $config.AdapterVersion = 2L
+        $config.SourceDomainId = ('0' * 64)
+        $config.MaxSourceBytes = 1048576
+        $config.DumpCommand = [string[]] $commands.dumpCommand
+        $config.DigestCommand = [string[]] $commands.digestCommand
+        $config.Validator = { param($Document) throw [InvalidOperationException]::new('validator machinery broke') }
+        $stage = $null
+        $reason = $null
+        try { [void] (Invoke-SaveDigest -AdapterDirectory $innerAdapterDirectory -AdapterConfig $config -SourceSave ([IO.FileInfo]::new($innerSave)) -WorkFileStem 'work-cycle' -WarningSink (New-CompanionWarningSink -Profile Cycle)) }
+        catch [SaveDigestStageException] { $stage = $_.Exception.Stage; $reason = $_.Exception.Reason }
+        Assert-OrdinalEqual -Actual $stage -Expected 'digest' -Message 'fresh mapper-output validator infrastructure fails at the digest stage'
+        Assert-OrdinalEqual -Actual $reason -Expected 'adapter-validator-infrastructure-failed' -Message 'fresh mapper-output validator infrastructure carries the registry reason'
     }
 }
 
@@ -714,7 +804,7 @@ function Test-PackageMemberRemediation {
 }
 
 $tests = [ordered]@{
-    SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; FileWriteStableClassification = ${function:Test-FileWriteStableClassifiesSamplingFailures}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}
+    SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; FileWriteStableClassification = ${function:Test-FileWriteStableClassifiesSamplingFailures}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}; CacheClassification = ${function:Test-CycleClassifiesCachePhaseFailures}; DigestInfrastructure = ${function:Test-SaveDigestClassifiesValidatorInfrastructure}
 }
 
 if ($Only -eq 'All') {

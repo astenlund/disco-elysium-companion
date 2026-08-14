@@ -486,6 +486,93 @@ $freshnessThread = Invoke-InCompanionModule {
 Assert-Equal -Actual $freshnessThread.outcomeClass -Expected 'freshness' -Message 'Exhausted invalid-target passes terminate as freshness.'
 Assert-OrdinalEqual -Actual $freshnessThread.diagnostic['detail'] -Expected 'target-invalid' -Message 'The terminal freshness diagnostic threads the observed target reason.'
 
+# Section 11 adapter-validator infrastructure boundaries (attempt side): initial
+# target, preflight target, and producer envelope.
+$validatorInfraRoot = New-ScratchCompanionRoot -Prefix 'turn-context-validator-infra'
+$validatorInfraFixture = New-TurnContextAttemptFixture -Root $validatorInfraRoot
+$validatorInfra = Invoke-InCompanionModule {
+    param($Root, $Template, $Domain, $Config, $SavePath)
+    $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+    $stateDoc = Read-DigestDocument -Json $stateJson
+    $rows = [ordered]@{}
+
+    # Initial target read (stage 3): terminal compute, no cycle, nothing consumed.
+    $initialCycles = [Collections.Generic.List[int]]::new()
+    $rows['initial'] = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } }
+        ConfirmConfig = { param($Unused) }
+        Cycle = { param($UnusedSave, $Sink) $initialCycles.Add(1); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+    $rows['initialCycles'] = $initialCycles.Count
+
+    # Preflight target read (post-refresh): first read absent forces the refresh,
+    # the second read fails in validator infrastructure.
+    $preflightReads = [Collections.Generic.List[int]]::new()
+    $rows['preflight'] = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+        ReadCurrent = { param($Unused) $preflightReads.Add(1); if ($preflightReads.Count -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } } else { [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } } }
+        ConfirmConfig = { param($Unused) }
+        Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+
+    # Producer envelope validation: the reads and consumption bypass the validator,
+    # so its first invocation happens inside Read-TurnContextEnvelope's producer
+    # branch; an untyped throw there is protocol infrastructure with the consumed
+    # state preserved.
+    $Config.Validator = { param($Document) throw [InvalidOperationException]::new('validator machinery broke') }
+    $rows['envelope'] = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
+        ConfirmConfig = { param($Unused) }
+        Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
+    }
+
+    return $rows
+} @($validatorInfraRoot, $turnContextDigestTemplate, $turnContextDomain, $validatorInfraFixture.Config, $validatorInfraFixture.SavePath)
+Assert-Equal -Actual $validatorInfra['initial'].outcomeClass -Expected 'compute' -Message 'Initial-target validator infrastructure failure is terminal compute.'
+Assert-OrdinalEqual -Actual $validatorInfra['initial'].diagnostic['detail'] -Expected 'adapter-validator-infrastructure-failed' -Message 'The initial-target diagnostic carries the registry infrastructure reason.'
+Assert-Equal -Actual $validatorInfra['initialCycles'] -Expected 0 -Message 'Initial-target validator infrastructure failure never starts a cycle.'
+Assert-True -Condition ($null -ne $validatorInfra['initial'].diagnostic['sourceIdentity']) -Message 'The initial-target compute diagnostic carries the selected identity.'
+Assert-True -Condition ($null -eq $validatorInfra['initial'].diagnostic['generationTimestamp']) -Message 'The initial-target compute diagnostic carries a null generation.'
+Assert-Equal -Actual $validatorInfra['preflight'].outcomeClass -Expected 'compute' -Message 'Preflight-target validator infrastructure failure is terminal compute.'
+Assert-OrdinalEqual -Actual $validatorInfra['preflight'].diagnostic['detail'] -Expected 'adapter-validator-infrastructure-failed' -Message 'The preflight diagnostic carries the registry infrastructure reason.'
+Assert-Equal -Actual $validatorInfra['envelope'].outcomeClass -Expected 'protocol' -Message 'Producer-envelope validator infrastructure failure is protocol.'
+Assert-Equal -Actual $validatorInfra['envelope'].consumptionState -Expected 'consumed' -Message 'Producer-envelope infrastructure failure preserves the consumed state.'
+Assert-OrdinalEqual -Actual $validatorInfra['envelope'].diagnostic['detail'] -Expected 'adapter-validator-infrastructure-failed' -Message 'The producer-envelope diagnostic carries the registry infrastructure reason.'
+
+# The compute-detail passthrough (the third sibling of the reset-write and freshness
+# passthroughs): baseline-read-failed and adapter-validator-infrastructure-failed
+# thread through unchanged; the internal payload-or-diff-failed literal maps to
+# diff-compute-failed.
+$computeDetailRoot = New-ScratchCompanionRoot -Prefix 'turn-context-compute-details'
+$computeDetailFixture = New-TurnContextAttemptFixture -Root $computeDetailRoot
+$computeDetails = Invoke-InCompanionModule {
+    param($Root, $Template, $Domain, $Config, $SavePath)
+    $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+    $stateDoc = Read-DigestDocument -Json $stateJson
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($case in @(
+            @{ detail = 'baseline-read-failed'; expected = 'baseline-read-failed' },
+            @{ detail = 'payload-or-diff-failed'; expected = 'diff-compute-failed' },
+            @{ detail = 'adapter-validator-infrastructure-failed'; expected = 'adapter-validator-infrastructure-failed' })) {
+        $operations = @{
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
+            ConfirmConfig = { param($Unused) }
+            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass compute -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail }
+        }
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $rows.Add([pscustomobject]@{ detail = $case.detail; expected = $case.expected; class = $res.outcomeClass; diagnosticDetail = $res.diagnostic['detail'] })
+    }
+
+    return @($rows)
+} @($computeDetailRoot, $turnContextDigestTemplate, $turnContextDomain, $computeDetailFixture.Config, $computeDetailFixture.SavePath)
+foreach ($row in $computeDetails) {
+    Assert-Equal -Actual $row.class -Expected 'compute' -Message "A '$($row.detail)' consumption result terminates as compute."
+    Assert-OrdinalEqual -Actual $row.diagnosticDetail -Expected $row.expected -Message "The '$($row.detail)' consumption detail maps to '$($row.expected)' in the attempt diagnostic."
+}
+
 # Section 11 "Acquisition retry taxonomy": only retryable failures draw the extra
 # passes inside the three-pass budget; permanent failures make one initial pass.
 # (The typed stability and gate-disappearance classes are unreachable through the

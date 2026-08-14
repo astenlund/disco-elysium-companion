@@ -75,6 +75,9 @@ function Invoke-CompanionConsumption {
 
     try {
         $current = & $ReadCurrent $CompanionRoot $AdapterConfig
+        if ($current.outcome -ceq 'validator-infrastructure') {
+            return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
+        }
         if ($current.outcome -ne 'valid') {
             return New-ConsumptionResult -OutcomeClass 'freshness' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $current.reason
         }
@@ -97,6 +100,12 @@ function Invoke-CompanionConsumption {
         if ($baselineRead.outcome -eq 'valid') {
             try {
                 Assert-AdapterDigestDocument -Document $baseline -AdapterConfig $AdapterConfig
+            }
+            catch [AdapterValidatorInfrastructureException] {
+                return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
+            }
+            catch [AdapterConfigurationException] {
+                return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
             }
             catch [CompanionContentException] {
                 $baselineRead = [pscustomobject]@{ outcome = 'content-invalid'; document = $null }

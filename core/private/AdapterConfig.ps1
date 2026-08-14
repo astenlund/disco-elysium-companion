@@ -272,16 +272,24 @@ function Get-AdapterConfig {
 function Assert-AdapterDigestDocument {
     param([Parameter(Mandatory)] [CompanionJsonValue] $Document, [Parameter(Mandatory)] [AdapterCompatibilityConfig] $AdapterConfig)
 
-    if ($AdapterConfig.Disposed) { throw [AdapterConfigurationException]::new('Adapter configuration was disposed.') }
+    if ($AdapterConfig.Disposed) { throw [AdapterValidatorInfrastructureException]::new('Adapter configuration was disposed.', $null) }
     try {
         $root = $Document.RootElement
         if ((Get-Property $root schemaVersion).GetInt64() -ne (Get-CoreSchemaVersion) -or (Get-Property $root adapterVersion).GetInt64() -ne $AdapterConfig.AdapterVersion -or -not [string]::Equals((Get-Property $root game).GetString(), $AdapterConfig.Game, [StringComparison]::Ordinal) -or -not [string]::Equals((Get-Property (Get-Property $root source) domainId).GetString(), $AdapterConfig.SourceDomainId, [StringComparison]::Ordinal)) { throw [AdapterDigestValidationException]::new('Adapter digest rejected.') }
-        $result = @(& $AdapterConfig.Validator $Document 2>&1 3>&1 4>&1 5>&1 6>&1)
+        try {
+            $result = @(& $AdapterConfig.Validator $Document 2>&1 3>&1 4>&1 5>&1 6>&1)
+        }
+        catch [AdapterDigestValidationException] { throw }
+        catch [AdapterConfigurationException] { throw [AdapterValidatorInfrastructureException]::new('Adapter validator invocation failed.', $_.Exception) }
+        catch [CompanionContentException] { throw }
+        catch { throw [AdapterValidatorInfrastructureException]::new('Adapter validator invocation failed.', $_.Exception) }
         if ($result.Count -ne 0) { throw [AdapterConfigurationException]::new('adapter-release-corrupt') }
     }
     catch [AdapterDigestValidationException] { throw }
+    catch [AdapterValidatorInfrastructureException] { throw }
     catch [AdapterConfigurationException] { throw }
-    catch { throw }
+    catch [CompanionContentException] { throw }
+    catch { throw [AdapterValidatorInfrastructureException]::new('Adapter digest validation machinery failed.', $_.Exception) }
 }
 function Read-AdapterDigestDocument {
     [CmdletBinding(DefaultParameterSetName = 'Path')]

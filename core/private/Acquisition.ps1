@@ -245,7 +245,7 @@ function Invoke-CompanionCycle {
             $current = Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig
         }
         $currentDocument = $current.document
-        if ($current.outcome -ceq 'infrastructure-failure') {
+        if ($current.outcome -in @('infrastructure-failure', 'validator-infrastructure')) {
             return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $false -GuardDiscarded $false -CacheWritten $false -BookkeepingWritten $false -FailurePhase 'commit' -SourceDisposition 'stable' -Retryable $false -Detail 'current-read-failed' -WarningSink $WarningSink
         }
         if ($current.outcome -in @('content-invalid', 'stale')) {
@@ -305,7 +305,13 @@ function Invoke-CompanionCycle {
                 $cacheWritten = $true
             }
             catch {
-                return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $true -GuardDiscarded $false -CacheWritten $false -BookkeepingWritten $false -FailurePhase 'cache' -SourceDisposition 'stable' -Retryable $false -Detail 'cycle-cache' -WarningSink $WarningSink
+                $cacheDetail = if ($_.Exception -is [AdapterValidatorInfrastructureException] -or $_.Exception -is [AdapterConfigurationException]) { 'adapter-validator-infrastructure-failed' }
+                elseif ($_.Exception -is [CompanionDiffCompatibilityException]) { 'diff-compatibility-failed' }
+                elseif ($_.Exception -is [CompanionDiffSemanticException]) { 'diff-validation-failed' }
+                elseif ($_.Exception -is [CompanionStateWriteException]) { switch ($_.Exception.Stage) { 'serialize' { 'cache-serialize-failed' } 'replace' { 'cache-replace-failed' } default { 'cache-temp-write-failed' } } }
+                else { 'diff-compute-failed' }
+
+                return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $true -GuardDiscarded $false -CacheWritten $false -BookkeepingWritten $false -FailurePhase 'cache' -SourceDisposition 'stable' -Retryable $false -Detail $cacheDetail -WarningSink $WarningSink
             }
         }
 
@@ -319,7 +325,9 @@ function Invoke-CompanionCycle {
             }
         }
         catch {
-            return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $currentCommitted -GuardDiscarded $guardDiscarded -CacheWritten $cacheWritten -BookkeepingWritten $false -FailurePhase 'bookkeeping' -SourceDisposition 'stable' -Retryable $false -Detail 'cycle-bookkeeping' -WarningSink $WarningSink
+            $bookkeepingDetail = if ($_.Exception -is [CompanionStateWriteException]) { switch ($_.Exception.Stage) { 'serialize' { 'bookkeeping-serialize-failed' } 'replace' { 'bookkeeping-replace-failed' } default { 'bookkeeping-temp-write-failed' } } } else { 'bookkeeping-temp-write-failed' }
+
+            return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $currentCommitted -GuardDiscarded $guardDiscarded -CacheWritten $cacheWritten -BookkeepingWritten $false -FailurePhase 'bookkeeping' -SourceDisposition 'stable' -Retryable $false -Detail $bookkeepingDetail -WarningSink $WarningSink
         }
 
         return Complete-CycleOutcome -Result $result -Completed $true -CurrentCommitted $currentCommitted -GuardDiscarded $guardDiscarded -CacheWritten $cacheWritten -BookkeepingWritten $true -FailurePhase $null -SourceDisposition 'stable' -Retryable $false -Detail $null -WarningSink $WarningSink
@@ -389,6 +397,8 @@ function Invoke-SaveDigest {
             if (-not [string]::Equals($source.GetProperty('saveFile').GetString(), $sourceA.Name, [StringComparison]::Ordinal) -or -not [string]::Equals($source.GetProperty('savedAt').GetString(), $savedAt, [StringComparison]::Ordinal) -or $source.GetProperty('byteLength').GetInt64() -ne $firstHash.Length -or -not [string]::Equals($source.GetProperty('contentSha256').GetString(), $firstHash.Sha256, [StringComparison]::Ordinal)) { throw [AdapterDigestValidationException]::new('Digest provenance rejected.') }
         }
         catch [SaveDigestStageException] { throw }
+        catch [AdapterValidatorInfrastructureException] { throw [SaveDigestStageException]::new('digest', 'stable', 'adapter-validator-infrastructure-failed', [pscustomobject]@{}, $_.Exception) }
+        catch [AdapterConfigurationException] { throw [SaveDigestStageException]::new('digest', 'stable', 'adapter-release-corrupt', [pscustomobject]@{}, $_.Exception) }
         catch { throw [SaveDigestStageException]::new('digest', 'stable', 'document-invalid', [pscustomobject]@{}, $_.Exception) }
         $result = [SaveDigestResult]::new()
         $result.DigestPath = $digestPath; $result.Digest = $digest

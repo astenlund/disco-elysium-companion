@@ -52,6 +52,9 @@ try {
     if ($advisory.outcome -eq 'stale') {
         Write-GetDiffFailure -Class 'stale-current' -Detail 'run-update-companion-state'
     }
+    if ($advisory.outcome -eq 'validator-infrastructure') {
+        Write-GetDiffFailure -Class 'compute' -Detail 'adapter-validator-infrastructure-failed'
+    }
     if ($advisory.outcome -ne 'valid') {
         Write-GetDiffFailure -Class 'freshness' -Detail $advisory.reason
     }
