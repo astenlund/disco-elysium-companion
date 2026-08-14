@@ -137,6 +137,7 @@ $passOutcome = Invoke-InCompanionModule {
         GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($save)) }
         ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
         ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
         Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
     $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
@@ -155,6 +156,7 @@ $driftOutcome = Invoke-InCompanionModule {
         GetSaveCandidates = { param($Unused) @($save) }
         ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
         ConfirmConfig = { param($Unused) throw [AdapterConfigurationException]::new('changed') }
+        TestStable = { param($Save) $true }
         Cycle = { param($UnusedSave, $Sink) $calls.Add('cycle'); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
     $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
@@ -478,6 +480,7 @@ $freshnessThread = Invoke-InCompanionModule {
         GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
         ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } }
         ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
         Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
 
@@ -513,6 +516,7 @@ $validatorInfra = Invoke-InCompanionModule {
         GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
         ReadCurrent = { param($Unused) $preflightReads.Add(1); if ($preflightReads.Count -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } } else { [pscustomobject]@{ outcome = 'validator-infrastructure'; document = $null; reason = 'adapter-validator-infrastructure-failed' } } }
         ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
         Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
 
@@ -574,9 +578,8 @@ foreach ($row in $computeDetails) {
 }
 
 # Section 11 "Acquisition retry taxonomy": only retryable failures draw the extra
-# passes inside the three-pass budget; permanent failures make one initial pass.
-# (The typed stability and gate-disappearance classes are unreachable through the
-# turn-context path until the post-lock stability gate ships; see BUGS.md.)
+# passes inside the three-pass budget; permanent failures make one initial pass,
+# including the post-lock stability gate's typed classes.
 $retryTaxonomyRoot = New-ScratchCompanionRoot -Prefix 'turn-context-retry-taxonomy'
 $retryTaxonomyFixture = New-TurnContextAttemptFixture -Root $retryTaxonomyRoot
 $retryTaxonomy = Invoke-InCompanionModule {
@@ -608,6 +611,7 @@ $retryTaxonomy = Invoke-InCompanionModule {
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
             ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) $true }
             Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($false, $false, $false, $false, $false, 'source', $case.disposition, $case.retryable, $case.detail, $Sink.Freeze()) }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
@@ -620,6 +624,106 @@ foreach ($row in $retryTaxonomy) {
     Assert-Equal -Actual $row.calls -Expected $row.expectedCalls -Message "The '$($row.name)' outcome drives exactly $($row.expectedCalls) pass(es) within the three-pass budget."
     Assert-Equal -Actual $row.class -Expected $row.expectedClass -Message "The '$($row.name)' outcome terminates as '$($row.expectedClass)'."
 }
+
+# Post-lock stability gate taxonomy: unstable and vanished retry within the budget,
+# unreadable stops immediately, and the gate runs on the post-lock re-enumeration's
+# selection with the floor raised, never lowered.
+$stabilityRoot = New-ScratchCompanionRoot -Prefix 'turn-context-stability'
+$stabilityFixture = New-TurnContextAttemptFixture -Root $stabilityRoot
+$stabilityRows = Invoke-InCompanionModule {
+    param($Root, $Config, $SavePath)
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($case in @(
+            @{ name = 'unstable'; gate = { param($Save) $false }; expectedCalls = 3; expectedClass = 'stability'; expectedDetail = 'stability-exhausted [attempts=3]' },
+            @{ name = 'vanished'; gate = { param($Save) throw [SaveSourceException]::new('vanished', 'save-source-vanished', $null) }; expectedCalls = 3; expectedClass = 'source'; expectedDetail = 'source-vanished' },
+            @{ name = 'unreadable'; gate = { param($Save) throw [SaveSourceException]::new('unreadable', 'save-source-unreadable', $null) }; expectedCalls = 1; expectedClass = 'source'; expectedDetail = 'source-unreadable' })) {
+        $gates = [Collections.Generic.List[int]]::new()
+        $cycles = [Collections.Generic.List[int]]::new()
+        $gateProbe = $case.gate
+        $operations = @{
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+            ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) $gates.Add(1); & $gateProbe $Save }
+            Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+        }
+        $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $rows.Add([pscustomobject]@{ name = $case.name; gateCalls = $gates.Count; cycleCalls = $cycles.Count; class = $res.outcomeClass; detail = $res.diagnostic['detail']; expectedCalls = $case.expectedCalls; expectedClass = $case.expectedClass; expectedDetail = $case.expectedDetail })
+    }
+
+    # The post-lock re-enumeration re-selects: a newer save appearing between the
+    # pre-lock selection and the lock acquisition is the one the cycle processes,
+    # and the floor rises to it.
+    $newerPath = Join-Path (Split-Path $SavePath -Parent) 'C.ntwtf.zip'
+    [IO.File]::WriteAllText($newerPath, 'y', [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::SetLastWriteTimeUtc($newerPath, [datetime]::Parse('2026-08-10T13:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+    $enumerations = [Collections.Generic.List[int]]::new()
+    $cycledSaves = [Collections.Generic.List[string]]::new()
+    $reselect = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) $enumerations.Add(1); if ($enumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath), [IO.FileInfo]::new($SavePath)) } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+        ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
+        Cycle = { param($CycleSave, $Sink) $cycledSaves.Add($CycleSave.Name); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+    [IO.File]::Delete($newerPath)
+
+    return [pscustomobject]@{ rows = @($rows); firstCycledSave = $cycledSaves[0]; reselectFloorFile = $reselect.diagnostic['sourceIdentity'] }
+} @($stabilityRoot, $stabilityFixture.Config, $stabilityFixture.SavePath)
+foreach ($row in $stabilityRows.rows) {
+    Assert-Equal -Actual $row.gateCalls -Expected $row.expectedCalls -Message "The '$($row.name)' gate outcome draws exactly $($row.expectedCalls) gate pass(es)."
+    Assert-Equal -Actual $row.cycleCalls -Expected 0 -Message "The '$($row.name)' gate outcome never reaches the cycle."
+    Assert-Equal -Actual $row.class -Expected $row.expectedClass -Message "The '$($row.name)' gate outcome terminates as '$($row.expectedClass)'."
+    Assert-OrdinalEqual -Actual $row.detail -Expected $row.expectedDetail -Message "The '$($row.name)' gate outcome carries '$($row.expectedDetail)'."
+}
+Assert-OrdinalEqual -Actual $stabilityRows.firstCycledSave -Expected 'C.ntwtf.zip' -Message 'The cycle processes the post-lock re-selected newer save.'
+Assert-OrdinalEqual -Actual ([string] $stabilityRows.reselectFloorFile['saveFile']) -Expected 'C.ntwtf.zip' -Message 'The floor rises to the post-lock selection.'
+
+# The remaining post-lock terminal exits: an empty re-enumeration is no-saves, a
+# failing re-enumeration is non-retryable source/save-enumeration-failed, and an
+# over-limit re-enumeration is non-retryable source/candidate-limit-exceeded (this
+# is the first attempt-level pin of the candidate-limit terminal on either side of
+# the lock).
+$lockEnumRoot = New-ScratchCompanionRoot -Prefix 'turn-context-lock-enum'
+$lockEnumFixture = New-TurnContextAttemptFixture -Root $lockEnumRoot
+$lockEnum = Invoke-InCompanionModule {
+    param($Root, $Config, $SavePath)
+    $emptyCalls = [Collections.Generic.List[int]]::new()
+    $empty = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) $emptyCalls.Add(1); if ($emptyCalls.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @() } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+        ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
+        Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+    $failCalls = [Collections.Generic.List[int]]::new()
+    $failed = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) $failCalls.Add(1); if ($failCalls.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { throw [IO.IOException]::new('enumeration broke') } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+        ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
+        Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+
+    $limitCalls = [Collections.Generic.List[int]]::new()
+    $limited = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) $limitCalls.Add(1); if ($limitCalls.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { throw [SaveCandidateLimitException]::new('save-candidate-limit-exceeded') } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+        ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) $true }
+        Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+    }
+
+    return [pscustomobject]@{ emptyClass = $empty.outcomeClass; emptyDetail = $empty.diagnostic['detail']; failedClass = $failed.outcomeClass; failedDetail = $failed.diagnostic['detail']; failedIdentityFile = [string] $failed.diagnostic['sourceIdentity']['saveFile']; limitClass = $limited.outcomeClass; limitDetail = $limited.diagnostic['detail']; limitIdentityFile = [string] $limited.diagnostic['sourceIdentity']['saveFile'] }
+} @($lockEnumRoot, $lockEnumFixture.Config, $lockEnumFixture.SavePath)
+Assert-Equal -Actual $lockEnum.emptyClass -Expected 'no-saves' -Message 'An empty post-lock re-enumeration terminates as no-saves.'
+Assert-OrdinalEqual -Actual $lockEnum.emptyDetail -Expected 'no-matching-saves' -Message 'An empty post-lock re-enumeration carries no-matching-saves.'
+Assert-Equal -Actual $lockEnum.failedClass -Expected 'source' -Message 'A failing post-lock re-enumeration is terminal source.'
+Assert-OrdinalEqual -Actual $lockEnum.failedDetail -Expected 'save-enumeration-failed' -Message 'A failing post-lock re-enumeration carries save-enumeration-failed.'
+Assert-OrdinalEqual -Actual $lockEnum.failedIdentityFile -Expected 'B.ntwtf.zip' -Message 'A failing post-lock re-enumeration carries the latched floor as provenance.'
+Assert-Equal -Actual $lockEnum.limitClass -Expected 'source' -Message 'An over-limit post-lock re-enumeration is terminal source.'
+Assert-OrdinalEqual -Actual $lockEnum.limitDetail -Expected 'candidate-limit-exceeded' -Message 'An over-limit post-lock re-enumeration carries candidate-limit-exceeded.'
+Assert-OrdinalEqual -Actual $lockEnum.limitIdentityFile -Expected 'B.ntwtf.zip' -Message 'An over-limit post-lock re-enumeration carries the latched floor as provenance.'
 
 # A populated sourceIdentity must serialize through the real writer and round-trip
 # through the diagnostic reader: a bare [pscustomobject] sourceIdentity is not an

@@ -318,6 +318,28 @@ function Invoke-TurnContextAttempt {
                 try {
                     try { if ($Operations.ContainsKey('ConfirmConfig')) { & $Operations.ConfirmConfig $AdapterConfig } else { Confirm-TurnContextAdapterConfig -AdapterConfig $AdapterConfig } }
                     catch [AdapterConfigurationException] { return New-TurnContextTerminalResult -Class config -Reason adapter-config-changed }
+                    # 7.5 stage 3: re-enumerate and stability-gate after acquiring
+                    # cycle.lock; the cycle processes the post-lock selection and the
+                    # floor rises (never lowers) to it.
+                    try { $lockedCandidates = if ($Operations.ContainsKey('GetSaveCandidates')) { & $Operations.GetSaveCandidates $AdapterConfig } else { Get-SaveCandidates -SaveDirectory $AdapterConfig.SaveDirectory -SaveGlob $AdapterConfig.SaveGlob } }
+                    catch [SaveCandidateLimitException] { return New-TurnContextTerminalResult -Class source -Reason candidate-limit-exceeded -SourceIdentity $floor }
+                    catch { return New-TurnContextTerminalResult -Class source -Reason save-enumeration-failed -SourceIdentity $floor }
+                    if (@($lockedCandidates).Count -eq 0) { return New-TurnContextTerminalResult -Class 'no-saves' -Reason no-matching-saves }
+                    $selected = @($lockedCandidates)[0]
+                    $lockedIdentity = New-SourceIdentity -DomainId $AdapterConfig.SourceDomainId -SaveFile $selected.Name -SavedAt $selected.LastWriteTimeUtc
+                    if ((Compare-SourceIdentity -Left $lockedIdentity -Right $floor).order -gt 0) { $floor = $lockedIdentity }
+                    try { $stable = if ($Operations.ContainsKey('TestStable')) { & $Operations.TestStable $selected } else { Test-FileWriteStable -Path $selected.FullName } }
+                    catch [SaveSourceException] {
+                        if ($_.Exception.SourceDisposition -ceq 'vanished' -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1)) { continue }
+                        $sourceReason = if ($_.Exception.SourceDisposition -ceq 'vanished') { 'source-vanished' } else { 'source-unreadable' }
+
+                        return New-TurnContextTerminalResult -Class source -Reason $sourceReason -SourceIdentity $floor
+                    }
+                    if (-not $stable) {
+                        if ($pass -lt ($script:TurnContextRefreshAttemptCap - 1)) { continue }
+
+                        return New-TurnContextTerminalResult -Class stability -Detail (New-TurnContextDetail -Class stability -Reason stability-exhausted -Atoms @{ attempts = $pass + 1 }) -SourceIdentity $floor
+                    }
                     $cycleWarnings = New-CompanionWarningSink -Profile Cycle
                     Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $cycleWarnings
                     $cycle = if ($Operations.ContainsKey('Cycle')) { & $Operations.Cycle $selected $cycleWarnings } else { Invoke-CompanionCycle -CompanionRoot $CompanionRoot -AdapterDirectory $AdapterConfig.AdapterDirectory -AdapterConfig $AdapterConfig -SourceSave $selected -WarningSink $cycleWarnings }
