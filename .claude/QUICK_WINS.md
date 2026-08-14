@@ -30,10 +30,10 @@ can still fix it in the same session.
 ## Section 11 verification fixtures (deferred)
 
 The three deferred fixture claims (40, 41, 42) all shipped 2026-08-13; see
-QUICK_WINS_HISTORY.md. Claim 41's residual halves ride the three reason-taxonomy
-bugs in BUGS.md, and claim 42's stability and gate-disappearance retry classes
-ride the post-lock stability-gate bug there. Only the live-claims probe below
-remains, gated on a play session.
+QUICK_WINS_HISTORY.md. Claim 41's residual halves and claim 42's stability and
+gate-disappearance retry classes shipped 2026-08-14 with the four turn-context
+spec-conformance bug fixes (archived in BUGS_HISTORY.md). Only the live-claims
+probe below remains, gated on a play session.
 
 - **Execute the two provisional live-claims (section 11 rows 56 and 59).**
   Save-write stability and historical-save immutability passed verification only as PROVISIONAL
