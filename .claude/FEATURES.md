@@ -217,6 +217,15 @@ the evidence and disclosure core from horizon reconstruction, check loadouts,
 thought notices, enrichment, deferred research, interest adaptation, and later
 cross-game generalization.
 
+### [Psychologist persona](features/psychologist-persona.md)
+
+An in-character therapist treating Harry Du Bois as a patient, commenting on
+changes in his psychological well-being from vitals and morale, thoughts and
+build, and choice-pattern evidence. Confirmed delivery modes: woven-in
+observations on significant changes, an end-of-play-session psych report, and
+an on-demand report command. Candidate seams follow the runtime, TUI, and
+adaptive-guidance boundaries.
+
 ## (add sections as features emerge)
 
 Nothing captured yet.
