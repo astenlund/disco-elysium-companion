@@ -115,3 +115,7 @@ presentation client.
   client exits mid-operation.
 - Define the minimum host API needed by the TUI without coupling it to Ink or
   another presentation library.
+- Define the play-session start and end boundary: the session focus dial
+  (auto-revert to balanced) and the psychologist persona (end-of-session
+  report) both depend on a session-end signal; define the signal and its
+  owner once for both.

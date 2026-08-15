@@ -71,6 +71,14 @@ Expose a temporary stronger-reasoning action that reverts after one question.
 Keep model configuration in the runtime and the keybinding and feedback in the
 TUI.
 
+### Session focus control
+
+Render the [session focus](session-focus.md) dial: a status-bar chip showing
+the active focus and a pick or cycle keybinding. The focus state itself is
+adaptive-guidance domain state carried by the runtime; the TUI presents the
+control and invokes the command, following the same presentation-only split as
+the effort control above.
+
 ## Architecture sketch (from the 2026-08-08 discussion)
 
 - **Session connection: Claude Agent SDK** (TypeScript or Python). The runtime

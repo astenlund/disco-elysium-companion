@@ -79,6 +79,15 @@ the TUI inbox depends on this workflow, not the reverse.
 Apply explainable, resettable priority nudges learned from repeated questions.
 This is a later continuation and never lowers evidence or spoiler standards.
 
+A declared [session focus](session-focus.md) enters the same priority model as
+an explicitly-sourced nudge that outranks learned nudges for the session, and
+while active it also reorders which recommendations lead in guidance dialogs,
+a reach the learned profile does not have; balanced means no override and
+leaves the learned profile alone in charge.
+Learned observations carry a session-phase signal so recall weights by phase:
+what the player wants early in a session differs from two hours in, and the
+previous session's tail must not over-weight the next session's start.
+
 ### Generic research-adapter contract
 
 Define cross-game stage signals, source discovery, graph namespaces, and
@@ -181,7 +190,10 @@ fields during later enrichment. A single question nudges priorities; repeated
 patterns shape them more strongly.
 
 The profile controls research order only. It cannot lower evidence standards or
-weaken spoiler filtering, and it is resettable.
+weaken spoiler filtering, and it is resettable. A declared
+[session focus](session-focus.md) shares the profile's priority model and
+additionally reorders recommendation ranking while active; it is bound by the
+same evidence and spoiler limits.
 
 ## TUI relationship
 

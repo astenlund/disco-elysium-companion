@@ -235,6 +235,18 @@ with embeddings of the D&D 5e (2014) ruleset, defaulting to the CC-BY-4.0 SRD
 second-adapter test case for the runtime's adapter-catalog isolation and
 adaptive guidance's generic research-adapter contract.
 
+### [Session focus](features/session-focus.md)
+
+A session-scoped dial declaring what kind of progress the player wants this
+session: an exclusive selector with a balanced default meaning the learned
+interest profile alone steers, plus adapter-declared focuses (white checks,
+loot and money for Disco Elysium). A declared focus is an explicitly-sourced
+priority nudge into the adaptive-guidance interest machinery, steering
+recommendation ranking and enrichment priority but never spoiler standards,
+evidence standards, or the classification itself. Includes session-phase-aware
+learning so late-session question patterns do not over-weight the start of the
+next session under balanced.
+
 ## (add sections as features emerge)
 
 Nothing captured yet.
