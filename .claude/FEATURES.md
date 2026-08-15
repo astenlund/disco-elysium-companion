@@ -226,6 +226,15 @@ observations on significant changes, an end-of-play-session psych report, and
 an on-demand report command. Candidate seams follow the runtime, TUI, and
 adaptive-guidance boundaries.
 
+### [Baldur's Gate 3 adapter](features/baldurs-gate-3-adapter.md)
+
+Add BG3 as the second game: a full save-reading adapter over Larian's LSV/LSF
+save format (LSLib as the likely foundation) plus a new rules-knowledge layer
+with embeddings of the D&D 5e (2014) ruleset, defaulting to the CC-BY-4.0 SRD
+5.1 with an optional strictly-local owned-rulebook overlay. The concrete
+second-adapter test case for the runtime's adapter-catalog isolation and
+adaptive guidance's generic research-adapter contract.
+
 ## (add sections as features emerge)
 
 Nothing captured yet.
