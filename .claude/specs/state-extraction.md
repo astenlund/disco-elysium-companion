@@ -496,9 +496,8 @@ only.
 
 ### 5.2 Parser adaptation (complete deviation list)
 
-The vendored reference parser (`lua_parser.go`, byte-identical in both places it appears
-in the repo) is adapted with exactly these deviations; everything else, including naming
-and type tags, is kept verbatim:
+The vendored reference parser (`lua_parser.go`) is adapted with exactly these
+deviations; everything else, including naming and type tags, is kept verbatim:
 
 1. **Array-part header fix.** The reference treats the first int32 of a table header as
    padding. In reality the header is `T <int32 arrayCount> <arrayCount values>
@@ -593,8 +592,9 @@ and type tags, is kept verbatim:
    and 6,082,480 retained string and key bytes.
 
 A comment at the top of the vendored file records origin (repo URL, commit) and this
-deviation list. The upstream repo is GPL-licensed; this is a private personal tool, but
-if the companion is ever published the GPL carries (user acknowledged 2026-08-07).
+deviation list. The pinned upstream source is MIT-licensed. The companion root's
+`THIRD_PARTY-NOTICES.md` records the exact source revision and preserves the upstream
+copyright and permission notice.
 
 ### 5.3 Build
 

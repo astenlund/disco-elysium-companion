@@ -1,7 +1,8 @@
 // Package parser reads Disco Elysium's binary-serialized Lua tables (TLV).
 //
-// Vendored from https://github.com/ig4e/disco-elysium-editor
-// (scraper/parser/lua_parser.go at commit ef1b126), GPL upstream.
+// Adapted from https://github.com/ig4e/disco-elysium-editor
+// (scraper/parser/lua_parser.go at commit ef1b126), licensed upstream under MIT.
+// See THIRD_PARTY-NOTICES.md at the companion root for provenance and license text.
 // Deliberate deviations from the reference, per spec section 5.2:
 //  1. Table headers contain an array count and values followed by a hash count and pairs.
 //  2. ReadTopLevel preserves ordered top-level values instead of flattening tables.
