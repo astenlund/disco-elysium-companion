@@ -224,17 +224,21 @@ Facts the design relies on, verified against the user's real Day 4 save:
   the same layout (12145 variables). Exact identities of the non-variable tables are
   recorded in knowledge.md during implementation; only the variable store is consumed by
   the digest.
-- The editor repo ships reference DBs extracted from game data. Relevant here:
-  `variables_tasks.json` (1131 `TASK.*` entries; count matches the save's `TASK.*`
-  variable count exactly), `variables_reputation.json` (21 reputation axes with their
-  store variable names and initial values), and `skill_key_map.json` (a structured file:
-  an `abilities` array of 4 and a `skills` array of 24, flattened for lookup, plus
-  unrelated enum sections). Two hazards these DBs carry: the task DB's `description`
+- The editor repo ships reference mappings with distinct provenance. Its extractor emits
+  `variables_tasks.json` and `variables_reputation.json` from the game's dialogue bundle.
+  The former has 1131 `TASK.*` entries, matching the save's `TASK.*` variable count
+  exactly; the latter has 21 reputation axes with their store variable names and initial
+  values. `skill_key_map.json` was committed separately, and the scraper scripts do not
+  document its derivation. It contains an `abilities` array of 4 and a `skills` array of
+  24, flattened for lookup, plus unrelated enum sections. Two hazards these mappings
+  carry: the task DB's `description`
   strings are designer AUTHORING NOTES lifted from the dialogue database, not
   player-facing journal text (655 of 1131 are empty, and several state intended outcomes
   of in-progress tasks), so they are spoiler-unsafe and are never used for display
-  (6.2); and the digest's reputation keys are NOT the store variable names, so an
-  explicit mapping is required (6.3). Only `variables_reputation.json` and
+  (6.2). The reputation extractor output carried the same authoring-note class in
+  `description`; the vendored copy strips those unconsumed fields. The digest's
+  reputation keys are NOT the store variable names, so an explicit mapping is required
+  (6.3). Only `variables_reputation.json` and
   `skill_key_map.json` are vendored: the task DB became unconsumed with the
   humanized-title decision and stays in the cloned repo as reference, and the
   `auto.daychange_*` initial values (from the repo's `variables_auto.json`) are pinned

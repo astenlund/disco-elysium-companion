@@ -114,3 +114,10 @@ reputation map at digest build) and `skill_key_map.json` (abilities[4] + skills[
 both hops of the skills name/group join, fail-closed on drift). The skillType
 discriminator applies to DIRECT children of characterSheet only; nested modifier records
 also carry skillType (including sentinel values) and are not skills.
+
+The files have distinct upstream provenance. `variables_reputation.json` is emitted by
+upstream's `extract_game_data.py` from the game's dialogue bundle.
+`skill_key_map.json` was committed separately upstream, and the scraper scripts do not
+document its derivation. The reputation source's `description` strings are designer
+authoring notes, not player-facing text. They are spoiler-unsafe and unconsumed, so the
+vendored copy strips them and a focused asset test prevents their return.

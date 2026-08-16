@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'MapperSemanticOutput', 'MapperPublication', 'MapperCharacterClosure', 'MapperSkillCompleteness', 'MapperThoughtOrdering', 'MapperOrdinalCaseSensitivity', 'MapperMoneyDecimal', 'MapperReputationSemantics')]
+    [ValidateSet('All', 'MapperSemanticOutput', 'MapperPublication', 'MapperCharacterClosure', 'MapperSkillCompleteness', 'MapperThoughtOrdering', 'MapperOrdinalCaseSensitivity', 'MapperMoneyDecimal', 'MapperReputationSemantics', 'MapperReputationDataSafety')]
     [string] $Only = 'All'
 )
 
@@ -23,6 +23,11 @@ function Assert([bool] $Condition, [string] $Message) {
     }
 
     Write-Host "ok: $Message"
+}
+
+function Test-MapperReputationDataSafety {
+    $rows = Get-Content -Raw (Join-Path $PSScriptRoot 'game_data/variables_reputation.json') | ConvertFrom-Json -AsHashtable
+    Assert (@($rows | Where-Object { $_.Contains('description') }).Count -eq 0) 'vendored reputation rows exclude spoiler-unsafe designer descriptions'
 }
 
 function New-Variables {
@@ -309,6 +314,7 @@ try {
         MapperOrdinalCaseSensitivity = ${function:Test-MapperOrdinalCaseSensitivity}
         MapperMoneyDecimal = ${function:Test-MapperMoneyDecimal}
         MapperReputationSemantics = ${function:Test-MapperReputationSemantics}
+        MapperReputationDataSafety = ${function:Test-MapperReputationDataSafety}
     }
 
     if ($Only -eq 'All') {
