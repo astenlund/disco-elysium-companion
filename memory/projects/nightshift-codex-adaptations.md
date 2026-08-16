@@ -27,8 +27,9 @@ use Nightshift's native Claude tools, environment, hooks, and model pins instead
 | AskUserQuestion | Use the available user-input tool when surfaced; otherwise ask plainly in chat. |
 | `${CLAUDE_PLUGIN_ROOT}` | Resolve the current installed skill path surfaced by Codex. Never assume the environment variable exists. |
 
-- Codex has four total collaboration slots including the coordinator. Batch manual
-  reviewer and skeptic fan-out within that limit without dropping prescribed agents.
+- Read the current session's advertised collaboration capacity before dispatch. The
+  coordinator consumes one slot; batch manual reviewer and skeptic fan-out within the
+  remaining capacity without dropping prescribed agents.
 - Fresh-agent prompts must carry the applicable project rules as required by the
   global `AGENTS.md` subagent convention.
 - Edit Nightshift only in `C:/Git/nightshift`, never in an installed plugin cache.
@@ -51,6 +52,9 @@ substitution in review state and reports rather than claiming the models are ide
 - Route Nightshift workflow changes to the Nightshift clone with the required review,
   commit, version, and push rules.
 - Adapt `revise-docs` checks that name `CLAUDE.md` to the canonical `AGENTS.md`.
-- The companion intentionally has no Git repository. Follow its explicit no-Git
-  checkpoints, test gates, `no-git` provenance text, and `.tmp/preedit-*.bak`
-  rollback protocol. Never invent commits or SHAs.
+- The companion IS a Git repository (git-ified 2026-08-13, remote
+  `astenlund/disco-elysium-companion`); an earlier version of this note said
+  otherwise and was corrected 2026-08-16. Ordinary commit, checkpoint, and
+  provenance rules apply, and real SHAs are available. Never invent commits or
+  SHAs, and prefer a commit over the legacy `.tmp/preedit-*.bak` rollback
+  protocol where a workflow offers both.
