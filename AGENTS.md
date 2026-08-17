@@ -176,8 +176,9 @@ remains only for manual inspection that must not consume.
 
 ## Hard limits
 
-- Never modify anything outside `companion\`. Saves are sacred: never write to,
-  move, or delete anything under `..\SaveGames\`.
+- Never modify anything outside the repository root. Saves are sacred: never write
+  to, move, or delete anything under
+  `C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium\SaveGames\`.
 - References: `adapters/disco_elysium/knowledge.md` (game structure),
   `core/digest-schema.md` (digest and diff shapes),
   `.claude/specs/state-extraction.md` (the authoritative design).

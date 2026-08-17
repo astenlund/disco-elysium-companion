@@ -361,3 +361,15 @@ not to resolve dependencies.
   quicksave also survived that autosave. Those timestamps provide at least three
   non-vacuous survivor comparisons and independently place the autosave after the live
   boundary. The section 11 rows now carry those results instead of provisional markers.
+
+- Companion repository relocation to `C:\Git\disco-elysium-companion`, shipped
+  2026-08-17. The whole directory moves within the same volume, preserving `.git`,
+  ignored adapter releases and dump tooling, scratch data, and live `state/`. Acquisition
+  remains rooted in `adapter.json`'s absolute
+  `C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium\SaveGames` path; the
+  repository hard limit now names that path explicitly instead of the invalidated
+  sibling-relative relationship. Claude's path-keyed project history and
+  auto-memory move to the new project key, while Claude's project map and repository
+  mapping plus Codex's trust and SessionStart hook-state keys are rewritten to the new
+  root. The running Codex session still requires a reopen at the new root because its
+  active workspace identity is not rewritten in place.

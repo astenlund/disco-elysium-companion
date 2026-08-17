@@ -27,19 +27,6 @@ failure mode to catch is an entry that doesn't parse as a `- ` bullet or
 `###` heading (ready reports it as a prose-only-section notice) while you
 can still fix it in the same session.
 
-## Version control / repository migration
-
-- **Move the companion from the AppData sibling to `C:\Git\disco-elysium-companion`.**
-  The companion was git-ified in place 2026-08-13 (private GitHub repo
-  `astenlund/disco-elysium-companion`); its preferred long-term home is `C:\Git\`, per
-  the machine convention for repo clones. Before moving, confirm the relocation breaks
-  nothing: `adapter.json`'s absolute `saveDirectory` should survive, but re-verify that
-  no acquisition path relies on `..\SaveGames\` resolving from the companion root. The
-  move also changes the Claude/Codex project identity: the auto-memory directory,
-  session directories, and `SessionStart` hook wiring are keyed to the current AppData
-  path and need re-establishing from the new location before the old path is retired.
-  Requires: none.
-
 ## Turn-context internals
 
 - **Decompose Invoke-TurnContextAttempt.** One body of roughly 120 lines
