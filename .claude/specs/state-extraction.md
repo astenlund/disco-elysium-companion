@@ -4675,7 +4675,9 @@ Standing rules for future Companion sessions:
 - Save-write stability: with the game running, observe at least one autosave being
   written and confirm the two-sample size-stability gate never dispatches a copy that
   then fails to unzip; pass condition is 0 unzip failures across a play session that
-  produces at least 5 saves (live-claim: deferred 2026-08-11).
+  produces at least 5 saves (live-claim: probed 2026-08-17; result save events=5,
+  stable archives=5, live autosaves=1, unzip failures=0; the monitor began at
+  23:42:08 UTC and the retained autosave was written at 23:55:22 UTC).
 - Watcher sample identity: after poll P0 records `(N,T1,L)`, rewrite fixture N to
   different bytes with equal size L and timestamp T2. Poll P1 replaces the sample
   without dispatch; only an unchanged P2 dispatches. A control preserving all three
@@ -4705,8 +4707,13 @@ Standing rules for future Companion sessions:
   quicksave, overwrite or rotation mode and enabled cloud synchronization, retain hashes,
   sizes, and timestamps for older matching candidates across later saves. Confirm none
   changes and separately confirm every artifact that is rewritten in place remains
-  outside the configured saveGlob. Until every context passes, older-candidate gate
-  skipping remains provisional. (live-claim: deferred 2026-08-11)
+  outside the configured saveGlob. The live session covered three manual events, one
+  quicksave, one autosave, overwrite or rotation behavior, and operator-confirmed cloud
+  synchronization; older matching candidate mutations=0 and observed non-save in-place
+  rewrites=0. The retained manual archive at 23:45:48 UTC survived the later quicksave
+  and autosave, and the retained quicksave at 23:47:20 UTC survived the later autosave,
+  establishing at least three older-candidate survivor comparisons against the autosave
+  at 23:55:22 UTC (live-claim: probed 2026-08-17).
 - Read-only guarantee: after a full watch cycle, every file under `SaveGames\` has an
   unchanged LastWriteTime and hash sample.
 - Test-UneventfulDiff (7.4): canonical empty diff is uneventful; sessionChange-only is

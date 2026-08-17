@@ -3,24 +3,28 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Section11-01', 'Section11-02', 'Section11-03', 'Section11-04', 'Section11-05', 'Section11-06', 'Section11-07', 'Section11-29', 'Section11-56', 'Section11-59', 'Section11-60', 'Section11-72')]
-    [string] $Only = 'All'
+    [ValidateSet('All', 'Section11-01', 'Section11-02', 'Section11-03', 'Section11-04', 'Section11-05', 'Section11-06', 'Section11-07', 'Section11-29', 'Section11-56', 'Section11-56-59', 'Section11-59', 'Section11-60', 'Section11-72')]
+    [string] $Only = 'All',
+    [Parameter()]
+    [ValidateRange(1, 86400)]
+    [int] $ObservationTimeoutSeconds = 2700,
+    [Parameter()]
+    [switch] $CloudSyncEnabled
 )
 
-# Section 11 live probes, wired during Task 16. Each selector runs the genuine
-# observation its section 11 claim names: the installed immutable release's dedump
+# Section 11 live probes. Each selector runs the genuine observation its section 11
+# claim names: the installed immutable release's dedump
 # and mapper against real save copies, the exact Go tests covering dump schema and
 # TLV boundaries, and the real SaveGames directory for the read-only and walk
 # claims. A probe declares its observed result through the assertion-producer
-# trailer (STATE_EXTRACTION_ASSERTION_RESULT PASS|PROVISIONAL); the two deferred
-# live-claims (56/59) report PROVISIONAL when their game-running precondition
-# cannot be established in the current closed-game window.
+# trailer (STATE_EXTRACTION_ASSERTION_RESULT PASS|PROVISIONAL).
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path (Split-Path $PSScriptRoot -Parent) 'DigestDiff.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Section11LiveProbeSupport.psm1') -Force
 
 function Assert-True {
     param(
@@ -326,20 +330,92 @@ function Test-Section11-29 {
     }
 }
 
+function Invoke-Section11SaveSessionObservation {
+    Assert-True -Condition $CloudSyncEnabled.IsPresent -Message 'The historical-save immutability probe requires operator confirmation that cloud synchronization is enabled.'
+    $game = Get-Process -Name disco -ErrorAction SilentlyContinue | Select-Object -First 1
+    Assert-True -Condition ($null -ne $game) -Message 'Disco Elysium must be running for the live save-session probe.'
+
+    $probeRoot = New-ScratchCompanionRoot -Prefix 'section11-56-59'
+    try {
+        return Invoke-Section11LiveSaveMonitor -SaveDirectory (Get-RealSaveDirectory) -SaveGlob '*.ntwtf.zip' -ScratchRoot $probeRoot -SessionStartedAtUtc $game.StartTime.ToUniversalTime() -CloudSyncEnabled -TimeoutSeconds $ObservationTimeoutSeconds
+    }
+    finally {
+        if (Test-Path -LiteralPath $probeRoot) {
+            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
+        }
+    }
+}
+
+function Write-Section11ObservationSummary {
+    param([Parameter(Mandatory)] $Observation)
+
+    [ordered]@{
+        saveEvents = $Observation.SaveEventCount
+        stableArchives = $Observation.StableArchiveCount
+        unzipFailures = $Observation.UnzipFailureCount
+        manualSaves = $Observation.ManualSaveCount
+        quicksaves = $Observation.QuicksaveCount
+        autosaves = $Observation.AutosaveCount
+        liveAutosaves = $Observation.LiveAutosaveCount
+        olderCandidateSurvivorComparisons = $Observation.OlderCandidateSurvivorComparisonCount
+        olderCandidateMutations = $Observation.OlderCandidateMutationCount
+        rewrittenOutsideGlob = $Observation.RewrittenOutsideGlobCount
+        rotationObserved = $Observation.RotationObserved
+        cloudSyncEnabled = $Observation.CloudSyncEnabled
+        frames = $Observation.FrameCount
+        timedOut = $Observation.TimedOut
+    } | ConvertTo-Json -Compress
+}
+
+function Assert-Section11-56Observation {
+    param([Parameter(Mandatory)] $Observation)
+
+    if ($Observation.UnzipFailureCount -gt 0) {
+        throw [InvalidOperationException]::new('A save passed the two-sample stability gate but its copied archive failed to open.')
+    }
+    if ($Observation.Section11_56Passed) {
+        Write-Output 'SECTION11_56_ASSERTION_RESULT PASS'
+        return
+    }
+
+    Write-Output 'SECTION11_56_ASSERTION_RESULT PROVISIONAL'
+}
+
+function Assert-Section11-59Observation {
+    param([Parameter(Mandatory)] $Observation)
+
+    if ($Observation.OlderCandidateMutationCount -gt 0) {
+        throw [InvalidOperationException]::new('An older matching save candidate changed hash, size, or timestamp during the live session.')
+    }
+    if ($Observation.Section11_59Passed) {
+        Write-Output 'SECTION11_59_ASSERTION_RESULT PASS'
+        return
+    }
+
+    Write-Output 'SECTION11_59_ASSERTION_RESULT PROVISIONAL'
+}
+
 function Test-Section11-56 {
-    # Save-write stability (live-claim, deferred): with the game closed there is no
-    # autosave activity to observe, so the claim cannot be fully established in
-    # this window. The size-stability protocol itself is pinned by the suite; the
-    # live observation is provisionally deferred.
-    Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PROVISIONAL'
+    $observation = Invoke-Section11SaveSessionObservation
+    Write-Section11ObservationSummary -Observation $observation
+    Assert-Section11-56Observation -Observation $observation
+    Write-Output ('STATE_EXTRACTION_ASSERTION_RESULT ' + $(if ($observation.Section11_56Passed) { 'PASS' } else { 'PROVISIONAL' }))
+}
+
+function Test-Section11-56-59 {
+    $observation = Invoke-Section11SaveSessionObservation
+    Write-Section11ObservationSummary -Observation $observation
+    Assert-Section11-56Observation -Observation $observation
+    Assert-Section11-59Observation -Observation $observation
+    $passed = $observation.Section11_56Passed -and $observation.Section11_59Passed
+    Write-Output ('STATE_EXTRACTION_ASSERTION_RESULT ' + $(if ($passed) { 'PASS' } else { 'PROVISIONAL' }))
 }
 
 function Test-Section11-59 {
-    # Historical-save immutability (live-claim, deferred): with the game closed and
-    # cloud paused, older candidate immutability across new saves cannot be
-    # observed; the portable fixture halves are pinned by the suite and the live
-    # observation is provisionally deferred.
-    Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PROVISIONAL'
+    $observation = Invoke-Section11SaveSessionObservation
+    Write-Section11ObservationSummary -Observation $observation
+    Assert-Section11-59Observation -Observation $observation
+    Write-Output ('STATE_EXTRACTION_ASSERTION_RESULT ' + $(if ($observation.Section11_59Passed) { 'PASS' } else { 'PROVISIONAL' }))
 }
 
 function Test-Section11-60 {
@@ -444,12 +520,17 @@ $tests = [ordered]@{
     'Section11-07' = ${function:Test-Section11-07}
     'Section11-29' = ${function:Test-Section11-29}
     'Section11-56' = ${function:Test-Section11-56}
+    'Section11-56-59' = ${function:Test-Section11-56-59}
     'Section11-59' = ${function:Test-Section11-59}
     'Section11-60' = ${function:Test-Section11-60}
     'Section11-72' = ${function:Test-Section11-72}
 }
 if ($Only -eq 'All') {
-    foreach ($test in $tests.Values) { & $test }
+    foreach ($entry in $tests.GetEnumerator()) {
+        if ($entry.Key -notin @('Section11-56', 'Section11-56-59', 'Section11-59')) {
+            & $entry.Value
+        }
+    }
 }
 else { & $tests[$Only] }
 

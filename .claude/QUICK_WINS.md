@@ -27,27 +27,6 @@ failure mode to catch is an entry that doesn't parse as a `- ` bullet or
 `###` heading (ready reports it as a prose-only-section notice) while you
 can still fix it in the same session.
 
-## Section 11 verification fixtures (deferred)
-
-The three deferred fixture claims (40, 41, 42) all shipped 2026-08-13; see
-QUICK_WINS_HISTORY.md. Claim 41's residual halves and claim 42's stability and
-gate-disappearance retry classes shipped 2026-08-14 with the four turn-context
-spec-conformance bug fixes (archived in BUGS_HISTORY.md). Only the live-claims
-probe below remains, gated on a play session.
-
-- **Execute the two provisional live-claims (section 11 rows 56 and 59).**
-  Save-write stability and historical-save immutability passed verification only as PROVISIONAL
-  because their preconditions need the game RUNNING (and, for immutability, cloud sync
-  enabled): observe at least one live autosave pass the two-sample stability gate with
-  zero unzip failures across a session producing 5+ saves, and confirm older matching
-  candidates keep hash/size/mtime across later saves in every save mode. The probe
-  selectors live in `core/tests/Test-Section11LiveProbes.ps1` (`Section11-56` /
-  `Section11-59`), which is deliberately outside the `-Group All` dispatcher because its
-  probes touch the real SaveGames; run them directly during a play session and then
-  replace the spec's two `(live-claim: deferred 2026-08-11)` markers with the probe
-  results.
-  Requires: a window with the game running (user-scheduled).
-
 ## Version control / repository migration
 
 - **Move the companion from the AppData sibling to `C:\Git\disco-elysium-companion`.**

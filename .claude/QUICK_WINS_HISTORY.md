@@ -344,3 +344,20 @@ not to resolve dependencies.
   scope. Behavior-preserving; verified by the `TurnContext` test group. Deferred from
   the 2026-08-13 revise-code run, which judged it too invasive for an inline review
   fix in a hot path.
+
+- Section 11 save-write stability and historical-save immutability live claims,
+  shipped 2026-08-17. A single read-only joint monitor now backs selectors
+  `Section11-56`, `Section11-59`, and `Section11-56-59`: it counts archives created
+  since the running game process began, requires a live autosave, applies the production
+  two-sample stability gate before copying into project `.tmp` for ZIP validation,
+  fingerprints surviving older candidates after later saves, records rotation and
+  non-save rewrites separately, and requires operator confirmation of cloud sync.
+  Fixture coverage lives in `Test-Section11LiveProbeSupport.ps1` under the Watcher test
+  group. The live session passed with 5 save events, 5 stable archives, 0 unzip failures,
+  3 manual events, 1 quicksave, 1 autosave, 1 live autosave, rotation observed, cloud
+  sync enabled, 0 older-candidate mutations, and 0 observed non-save in-place rewrites.
+  The monitor began at 23:42:08 UTC and retained archives establish that the manual save
+  at 23:45:48 survived both the quicksave at 23:47:20 and autosave at 23:55:22, while the
+  quicksave also survived that autosave. Those timestamps provide at least three
+  non-vacuous survivor comparisons and independently place the autosave after the live
+  boundary. The section 11 rows now carry those results instead of provisional markers.
