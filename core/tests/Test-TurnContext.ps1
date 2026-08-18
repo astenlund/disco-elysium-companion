@@ -733,18 +733,27 @@ if ($Only -eq 'FreshnessRaceNewerConsumed') {
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $Config -ExpectedCacheDegraded $false
         $e = $envDoc.RootElement; $src = $e.GetProperty('state').GetProperty('source'); $floor = $e.GetProperty('sourceFloor')
+        $diagnosticSource = $res.diagnostic['sourceIdentity']
         [pscustomobject]@{
             outcomeClass = $res.outcomeClass
             consumedFile = $src.GetProperty('saveFile').GetString()
             consumedSavedAt = $src.GetProperty('savedAt').GetString()
             floorFile = $floor.GetProperty('saveFile').GetString()
             floorSavedAt = $floor.GetProperty('savedAt').GetString()
+            diagnosticDomainId = [string] $diagnosticSource['domainId']
+            diagnosticFile = [string] $diagnosticSource['saveFile']
+            diagnosticSavedAt = [string] $diagnosticSource['savedAt']
+            diagnosticGeneration = [string] $res.diagnostic['generationTimestamp']
         }
     } @($publishedRoot, $turnContextDigestTemplate, $turnContextDomain, $publishedFixture.Config, $publishedFixture.SavePath)
     Assert-Equal -Actual $published.outcomeClass -Expected 'success' -Message 'A serialized publish of a newer save is consumed in the same turn.'
     Assert-OrdinalEqual -Actual $published.consumedFile -Expected 'S2.ntwtf.zip' -Message 'Only the newer S2 reaches consumption.'
     Assert-OrdinalEqual -Actual $published.floorFile -Expected 'B.ntwtf.zip' -Message 'The floor stays pinned at the older S1 established before the race.'
     Assert-True -Condition ([datetime]::Parse($published.consumedSavedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind) -gt [datetime]::Parse($published.floorSavedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)) -Message 'The consumed S2 sits above the S1 floor.'
+    Assert-OrdinalEqual -Actual $published.diagnosticDomainId -Expected $turnContextDomain -Message 'The success diagnostic carries the payload state domain.'
+    Assert-OrdinalEqual -Actual $published.diagnosticFile -Expected 'S2.ntwtf.zip' -Message 'The success diagnostic carries the payload state file.'
+    Assert-OrdinalEqual -Actual $published.diagnosticSavedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message 'The success diagnostic carries the payload state timestamp.'
+    Assert-OrdinalEqual -Actual $published.diagnosticGeneration -Expected '2026-08-10T14:00:00.0000000Z' -Message 'The success diagnostic carries the payload state generation.'
 
     Write-TurnContextPassGate
     exit 0
@@ -761,7 +770,9 @@ $serializeRoot = New-ScratchCompanionRoot -Prefix 'turn-context-envelope-seriali
 $serializeFixture = New-TurnContextAttemptFixture -Root $serializeRoot -Game 'other'
 $serialize = Invoke-InCompanionModule {
     param($Root, $Template, $Domain, $Config, $SavePath)
-    $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+    $targetJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+    $stateJson = $Template.Replace('GEN', '2026-08-10T14:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'S2.ntwtf.zip').Replace('SAVE', '2026-08-10T13:00:00.0000000Z')
+    $targetDoc = Read-DigestDocument -Json $targetJson
     $stateDoc = Read-DigestDocument -Json $stateJson
     $rows = [Collections.Generic.List[object]]::new()
     foreach ($case in @(
@@ -769,12 +780,13 @@ $serialize = Invoke-InCompanionModule {
             @{ outcome = 'reset-write:not-consumed'; state = 'notConsumed'; degraded = $false; detail = 'baseline-temp-write-failed' })) {
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
-            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $targetDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
             Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($case.degraded, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass $case.outcome -ConsumptionState $case.state -Payload $p -CacheDegraded $case.degraded -Detail $case.detail }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         [void] (Assert-TurnContextAttemptResult -Value $res)
+        $diagnosticSource = $res.diagnostic['sourceIdentity']
         $rows.Add([pscustomobject]@{
                 consumptionOutcome = $case.outcome
                 outcomeClass = $res.outcomeClass
@@ -783,6 +795,10 @@ $serialize = Invoke-InCompanionModule {
                 cacheDegraded = $res.cacheDegraded
                 diagnosticState = $res.diagnostic['consumptionState']
                 diagnosticDetail = $res.diagnostic['detail']
+                diagnosticDomainId = [string] $diagnosticSource['domainId']
+                diagnosticFile = [string] $diagnosticSource['saveFile']
+                diagnosticSavedAt = [string] $diagnosticSource['savedAt']
+                diagnosticGeneration = [string] $res.diagnostic['generationTimestamp']
             })
     }
 
@@ -793,6 +809,10 @@ foreach ($row in $serialize) {
     Assert-True -Condition ($null -eq $row.envelopeJson -or $row.envelopeJson -eq '') -Message "Envelope serialization failure after '$($row.consumptionOutcome)' emits no envelope."
     Assert-False -Condition $row.cacheDegraded -Message "Envelope serialization failure after '$($row.consumptionOutcome)' does not fabricate cache degradation."
     Assert-OrdinalEqual -Actual $row.diagnosticDetail -Expected 'envelope-serialize-failed' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' carries the registry serialize reason."
+    Assert-OrdinalEqual -Actual $row.diagnosticDomainId -Expected $turnContextDomain -Message "Envelope serialization failure after '$($row.consumptionOutcome)' carries the payload state domain."
+    Assert-OrdinalEqual -Actual $row.diagnosticFile -Expected 'S2.ntwtf.zip' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' carries the payload state file."
+    Assert-OrdinalEqual -Actual $row.diagnosticSavedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' carries the payload state timestamp."
+    Assert-OrdinalEqual -Actual $row.diagnosticGeneration -Expected '2026-08-10T14:00:00.0000000Z' -Message "Envelope serialization failure after '$($row.consumptionOutcome)' carries the payload state generation."
 }
 Assert-Equal -Actual $serialize[0].consumptionState -Expected 'consumed' -Message 'Serialization failure after a consumed consumption preserves consumed.'
 Assert-Equal -Actual $serialize[0].diagnosticState -Expected 'consumed' -Message 'The diagnostic reports the preserved consumed state.'
@@ -1122,9 +1142,33 @@ $stabilityRows = Invoke-InCompanionModule {
         TestStable = { param($Save) $true }
         Cycle = { param($CycleSave, $Sink) $cycledSaves.Add($CycleSave.Name); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
     }
+    $unexpectedEnumerations = [Collections.Generic.List[int]]::new()
+    $unexpectedCycles = [Collections.Generic.List[int]]::new()
+    $unexpectedConsumptions = [Collections.Generic.List[int]]::new()
+    $unexpected = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        GetSaveCandidates = { param($Unused) $unexpectedEnumerations.Add(1); if ($unexpectedEnumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath), [IO.FileInfo]::new($SavePath)) } }
+        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+        ConfirmConfig = { param($Unused) }
+        TestStable = { param($Save) throw [InvalidOperationException]::new('unexpected stability failure') }
+        Cycle = { param($CycleSave, $Sink) $unexpectedCycles.Add(1) }
+        Consumption = { param($Floor, $Ctx, $Sink) $unexpectedConsumptions.Add(1) }
+    }
+    $unexpectedSource = $unexpected.diagnostic['sourceIdentity']
     [IO.File]::Delete($newerPath)
 
-    return [pscustomobject]@{ rows = @($rows); firstCycledSave = $cycledSaves[0]; reselectFloorFile = $reselect.diagnostic['sourceIdentity'] }
+    return [pscustomobject]@{
+        rows = @($rows)
+        firstCycledSave = $cycledSaves[0]
+        reselectFloorFile = $reselect.diagnostic['sourceIdentity']
+        unexpectedClass = $unexpected.outcomeClass
+        unexpectedDetail = $unexpected.diagnostic['detail']
+        unexpectedDomainId = if ($null -eq $unexpectedSource) { $null } else { [string] $unexpectedSource['domainId'] }
+        unexpectedFile = if ($null -eq $unexpectedSource) { $null } else { [string] $unexpectedSource['saveFile'] }
+        unexpectedSavedAt = if ($null -eq $unexpectedSource) { $null } else { [string] $unexpectedSource['savedAt'] }
+        unexpectedGeneration = $unexpected.diagnostic['generationTimestamp']
+        unexpectedCycleCalls = $unexpectedCycles.Count
+        unexpectedConsumptionCalls = $unexpectedConsumptions.Count
+    }
 } @($stabilityRoot, $stabilityFixture.Config, $stabilityFixture.SavePath)
 foreach ($row in $stabilityRows.rows) {
     Assert-Equal -Actual $row.gateCalls -Expected $row.expectedCalls -Message "The '$($row.name)' gate outcome draws exactly $($row.expectedCalls) gate pass(es)."
@@ -1134,6 +1178,14 @@ foreach ($row in $stabilityRows.rows) {
 }
 Assert-OrdinalEqual -Actual $stabilityRows.firstCycledSave -Expected 'C.ntwtf.zip' -Message 'The cycle processes the post-lock re-selected newer save.'
 Assert-OrdinalEqual -Actual ([string] $stabilityRows.reselectFloorFile['saveFile']) -Expected 'C.ntwtf.zip' -Message 'The floor rises to the post-lock selection.'
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedClass -Expected 'protocol' -Message 'An unexpected post-lock stability failure terminates as protocol.'
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedDetail -Expected 'envelope-invalid' -Message 'An unexpected post-lock stability failure carries envelope-invalid.'
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedDomainId -Expected $turnContextDomain -Message 'An unexpected post-lock stability failure carries the raised floor domain.'
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedFile -Expected 'C.ntwtf.zip' -Message 'An unexpected post-lock stability failure carries the raised floor file.'
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedSavedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message 'An unexpected post-lock stability failure carries the raised floor timestamp.'
+Assert-True -Condition ($null -eq $stabilityRows.unexpectedGeneration) -Message 'An unexpected post-lock stability failure has no generation timestamp.'
+Assert-Equal -Actual $stabilityRows.unexpectedCycleCalls -Expected 0 -Message 'An unexpected post-lock stability failure never invokes the cycle.'
+Assert-Equal -Actual $stabilityRows.unexpectedConsumptionCalls -Expected 0 -Message 'An unexpected post-lock stability failure never starts consumption.'
 
 # The remaining post-lock terminal exits: an empty re-enumeration is no-saves, a
 # failing re-enumeration is non-retryable source/save-enumeration-failed, and an
