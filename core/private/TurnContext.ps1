@@ -377,8 +377,8 @@ function Invoke-TurnContextAttempt {
         Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $OperationalWarnings
         for ($pass = 0; $pass -lt $script:TurnContextRefreshAttemptCap; $pass++) {
             try { $candidates = if ($Operations.ContainsKey('GetSaveCandidates')) { & $Operations.GetSaveCandidates $AdapterConfig } else { Get-SaveCandidates -SaveDirectory $AdapterConfig.SaveDirectory -SaveGlob $AdapterConfig.SaveGlob } }
-            catch [SaveCandidateLimitException] { return New-TurnContextTerminalResult -Class source -Reason candidate-limit-exceeded }
-            catch { return New-TurnContextTerminalResult -Class source -Reason save-enumeration-failed }
+            catch [SaveCandidateLimitException] { return New-TurnContextTerminalResult -Class source -Reason candidate-limit-exceeded -SourceIdentity $floor }
+            catch { return New-TurnContextTerminalResult -Class source -Reason save-enumeration-failed -SourceIdentity $floor }
             if (@($candidates).Count -eq 0) { return New-TurnContextTerminalResult -Class 'no-saves' -Reason no-matching-saves }
             $selected = @($candidates)[0]
             $identity = New-SourceIdentity -DomainId $AdapterConfig.SourceDomainId -SaveFile $selected.Name -SavedAt $selected.LastWriteTimeUtc
@@ -442,8 +442,35 @@ function Invoke-TurnContextAttempt {
 
                 continue
             }
+            # 7.5 stage 4: admit only a target at or above the incoming floor.
             if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
-                if ($null -ne $cycleWarningCode) { return New-TurnContextTerminalResult -Class freshness -Reason target-below-floor -SourceIdentity $floor }
+                if ($null -ne $cycleWarningCode -or $pass -eq ($script:TurnContextRefreshAttemptCap - 1)) {
+                    return New-TurnContextTerminalResult -Class freshness -Reason target-below-floor -SourceIdentity $floor
+                }
+                $lastFreshnessReason = 'target-below-floor'
+
+                continue
+            }
+            $admittedGeneration = $target.document.RootElement.GetProperty('generatedAt').GetString()
+            # 7.5 stage 5: observe the save directory after the frozen target has
+            # been admitted, raising the floor to the newest identity observed.
+            # An empty observation leaves the existing floor unchanged.
+            try { $postTargetCandidates = if ($Operations.ContainsKey('GetSaveCandidates')) { & $Operations.GetSaveCandidates $AdapterConfig } else { Get-SaveCandidates -SaveDirectory $AdapterConfig.SaveDirectory -SaveGlob $AdapterConfig.SaveGlob } }
+            catch [SaveCandidateLimitException] { return New-TurnContextTerminalResult -Class source -Reason candidate-limit-exceeded -SourceIdentity $floor }
+            catch { return New-TurnContextTerminalResult -Class source -Reason save-enumeration-failed -SourceIdentity $floor }
+            $newestPostTargetIdentity = $null
+            $postTargetCandidateArray = @($postTargetCandidates)
+            if ($postTargetCandidateArray.Count -gt 0) {
+                foreach ($postTargetCandidate in $postTargetCandidateArray) {
+                    $postTargetIdentity = New-SourceIdentity -DomainId $AdapterConfig.SourceDomainId -SaveFile $postTargetCandidate.Name -SavedAt $postTargetCandidate.LastWriteTimeUtc
+                    if ($null -eq $newestPostTargetIdentity -or (Compare-SourceIdentity -Left $postTargetIdentity -Right $newestPostTargetIdentity).order -gt 0) { $newestPostTargetIdentity = $postTargetIdentity }
+                }
+            }
+            if ($null -ne $newestPostTargetIdentity -and (Compare-SourceIdentity -Left $newestPostTargetIdentity -Right $floor).order -gt 0) { $floor = $newestPostTargetIdentity }
+            if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
+                if ($null -ne $cycleWarningCode -or $pass -eq ($script:TurnContextRefreshAttemptCap - 1)) {
+                    return New-TurnContextTerminalResult -Class freshness -Reason target-below-floor -SourceIdentity $floor -GenerationTimestamp $admittedGeneration
+                }
                 $lastFreshnessReason = 'target-below-floor'
 
                 continue

@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome')]
     [string] $Only = 'All'
 )
 
@@ -196,6 +196,329 @@ function New-TurnContextAttemptFixture {
 
         return [pscustomobject]@{ Config = $config; SavePath = $savePath }
     } @($Root, $Game, $turnContextDomain)
+}
+
+if ($Only -in @('All', 'PostTargetEnumeration')) {
+    $postTargetRoot = New-ScratchCompanionRoot -Prefix 'turn-context-post-target'
+    $postTargetFixture = New-TurnContextAttemptFixture -Root $postTargetRoot
+    $postTargetRace = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain, $Config, $SavePath)
+        $newerPath = Join-Path (Split-Path $SavePath -Parent) 'C.ntwtf.zip'
+        [IO.File]::WriteAllText($newerPath, 'y', [Text.UTF8Encoding]::new($false, $true))
+        [IO.File]::SetLastWriteTimeUtc($newerPath, [datetime]::Parse('2026-08-10T13:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+        $targetB = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z'))
+        $targetC = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T14:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'C.ntwtf.zip').Replace('SAVE', '2026-08-10T13:00:00.0000000Z'))
+        $enumerations = [Collections.Generic.List[int]]::new()
+        $reads = [Collections.Generic.List[int]]::new()
+        $consumptions = [Collections.Generic.List[string]]::new()
+        $operations = @{
+            GetSaveCandidates = {
+                param($Unused)
+                $enumerations.Add(1)
+                if ($enumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath)) }
+            }
+            ReadCurrent = {
+                param($Unused)
+                $reads.Add(1)
+                if ($reads.Count -eq 1) { [pscustomobject]@{ outcome = 'valid'; document = $targetB; reason = $null } } else { [pscustomobject]@{ outcome = 'valid'; document = $targetC; reason = $null } }
+            }
+            ConfirmConfig = { param($Unused) }
+            Consumption = {
+                param($Floor, $Ctx, $Sink)
+                $consumptions.Add([string] $Floor.saveFile)
+                $consumptionTarget = if ($Floor.saveFile -ceq 'B.ntwtf.zip') { $targetB } else { $targetC }
+                $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $consumptionTarget) -State $consumptionTarget -Context $Ctx
+                $payload.Complete($false, $Sink.Freeze())
+                New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+            }
+        }
+        $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $consumedFloor = if ($consumptions.Count -eq 0) { $null } else { $consumptions[0] }
+        [pscustomobject]@{ outcomeClass = $result.outcomeClass; diagnosticDetail = $result.diagnostic['detail']; enumerationCalls = $enumerations.Count; readCalls = $reads.Count; consumptionCalls = $consumptions.Count; consumedFloor = $consumedFloor }
+    } @($postTargetRoot, $turnContextDigestTemplate, $turnContextDomain, $postTargetFixture.Config, $postTargetFixture.SavePath)
+    Assert-OrdinalEqual -Actual $postTargetRace.outcomeClass -Expected 'success' -Message "A newer post-target save causes reacquisition before consumption succeeds (detail: $($postTargetRace.diagnosticDetail))."
+    Assert-Equal -Actual $postTargetRace.enumerationCalls -Expected 4 -Message 'The newer post-target save is observed across two complete passes.'
+    Assert-Equal -Actual $postTargetRace.readCalls -Expected 2 -Message 'A below-floor target is discarded and reacquired on the next pass.'
+    Assert-Equal -Actual $postTargetRace.consumptionCalls -Expected 1 -Message 'The first below-floor pass never starts consumption.'
+    Assert-OrdinalEqual -Actual $postTargetRace.consumedFloor -Expected 'C.ntwtf.zip' -Message 'Consumption receives the raised post-target floor.'
+
+    $reacquisitionFailure = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain, $Config, $SavePath)
+        $newerPath = Join-Path (Split-Path $SavePath -Parent) 'C.ntwtf.zip'
+        [IO.File]::WriteAllText($newerPath, 'y', [Text.UTF8Encoding]::new($false, $true))
+        [IO.File]::SetLastWriteTimeUtc($newerPath, [datetime]::Parse('2026-08-10T13:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+        $targetB = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z'))
+        $enumerations = [Collections.Generic.List[int]]::new()
+        $consumptions = [Collections.Generic.List[int]]::new()
+        $operations = @{
+            GetSaveCandidates = {
+                param($Unused)
+                $enumerations.Add(1)
+                if ($enumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) }
+                elseif ($enumerations.Count -eq 2) { @([IO.FileInfo]::new($newerPath)) }
+                else { throw [IO.IOException]::new('reacquisition enumeration broke') }
+            }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $targetB; reason = $null } }
+            ConfirmConfig = { param($Unused) }
+            Consumption = { param($Floor, $Ctx, $Sink) $consumptions.Add(1) }
+        }
+        $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+        $sourceIdentity = $result.diagnostic['sourceIdentity']
+        $initialFailure = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = { param($Unused) throw [IO.IOException]::new('initial enumeration broke') }
+        }
+
+        return [pscustomobject]@{
+            outcomeClass = $result.outcomeClass
+            detail = $result.diagnostic['detail']
+            sourceDomainId = if ($null -eq $sourceIdentity) { $null } else { [string] $sourceIdentity['domainId'] }
+            sourceFile = if ($null -eq $sourceIdentity) { $null } else { [string] $sourceIdentity['saveFile'] }
+            sourceSavedAt = if ($null -eq $sourceIdentity) { $null } else { [string] $sourceIdentity['savedAt'] }
+            generation = $result.diagnostic['generationTimestamp']
+            enumerationCalls = $enumerations.Count
+            consumptionCalls = $consumptions.Count
+            initialSourceIdentity = $initialFailure.diagnostic['sourceIdentity']
+        }
+    } @($postTargetRoot, $turnContextDigestTemplate, $turnContextDomain, $postTargetFixture.Config, $postTargetFixture.SavePath)
+    Assert-OrdinalEqual -Actual $reacquisitionFailure.outcomeClass -Expected 'source' -Message 'An opening enumeration failure during reacquisition terminates as source.'
+    Assert-OrdinalEqual -Actual $reacquisitionFailure.detail -Expected 'save-enumeration-failed' -Message 'A reacquisition enumeration failure carries save-enumeration-failed.'
+    Assert-OrdinalEqual -Actual $reacquisitionFailure.sourceDomainId -Expected $turnContextDomain -Message 'A reacquisition enumeration failure carries the latched floor domain.'
+    Assert-OrdinalEqual -Actual $reacquisitionFailure.sourceFile -Expected 'C.ntwtf.zip' -Message 'A reacquisition enumeration failure carries the newer observed floor file.'
+    Assert-OrdinalEqual -Actual $reacquisitionFailure.sourceSavedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message 'A reacquisition enumeration failure carries the newer observed floor timestamp.'
+    Assert-True -Condition ($null -eq $reacquisitionFailure.generation) -Message 'A reacquisition enumeration failure has no generation timestamp.'
+    Assert-Equal -Actual $reacquisitionFailure.enumerationCalls -Expected 3 -Message 'The reacquisition failure occurs at the next pass opening observation.'
+    Assert-Equal -Actual $reacquisitionFailure.consumptionCalls -Expected 0 -Message 'A reacquisition enumeration failure never starts consumption.'
+    Assert-True -Condition ($null -eq $reacquisitionFailure.initialSourceIdentity) -Message 'A first-pass opening enumeration failure retains null source identity.'
+
+    $floorGateCases = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain, $Config, $SavePath)
+        $saveDirectory = Split-Path $SavePath -Parent
+        $newerPath = Join-Path $saveDirectory 'C.ntwtf.zip'
+        $newestPath = Join-Path $saveDirectory 'D.ntwtf.zip'
+        $finalPath = Join-Path $saveDirectory 'E.ntwtf.zip'
+        foreach ($save in @(
+                @{ path = $newerPath; content = 'y'; savedAt = '2026-08-10T13:00:00.0000000Z' },
+                @{ path = $newestPath; content = 'z'; savedAt = '2026-08-10T15:00:00.0000000Z' },
+                @{ path = $finalPath; content = 'w'; savedAt = '2026-08-10T17:00:00.0000000Z' }
+            )) {
+            [IO.File]::WriteAllText($save.path, $save.content, [Text.UTF8Encoding]::new($false, $true))
+            [IO.File]::SetLastWriteTimeUtc($save.path, [datetime]::Parse($save.savedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
+        }
+        $targetB = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z'))
+        $targetC = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T14:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'C.ntwtf.zip').Replace('SAVE', '2026-08-10T13:00:00.0000000Z'))
+        $targetD = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T16:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'D.ntwtf.zip').Replace('SAVE', '2026-08-10T15:00:00.0000000Z'))
+
+        $reacquireEnumerations = [Collections.Generic.List[int]]::new()
+        $reacquireReads = [Collections.Generic.List[int]]::new()
+        $reacquireCycles = [Collections.Generic.List[int]]::new()
+        $reacquireConsumptions = [Collections.Generic.List[int]]::new()
+        $reacquireResult = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = {
+                param($Unused)
+                $reacquireEnumerations.Add(1)
+                if ($reacquireEnumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath)) }
+            }
+            ReadCurrent = {
+                param($Unused)
+                $reacquireReads.Add(1)
+                if ($reacquireReads.Count -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+                elseif ($reacquireReads.Count -eq 2) { [pscustomobject]@{ outcome = 'valid'; document = $targetB; reason = $null } }
+                else { [pscustomobject]@{ outcome = 'valid'; document = $targetC; reason = $null } }
+            }
+            ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) $true }
+            Cycle = { param($UnusedSave, $Sink) $reacquireCycles.Add(1); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+            Consumption = {
+                param($Floor, $Ctx, $Sink)
+                $reacquireConsumptions.Add(1)
+                $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $targetC) -State $targetC -Context $Ctx
+                $payload.Complete($false, $Sink.Freeze())
+                New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+            }
+        }
+
+        $exhaustEnumerations = [Collections.Generic.List[int]]::new()
+        $exhaustReads = [Collections.Generic.List[int]]::new()
+        $exhaustCycles = [Collections.Generic.List[int]]::new()
+        $exhaustConsumptions = [Collections.Generic.List[int]]::new()
+        $exhaustResult = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = {
+                param($Unused)
+                $exhaustEnumerations.Add(1)
+                if ($exhaustEnumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath)) }
+            }
+            ReadCurrent = {
+                param($Unused)
+                $exhaustReads.Add(1)
+                if (($exhaustReads.Count % 2) -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } } else { [pscustomobject]@{ outcome = 'valid'; document = $targetB; reason = $null } }
+            }
+            ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) $true }
+            Cycle = { param($UnusedSave, $Sink) $exhaustCycles.Add(1); [CycleOutcome]::new($true, $true, $false, $true, $true, $null, 'stable', $false, $null, $Sink.Freeze()) }
+            Consumption = { param($Floor, $Ctx, $Sink) $exhaustConsumptions.Add(1) }
+        }
+        $exhaustSource = $exhaustResult.diagnostic['sourceIdentity']
+
+        $warningEnumerations = [Collections.Generic.List[int]]::new()
+        $warningConsumptions = [Collections.Generic.List[int]]::new()
+        $warningReads = [Collections.Generic.List[int]]::new()
+        $warningResult = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = {
+                param($Unused)
+                $warningEnumerations.Add(1)
+                if ($warningEnumerations.Count -le 2) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath)) }
+            }
+            ReadCurrent = {
+                param($Unused)
+                $warningReads.Add(1)
+                if ($warningReads.Count -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } } else { [pscustomobject]@{ outcome = 'valid'; document = $targetB; reason = $null } }
+            }
+            ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) $true }
+            Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($false, $true, $false, $false, $false, 'cache', 'stable', $false, 'diff-compute-failed', $Sink.Freeze()) }
+            Consumption = { param($Floor, $Ctx, $Sink) $warningConsumptions.Add(1) }
+        }
+        $warningSource = $warningResult.diagnostic['sourceIdentity']
+
+        $postStageEnumerations = [Collections.Generic.List[int]]::new()
+        $postStageReads = [Collections.Generic.List[int]]::new()
+        $postStageConsumptions = [Collections.Generic.List[int]]::new()
+        $postStageResult = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = {
+                param($Unused)
+                $postStageEnumerations.Add(1)
+                switch ($postStageEnumerations.Count) {
+                    1 { @([IO.FileInfo]::new($SavePath)) }
+                    2 { @([IO.FileInfo]::new($newerPath)) }
+                    3 { @([IO.FileInfo]::new($newerPath)) }
+                    4 { @([IO.FileInfo]::new($newestPath)) }
+                    5 { @([IO.FileInfo]::new($newestPath)) }
+                    default { @([IO.FileInfo]::new($finalPath)) }
+                }
+            }
+            ReadCurrent = {
+                param($Unused)
+                $postStageReads.Add(1)
+                switch ($postStageReads.Count) {
+                    1 { [pscustomobject]@{ outcome = 'valid'; document = $targetB; reason = $null } }
+                    2 { [pscustomobject]@{ outcome = 'valid'; document = $targetC; reason = $null } }
+                    default { [pscustomobject]@{ outcome = 'valid'; document = $targetD; reason = $null } }
+                }
+            }
+            Consumption = { param($Floor, $Ctx, $Sink) $postStageConsumptions.Add(1) }
+        }
+        $postStageSource = $postStageResult.diagnostic['sourceIdentity']
+
+        return [pscustomobject]@{
+            reacquire = [pscustomobject]@{ class = $reacquireResult.outcomeClass; enumerations = $reacquireEnumerations.Count; reads = $reacquireReads.Count; cycles = $reacquireCycles.Count; consumptions = $reacquireConsumptions.Count }
+            exhaust = [pscustomobject]@{ class = $exhaustResult.outcomeClass; detail = $exhaustResult.diagnostic['detail']; domain = [string] $exhaustSource['domainId']; file = [string] $exhaustSource['saveFile']; savedAt = [string] $exhaustSource['savedAt']; generation = $exhaustResult.diagnostic['generationTimestamp']; enumerations = $exhaustEnumerations.Count; reads = $exhaustReads.Count; cycles = $exhaustCycles.Count; consumptions = $exhaustConsumptions.Count }
+            warning = [pscustomobject]@{ class = $warningResult.outcomeClass; detail = $warningResult.diagnostic['detail']; domain = [string] $warningSource['domainId']; file = [string] $warningSource['saveFile']; savedAt = [string] $warningSource['savedAt']; generation = $warningResult.diagnostic['generationTimestamp']; enumerations = $warningEnumerations.Count; consumptions = $warningConsumptions.Count }
+            postStage = [pscustomobject]@{ class = $postStageResult.outcomeClass; detail = $postStageResult.diagnostic['detail']; domain = [string] $postStageSource['domainId']; file = [string] $postStageSource['saveFile']; savedAt = [string] $postStageSource['savedAt']; generation = $postStageResult.diagnostic['generationTimestamp']; enumerations = $postStageEnumerations.Count; reads = $postStageReads.Count; consumptions = $postStageConsumptions.Count }
+        }
+    } @($postTargetRoot, $turnContextDigestTemplate, $turnContextDomain, $postTargetFixture.Config, $postTargetFixture.SavePath)
+    Assert-OrdinalEqual -Actual $floorGateCases.reacquire.class -Expected 'success' -Message 'A target below the incoming floor is reacquired while pass budget remains.'
+    Assert-Equal -Actual $floorGateCases.reacquire.enumerations -Expected 4 -Message 'Stage 5 is skipped for the rejected preflight target.'
+    Assert-Equal -Actual $floorGateCases.reacquire.reads -Expected 3 -Message 'The rejected preflight target is replaced on the next pass.'
+    Assert-Equal -Actual $floorGateCases.reacquire.cycles -Expected 1 -Message 'Only the initial absent target requires a refresh cycle.'
+    Assert-Equal -Actual $floorGateCases.reacquire.consumptions -Expected 1 -Message 'Only the reacquired target reaches consumption.'
+    Assert-OrdinalEqual -Actual $floorGateCases.exhaust.class -Expected 'freshness' -Message 'Exhausting stage 4 floor rejection returns freshness.'
+    Assert-OrdinalEqual -Actual $floorGateCases.exhaust.detail -Expected 'target-below-floor' -Message 'Exhausting stage 4 floor rejection preserves its concrete reason.'
+    Assert-OrdinalEqual -Actual $floorGateCases.exhaust.domain -Expected $turnContextDomain -Message 'Stage 4 exhaustion carries the latched floor domain.'
+    Assert-OrdinalEqual -Actual $floorGateCases.exhaust.file -Expected 'C.ntwtf.zip' -Message 'Stage 4 exhaustion carries the latched floor file.'
+    Assert-OrdinalEqual -Actual $floorGateCases.exhaust.savedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message 'Stage 4 exhaustion carries the latched floor timestamp.'
+    Assert-True -Condition ($null -eq $floorGateCases.exhaust.generation) -Message 'A target rejected at stage 4 has no admitted generation.'
+    Assert-Equal -Actual $floorGateCases.exhaust.enumerations -Expected 6 -Message 'Stage 5 is skipped on every exhausted stage 4 rejection.'
+    Assert-Equal -Actual $floorGateCases.exhaust.reads -Expected 6 -Message 'Every stage 4 exhaustion pass revalidates the refreshed target.'
+    Assert-Equal -Actual $floorGateCases.exhaust.cycles -Expected 3 -Message 'Stage 4 exhaustion uses the existing three-pass refresh cap.'
+    Assert-Equal -Actual $floorGateCases.exhaust.consumptions -Expected 0 -Message 'Stage 4 exhaustion never starts consumption.'
+    Assert-OrdinalEqual -Actual $floorGateCases.warning.class -Expected 'freshness' -Message 'A cycle warning makes a post-stage-5 floor raise terminal.'
+    Assert-OrdinalEqual -Actual $floorGateCases.warning.detail -Expected 'target-below-floor' -Message 'A warning-specific post-stage-5 terminal carries target-below-floor.'
+    Assert-OrdinalEqual -Actual $floorGateCases.warning.domain -Expected $turnContextDomain -Message 'A warning-specific terminal carries the raised floor domain.'
+    Assert-OrdinalEqual -Actual $floorGateCases.warning.file -Expected 'C.ntwtf.zip' -Message 'A warning-specific terminal carries the raised floor file.'
+    Assert-OrdinalEqual -Actual $floorGateCases.warning.savedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message 'A warning-specific terminal carries the raised floor timestamp.'
+    Assert-OrdinalEqual -Actual $floorGateCases.warning.generation -Expected '2026-08-10T12:00:00.0000000Z' -Message 'A warning-specific terminal carries the admitted target generation.'
+    Assert-Equal -Actual $floorGateCases.warning.enumerations -Expected 3 -Message 'The warning-specific case reaches stage 5 after target admission.'
+    Assert-Equal -Actual $floorGateCases.warning.consumptions -Expected 0 -Message 'A warning-specific post-stage-5 terminal never starts consumption.'
+    Assert-OrdinalEqual -Actual $floorGateCases.postStage.class -Expected 'freshness' -Message 'Ordinary post-stage-5 floor raises exhaust as freshness.'
+    Assert-OrdinalEqual -Actual $floorGateCases.postStage.detail -Expected 'target-below-floor' -Message 'Ordinary post-stage-5 exhaustion carries target-below-floor.'
+    Assert-OrdinalEqual -Actual $floorGateCases.postStage.domain -Expected $turnContextDomain -Message 'Post-stage-5 exhaustion carries the final raised floor domain.'
+    Assert-OrdinalEqual -Actual $floorGateCases.postStage.file -Expected 'E.ntwtf.zip' -Message 'Post-stage-5 exhaustion carries the final raised floor file.'
+    Assert-OrdinalEqual -Actual $floorGateCases.postStage.savedAt -Expected '2026-08-10T17:00:00.0000000Z' -Message 'Post-stage-5 exhaustion carries the final raised floor timestamp.'
+    Assert-OrdinalEqual -Actual $floorGateCases.postStage.generation -Expected '2026-08-10T16:00:00.0000000Z' -Message 'Post-stage-5 exhaustion carries the target generation admitted on the final pass.'
+    Assert-Equal -Actual $floorGateCases.postStage.enumerations -Expected 6 -Message 'Ordinary post-stage-5 exhaustion uses two observations per pass.'
+    Assert-Equal -Actual $floorGateCases.postStage.reads -Expected 3 -Message 'Ordinary post-stage-5 exhaustion admits one target per pass.'
+    Assert-Equal -Actual $floorGateCases.postStage.consumptions -Expected 0 -Message 'Ordinary post-stage-5 exhaustion never starts consumption.'
+
+    $postTargetBoundary = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain, $Config, $SavePath)
+        $stateDoc = Read-DigestDocument -Json ($Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z'))
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($mode in @('empty', 'generic-failure', 'candidate-limit')) {
+            $enumerations = [Collections.Generic.List[int]]::new()
+            $consumptions = [Collections.Generic.List[int]]::new()
+            $consumptionFloors = [Collections.Generic.List[object]]::new()
+            $operations = @{
+                GetSaveCandidates = {
+                    param($Unused)
+                    $enumerations.Add(1)
+                    if ($enumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) }
+                    elseif ($mode -ceq 'empty') { @() }
+                    elseif ($mode -ceq 'generic-failure') { throw [IO.IOException]::new('enumeration broke') }
+                    elseif ($mode -ceq 'candidate-limit') { throw [SaveCandidateLimitException]::new('save-candidate-limit-exceeded') }
+                    else {
+                        @([IO.FileInfo]::new($SavePath))
+                    }
+                }
+                ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
+                ConfirmConfig = { param($Unused) }
+                Consumption = {
+                    param($Floor, $Ctx, $Sink)
+                    $consumptions.Add(1)
+                    $consumptionFloors.Add([pscustomobject]@{ domainId = [string] $Floor.domainId; saveFile = [string] $Floor.saveFile; savedAt = $Floor.savedAt.ToString('o', [Globalization.CultureInfo]::InvariantCulture) })
+                    $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx
+                    $payload.Complete($false, $Sink.Freeze())
+                    New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+                }
+            }
+            $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+            $sourceIdentity = $result.diagnostic['sourceIdentity']
+            $sourceDomainId = if ($null -eq $sourceIdentity) { $null } else { [string] $sourceIdentity['domainId'] }
+            $sourceFile = if ($null -eq $sourceIdentity) { $null } else { [string] $sourceIdentity['saveFile'] }
+            $sourceSavedAt = if ($null -eq $sourceIdentity) { $null } else { [string] $sourceIdentity['savedAt'] }
+            $consumptionFloor = if ($consumptionFloors.Count -eq 0) { $null } else { $consumptionFloors[0] }
+            $rows.Add([pscustomobject]@{ mode = $mode; outcomeClass = $result.outcomeClass; detail = $result.diagnostic['detail']; sourceDomainId = $sourceDomainId; sourceFile = $sourceFile; sourceSavedAt = $sourceSavedAt; consumptionFloorDomainId = if ($null -eq $consumptionFloor) { $null } else { $consumptionFloor.domainId }; consumptionFloorFile = if ($null -eq $consumptionFloor) { $null } else { $consumptionFloor.saveFile }; consumptionFloorSavedAt = if ($null -eq $consumptionFloor) { $null } else { $consumptionFloor.savedAt }; enumerationCalls = $enumerations.Count; consumptionCalls = $consumptions.Count })
+        }
+
+        return @($rows)
+    } @($postTargetRoot, $turnContextDigestTemplate, $turnContextDomain, $postTargetFixture.Config, $postTargetFixture.SavePath)
+    $emptyBoundary = $postTargetBoundary | Where-Object mode -eq 'empty'
+    Assert-OrdinalEqual -Actual $emptyBoundary.outcomeClass -Expected 'success' -Message "An empty post-target enumeration leaves the floor unchanged and permits consumption (detail: $($emptyBoundary.detail))."
+    Assert-Equal -Actual $emptyBoundary.enumerationCalls -Expected 2 -Message 'An empty post-target enumeration is still observed after target admission.'
+    Assert-Equal -Actual $emptyBoundary.consumptionCalls -Expected 1 -Message 'An empty post-target enumeration permits one consumption.'
+    Assert-OrdinalEqual -Actual $emptyBoundary.consumptionFloorDomainId -Expected $turnContextDomain -Message 'Empty post-target consumption receives the existing floor domain.'
+    Assert-OrdinalEqual -Actual $emptyBoundary.consumptionFloorFile -Expected 'B.ntwtf.zip' -Message 'Empty post-target consumption receives the existing floor file.'
+    Assert-OrdinalEqual -Actual $emptyBoundary.consumptionFloorSavedAt -Expected '2026-08-10T11:00:00.0000000Z' -Message 'Empty post-target consumption receives the existing floor timestamp.'
+    $genericBoundary = $postTargetBoundary | Where-Object mode -eq 'generic-failure'
+    Assert-OrdinalEqual -Actual $genericBoundary.outcomeClass -Expected 'source' -Message 'A generic post-target enumeration failure terminates as source.'
+    Assert-OrdinalEqual -Actual $genericBoundary.detail -Expected 'save-enumeration-failed' -Message 'A generic post-target enumeration failure carries save-enumeration-failed.'
+    Assert-OrdinalEqual -Actual $genericBoundary.sourceDomainId -Expected $turnContextDomain -Message 'A generic post-target enumeration failure carries the latched floor domain.'
+    Assert-OrdinalEqual -Actual $genericBoundary.sourceFile -Expected 'B.ntwtf.zip' -Message 'A generic post-target enumeration failure carries the latched floor as source identity.'
+    Assert-OrdinalEqual -Actual $genericBoundary.sourceSavedAt -Expected '2026-08-10T11:00:00.0000000Z' -Message 'A generic post-target enumeration failure carries the latched floor timestamp.'
+    Assert-Equal -Actual $genericBoundary.enumerationCalls -Expected 2 -Message 'A generic post-target enumeration failure occurs after target admission.'
+    Assert-Equal -Actual $genericBoundary.consumptionCalls -Expected 0 -Message 'A generic post-target enumeration failure never starts consumption.'
+    $limitBoundary = $postTargetBoundary | Where-Object mode -eq 'candidate-limit'
+    Assert-OrdinalEqual -Actual $limitBoundary.outcomeClass -Expected 'source' -Message 'A candidate-limit post-target enumeration failure terminates as source.'
+    Assert-OrdinalEqual -Actual $limitBoundary.detail -Expected 'candidate-limit-exceeded' -Message 'A candidate-limit post-target enumeration failure carries candidate-limit-exceeded.'
+    Assert-OrdinalEqual -Actual $limitBoundary.sourceDomainId -Expected $turnContextDomain -Message 'A candidate-limit post-target enumeration failure carries the latched floor domain.'
+    Assert-OrdinalEqual -Actual $limitBoundary.sourceFile -Expected 'B.ntwtf.zip' -Message 'A candidate-limit post-target enumeration failure carries the latched floor as source identity.'
+    Assert-OrdinalEqual -Actual $limitBoundary.sourceSavedAt -Expected '2026-08-10T11:00:00.0000000Z' -Message 'A candidate-limit post-target enumeration failure carries the latched floor timestamp.'
+    Assert-Equal -Actual $limitBoundary.enumerationCalls -Expected 2 -Message 'A candidate-limit post-target enumeration failure occurs after target admission.'
+    Assert-Equal -Actual $limitBoundary.consumptionCalls -Expected 0 -Message 'A candidate-limit post-target enumeration failure never starts consumption.'
+
+    if ($Only -eq 'PostTargetEnumeration') {
+        Write-TurnContextPassGate
+        exit 0
+    }
 }
 
 if ($Only -in @('All', 'BridgeCycleOutcome')) {
