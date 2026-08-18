@@ -17,11 +17,32 @@ $script:TurnContextReasons = @{
     emit = @('payload-serialize-failed', 'stdout-write-failed')
     delivery = @('stdout-write-failed')
 }
+$script:TurnContextInternalReasons = @{
+    'cycle-cache' = @('adapter-validator-infrastructure-failed', 'diff-compatibility-failed', 'diff-compute-failed', 'diff-validation-failed', 'cache-serialize-failed', 'cache-temp-write-failed', 'cache-replace-failed')
+    'cycle-bookkeeping' = @('bookkeeping-serialize-failed', 'bookkeeping-temp-write-failed', 'bookkeeping-replace-failed')
+}
+$script:TurnContextCycleCommitReasons = @('current-read-failed', 'current-write-failed')
+
+function Test-TurnContextReason {
+    param([AllowNull()] $Reason, [Parameter(Mandatory)] [object[]] $Allowed)
+
+    if ($Reason -isnot [string]) {
+        return $false
+    }
+    foreach ($candidate in $Allowed) {
+        if ([string]::Equals($Reason, $candidate, [StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+
+    return $false
+}
 
 function New-TurnContextDetail {
     param([Parameter(Mandatory)] [string] $Class, [Parameter(Mandatory)] [string] $Reason, [hashtable] $Atoms = @{})
 
-    if (-not $script:TurnContextReasons.ContainsKey($Class) -or $Reason -notin $script:TurnContextReasons[$Class]) { throw [TurnContextProtocolException]::new('Invalid turn-context detail.') }
+    $reasons = if ($script:TurnContextReasons.ContainsKey($Class)) { $script:TurnContextReasons[$Class] } elseif ($script:TurnContextInternalReasons.ContainsKey($Class)) { $script:TurnContextInternalReasons[$Class] } else { $null }
+    if ($null -eq $reasons -or -not (Test-TurnContextReason -Reason $Reason -Allowed $reasons)) { throw [TurnContextProtocolException]::new('Invalid turn-context detail.') }
     $allowedAtom = switch ($Reason) {
         'lock-timeout' { 'timeoutSeconds' }
         'command-timeout' { 'timeoutSeconds' }
@@ -272,6 +293,58 @@ function Merge-TurnContextCycleWarnings {
     }
 }
 
+function Resolve-TurnContextCycleOutcome {
+    param([AllowNull()] $Outcome)
+
+    try {
+        if ($Outcome -isnot [CycleOutcome]) {
+            throw [TurnContextProtocolException]::new('Invalid cycle outcome.')
+        }
+        Assert-CycleOutcome -Outcome $Outcome
+        if ($Outcome.Completed) {
+            return [pscustomobject]@{ action = 'continue'; outcomeClass = $null; detail = $null; retryable = $false; warningCode = $null }
+        }
+
+        switch ($Outcome.FailurePhase) {
+            'source' {
+                return [pscustomobject]@{ action = 'failure'; outcomeClass = 'source'; detail = New-TurnContextDetail -Class source -Reason $Outcome.Detail; retryable = $Outcome.Retryable; warningCode = $null }
+            }
+            'dump' {
+                return [pscustomobject]@{ action = 'failure'; outcomeClass = 'dump'; detail = New-TurnContextDetail -Class dump -Reason $Outcome.Detail; retryable = $false; warningCode = $null }
+            }
+            'digest' {
+                return [pscustomobject]@{ action = 'failure'; outcomeClass = 'digest'; detail = New-TurnContextDetail -Class digest -Reason $Outcome.Detail; retryable = $false; warningCode = $null }
+            }
+            'cache' {
+                [void] (New-TurnContextDetail -Class 'cycle-cache' -Reason $Outcome.Detail)
+
+                return [pscustomobject]@{ action = 'revalidate'; outcomeClass = $null; detail = $null; retryable = $false; warningCode = 'pipeline-cache-degraded' }
+            }
+            'bookkeeping' {
+                [void] (New-TurnContextDetail -Class 'cycle-bookkeeping' -Reason $Outcome.Detail)
+
+                return [pscustomobject]@{ action = 'revalidate'; outcomeClass = $null; detail = $null; retryable = $false; warningCode = 'pipeline-bookkeeping-degraded' }
+            }
+            'initialize' {
+                return [pscustomobject]@{ action = 'failure'; outcomeClass = 'source'; detail = New-TurnContextDetail -Class source -Reason $Outcome.Detail; retryable = $false; warningCode = $null }
+            }
+            'commit' {
+                if (-not (Test-TurnContextReason -Reason $Outcome.Detail -Allowed $script:TurnContextCycleCommitReasons)) {
+                    throw [TurnContextProtocolException]::new('Invalid cycle outcome.')
+                }
+
+                return [pscustomobject]@{ action = 'failure'; outcomeClass = 'refresh'; detail = New-TurnContextDetail -Class refresh -Reason current-commit-failed; retryable = $false; warningCode = $null }
+            }
+            default {
+                throw [TurnContextProtocolException]::new('Invalid cycle outcome.')
+            }
+        }
+    }
+    catch {
+        return [pscustomobject]@{ action = 'failure'; outcomeClass = 'refresh'; detail = New-TurnContextDetail -Class refresh -Reason cycle-outcome-invalid; retryable = $false; warningCode = $null }
+    }
+}
+
 function Invoke-TurnContextAttempt {
     param(
         [Parameter(Mandatory)] [string] $CompanionRoot,
@@ -298,6 +371,7 @@ function Invoke-TurnContextAttempt {
     $refreshAttempts = 0
     $lastFreshnessReason = 'target-below-floor'
     $refreshCommitted = $false
+    $cycleWarningCode = $null
     try {
         Initialize-CompanionStateDirectories -CompanionRoot $CompanionRoot
         Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $OperationalWarnings
@@ -343,18 +417,40 @@ function Invoke-TurnContextAttempt {
                     $cycleWarnings = New-CompanionWarningSink -Profile Cycle
                     Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $cycleWarnings
                     $cycle = if ($Operations.ContainsKey('Cycle')) { & $Operations.Cycle $selected $cycleWarnings } else { Invoke-CompanionCycle -CompanionRoot $CompanionRoot -AdapterDirectory $AdapterConfig.AdapterDirectory -AdapterConfig $AdapterConfig -SourceSave $selected -WarningSink $cycleWarnings }
-                    Merge-TurnContextCycleWarnings -Warnings $cycle.Warnings -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings
+                    $cycleResolution = Resolve-TurnContextCycleOutcome -Outcome $cycle
+                    if ($cycleResolution.detail -cne 'cycle-outcome-invalid') {
+                        Merge-TurnContextCycleWarnings -Warnings $cycle.Warnings -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings
+                    }
                     $refreshAttempts++
-                    $refreshCommitted = $refreshCommitted -or $cycle.CurrentCommitted
+                    if ($cycle -is [CycleOutcome]) {
+                        $refreshCommitted = $refreshCommitted -or $cycle.CurrentCommitted
+                    }
                 }
                 finally { $cycleLock.Dispose() }
-                if (-not $cycle.Completed -and -not ($cycle.Retryable -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1))) { return New-TurnContextTerminalResult -Class refresh -Reason current-commit-failed -SourceIdentity $floor }
-                if (-not $cycle.Completed) { continue }
+                if ($cycleResolution.action -ceq 'failure') {
+                    if ($cycleResolution.retryable -and $pass -lt ($script:TurnContextRefreshAttemptCap - 1)) { continue }
+
+                    return New-TurnContextTerminalResult -Class $cycleResolution.outcomeClass -Detail $cycleResolution.detail -SourceIdentity $floor
+                }
+                $cycleWarningCode = $cycleResolution.warningCode
             }
             $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
             if ($target.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
-            if ($target.outcome -ne 'valid') { $lastFreshnessReason = $target.reason; continue }
-            if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) { $lastFreshnessReason = 'target-below-floor'; continue }
+            if ($target.outcome -ne 'valid') {
+                if ($null -ne $cycleWarningCode) { return New-TurnContextTerminalResult -Class freshness -Reason $target.reason -SourceIdentity $floor }
+                $lastFreshnessReason = $target.reason
+
+                continue
+            }
+            if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
+                if ($null -ne $cycleWarningCode) { return New-TurnContextTerminalResult -Class freshness -Reason target-below-floor -SourceIdentity $floor }
+                $lastFreshnessReason = 'target-below-floor'
+
+                continue
+            }
+            if ($null -ne $cycleWarningCode) {
+                Add-CompanionWarning -Sink $attemptWarnings -Code $cycleWarningCode -Detail $null
+            }
             $context = [TurnContextPayloadContext]::new($floor, $refreshAttempts -gt 0, $refreshCommitted, $refreshAttempts)
             $consume = if ($Operations.ContainsKey('Consumption')) { & $Operations.Consumption $floor $context $attemptWarnings } else { Invoke-CompanionConsumption -AdapterConfig $AdapterConfig -CompanionRoot $CompanionRoot -DeliveryMode privateResult -SourceFloor $floor -Context $context -WarningSink $attemptWarnings }
             if ($consume.payload -is [TurnContextPayloadCandidate]) {

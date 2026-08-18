@@ -234,7 +234,7 @@ function Test-CycleOutcomeRejectsIllegalCombinations {
     Invoke-InCompanionModule -ScriptBlock {
         $rows = @(
             @($true, $true, $false, $true, $true, $null, 'stable', $false, $null), @($true, $false, $true, $false, $true, $null, 'stable', $false, $null),
-            @($false, $false, $false, $false, $false, 'initialize', 'not-checked', $false, 'cycle-initialize-failed'), @($false, $false, $false, $false, $false, 'source', 'vanished', $true, 'source-vanished'),
+            @($false, $false, $false, $false, $false, 'initialize', 'not-checked', $false, 'state-setup-failed'), @($false, $false, $false, $false, $false, 'source', 'vanished', $true, 'source-vanished'),
             @($false, $false, $false, $false, $false, 'source', 'changed', $true, 'source-changed'), @($false, $false, $false, $false, $false, 'source', 'unreadable', $false, 'source-unreadable'),
             @($false, $false, $false, $false, $false, 'dump', 'stable', $false, 'command-timeout'), @($false, $false, $false, $false, $false, 'digest', 'stable', $false, 'document-invalid'),
             @($false, $false, $false, $false, $false, 'commit', 'stable', $false, 'current-write-failed'), @($false, $true, $false, $false, $false, 'cache', 'stable', $false, 'diff-compute-failed'),

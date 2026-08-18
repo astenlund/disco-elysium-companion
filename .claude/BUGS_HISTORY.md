@@ -100,3 +100,10 @@ archaeological.
   retry classes unreachable. The attempt now re-enumerates, raises the floor, and
   stability-gates inside `cycle.lock` (`fix(turn-context): re-enumerate and
   stability-gate after cycle lock`, 2026-08-14).
+- The turn-context attempt collapsed every permanent cycle failure to
+  `refresh/current-commit-failed`, so post-commit cache and bookkeeping failures
+  discarded usable current state. The bridge now validates and classifies every cycle
+  outcome, maps initialization to `source/state-setup-failed`, revalidates targets after
+  a commit or guard discard, emits the matching null-detail degradation warning on
+  success, and reports the observed freshness reason or `cycle-outcome-invalid` on
+  failure (`fix(turn-context): classify cycle bridge outcomes`, 2026-08-18).

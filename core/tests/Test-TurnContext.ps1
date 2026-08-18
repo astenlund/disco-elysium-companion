@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome')]
     [string] $Only = 'All'
 )
 
@@ -196,6 +196,136 @@ function New-TurnContextAttemptFixture {
 
         return [pscustomobject]@{ Config = $config; SavePath = $savePath }
     } @($Root, $Game, $turnContextDomain)
+}
+
+if ($Only -in @('All', 'BridgeCycleOutcome')) {
+    # A post-commit cache or bookkeeping failure retains a usable current digest.
+    # The attempt must revalidate that digest, consume it, and reduce the internal
+    # failure detail to the matching null-detail envelope warning.
+    $bridgeRoot = New-ScratchCompanionRoot -Prefix 'turn-context-bridge-cycle'
+    $bridgeFixture = New-TurnContextAttemptFixture -Root $bridgeRoot
+    $bridgeRows = Invoke-InCompanionModule {
+        param($Root, $Template, $Domain, $Config, $SavePath)
+        $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+        $stateDoc = Read-DigestDocument -Json $stateJson
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($case in @(
+                @{ name = 'post-commit cache'; phase = 'cache'; detail = 'diff-compute-failed'; currentCommitted = $true; guardDiscarded = $false; cacheWritten = $false; warnings = 'pipeline-cache-degraded,pipeline-current-self-healed' },
+                @{ name = 'post-commit bookkeeping'; phase = 'bookkeeping'; detail = 'bookkeeping-temp-write-failed'; currentCommitted = $true; guardDiscarded = $false; cacheWritten = $true; warnings = 'pipeline-bookkeeping-degraded,pipeline-current-self-healed' },
+                @{ name = 'guard-discard bookkeeping'; phase = 'bookkeeping'; detail = 'bookkeeping-temp-write-failed'; currentCommitted = $false; guardDiscarded = $true; cacheWritten = $false; warnings = 'pipeline-bookkeeping-degraded,pipeline-current-self-healed,pipeline-guard-discarded' })) {
+            $reads = [Collections.Generic.List[int]]::new()
+            $operations = @{
+                GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+                ReadCurrent = { param($Unused) $reads.Add(1); if ($reads.Count -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } } else { [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } } }
+                ConfirmConfig = { param($Unused) }
+                TestStable = { param($Save) $true }
+                Cycle = { param($UnusedSave, $Sink) if ($case.guardDiscarded) { Add-CompanionWarning -Sink $Sink -Code pipeline-guard-discarded -Detail $null }; [CycleOutcome]::new($false, $case.currentCommitted, $case.guardDiscarded, $case.cacheWritten, $false, $case.phase, 'stable', $false, $case.detail, $Sink.Freeze()) }
+                Consumption = { param($Floor, $Ctx, $Sink) $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $payload.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null }
+            }
+            $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
+            $warningCodes = $null
+            $warningDetailsNull = $false
+            $refreshAttempted = $false
+            $refreshCommitted = $false
+            $refreshAttempts = 0
+            if (-not [string]::IsNullOrEmpty($result.envelopeJson)) {
+                $envelope = Read-TurnContextEnvelope -Json $result.envelopeJson -AdapterConfig $Config -ExpectedCacheDegraded $false
+                $warnings = @($envelope.RootElement.GetProperty('warnings').EnumerateArray())
+                $warningCodes = @($warnings | ForEach-Object { $_.GetProperty('code').GetString() }) -join ','
+                $warningDetailsNull = @($warnings | Where-Object { $_.GetProperty('detail').ValueKind -ne [Text.Json.JsonValueKind]::Null }).Count -eq 0
+                $refresh = $envelope.RootElement.GetProperty('refresh')
+                $refreshAttempted = $refresh.GetProperty('attempted').GetBoolean()
+                $refreshCommitted = $refresh.GetProperty('commitObserved').GetBoolean()
+                $refreshAttempts = $refresh.GetProperty('attempts').GetInt32()
+            }
+            $rows.Add([pscustomobject]@{ name = $case.name; class = $result.outcomeClass; warnings = $warningCodes; expectedWarnings = $case.warnings; warningDetailsNull = $warningDetailsNull; refreshAttempted = $refreshAttempted; refreshCommitted = $refreshCommitted; expectedCommitted = $case.currentCommitted; refreshAttempts = $refreshAttempts })
+        }
+
+        return @($rows)
+    } @($bridgeRoot, $turnContextDigestTemplate, $turnContextDomain, $bridgeFixture.Config, $bridgeFixture.SavePath)
+    foreach ($row in $bridgeRows) {
+        Assert-Equal -Actual $row.class -Expected 'success' -Message "A '$($row.name)' failure revalidates and consumes the available target."
+        Assert-OrdinalEqual -Actual $row.warnings -Expected $row.expectedWarnings -Message "A '$($row.name)' failure carries its complete ordered warning set."
+        Assert-True -Condition $row.warningDetailsNull -Message "Every '$($row.name)' warning carries a null detail."
+        Assert-True -Condition $row.refreshAttempted -Message "A '$($row.name)' failure records that refresh was attempted."
+        Assert-Equal -Actual $row.refreshCommitted -Expected $row.expectedCommitted -Message "A '$($row.name)' failure preserves the cycle's commit observation."
+        Assert-Equal -Actual $row.refreshAttempts -Expected 1 -Message "A '$($row.name)' failure records exactly one cycle invocation."
+    }
+
+    # If the committed target cannot be revalidated, its concrete freshness reason
+    # replaces the internal cache detail and consumption never begins.
+    $failedRevalidation = Invoke-InCompanionModule {
+        param($Root, $Config, $SavePath)
+        $reads = [Collections.Generic.List[int]]::new()
+        Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+            ReadCurrent = { param($Unused) $reads.Add(1); if ($reads.Count -eq 1) { [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } } else { [pscustomobject]@{ outcome = 'content-invalid'; document = $null; reason = 'target-invalid' } } }
+            ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) $true }
+            Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($false, $true, $false, $false, $false, 'cache', 'stable', $false, 'diff-compute-failed', $Sink.Freeze()) }
+        }
+    } @($bridgeRoot, $bridgeFixture.Config, $bridgeFixture.SavePath)
+    Assert-Equal -Actual $failedRevalidation.outcomeClass -Expected 'freshness' -Message 'A failed post-commit target revalidation terminates as freshness.'
+    Assert-OrdinalEqual -Actual $failedRevalidation.diagnostic['detail'] -Expected 'target-invalid' -Message 'A failed post-commit target revalidation carries the observed freshness reason.'
+
+    # Legal field shapes with details outside their phase registries are invalid
+    # cycle tuples at the bridge boundary, never generic commit failures.
+    $invalidCycles = Invoke-InCompanionModule {
+        param($Root, $Config, $SavePath)
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($case in @(
+                @{ phase = 'initialize'; currentCommitted = $false; disposition = 'not-checked'; detail = 'unregistered-initialize-detail' },
+                @{ phase = 'commit'; currentCommitted = $false; disposition = 'stable'; detail = 'unregistered-commit-detail' },
+                @{ phase = 'cache'; currentCommitted = $true; disposition = 'stable'; detail = 'unregistered-cache-detail' })) {
+            $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+                GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+                ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+                ConfirmConfig = { param($Unused) }
+                TestStable = { param($Save) $true }
+                Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($false, $case.currentCommitted, $false, $false, $false, $case.phase, $case.disposition, $false, $case.detail, $Sink.Freeze()) }
+            }
+            $rows.Add([pscustomobject]@{ phase = $case.phase; class = $result.outcomeClass; detail = $result.diagnostic['detail'] })
+        }
+
+        return @($rows)
+    } @($bridgeRoot, $bridgeFixture.Config, $bridgeFixture.SavePath)
+    foreach ($row in $invalidCycles) {
+        Assert-Equal -Actual $row.class -Expected 'refresh' -Message "An invalid '$($row.phase)' cycle tuple terminates in the refresh class."
+        Assert-OrdinalEqual -Actual $row.detail -Expected 'cycle-outcome-invalid' -Message "An invalid '$($row.phase)' cycle tuple carries cycle-outcome-invalid."
+    }
+
+    # Pre-commit failures whose details already belong to a public registry retain
+    # that class and detail instead of collapsing to current-commit-failed.
+    $classifiedFailures = Invoke-InCompanionModule {
+        param($Root, $Config, $SavePath)
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($case in @(
+                @{ phase = 'initialize'; disposition = 'not-checked'; detail = 'state-setup-failed'; expectedClass = 'source'; expectedDetail = 'state-setup-failed' },
+                @{ phase = 'source'; disposition = 'unreadable'; detail = 'source-unreadable'; expectedClass = 'source'; expectedDetail = 'source-unreadable' },
+                @{ phase = 'dump'; disposition = 'stable'; detail = 'command-timeout'; expectedClass = 'dump'; expectedDetail = 'command-timeout' },
+                @{ phase = 'digest'; disposition = 'stable'; detail = 'document-invalid'; expectedClass = 'digest'; expectedDetail = 'document-invalid' },
+                @{ phase = 'commit'; disposition = 'stable'; detail = 'current-write-failed'; expectedClass = 'refresh'; expectedDetail = 'current-commit-failed' })) {
+            $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+                GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
+                ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+                ConfirmConfig = { param($Unused) }
+                TestStable = { param($Save) $true }
+                Cycle = { param($UnusedSave, $Sink) [CycleOutcome]::new($false, $false, $false, $false, $false, $case.phase, $case.disposition, $false, $case.detail, $Sink.Freeze()) }
+            }
+            $rows.Add([pscustomobject]@{ phase = $case.phase; expectedClass = $case.expectedClass; expectedDetail = $case.expectedDetail; class = $result.outcomeClass; detail = $result.diagnostic['detail'] })
+        }
+
+        return @($rows)
+    } @($bridgeRoot, $bridgeFixture.Config, $bridgeFixture.SavePath)
+    foreach ($row in $classifiedFailures) {
+        Assert-Equal -Actual $row.class -Expected $row.expectedClass -Message "A cycle '$($row.phase)' failure maps to its public attempt class."
+        Assert-OrdinalEqual -Actual $row.detail -Expected $row.expectedDetail -Message "A cycle '$($row.phase)' failure maps to its public registry detail."
+    }
+
+    if ($Only -eq 'BridgeCycleOutcome') {
+        Write-TurnContextPassGate
+        exit 0
+    }
 }
 
 if ($Only -eq 'TurnContextPairing') {
@@ -615,7 +745,7 @@ $retryTaxonomy = Invoke-InCompanionModule {
             Cycle = { param($UnusedSave, $Sink) $cycles.Add(1); [CycleOutcome]::new($false, $false, $false, $false, $false, 'source', $case.disposition, $case.retryable, $case.detail, $Sink.Freeze()) }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
-        $rows.Add([pscustomobject]@{ name = $case.name; calls = $cycles.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; expectedClass = 'refresh' })
+        $rows.Add([pscustomobject]@{ name = $case.name; calls = $cycles.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; detail = $res.diagnostic['detail']; expectedClass = 'source'; expectedDetail = $case.detail })
     }
 
     return @($rows)
@@ -623,6 +753,9 @@ $retryTaxonomy = Invoke-InCompanionModule {
 foreach ($row in $retryTaxonomy) {
     Assert-Equal -Actual $row.calls -Expected $row.expectedCalls -Message "The '$($row.name)' outcome drives exactly $($row.expectedCalls) pass(es) within the three-pass budget."
     Assert-Equal -Actual $row.class -Expected $row.expectedClass -Message "The '$($row.name)' outcome terminates as '$($row.expectedClass)'."
+    if ($row.name -in @('cycle-retryable', 'cycle-permanent')) {
+        Assert-OrdinalEqual -Actual $row.detail -Expected $row.expectedDetail -Message "The '$($row.name)' outcome retains its cycle source detail."
+    }
 }
 
 # Post-lock stability gate taxonomy: unstable and vanished retry within the budget,

@@ -49,22 +49,6 @@ otherwise sits in the backlog until the next readiness pass surfaces it.
 
 ## Open
 
-### Turn-context attempt skips bridge revalidation after post-commit cycle failures
-
-The spec's class-to-reason registry paragraph requires that internal `cycle-cache` /
-`cycle-bookkeeping` cycle failures with a committed current trigger bridge target
-revalidation: a qualifying committed target continues the attempt with the existing
-null-detail pipeline warning, failed revalidation produces a new `freshness` detail,
-and only an invalid cycle tuple maps to `refresh`/`cycle-outcome-invalid`.
-`Invoke-TurnContextAttempt` instead terminates every non-completed, non-retryable
-cycle as `refresh`/`current-commit-failed`, discarding the cycle's classified detail
-and the committed target; `cycle-outcome-invalid` has no producer. The cycle-side
-detail classification landed with the adapter-validator infrastructure fix; this
-entry tracks the attempt-side continuation rule. Found 2026-08-14 during the
-revise-plan review of the turn-context spec-conformance bug-fix plan.
-
-**Requires:** none.
-
 (The reputation-mapping observability entry was resolved 2026-08-12 via the
 documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its
 diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md)

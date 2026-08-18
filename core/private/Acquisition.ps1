@@ -340,7 +340,7 @@ function Invoke-CompanionCycle {
         throw [WatcherCancellationException]::new($WarningSink.Freeze())
     }
     catch {
-        return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $currentCommitted -GuardDiscarded $guardDiscarded -CacheWritten $cacheWritten -BookkeepingWritten $false -FailurePhase 'initialize' -SourceDisposition 'not-checked' -Retryable $false -Detail 'cycle-initialize-failed' -WarningSink $WarningSink
+        return Complete-CycleOutcome -Result $result -Completed $false -CurrentCommitted $currentCommitted -GuardDiscarded $guardDiscarded -CacheWritten $cacheWritten -BookkeepingWritten $false -FailurePhase 'initialize' -SourceDisposition 'not-checked' -Retryable $false -Detail 'state-setup-failed' -WarningSink $WarningSink
     }
     finally {
         if ($null -ne $result) {
