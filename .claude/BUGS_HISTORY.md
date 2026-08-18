@@ -107,3 +107,9 @@ archaeological.
   a commit or guard discard, emits the matching null-detail degradation warning on
   success, and reports the observed freshness reason or `cycle-outcome-invalid` on
   failure (`fix(turn-context): classify cycle bridge outcomes`, 2026-08-18).
+- The turn-context attempt skipped the spec-required save observation after freezing and
+  admitting a target. It now re-enumerates after stage-4 admission, raises the retained
+  floor monotonically, reacquires when the target falls below that floor, keeps an empty
+  observation non-terminal, and preserves authoritative source identity and generation
+  provenance across retry and failure paths (`fix(turn-context): restore post-target save
+  observation`, primary commit `01fffcd` with review fixups through `0ecfc32`, 2026-08-19).
