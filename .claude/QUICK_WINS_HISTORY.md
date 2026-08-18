@@ -363,13 +363,17 @@ not to resolve dependencies.
   boundary. The section 11 rows now carry those results instead of provisional markers.
 
 - Companion repository relocation to `C:\Git\disco-elysium-companion`, shipped
-  2026-08-17. The whole directory moves within the same volume, preserving `.git`,
-  ignored adapter releases and dump tooling, scratch data, and live `state/`. Acquisition
-  remains rooted in `adapter.json`'s absolute
+  2026-08-17. A verified copy and authority cutover preserved `.git`, ignored adapter
+  releases and dump tooling, scratch data, and live `state/`. Recursive source and
+  destination manifests of relative paths, byte lengths, and SHA-256 hashes matched
+  before the new root became authoritative. The source contents were then cleared; a
+  temporary shell held the empty old root until it exited, and the old root is now
+  absent. Acquisition remains rooted in `adapter.json`'s absolute
   `C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium\SaveGames` path; the
   repository hard limit now names that path explicitly instead of the invalidated
-  sibling-relative relationship. Claude's path-keyed project history and
-  auto-memory move to the new project key, while Claude's project map and repository
-  mapping plus Codex's trust and SessionStart hook-state keys are rewritten to the new
-  root. The running Codex session still requires a reopen at the new root because its
-  active workspace identity is not rewritten in place.
+  sibling-relative relationship. Claude auto-memory, Claude's project map and repository
+  mapping, and Codex's trust and SessionStart hook-state keys use the new root. By user
+  choice, pre-relocation Claude prompt-history project fields and Codex thread
+  working-directory fields retain the old identity; new sessions use the new root. The
+  running Codex session required a reopen at the new root because its active workspace
+  identity was not rewritten in place.

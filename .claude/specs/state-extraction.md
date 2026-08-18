@@ -54,10 +54,9 @@ exhaustive verification claims in section 11).
 ## 2. Hard constraints
 
 - The Disco Elysium directory (`C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium`)
-  is read-only for this project except `companion\`. Save files are NEVER modified, moved,
-  or deleted.
-- Saves are copied into `companion\.tmp\` before being read (unzipped or parsed). Nothing
-  ever opens a file under `SaveGames\` for write.
+  is read-only for this project. Save files are NEVER modified, moved, or deleted.
+- Saves are copied into `C:\Git\disco-elysium-companion\.tmp\` before being read
+  (unzipped or parsed). Nothing ever opens a file under `SaveGames\` for write.
 - The dump tool adapts the existing Go reference parser from
   github.com/ig4e/disco-elysium-editor (decision made with the user 2026-08-07: the C#
   parser assumed by the original brief does not exist anywhere in that repo's ecosystem;
@@ -103,7 +102,7 @@ exhaustive verification claims in section 11).
   `extra` and values embedded in `extraChanges`. Without it, PowerShell silently keeps
   only the last same-case property and an exact-field validator cannot detect the
   discarded occurrence.
-- The core layer is game-agnostic. No Disco Elysium concepts in `companion\core\` or in
+- The core layer is game-agnostic. No Disco Elysium concepts in `core\` or in
   the digest schema outside the `extra` field. Game-specific tuning that core behavior
   needs (for example diff-noise exclusions) reaches core only as adapter.json data, never
   as core code.
@@ -3780,7 +3779,7 @@ Standing rules for future Companion sessions:
   a multi-way in-game decision (e.g. allocating skill points) is offered as its own
   follow-up dialog, grounded in the current digest and general mechanics, never in
   foreknowledge of upcoming checks or content.
-- Never modify anything outside `companion\`; saves are sacred.
+- Never modify anything outside the repository root; saves are sacred.
 - Pointers to knowledge.md, the digest schema doc, and this spec.
 
 ## 11. Verification (for the implementation plan to expand)
