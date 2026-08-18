@@ -377,3 +377,11 @@ not to resolve dependencies.
   working-directory fields retain the old identity; new sessions use the new root. The
   running Codex session required a reopen at the new root because its active workspace
   identity was not rewritten in place.
+
+- `Invoke-TurnContextAttempt` decomposition, shipped 2026-08-19 (primary commits
+  `01fffcd` and `53faeba`, with review fixups through `0ecfc32`). The coordinator now
+  delegates terminal construction, save observation, refresh-cycle handling, and
+  consumption mapping to file-scoped helpers while retaining target admission and the
+  stage-5 post-target observation in the visible attempt loop. The shared save helper
+  owns enumeration, maximum-candidate selection, identity conversion, and monotonic
+  floor raising; caller-specific empty handling remains at each boundary.

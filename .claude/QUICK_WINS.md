@@ -27,23 +27,6 @@ failure mode to catch is an entry that doesn't parse as a `- ` bullet or
 `###` heading (ready reports it as a prose-only-section notice) while you
 can still fix it in the same session.
 
-## Turn-context internals
-
-- **Decompose Invoke-TurnContextAttempt.** The large body in
-  `core/private/TurnContext.ps1` mixes init/reaper, the refresh retry loop,
-  lock/config/cycle handling, consumption/envelope emission, and terminal-result
-  construction (revise-code confirmed finding, 2026-08-13). The reason-taxonomy
-  and stability-gate fixes have landed and grew the body further. The attempt-side
-  cycle classifier is now isolated in `Resolve-TurnContextCycleOutcome`; preserve
-  that boundary during the decomposition. The 2026-08-14 revise-code pass added a
-  second confirmed input: the pre-lock and post-lock
-  save-candidate enumeration/selection/floor-raise blocks are near-duplicates
-  (differing only in `-SourceIdentity` carriage on the terminal returns and the
-  floor-null guard) and should collapse into one shared helper as part of this
-  decomposition, not as a standalone extraction. Decide during the work whether
-  `New-TurnContextTerminalResult` hoists to file scope as well.
-  Requires: none.
-
 Implemented quick wins are archived in
 [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md), read only when
 consulted (not at session start) so the active backlog above stays
