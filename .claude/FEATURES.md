@@ -235,6 +235,15 @@ with embeddings of the D&D 5e (2014) ruleset, defaulting to the CC-BY-4.0 SRD
 second-adapter test case for the runtime's adapter-catalog isolation and
 adaptive guidance's generic research-adapter contract.
 
+### [Death Stranding Director's Cut adapter](features/death-stranding-directors-cut-adapter.md)
+
+Add the PC Director's Cut as a state-aware logistics companion centered on a
+porter brief: current orders, cargo and equipment, preparation gaps, useful
+order batching, and recent progress. Product fit is strong, but implementation
+is gated on a read-only feasibility spike proving that binary `checkpoint.dat`
+saves expose enough stable semantic state; automatic map routing and live online
+structure tracking are outside the initial scope.
+
 ### [Session focus](features/session-focus.md)
 
 A session-scoped dial declaring what kind of progress the player wants this
