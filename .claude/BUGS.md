@@ -55,6 +55,15 @@ diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputatio
 remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value
 clauses it names are spec-deferred, not open bugs.)
 
+### Wrapper delivery diagnostics drop consumed-target provenance
+
+A delivery failure in `core/Get-TurnContext.ps1` can report the coordinator floor
+instead of preserving the authoritative consumed target source identity and generation
+timestamp required by the state-extraction provenance matrix. Repair the wrapper mapping
+and add staged wrapper regression coverage for the failure path.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded
