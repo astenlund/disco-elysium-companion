@@ -379,9 +379,25 @@ not to resolve dependencies.
   identity was not rewritten in place.
 
 - `Invoke-TurnContextAttempt` decomposition, shipped 2026-08-19 (primary commits
-  `01fffcd` and `53faeba`, with review fixups through `0ecfc32`). The coordinator now
+  `01fffcd` and `53eaeba`, with review fixups through `0ecfc32`). The coordinator now
   delegates terminal construction, save observation, refresh-cycle handling, and
   consumption mapping to file-scoped helpers while retaining target admission and the
   stage-5 post-target observation in the visible attempt loop. The shared save helper
   owns enumeration, maximum-candidate selection, identity conversion, and monotonic
   floor raising; caller-specific empty handling remains at each boundary.
+
+- Extract successful-consumption fixture construction, shipped 2026-08-19 (from the
+  active `QUICK_WINS.md`). `Test-TurnContext.ps1` repeated the successful
+  private-result consumption staging (build payload, complete it, return a
+  `success`/`consumed` `New-ConsumptionResult`) across seven attempt-scenario
+  blocks. A new `New-ConsumePrivateSuccess -Target -Context -Sink` helper in
+  `TestSupport.psm1` constructs the payload inside DigestDiff module scope (via
+  `Invoke-InCompanionModule`) with `State` defaulting to `Target`; the seven generic
+  sites now call it, with the count/floor-observation lines and the scenario's own
+  target (post-target re-selected, `targetC`, `s2Doc`, `stateDoc`) and assertions
+  left at each call site. The two `$case`-driven sites in the reset-write and
+  envelope-serialize selectors vary `Complete`/`-CacheDegraded`/outcome/state/detail
+  per table row and stay inline (a distinct shape, not a copy). The pairing and
+  freshness blocks' now-redundant prebuilt empty-diff locals (`$diffDoc`, `$diff2`)
+  were dropped. Verified: full `Test-TurnContext.ps1 -Only All` and
+  `Test-Consumption.ps1` both end `PASS`.

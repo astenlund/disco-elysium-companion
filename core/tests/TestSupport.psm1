@@ -474,6 +474,28 @@ function New-AdapterFixtureTree {
     [IO.File]::WriteAllText((Join-Path $releaseRoot 'core/DigestDiff.psm1'), "`n", [Text.UTF8Encoding]::new($false))
 }
 
+function New-ConsumePrivateSuccess {
+    # Builds a successful private-result consumption for a digest target. The
+    # payload, empty-diff, and result constructors live in DigestDiff module scope,
+    # so the construction runs inside one. Turn-context attempt scenarios share
+    # this shape; call sites wrap it with their own per-scenario recording and pin
+    # their own target, context, and sink.
+    param(
+        [Parameter(Mandatory)] $Target,
+        [Parameter(Mandatory)] $Context,
+        [Parameter(Mandatory)] $Sink,
+        [Parameter()] $State = $Target
+    )
+
+    return Invoke-InCompanionModule {
+        param($Target, $Context, $Sink, $State)
+        $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $Target) -State $State -Context $Context
+        $payload.Complete($false, $Sink.Freeze())
+
+        return New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+    } @($Target, $Context, $Sink, $State)
+}
+
 function Invoke-InCompanionModule {
     param(
         [Parameter(Mandatory)] [scriptblock] $ScriptBlock,
@@ -488,4 +510,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess

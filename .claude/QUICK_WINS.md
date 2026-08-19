@@ -27,14 +27,6 @@ failure mode to catch is an entry that doesn't parse as a `- ` bullet or
 `###` heading (ready reports it as a prose-only-section notice) while you
 can still fix it in the same session.
 
-## Turn-context tests
-
-- **Extract successful-consumption fixture construction.**
-  `core/tests/Test-TurnContext.ps1` repeats the successful private-result
-  consumption setup across sibling scenarios. Move the shared staging into a
-  narrow helper in `core/tests/TestSupport.psm1`, while keeping scenario-specific
-  source identities, generation timestamps, and assertions at each call site.
-
 Implemented quick wins are archived in
 [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md), read only when
 consulted (not at session start) so the active backlog above stays

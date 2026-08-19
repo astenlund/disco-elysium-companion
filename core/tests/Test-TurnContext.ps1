@@ -229,9 +229,7 @@ if ($Only -in @('All', 'PostTargetEnumeration')) {
                 param($Floor, $Ctx, $Sink)
                 $consumptions.Add([string] $Floor.saveFile)
                 $consumptionTarget = if ($Floor.saveFile -ceq 'B.ntwtf.zip') { $targetB } else { $targetC }
-                $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $consumptionTarget) -State $consumptionTarget -Context $Ctx
-                $payload.Complete($false, $Sink.Freeze())
-                New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+                New-ConsumePrivateSuccess -Target $consumptionTarget -Context $Ctx -Sink $Sink
             }
         }
         $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
@@ -333,9 +331,7 @@ if ($Only -in @('All', 'PostTargetEnumeration')) {
             Consumption = {
                 param($Floor, $Ctx, $Sink)
                 $reacquireConsumptions.Add(1)
-                $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $targetC) -State $targetC -Context $Ctx
-                $payload.Complete($false, $Sink.Freeze())
-                New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+                New-ConsumePrivateSuccess -Target $targetC -Context $Ctx -Sink $Sink
             }
         }
 
@@ -477,9 +473,7 @@ if ($Only -in @('All', 'PostTargetEnumeration')) {
                     param($Floor, $Ctx, $Sink)
                     $consumptions.Add(1)
                     $consumptionFloors.Add([pscustomobject]@{ domainId = [string] $Floor.domainId; saveFile = [string] $Floor.saveFile; savedAt = $Floor.savedAt.ToString('o', [Globalization.CultureInfo]::InvariantCulture) })
-                    $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx
-                    $payload.Complete($false, $Sink.Freeze())
-                    New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null
+                    New-ConsumePrivateSuccess -Target $stateDoc -Context $Ctx -Sink $Sink
                 }
             }
             $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
@@ -545,7 +539,7 @@ if ($Only -in @('All', 'BridgeCycleOutcome')) {
                 ConfirmConfig = { param($Unused) }
                 TestStable = { param($Save) $true }
                 Cycle = { param($UnusedSave, $Sink) if ($case.guardDiscarded) { Add-CompanionWarning -Sink $Sink -Code pipeline-guard-discarded -Detail $null }; [CycleOutcome]::new($false, $case.currentCommitted, $case.guardDiscarded, $case.cacheWritten, $false, $case.phase, 'stable', $false, $case.detail, $Sink.Freeze()) }
-                Consumption = { param($Floor, $Ctx, $Sink) $payload = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $payload.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $payload -CacheDegraded $false -Detail $null }
+                Consumption = { param($Floor, $Ctx, $Sink) New-ConsumePrivateSuccess -Target $stateDoc -Context $Ctx -Sink $Sink }
             }
             $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
             $warningCodes = $null
@@ -660,12 +654,11 @@ if ($Only -eq 'TurnContextPairing') {
         param($Root, $Template, $Domain, $Config, $SavePath)
         $stateJson = $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
         $stateDoc = Read-DigestDocument -Json $stateJson
-        $diffDoc = New-EmptyDiff -Target $stateDoc
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
-            Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff $diffDoc -State $stateDoc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
+            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumePrivateSuccess -Target $stateDoc -Context $Ctx -Sink $Sink }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $Config -ExpectedCacheDegraded $false
@@ -725,12 +718,11 @@ if ($Only -eq 'FreshnessRaceNewerConsumed') {
         $s2Json = $Template.Replace('GEN', '2026-08-10T14:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'S2.ntwtf.zip').Replace('SAVE', '2026-08-10T13:00:00.0000000Z')
         $s1Doc = Read-DigestDocument -Json $s1Json
         $s2Doc = Read-DigestDocument -Json $s2Json
-        $diff2 = New-EmptyDiff -Target $s2Doc
         $operations = @{
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $s1Doc; reason = $null } }
             ConfirmConfig = { param($Unused) }
-            Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff $diff2 -State $s2Doc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
+            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumePrivateSuccess -Target $s2Doc -Context $Ctx -Sink $Sink }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $envDoc = Read-TurnContextEnvelope -Json $res.envelopeJson -AdapterConfig $Config -ExpectedCacheDegraded $false
@@ -1004,7 +996,7 @@ $validatorInfra = Invoke-InCompanionModule {
         GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
         ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
         ConfirmConfig = { param($Unused) }
-        Consumption = { param($Floor, $Ctx, $Sink) $p = New-ConsumePayload -DeliveryMode privateResult -Diff (New-EmptyDiff -Target $stateDoc) -State $stateDoc -Context $Ctx; $p.Complete($false, $Sink.Freeze()); New-ConsumptionResult -OutcomeClass success -ConsumptionState consumed -Payload $p -CacheDegraded $false -Detail $null }
+        Consumption = { param($Floor, $Ctx, $Sink) New-ConsumePrivateSuccess -Target $stateDoc -Context $Ctx -Sink $Sink }
     }
 
     return $rows
