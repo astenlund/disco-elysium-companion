@@ -113,3 +113,11 @@ archaeological.
   observation non-terminal, and preserves authoritative source identity and generation
   provenance across retry and failure paths (`fix(turn-context): restore post-target save
   observation`, primary commit `01fffcd` with review fixups through `0ecfc32`, 2026-08-19).
+- The process-runner fixture rebuilt the `cmd.exe` path from the optional `WINDIR`
+  process variable, which some hosts omit while `ComSpec` points at the interpreter.
+  The fixture now resolves through a `Get-TestShellExecutable` helper preferring
+  `ComSpec` (an existing `cmd.exe` only) with a platform system-directory fallback for
+  absent or invalid values, and the `RelativeExecutableResolution` test runs with
+  `WINDIR` stripped plus explicit absent/nonexistent/non-interpreter ComSpec fallback
+  coverage (`fix(process-runner): resolve fixture shell via ComSpec not WINDIR`,
+  2026-08-19).

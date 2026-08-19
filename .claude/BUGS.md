@@ -64,16 +64,6 @@ and add staged wrapper regression coverage for the failure path.
 
 **Requires:** none.
 
-### Process-runner fixture depends on WINDIR
-
-`Test-ProcessRunner.ps1` builds the `RelativeExecutableResolution` fixture's
-`cmd.exe` path from `$env:WINDIR`, but that optional process variable is absent on
-this host while `$env:ComSpec` points to the executable. Resolve the fixture through
-`ComSpec` first, retain a platform system-directory fallback for an absent or invalid
-value, and cover the missing-`WINDIR` case.
-
-**Requires:** none.
-
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded
