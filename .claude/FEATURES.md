@@ -221,8 +221,7 @@ seam.
   ordinary responses; retain notices until acknowledged by a presentation
   client.
 
-**Requires:** Claude Agent SDK (streaming-mode primary), `claude /login` OAuth
-  available on the host.
+**Requires:** none.
 
 ## Exploring
 
