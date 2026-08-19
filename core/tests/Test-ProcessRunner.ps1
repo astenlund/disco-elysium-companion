@@ -104,12 +104,44 @@ function Test-AdapterCommandDrainsConcurrentLargeStreams {
     Assert-Equal -Actual $result.StandardError.Length -Expected 8388608 -Message 'stderr retains every drained large-stream character'
 }
 
+function Get-TestShellExecutable {
+    param(
+        [AllowNull()] [string] $ComSpec = $env:ComSpec,
+        [Parameter()] [string] $SystemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+    )
+
+    # ComSpec is the authoritative Windows pointer to the command interpreter, while the
+    # optional WINDIR process variable is absent on some hosts (tracked bug). Prefer ComSpec
+    # when it names an existing cmd.exe; otherwise fall back to the platform system directory
+    # so the fixture never derives the interpreter path from WINDIR.
+    if ($ComSpec -and (Test-Path -LiteralPath $ComSpec -PathType Leaf) -and
+        [string]::Equals([System.IO.Path]::GetFileName($ComSpec), 'cmd.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $ComSpec
+    }
+
+    return Join-Path $SystemDirectory 'cmd.exe'
+}
+
 function Test-RelativeExecutableResolution {
     $scratch = Join-Path (Split-Path $PSScriptRoot -Parent) ('.tmp/relative-exe-' + [guid]::NewGuid().ToString('N'))
+    $savedWindir = $env:WINDIR
+    Remove-Item Env:WINDIR -ErrorAction SilentlyContinue
     try {
         $toolRoot = Join-Path $scratch 'dump-tool'
         [void] [IO.Directory]::CreateDirectory($toolRoot)
-        Copy-Item -LiteralPath (Join-Path $env:WINDIR 'System32\cmd.exe') -Destination (Join-Path $toolRoot 'dedump.exe') -Force
+
+        # Run the fixture exactly as on a WINDIR-less host (the tracked bug's trigger) and
+        # cover each interpreter-resolution branch explicitly.
+        $fallbackSource = Get-TestShellExecutable -ComSpec $null
+        Assert-True -Condition (Test-Path -LiteralPath $fallbackSource -PathType Leaf) -Message 'an absent ComSpec falls back to a real interpreter in the system directory'
+        $missingPathSource = Get-TestShellExecutable -ComSpec (Join-Path $scratch 'missing-cmd.exe')
+        Assert-True -Condition (Test-Path -LiteralPath $missingPathSource -PathType Leaf) -Message 'a ComSpec naming a nonexistent executable falls back to the system directory'
+        $nonInterpreterSource = Get-TestShellExecutable -ComSpec (Join-Path $PSHOME 'pwsh.exe')
+        Assert-True -Condition (Test-Path -LiteralPath $nonInterpreterSource -PathType Leaf) -Message 'a ComSpec naming a non-interpreter executable falls back to the system directory'
+
+        $cmdSource = Get-TestShellExecutable
+        Assert-True -Condition (Test-Path -LiteralPath $cmdSource -PathType Leaf) -Message 'the ambient command-interpreter resolution names an existing executable without WINDIR'
+        Copy-Item -LiteralPath $cmdSource -Destination (Join-Path $toolRoot 'dedump.exe') -Force
 
         # A separator-containing relative argv[0] is resolved against the working directory
         # by CORE before spawning (spec section 8); the child working directory alone does
@@ -129,6 +161,10 @@ function Test-RelativeExecutableResolution {
         Assert-Equal -Actual $absolute.ExitCode -Expected 3 -Message 'the absolute-path start reaches its ordinary exit'
     }
     finally {
+        if ($null -ne $savedWindir) {
+            $env:WINDIR = $savedWindir
+        }
+
         Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
