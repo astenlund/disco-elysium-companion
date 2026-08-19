@@ -182,6 +182,48 @@ is struck through. As each slice ships, append its entry to
 new next-to-ship slice's gates, and walk every other `**Requires:**`
 line in `FEATURES.md` / `BUGS.md` to drop now-satisfied references.
 
+## Companion runtime
+
+### [Companion execution runtime](features/companion-execution-runtime.md)
+
+Host the persistent agent session, supervise the existing state core, own the
+single consuming diff reader and durable state-event handoff, and execute
+background work configured by domain features. The already-shipped turn-context
+acquisition bridge (`core/Get-TurnContext.ps1`, state-extraction spec section
+7.5) carries live consumption until the coordinator replaces it; the bridge is
+not part of the slice breakdown below. Declared design seams are settled and
+specified in the
+[runtime-work-projection-persistence-boundaries pattern](patterns/runtime-work-projection-persistence-boundaries.md):
+consumer-transaction outbox coupling, play-session lifecycle, playthrough
+identity (signed-in Windows principal), process recovery, and the session-host
+seam.
+
+**Slices:**
+
+- **Single-session state coordinator (MVP).** Host one configured agent
+  session and one adapter behind the session-host seam; supervise existing core
+  commands; own the only consuming diff reader with durable outbox-committed
+  state events; expose streaming chat, live freshness and classified error
+  state, replay of unacknowledged events after restart, and clean shutdown
+  without abandoning consumption or presentation state. Declared gates are the
+  Claude Agent SDK (streaming mode) and the settled process/session/identity
+  seams.
+- **Background work broker.** Execute domain-supplied work with bounded
+  concurrency, priority, cancellation, retry, offline handling, and coordinated
+  shutdown. The broker knows how to run and persist attempts, never what is
+  useful, player-visible, or spoiler-safe.
+- **Adapter catalog and session isolation.** Enumerate installed adapters and
+  isolate agent sessions, state-event journals, domain persistence, and user
+  preferences by (adapter, signed-in principal). A single-adapter runtime can
+  ship before this generalization.
+- **Proactive notice delivery.** Deliver domain-produced, spoiler-projected
+  notices between questions; preserve ordering with pending state events and
+  ordinary responses; retain notices until acknowledged by a presentation
+  client.
+
+**Requires:** Claude Agent SDK (streaming-mode primary), `claude /login` OAuth
+  available on the host.
+
 ## Exploring
 
 Pre-dependency-analysis brainstorms live here. An entry is a draft
@@ -194,14 +236,6 @@ up enough to declare its upstream
 gates, move it out of `## Exploring` into the appropriate themed `##`
 section, add the `**Requires:**` line, and drop the `status: exploring`
 frontmatter on the breakout file.
-
-### [Companion execution runtime](features/companion-execution-runtime.md)
-
-Host the persistent agent session, supervise the existing state core, own the
-single consuming diff reader and durable state-event handoff, and execute
-background work for domain features. Candidate slices cover the single-session
-coordinator, work broker, adapter and playthrough isolation, and proactive
-notice delivery.
 
 ### [TUI companion app](features/tui-companion-app.md)
 

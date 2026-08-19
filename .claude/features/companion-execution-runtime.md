@@ -1,7 +1,3 @@
----
-status: exploring
----
-
 # Companion execution runtime
 
 Build the host layer between the existing state-extraction core, domain features
@@ -25,13 +21,16 @@ does not decide what game guidance means or how that guidance is displayed.
 The shared lifecycle and projection rules live in
 [Runtime work, projection, and persistence boundaries](../patterns/runtime-work-projection-persistence-boundaries.md).
 
-## Candidate slices
+## Slices
 
-These are provisional design seams, not the formal `**Slices:**` contract used
-by the backlog index. They gain gates and MVP status only after their interfaces
-and failure behavior are specified.
+The MVP and continuations below form the formal `**Slices:**` contract in
+`FEATURES.md`. The single-session state coordinator, the durable-consumption
+protocol, play-session lifecycle, playthrough identity, session-host seam, and
+process recovery have their interfaces and failure behavior specified; the
+remaining slices are provisional seams whose interfaces still gain gates before
+they ship.
 
-### Single-session state coordinator
+### Single-session state coordinator (MVP)
 
 Host one configured agent session and one adapter. Supervise the existing core
 commands, expose streaming chat, freshness and classified error state, and a
@@ -40,13 +39,38 @@ retain each pending state event durably before its underlying change can be
 considered delivered. Replay unacknowledged events after app or session restart
 and support clean shutdown without abandoning consumption or presentation state.
 
-This is the likely runtime MVP. The exact protocol that couples durable event
+This is the runtime MVP. The exact protocol that couples durable event
 creation with baseline advancement is settled: the core appends the event record
 inside the same `consume.lock` transaction that advances baseline, so baseline
 advance is the outbox commit (see
 [consumer transaction coupling](../patterns/runtime-work-projection-persistence-boundaries.md#consumer-transaction-coupling-settled-protocol)).
 
-### Turn-context acquisition bridge
+### Background work broker
+
+Execute domain-supplied work with bounded concurrency, priority, cancellation,
+retry, offline handling, rate limiting, and coordinated shutdown. The broker
+knows how to run and persist work attempts, but not whether research is useful,
+player-visible, or spoiler-safe. Those are domain decisions.
+
+### Adapter catalog and session isolation
+
+Enumerate installed adapters and isolate agent sessions, state-event journals,
+domain persistence, and user preferences by adapter and playthrough. A
+single-adapter runtime can ship before this generalization.
+
+### Proactive notice delivery
+
+Deliver domain-produced, spoiler-projected notices between questions without
+turning hidden enrichment into inbox entries. Preserve ordering with pending
+state events and ordinary responses, and retain notices until acknowledged by a
+presentation client.
+
+## Turn-context acquisition bridge (shipped, pre-coordinator)
+
+The bridge is live production behavior, not a runtime slice: it carries
+consumption until the coordinator exists and is replaced, not wrapped, when the
+coordinator ships. See the FEATURES.md entry, which excludes it from the slice
+breakdown.
 
 Provide `core/Get-TurnContext.ps1` as the host-facing entry point for the current
 CLI companion while the persistent runtime remains unimplemented. The host calls
@@ -89,26 +113,6 @@ durable event, acknowledgement, or second persistence layer, and it retains the
 documented crash-loss window between successful consumption and model delivery.
 The runtime replaces the bridge with the durable state-event lifecycle rather
 than wrapping it.
-
-### Background work broker
-
-Execute domain-supplied work with bounded concurrency, priority, cancellation,
-retry, offline handling, rate limiting, and coordinated shutdown. The broker
-knows how to run and persist work attempts, but not whether research is useful,
-player-visible, or spoiler-safe. Those are domain decisions.
-
-### Adapter catalog and session isolation
-
-Enumerate installed adapters and isolate agent sessions, state-event journals,
-domain persistence, and user preferences by adapter and playthrough. A
-single-adapter runtime can ship before this generalization.
-
-### Proactive notice delivery
-
-Deliver domain-produced, spoiler-projected notices between questions without
-turning hidden enrichment into inbox entries. Preserve ordering with pending
-state events and ordinary responses, and retain notices until acknowledged by a
-presentation client.
 
 ## Settled design decisions
 
