@@ -121,3 +121,11 @@ archaeological.
   `WINDIR` stripped plus explicit absent/nonexistent/non-interpreter ComSpec fallback
   coverage (`fix(process-runner): resolve fixture shell via ComSpec not WINDIR`,
   2026-08-19).
+- The turn-context wrapper's stdout delivery-failure diagnostic passed null for
+  `sourceIdentity` and `generationTimestamp`, dropping the consumed target's
+  authoritative identity and generation that the state-extraction provenance matrix
+  requires of a `delivery` outcome. The delivery catch now maps the selected attempt's
+  diagnostic provenance through, and the staged wrapper harness models a consumed
+  success attempt's latched provenance so regression coverage asserts both fields
+  survive a failed delivery (`fix(turn-context): preserve consumed-target provenance on
+  delivery failure`, 2026-08-19).

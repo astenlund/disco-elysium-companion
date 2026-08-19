@@ -103,6 +103,8 @@ Assert-Equal -Actual $delivery.ExitCode -Expected 1 -Message 'A failed envelope 
 Assert-True -Condition $delivery.StdErr.StartsWith('[turn-context:delivery] ', [StringComparison]::Ordinal) -Message 'A failed stdout write reports the delivery class.'
 Assert-True -Condition $delivery.StdErr.Contains('"detail":"stdout-write-failed"', [StringComparison]::Ordinal) -Message 'The delivery diagnostic carries the stdout-write-failed reason.'
 Assert-True -Condition $delivery.StdErr.Contains('"consumptionState":"consumed"', [StringComparison]::Ordinal) -Message 'The delivery diagnostic preserves the consumed baseline advancement.'
+Assert-True -Condition $delivery.StdErr.Contains('"sourceIdentity":{"domainId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","saveFile":"B.ntwtf.zip","savedAt":"2026-08-10T11:00:00.0000000Z"}', [StringComparison]::Ordinal) -Message 'The delivery diagnostic preserves the authoritative consumed-target source identity.'
+Assert-True -Condition $delivery.StdErr.Contains('"generationTimestamp":"2026-08-10T12:00:00.0000000Z"', [StringComparison]::Ordinal) -Message 'The delivery diagnostic preserves the authoritative consumed-target generation timestamp.'
 Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $deliveryRoot 'attempt-trace.txt')).Trim()) -Expected '1' -Message 'A delivery failure authorizes no retry.'
 
 # The real diagnostic validator admits the delivery class with the consumed state

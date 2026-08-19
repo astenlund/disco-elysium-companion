@@ -29,7 +29,7 @@ $tracePath = Join-Path $ScratchRoot 'attempt-trace.txt'
 $modulePath = Join-Path $harnessCore 'DigestDiff.psm1'
 $module = @'
 function New-TestResult {
-    param([Parameter(Mandatory)] [string] $OutcomeClass, [Parameter(Mandatory)] [string] $ConsumptionState, [Parameter(Mandatory)] [string] $EnvelopeJson, [bool] $CacheDegraded = $false)
+    param([Parameter(Mandatory)] [string] $OutcomeClass, [Parameter(Mandatory)] [string] $ConsumptionState, [Parameter(Mandatory)] [string] $EnvelopeJson, [bool] $CacheDegraded = $false, $SourceIdentity = $null, $GenerationTimestamp = $null)
 
     return [pscustomobject]@{
         outcomeClass = $OutcomeClass
@@ -40,8 +40,8 @@ function New-TestResult {
             outcomeClass = $OutcomeClass
             consumptionState = $ConsumptionState
             lockStage = $null
-            sourceIdentity = $null
-            generationTimestamp = $null
+            sourceIdentity = $SourceIdentity
+            generationTimestamp = $GenerationTimestamp
             detail = 'test-terminal'
             warnings = @()
         }
@@ -79,7 +79,13 @@ function Invoke-TurnContextAttempt {
         $brokenStream.Dispose()
         [Console]::SetOut($brokenWriter)
 
-        return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}'
+        # Model the real success attempt, whose diagnostic latches the frozen target's
+        # source identity (state.source) and generation (state.generatedAt). The wrapper
+        # must carry this authoritative consumed-target provenance into the delivery
+        # diagnostic on a failed stdout write.
+        $consumedIdentity = [ordered]@{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' }
+
+        return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}' -SourceIdentity $consumedIdentity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z'
     }
     if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'degraded-select') {
         return New-TestResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}' -CacheDegraded $true
@@ -116,7 +122,7 @@ function New-TurnContextDetail {
 function New-TurnContextDiagnosticObject {
     param([string] $Class, [string] $ConsumptionState, $Detail, $SourceIdentity, $GenerationTimestamp, $LockStage, $OperationalWarnings)
 
-    return [ordered]@{ outcomeClass = $Class; consumptionState = $ConsumptionState; lockStage = $null; sourceIdentity = $null; generationTimestamp = $null; detail = $Detail; warnings = @() }
+    return [ordered]@{ outcomeClass = $Class; consumptionState = $ConsumptionState; lockStage = $null; sourceIdentity = $SourceIdentity; generationTimestamp = $GenerationTimestamp; detail = $Detail; warnings = @() }
 }
 
 function ConvertTo-CompanionJson {
