@@ -72,8 +72,10 @@ instead of guessing.
 - History source: derive trajectories on demand from retained saves and the
   research cache, or persist a dedicated psych timeline as evidence-core
   claims with provenance and freshness like any other claim.
-- Session-end detection: what signal marks a play session over (save-activity
-  quiescence, game process exit, user sign-off), and which component owns it.
+- The session-end signal is settled: the runtime emits a durable session-end
+  event on game process exit or explicit user sign-off, and the persona queues
+  its end-of-session report on any-cause end. See the
+  [play-session lifecycle](../patterns/runtime-work-projection-persistence-boundaries.md#play-session-lifecycle).
 - Voice coexistence: how the in-character clinician voice sits inside answers
   otherwise written in the companion's normal analytic voice; a labeled aside
   block versus a full register switch.

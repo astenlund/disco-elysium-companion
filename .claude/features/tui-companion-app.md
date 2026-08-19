@@ -81,13 +81,41 @@ the effort control above.
 
 ## Architecture sketch (from the 2026-08-08 discussion)
 
-- **Session connection: Claude Agent SDK** (TypeScript or Python). The runtime
-  uses the same engine as Claude Code (tools, CLAUDE.md loading, session model)
-  as a library and exposes one persistent streaming session per play session.
-  Session ids allow resume across app restarts and across days. Auto-compaction
-  handles context growth. Fallback option: the runtime shells out to
-  `claude -p --resume <session-id>` with JSON streaming output per question
-  (simpler wiring, process-spawn latency per turn, less mid-turn control).
+- **Session-host seam (authoritative host API).** The runtime exposes one
+  provider-neutral session-host contract that the TUI consumes; the TUI never
+  imports a provider library directly. The contract has four faces that map to
+  the four presentation needs, with provider capabilities asserted per
+  provider rather than assumed:
+  - **Conversation stream**: a uniform event stream of turn deltas, full turns,
+    and context compaction boundaries, so the TUI renders the same shapes for
+    every provider. The Claude Agent SDK streaming-input mode yields this
+    natively; a llama.cpp gateway or alternate endpoint must be adapted to the
+    same framing.
+  - **Host dialog callbacks**: tool-call events that the host renders as its
+    own UI instead of text. The Agent SDK's `canUseTool` intercepts
+    AskUserQuestion and lets the TUI render the selectable dialog; a host may
+    answer by returning the selection. A provider that cannot host dialogs
+    (llama.cpp gateway, alternate Codex) asserts `noDialog` and the TUI shows a
+    degraded prompt-by-text mode rather than faking a dialog.
+  - **Session control**: open by id, resume across restarts and days,
+    auto-compaction handling, and hard interrupt of a stuck turn. Session ids
+    come from the Agent SDK; other providers must supply their own or the TUI
+    treats the session as ephemeral.
+  - **Model override**: the per-question stronger-reasoning action that bumps
+    to a stronger model for one question then autoreverts (Opus at high effort
+    for the Claude host). Providers assert whether per-question override is
+    supported; a provider without it exposes no "think harder" keybinding.
+  Provider capabilities are declared by the runtime when a provider starts and
+  never inferred from behavior; a missing capability degrades presentation
+  visibly, never silently. The primary provider is the Claude Agent SDK
+  (TypeScript, streaming mode, Claude Code's own engine), which reuses the
+  existing `claude /login` OAuth, bundles the native binary, and resolves
+  session ids across projects. Declared alternate providers are Codex CLI and
+  Claude Code via an alternate endpoint (OpenRouter), both expected to assert
+  a subset of the same capabilities, and a local llama.cpp gateway expected to
+  assert only the active stream plus text dialogs. The retired fallback of
+  shelling out to `claude -p --resume` is removed because it cannot intercept
+  dialog tool calls in flight, which the host dialog contract requires.
 - **Plumbing becomes runtime internals.** The runtime supervises the watcher
   loop, state hydration, refresh, and consuming Get-Diff operations. The TUI
   opens immediately while those operations happen asynchronously.
@@ -181,6 +209,9 @@ rendering is the native habitat of the underlying session anyway.
   2026-08-08: the bump is per-question and auto-reverts; a sticky bump
   would silently tax every subsequent quick question. Dev sessions stay on
   the strong tier.
-- Undecided: auth/runtime packaging (SDK uses the same login as the CLI),
-  and whether the watcher-derived save-event stream should proactively
-  surface notable changes in the UI between questions.
+- Auth is settled: the primary Agent SDK provider reuses the existing
+  `claude /login` OAuth, with no second auth surface; alternate providers bring
+  their own endpoint and key resolution. Still open: whether the
+  watcher-derived save-event stream should proactively surface notable changes
+  in the UI between questions (that is a runtime notice-delivery decision, not
+  a TUI one).

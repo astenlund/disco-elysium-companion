@@ -48,8 +48,10 @@ command and supplies the session lifecycle boundary. The shared contract is
   a TUI restart is not a session end (focus state survives it, per the
   ownership boundary). Mirrors the auto-revert rationale of the TUI's
   per-question model effort control: a sticky declared intent would silently
-  tax the next session. The session-end signal itself is an open question
-  below.
+  tax the next session. The session-end signal itself is settled: the runtime
+  emits it on game process exit or explicit user sign-off (see the
+  [play-session lifecycle](../patterns/runtime-work-projection-persistence-boundaries.md#play-session-lifecycle)),
+  and a long gap remains an independent revert path.
 
 ## Session-phase-aware learning
 
@@ -84,11 +86,15 @@ play before any code exists.
 
 ## Open design questions
 
-- Session-end detection: what signal marks a play session over and which
-  component owns it. Shared verbatim with the psychologist persona draft's
-  session-end bullet; settle the signal once for both features.
+- The session-end signal is settled: the runtime emits a durable session-end
+  event on game process exit or explicit user sign-off, and the focus reverts
+  to balanced on session end. See the
+  [play-session lifecycle](../patterns/runtime-work-projection-persistence-boundaries.md#play-session-lifecycle).
 - What gap length counts as "a long gap" for the auto-revert, and whether the
   player is told the focus reverted.
-- Focus scope: per playthrough or per adapter, mirroring the interest
-  profile's open question about carrying state across playthroughs of the
-  same game.
+- Focus scope is settled with playthrough identity: a playthrough is the
+  signed-in principal's save set for the adapter, so focus scope is per
+  (adapter, principal identity). See the
+  [playthrough identity](../patterns/runtime-work-projection-persistence-boundaries.md#playthrough-identity-settled)
+  settlement; carrying state forward across a fresh run of the same game is the
+  deferred multi-playthrough data question, distinct from identity.
