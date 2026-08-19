@@ -3,8 +3,8 @@
 Refactors ready to land when time allows; not blocking any feature, but
 would improve the codebase meaningfully.
 
-This file is **one of four repo-local indexes** Claude reads on every
-session start (alongside `FEATURES.md`, `BUGS.md`, `PATTERNS.md`). Active
+This file is **one of four repo-local indexes** agents consult on demand
+when relevant (alongside `FEATURES.md`, `BUGS.md`, `PATTERNS.md`). Active
 entries are kept inline, organized under thematic `##` sections you
 invent as work emerges. When a quick win lands, append a shipped-note
 entry to [`QUICK_WINS_HISTORY.md`](QUICK_WINS_HISTORY.md); do not move

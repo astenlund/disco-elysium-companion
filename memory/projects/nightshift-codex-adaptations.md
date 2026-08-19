@@ -12,10 +12,10 @@ use Nightshift's native Claude tools, environment, hooks, and model pins instead
 - Keep `.claude/` as Nightshift's shared backlog-data namespace. Do not rename it.
 - `AGENTS.md` is the canonical project instruction file.
 - `CLAUDE.md` is only the `@AGENTS.md` bridge for Claude Code.
-- Maintain both host hooks when their shared directive changes:
-  `.claude/settings.json` for Claude Code and `.codex/hooks.json` for Codex.
-- Do not run `nightshift:init-backlog` unadapted. It targets `CLAUDE.md` and only
-  the Claude Code hook. Apply its intended merge to `AGENTS.md` and both hook files.
+- Backlog indexes are consulted on demand. Do not create project session hooks solely
+  to preload them.
+- Do not run `nightshift:init-backlog` unadapted. Route its `CLAUDE.md` guidance merge
+  to canonical `AGENTS.md`; keep `CLAUDE.md` as the bridge.
 
 ## Tool translation
 

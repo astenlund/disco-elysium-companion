@@ -5,8 +5,8 @@ points at a standalone file under `.claude/features/<slug>.md` with the
 full design sketch. Check this index before proposing new feature
 directions in the same territory.
 
-This file is **one of four repo-local indexes** Claude reads on every
-session start (alongside `QUICK_WINS.md`, `BUGS.md`, `PATTERNS.md`). Each
+This file is **one of four repo-local indexes** agents consult on demand
+when relevant (alongside `QUICK_WINS.md`, `BUGS.md`, `PATTERNS.md`). Each
 entry here is a short paragraph summary plus a `**Requires:**` line, and
 optionally a `**Slices:**` block (formal MVP plus continuations; see
 `## Slicing` below). For features that are partially done without a
@@ -51,12 +51,14 @@ they aid understanding.
 shipping order, shallow placeholders, workflow notes, exploratory
 brainstorms) rather than ready-to-implement entries. Items in those
 sections do not carry `Requires:` lines (or, in `## Exploring`'s
-case, may carry them as historical artifacts only) and `/nightshift:ready`
-ignores them. Working hypotheses / Staging / Future directions
-(not yet designed) / Author tooling are bulleted rather than `###`
-headings, so the `###`-only candidate filter handles them naturally;
-`## Exploring` holds `###` entries but is excluded by name in the
-`/nightshift:ready` filter.
+case, may carry them as historical artifacts only). `/nightshift:ready`
+ignores the bulleted sections entirely and keeps `## Exploring` out of
+the readiness set, reporting its entries separately as titles-only
+drafts; `/nightshift:exploring` renders them in full. Working
+hypotheses / Staging / Future directions (not yet designed) / Author
+tooling are bulleted rather than `###` headings, so the `###`-only
+candidate filter handles them naturally; `## Exploring` holds `###`
+entries, collected as drafts and never classified.
 
 Concrete entry shape inside the index. The example mixes a feature
 link, a quick-win link, and a bare external primitive to show all
@@ -185,8 +187,10 @@ line in `FEATURES.md` / `BUGS.md` to drop now-satisfied references.
 Pre-dependency-analysis brainstorms live here. An entry is a draft
 feature whose breakout file carries `status: exploring` in its
 frontmatter; the design is being firmed up and a `**Requires:**` line
-isn't expected yet. `/nightshift:ready` excludes this section from the readiness
-set on purpose. When a draft firms up enough to declare its upstream
+isn't expected yet. `/nightshift:ready` lists these drafts titles-only in a
+clearly-marked not-ready section, never in the readiness set, and
+`/nightshift:exploring` renders the full draft list. When a draft firms
+up enough to declare its upstream
 gates, move it out of `## Exploring` into the appropriate themed `##`
 section, add the `**Requires:**` line, and drop the `status: exploring`
 frontmatter on the breakout file.
