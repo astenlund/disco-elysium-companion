@@ -32,7 +32,10 @@ $groupScripts = [ordered]@{
     )
     Acquisition = @((Join-Path $PSScriptRoot 'Test-Acquisition.ps1'))
     Consumption = @((Join-Path $PSScriptRoot 'Test-Consumption.ps1'))
-    TurnContext = @((Join-Path $PSScriptRoot 'Test-TurnContext.ps1'))
+    TurnContext = @(
+        (Join-Path $PSScriptRoot 'Test-TurnContext.ps1'),
+        (Join-Path $PSScriptRoot 'Test-ValidatedTurnContext.ps1')
+    )
     Watcher = @(
         (Join-Path $PSScriptRoot 'Test-Watcher.ps1'),
         (Join-Path $PSScriptRoot 'Test-Section11LiveProbeSupport.ps1')

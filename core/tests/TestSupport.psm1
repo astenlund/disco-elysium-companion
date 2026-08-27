@@ -99,7 +99,7 @@ function Assert-ThrowsType {
     throw [System.InvalidOperationException]::new("Assertion failed: expected exception type '$TypeName', but no exception was thrown.")
 }
 
-function Start-BoundedPwsh {
+function New-BoundedPwshStartInfo {
     param(
         [Parameter(Mandatory)] [string[]] $Arguments,
         [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
@@ -119,6 +119,17 @@ function Start-BoundedPwsh {
         $startInfo.Environment[[string] $key] = [string] $Environment[$key]
     }
 
+    return $startInfo
+}
+
+function Start-BoundedPwsh {
+    param(
+        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
+        [Parameter()] [hashtable] $Environment = @{}
+    )
+
+    $startInfo = New-BoundedPwshStartInfo -Arguments $Arguments -WorkingDirectory $WorkingDirectory -Environment $Environment
     $process = [System.Diagnostics.Process]::Start($startInfo)
 
     return [pscustomobject]@{
@@ -126,6 +137,79 @@ function Start-BoundedPwsh {
         StandardOutputTask = $process.StandardOutput.ReadToEndAsync()
         StandardErrorTask = $process.StandardError.ReadToEndAsync()
         Disposed = $false
+    }
+}
+
+function Invoke-BoundedPwshBytes {
+    param(
+        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter()] [int] $TimeoutMilliseconds = 30000,
+        [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
+        [Parameter()] [hashtable] $Environment = @{}
+    )
+
+    if ($TimeoutMilliseconds -le 0) {
+        throw [System.ArgumentOutOfRangeException]::new('TimeoutMilliseconds')
+    }
+
+    $startInfo = New-BoundedPwshStartInfo -Arguments $Arguments -WorkingDirectory $WorkingDirectory -Environment $Environment
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $standardOutput = [System.IO.MemoryStream]::new()
+    $standardError = [System.IO.MemoryStream]::new()
+    $captureCompleted = $false
+    try {
+        $standardOutputTask = $process.StandardOutput.BaseStream.CopyToAsync($standardOutput)
+        $standardErrorTask = $process.StandardError.BaseStream.CopyToAsync($standardError)
+        $exitTask = $process.WaitForExitAsync()
+        $completionTask = [System.Threading.Tasks.Task]::WhenAll(@($exitTask, $standardOutputTask, $standardErrorTask))
+        $timeoutTask = [System.Threading.Tasks.Task]::Delay($TimeoutMilliseconds)
+        $completedTask = [System.Threading.Tasks.Task]::WhenAny(@($completionTask, $timeoutTask)).GetAwaiter().GetResult()
+        if (-not [object]::ReferenceEquals($completedTask, $completionTask)) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill($true)
+                }
+            }
+            catch {
+                # Test cleanup is best-effort after the composite deadline expires.
+            }
+            try {
+                $process.StandardOutput.BaseStream.Close()
+            }
+            catch {
+                # Test cleanup is best-effort after the composite deadline expires.
+            }
+            try {
+                $process.StandardError.BaseStream.Close()
+            }
+            catch {
+                # Test cleanup is best-effort after the composite deadline expires.
+            }
+            $graceTask = [System.Threading.Tasks.Task]::Delay([System.TimeSpan]::FromSeconds(5))
+            $graceCompletedTask = [System.Threading.Tasks.Task]::WhenAny(@($completionTask, $graceTask)).GetAwaiter().GetResult()
+            $captureCompleted = [object]::ReferenceEquals($graceCompletedTask, $completionTask)
+            throw [System.TimeoutException]::new("Child pwsh exceeded $TimeoutMilliseconds ms plus drain grace.")
+        }
+        $captureCompleted = $true
+        [void] $completionTask.GetAwaiter().GetResult()
+        $standardOutputBytes = $standardOutput.ToArray()
+        $standardErrorBytes = $standardError.ToArray()
+        $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StdOut = $strictUtf8.GetString($standardOutputBytes)
+            StdErr = $strictUtf8.GetString($standardErrorBytes)
+            StdOutBytes = $standardOutputBytes
+            StdErrBytes = $standardErrorBytes
+        }
+    }
+    finally {
+        if ($captureCompleted) {
+            $standardOutput.Dispose()
+            $standardError.Dispose()
+            $process.Dispose()
+        }
     }
 }
 
@@ -510,4 +594,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess

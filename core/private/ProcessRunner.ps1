@@ -29,6 +29,193 @@ public static class CompanionProcessPump
 '@
 }
 
+if ($null -eq ('CompanionBoundedBytePump' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+public sealed class CompanionBoundedByteCapture
+{
+    public CompanionBoundedByteCapture(byte[] bytes, bool overflow)
+    {
+        Bytes = bytes;
+        Overflow = overflow;
+    }
+
+    public byte[] Bytes { get; }
+
+    public bool Overflow { get; }
+}
+
+public static class CompanionBoundedBytePump
+{
+    public static async Task<CompanionBoundedByteCapture> ReadAsync(
+        Stream stream,
+        int maximumBytes,
+        TaskCompletionSource<bool> failureSignal,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var encoding = new UTF8Encoding(false, true);
+            var decoder = encoding.GetDecoder();
+            var byteBuffer = new byte[65536];
+            var charBuffer = new char[encoding.GetMaxCharCount(byteBuffer.Length)];
+            using var output = new MemoryStream(Math.Min(maximumBytes, byteBuffer.Length));
+
+            while (true)
+            {
+                var remainingWithOverflowSentinel = (long)maximumBytes - output.Length + 1;
+                var requested = (int)Math.Min(byteBuffer.Length, remainingWithOverflowSentinel);
+                var count = await stream.ReadAsync(byteBuffer.AsMemory(0, requested), cancellationToken).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    decoder.Convert(ReadOnlySpan<byte>.Empty, charBuffer.AsSpan(), true, out _, out _, out _);
+
+                    return new CompanionBoundedByteCapture(output.ToArray(), false);
+                }
+
+                if (output.Length + count > maximumBytes)
+                {
+                    failureSignal.TrySetResult(true);
+
+                    return new CompanionBoundedByteCapture(Array.Empty<byte>(), true);
+                }
+
+                output.Write(byteBuffer, 0, count);
+                var bytesUsed = 0;
+                while (bytesUsed < count)
+                {
+                    decoder.Convert(
+                        byteBuffer.AsSpan(bytesUsed, count - bytesUsed),
+                        charBuffer.AsSpan(),
+                        false,
+                        out var convertedBytes,
+                        out _,
+                        out _);
+                    bytesUsed += convertedBytes;
+                }
+            }
+        }
+        catch
+        {
+            failureSignal.TrySetResult(true);
+            throw;
+        }
+    }
+}
+
+public static class CompanionProcessTeardown
+{
+    public static Task RunAsync(
+        Process process,
+        Stream standardOutput,
+        Stream standardError,
+        CancellationTokenSource pumpCancellation,
+        Task[] transportTasks,
+        string failureOperation)
+    {
+        var killTask = Task.Run(() => TryKill(process, failureOperation));
+        var standardOutputTask = Task.Run(() => TryClose(standardOutput, failureOperation, "CloseStandardOutput"));
+        var standardErrorTask = Task.Run(() => TryClose(standardError, failureOperation, "CloseStandardError"));
+        var cancellationTask = Task.Run(() => TryCancel(pumpCancellation));
+        var drainTask = ObserveTransportAsync(transportTasks);
+
+        return CompleteAsync(process, pumpCancellation, new[] { killTask, standardOutputTask, standardErrorTask, cancellationTask, drainTask });
+    }
+
+    private static void TryKill(Process process, string failureOperation)
+    {
+        try
+        {
+            if (string.Equals(failureOperation, "BlockKill", StringComparison.Ordinal))
+            {
+                Thread.Sleep(10000);
+            }
+            if (string.Equals(failureOperation, "Kill", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Injected child-kill failure.");
+            }
+            if (!process.HasExited)
+            {
+                process.Kill(true);
+            }
+        }
+        catch
+        {
+            // Teardown is best-effort; the latched transport failure remains authoritative.
+        }
+    }
+
+    private static void TryClose(Stream stream, string failureOperation, string operation)
+    {
+        try
+        {
+            if (string.Equals(failureOperation, operation, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Injected stream-close failure.");
+            }
+            stream.Close();
+        }
+        catch
+        {
+            // Teardown is best-effort; the latched transport failure remains authoritative.
+        }
+    }
+
+    private static void TryCancel(CancellationTokenSource pumpCancellation)
+    {
+        try
+        {
+            pumpCancellation?.Cancel();
+        }
+        catch
+        {
+            // Teardown is best-effort; the latched transport failure remains authoritative.
+        }
+    }
+
+    private static async Task ObserveTransportAsync(Task[] transportTasks)
+    {
+        try
+        {
+            await Task.WhenAll(transportTasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Teardown is best-effort; the latched transport failure remains authoritative.
+        }
+    }
+
+    private static async Task CompleteAsync(Process process, CancellationTokenSource pumpCancellation, Task[] teardownTasks)
+    {
+        await Task.WhenAll(teardownTasks).ConfigureAwait(false);
+        try
+        {
+            pumpCancellation?.Dispose();
+        }
+        catch
+        {
+            // Teardown is best-effort; the latched transport failure remains authoritative.
+        }
+
+        try
+        {
+            process.Dispose();
+        }
+        catch
+        {
+            // Teardown is best-effort; the latched transport failure remains authoritative.
+        }
+    }
+}
+'@
+}
+
 function Invoke-AdapterCommandTeardownOperation {
     param(
         [Parameter(Mandatory)] [ValidateSet('Kill', 'CloseStandardOutput', 'CloseStandardError')] [string] $Operation,

@@ -118,7 +118,8 @@ companion/
     Watch-Saves.ps1              poll loop; invokes adapter, then differ
     Update-CompanionState.ps1    one-shot: process newest save now
     Get-Diff.ps1                 computes and prints the diff; consuming mode resets baseline
-    Get-TurnContext.ps1          freshness-gated consuming context for game-related turns (7.5)
+    Get-ValidatedTurnContext.ps1 host-neutral capture, validation, and admission entry point (7.5)
+    Get-TurnContext.ps1          freshness-gated consuming transaction child (7.5)
     Find-LastEventfulSpan.ps1    idle walk-back: most recent eventful save pair (7.4)
     DigestDiff.psm1              digest differ, source ordering, consumption, and JSON helpers
   adapters/
@@ -1737,20 +1738,31 @@ after serialization.
 
 The shared operation returns a typed `ConsumeResult` with exactly string
 `outcomeClass`, string `consumptionState`, module-owned `payload`, Boolean `cacheDegraded`, and
-string-or-null `detail`. `detail` is null on success and otherwise is produced by the
+string-or-null `detail`, plus module-owned `targetDocument` or null. `detail` is null on success and otherwise is produced by the
 shared terminal-detail registry below. The producer enforces the 512 Unicode-scalar
 limit before returning `ConsumeResult`; exception messages, paths, command lines, child
 streams, and arbitrary JSON or save values cannot enter it.
+`targetDocument` carries the admitted locked-final digest only when a payloadless
+`stale-target` or post-freeze `compute` result otherwise has no authoritative target
+container. It is created from the locked `current.json` read, is never refreshed, and
+exists only until the attempt stamps diagnostic provenance. It is null before a locked
+target is admitted, for every payload-bearing result whose private payload already owns
+the target state, and for raw-output failures. It is never serialized directly or
+persisted. The attempt falls back to the admitted preflight target only when
+`targetDocument` is null.
 Structured class values are canonical unbracketed tokens; prose renders a token such as
 `compute` as `[compute]`. Its complete legal tuples are:
 
-| Outcome token | Consumption | Payload | Cache degraded | Detail |
-|---|---|---|---|---|
-| `success` | `consumed` | Complete mode-specific payload above | false | null |
-| `reset-write:not-consumed` | `notConsumed` | Complete mode-specific payload above | false | non-empty text |
-| `reset-write:consumed` | `consumed` | Complete mode-specific payload above | true | non-empty text |
-| `busy`, `lock`, `freshness`, `stale-target`, or `compute` | `none` | null | false | non-empty text |
-| `emit` in rawStdout mode | `none` | null, even when a private value was built before the stream failure | false | non-empty text |
+| Outcome token | Consumption | Payload | Cache degraded | Detail | Target document |
+|---|---|---|---|---|---|
+| `success` | `consumed` | Complete mode-specific payload above | false | null | null |
+| `reset-write:not-consumed` | `notConsumed` | Complete mode-specific payload above | false | non-empty text | null |
+| `reset-write:consumed` | `consumed` | Complete mode-specific payload above | true | non-empty text | null |
+| `busy`, `lock`, or `freshness` | `none` | null | false | non-empty text | null |
+| `stale-target` | `none` | null | false | non-empty text | Admitted locked-final digest |
+| `compute` before locked-final admission | `none` | null | false | non-empty text | null |
+| `compute` after locked-final admission | `none` | null | false | non-empty text | Admitted locked-final digest |
+| `emit` in rawStdout mode | `none` | null, even when a private value was built before the stream failure | false | non-empty text | null |
 
 Every other tuple is invalid.
 `Get-Diff.ps1` maps this result to its historical missing-current or stale-current class
@@ -2324,15 +2336,41 @@ tui-companion-app.md) plans an automated idle-aware recap that would invoke this
 script and consume this JSON contract; contract changes should keep that consumer in
 mind.
 
-### 7.5 Game-turn acquisition: `Get-TurnContext.ps1 [-Adapter <name>] [-CompanionRoot <path>]`
+### 7.5 Game-turn acquisition: validated host entry and consuming transaction
 
-This temporary host bridge combines freshness acquisition with one consuming read for
-the current CLI companion. `Get-TurnContext.ps1` is the one executable transaction
-wrapper the host invokes. It runs acquisition attempts in-process through the internal
+`Get-ValidatedTurnContext.ps1 [-Adapter <name>] [-CompanionRoot <path>]` is the
+host-neutral entry point for both Codex and Claude Code. The host invokes it exactly
+once per game-related turn. It starts sibling `Get-TurnContext.ps1` exactly once as a
+child process, drains both streams concurrently, accepts only the exit-0 or exit-1
+framing defined below, and validates the exact child output. On exit 0 it first applies
+`Read-TurnContextEnvelope -TransportOnly`, then resolves one fresh Acquisition config
+and applies producer-mode envelope validation under that config, which covers ordinal
+game and source-domain identity, numeric adapter-version identity, and nested adapter
+digest admission. Only then does it write the original complete child envelope
+unchanged to its own stdout. On a valid child exit-1 diagnostic it validates with
+`Read-TurnContextDiagnostic` and forwards the exact diagnostic unchanged. Legal child
+exit-1 classes are exactly `config`, `busy`, `lock`, `stale-target`, `no-saves`,
+`stability`, `source`, `dump`, `digest`, `refresh`, `freshness`, `compute`,
+`reset-write:not-consumed`, `protocol`, and `delivery`; class, consumption, lock-stage,
+reason, and warning tokens use ordinal case-sensitive matching. Invalid
+exit-1 framing becomes `[protocol]` with `consumptionState: unknown` and
+`attempt-result-invalid`; invalid exit-0 framing or admission becomes `[protocol]` with
+`consumptionState: consumed` and `envelope-invalid`. A failed final stdout write becomes
+`[delivery]` with `consumptionState: consumed` and `stdout-write-failed`; partial stdout
+may precede that diagnostic but is never a usable envelope. Every outer failure injects
+no envelope and never starts another child. The entry point is plain PowerShell 7.5 with
+JSON stdout, typed diagnostic stderr, and process exit codes, so neither host supplies
+an adapter script or host-specific parsing path.
+
+This temporary bridge combines freshness acquisition with one consuming read for the
+current CLI companion. `Get-TurnContext.ps1 [-Adapter <name>] [-CompanionRoot <path>]`
+is the one executable transaction wrapper the validated host entry invokes. It runs
+acquisition attempts in-process through the internal
 `Invoke-TurnContextAttempt` function, captures every candidate envelope in private
 memory, performs the one permitted retry itself, and writes only the selected final
-envelope to process stdout, with no leading or trailing whitespace. The host never invokes or captures a single attempt
-directly. Before attempt A, the wrapper resolves and validates exactly one adapter
+envelope to process stdout, with no leading or trailing whitespace. Neither outer host
+nor validated entry invokes or captures a single attempt directly. Before attempt A,
+the wrapper resolves and validates exactly one adapter
 configuration snapshot. It owns that snapshot through selection, passes the same object
 to A and any B retry, and supplies it to every candidate-envelope validation. A
 mid-transaction adapter.json edit never replaces that held snapshot. If a refresh
@@ -2678,7 +2716,7 @@ discard the selected identity rather than contradicting the null `config` matrix
 | `stale-target`, both reset-write outcomes, `success`, other `protocol`, `delivery` | null | selected identity | target `generatedAt` |
 
 `Read-TurnContextDiagnostic -Json <string> -ExpectedClass <token>
-[-ExpectedLockStage <cycle|consume>]` is the shared wrapper/host validator. It uses
+[-ExpectedLockStage <cycle|consume>] [-HostGenerated]` is the shared wrapper/host validator. It uses
 `Read-CompanionJson` budget `config`, requires the exact seven fields and canonical
 unbracketed class, validates the bounded operational warning subset and ordering,
 checks the detail registry plus the consumption, lock-stage, and provenance matrix,
@@ -2686,7 +2724,10 @@ requires non-empty `detail` for every failure and null for success, enforces the
 and UTF-8 byte caps, and rejects a record whose class differs ordinally from the terminal
 prefix. The wrapper supplies `ExpectedLockStage` from its typed operation result; the
 host omits it and validates the producer-stamped field against the closed matrix. The
-parameter is forbidden for non-lock classes. The function returns the validated
+parameter is forbidden for non-lock classes. `HostGenerated` is a narrow admission
+flag for the validated entry's own null-provenance protocol records. It admits only
+`none` plus `attempt-result-invalid` or `consumed` plus `envelope-invalid`; it is never
+used while validating child output. The function returns the validated
 `CompanionJsonValue` or throws `TurnContextProtocolException`; it never returns a
 partial value. `unknown` consumption is accepted only with class `protocol`, detail
 reason `attempt-result-invalid`, and all three provenance fields null.
@@ -2754,8 +2795,9 @@ equality with `AdapterConfig.game`, and domainId equality with the snapshot-deri
 `AdapterConfig.sourceDomainId`. Pairwise agreement does not substitute for these running-config checks in
 producer mode. Host transport mode repeats the exact structure, core nested-document,
 pairwise, floor, and running-core checks but neither accepts nor rereads mutable adapter
-configuration. Adapter admission at that boundary belongs to section 10's immediately
-following fresh guidance snapshot and must succeed before the host uses nested state.
+configuration. Adapter admission at that boundary belongs to the validated host entry's
+immediately following fresh Acquisition snapshot and must succeed before it returns
+nested state.
 When
 producer mode is selected, `cacheDegraded` must equal the mandatory structured attempt
 result flag. Missing, extra,
@@ -2763,13 +2805,15 @@ malformed, wrong-version, or invariant-breaking content is `[protocol]`.
 
 The wrapper always supplies its transaction-owned adapter snapshot and the validated
 `TurnContextAttemptResult.cacheDegraded` value to this validator; it never derives
-either from envelope fields or re-reads adapter.json after an attempt returns. The host
-uses `-TransportOnly`: the wrapper already performed producer validation against its
-discarded snapshot, while transport validation protects against output corruption
-without binding itself to adapter.json. Section 10 then resolves a fresh guidance
-snapshot, checks configuration identity, and independently adapter-admits nested state
-before use. A configuration change is therefore handled by that explicit guidance gate,
-not by silently rereading mutable bytes inside transport validation.
+either from envelope fields or re-reads adapter.json after an attempt returns. The
+validated host entry first uses `-TransportOnly`: the wrapper already performed producer
+validation against its discarded snapshot, while transport validation protects against
+child-output corruption without binding itself to adapter.json. The entry then resolves
+a fresh Acquisition snapshot, checks configuration identity, and independently
+adapter-admits nested state before returning it. A configuration change is therefore
+handled by that explicit admission gate, not by silently rereading mutable bytes inside
+transport validation. Section 10 may resolve another short-lived snapshot only for
+opening-session walk-back policy after the state has already been admitted.
 
 For a structurally valid attempt result, the wrapper validates every envelope-bearing
 attempt before selection. An envelope validation
@@ -2791,14 +2835,16 @@ stream renderers. A test helper that
 writes directly to any process stream is therefore a contract violation, not a warning
 the wrapper is expected to scrub after logging.
 
-The host starts one acquisition transaction and one process invocation of the wrapper
-at the start of every game-related turn. The wrapper normally makes one
-internal attempt; the single prescribed `[reset-write:not-consumed]` retry remains part
-of that process and transaction. A supervised host transport starts the wrapper with
-stdout and stderr drained concurrently through strict UTF-8 byte-counting pumps, applies
-one module-owned 3,600-second composite deadline, and allows a final five-second teardown
-and drain grace. Stdout retains at most 33,554,432 bytes, covering the complete
-32-MiB turn-context document; stderr retains at most 65,536 bytes,
+The host starts one validated entry process at the start of every game-related turn and
+reads only that entry's final stdout, stderr, and exit code. The validated entry owns the
+child transport supervisor and starts exactly one acquisition transaction child; the
+calling host never captures or interprets the child's streams. The consuming wrapper
+normally makes one internal attempt; the single prescribed
+`[reset-write:not-consumed]` retry remains part of that child process and transaction.
+The validated entry drains child stdout and stderr concurrently through strict UTF-8
+byte-counting pumps, applies one entry-owned 3,600-second composite deadline, and allows
+a final five-second teardown and drain grace. Stdout retains at most 33,554,432 bytes,
+covering the complete 32-MiB turn-context document; stderr retains at most 65,536 bytes,
 well above the 4,096-byte terminal record. A cap-plus-one byte latches overflow, stops
 retention, attempts process-tree termination, and drains or closes both streams only
 within the teardown grace. Overflow is host-only `[protocol]` with
@@ -2855,45 +2901,50 @@ The wrapper may use `unknown` only for `[protocol]` with detail reason
 `attempt-result-invalid`, because the rejected result was the only attempted source of
 baseline-mutation evidence. That combination carries null lock stage and provenance and
 never authorizes a retry. No valid `TurnContextAttemptResult` uses `unknown`.
-Both wrapper and host validate it with `Read-TurnContextDiagnostic`; the host never
-parses `detail` to infer class, consumption, provenance, or retry behavior.
-`[delivery]` is the only failure after selection and always reports consumed. The host
-validates the successful stdout once more with `Read-TurnContextEnvelope -TransportOnly` before
-injection as a defense against transport corruption. Exit 0 with any terminal record,
-exit 1 with a missing, duplicate, malformed, or class-contradictory record, and any
-success-payload validation failure map to host-side `[protocol]`; the host injects
-nothing and never reruns the wrapper. A valid exit-1 diagnostic supplies its validated
-`none`, `notConsumed`, or `consumed` state. An invalid, absent, duplicate, or
-contradictory exit-1 diagnostic instead produces host-only `consumptionState: unknown`.
-Invalid exit-0 output produces host-only `consumptionState: consumed`, because wrapper
-exit 0 is reachable only after selection of an attempt that advanced baseline.
-Outside the one wrapper-generated `attempt-result-invalid` diagnostic, `unknown` exists
-only in the host failure/disclosure result. `Read-TurnContextDiagnostic` accepts it only
-for that one exact wrapper diagnostic, and it never authorizes a retry.
-Host-generated protocol failures trust and reproduce no provenance or detail from
-rejected bytes. A
+Both wrapper and validated entry validate it with `Read-TurnContextDiagnostic`; the
+calling host trusts the resulting structured fields and never parses `detail` to infer
+class, consumption, provenance, or retry behavior. `[delivery]` is the only failure
+after selection and always reports consumed, whether the consuming wrapper cannot write
+its selected envelope or the validated entry cannot complete its final raw-byte write.
+The validated entry validates the successful child stdout once more with
+`Read-TurnContextEnvelope -TransportOnly`, then
+performs fresh-config identity and adapter admission before returning it. Child exit 0
+with any terminal record, child exit 1 with missing, duplicate, malformed, or
+class-contradictory framing, and any success-payload admission failure map to the outer
+`[protocol]`; the entry emits no envelope and never reruns the child. A valid child
+exit-1 diagnostic supplies its validated `none`, `notConsumed`, or `consumed` state. An
+invalid, absent, duplicate, or contradictory child exit-1 diagnostic instead produces
+`consumptionState: unknown`. Invalid child exit-0 output produces
+`consumptionState: consumed`, because inner exit 0 is reachable only after selection of
+an attempt that advanced baseline. A calling tool that truncates or rejects the
+validated entry's own exit-0 stdout likewise injects nothing and discloses a host-only
+consumed state without rerunning the entry.
+Outside a wrapper- or validated-entry-generated `attempt-result-invalid` diagnostic,
+`unknown` exists only in the host failure/disclosure result.
+`Read-TurnContextDiagnostic` accepts it only for that exact protocol shape, and it never
+authorizes a retry. Host-generated protocol failures trust and reproduce no provenance
+or detail from rejected bytes. A
 message is game-related when it concerns the game world, mechanics, lore, the player's
 playthrough or choices, saves, or any state-derived guidance; a mixed message qualifies
 if any part meets that predicate. Repository work, backlog management, companion
 feature design, and other development-only conversation do not qualify. The selected
 final envelope is injected into that same turn and processed under the notice, baseline-reset,
 research-cache, and guidance rules even when the immediate question is general game
-lore. After wrapper exit 0, this temporary bridge is at-most-once rather than replayable:
-baseline has advanced, so any later host-side transport rejection, fresh-configuration
-resolution failure, configuration drift, adapter-admission failure, or host or model
-session death before presentation can lose that consumed transition. When a host remains
-alive to disclose such a post-exit-0 failure, it reports host-only
-`consumptionState: consumed`; the next ordinary transaction compares from the advanced
-baseline and does not replay the notice. The execution runtime's durable event journal
-and acknowledgement protocol close this complete loss window; this bridge does not
-pretend to.
+lore. After the consuming child exits 0, this temporary bridge is at-most-once rather
+than replayable: baseline has advanced, so outer admission failure, calling-tool
+transport rejection, or host or model session death before presentation can lose that
+consumed transition. When the validated entry or calling host remains alive to disclose
+such a post-exit-0 failure, it reports `consumptionState: consumed`; the next ordinary
+transaction compares from the advanced baseline and does not replay the notice. The
+execution runtime's durable event journal and acknowledgement protocol close this
+complete loss window; this bridge does not pretend to.
 
 ## 8. Component: watcher (core)
 
 `Watch-Saves.ps1 [-Adapter <name>] [-IntervalSeconds 30]`
 `Update-CompanionState.ps1 [-Adapter <name>]`
 
-All five core entry points also accept `-CompanionRoot <path>`, defaulting to the
+All six core entry points also accept `-CompanionRoot <path>`, defaulting to the
 parent of the script's directory (the companion root above `core\`); it roots the
 resolution of `adapters\` and, for the entry points that use them, `state\` and
 `.tmp\` (Get-Diff uses no `.tmp\`, the walk uses no `state\`; section 3), and
@@ -2902,8 +2953,9 @@ An explicit value must satisfy `[IO.Path]::IsPathFullyQualified`, resolve throug
 `[IO.Path]::GetFullPath` to an existing directory, and be opened through literal-path
 APIs; relative values fail rather than inheriting the process working directory.
 
-For all five core entry points (these two, `Get-Diff.ps1`,
-`Get-TurnContext.ps1`, and `Find-LastEventfulSpan.ps1`, 7.4), `-Adapter` names a
+For all six core entry points (these two, `Get-Diff.ps1`,
+`Get-ValidatedTurnContext.ps1`, `Get-TurnContext.ps1`, and
+`Find-LastEventfulSpan.ps1`, 7.4), `-Adapter` names a
 directory under `adapters\`; when exactly one adapter directory exists the parameter may
 be omitted and resolves to it; with several it is required (exit 1 with the candidate
 list otherwise); with none, exit 1 directing to install an adapter (a fresh checkout is
@@ -3644,12 +3696,13 @@ appear as examples; mechanical examples only (the ones used in this spec).
 Standing rules for future Companion sessions:
 
 - Before answering every game-related message, perform one section 7.5 acquisition
-  transaction by invoking the wrapper once. Section 7.5's positive predicate defines
-  game-related and makes mixed messages qualify; repository, backlog, and companion
-  feature-design turns skip acquisition. On exit 0, validate the one selected envelope through
-  `Read-TurnContextEnvelope`, but do not inject or use nested state until the fresh
-  guidance configuration and adapter-admission gate below succeeds. Then inject both
-  `diff` and its exact `state` target into the same turn. Process every acquired
+  transaction by invoking `Get-ValidatedTurnContext.ps1` once. Section 7.5's positive
+  predicate defines game-related and makes mixed messages qualify; repository, backlog,
+  and companion feature-design turns skip acquisition. The validated entry invokes the
+  consuming wrapper exactly once and owns capture, transport validation, fresh
+  Acquisition-configuration identity, and nested adapter admission. On exit 0, inject
+  both `diff` and its exact `state` target into the same turn without repeating those
+  steps. Process every acquired
   envelope under the structured-warning, notice, research-cache, baseline-reset, and guidance rules before
   answering the immediate question. Never read `diff-since-last-read.json` directly;
   `Get-Diff.ps1 -Peek` remains only for manual inspection that must not consume.
@@ -3707,34 +3760,24 @@ Standing rules for future Companion sessions:
   requests (no previews there). The first guidance answer of a session opens with
   a situation brief (day/time/location, vitals, money, active critical-path
   threads, what the consumed diff reported or that the baseline reset) before any
-  dialog; later answers stay incremental. After transport-validating the envelope, the
-  host resolves one fresh acquisition `AdapterConfig` for the guidance phase and holds
-  it through trigger evaluation and any walk-result validation. Resolution failure is a
-  local `[config]` admission failure with host-only `consumptionState: consumed`, no
-  terminal detail or diagnostic provenance, and no automatic replay: disclose it, inject
-  no state, never retry, and stop. Ordinal
-  guidance `game` and `sourceDomainId` plus
-  numeric `adapterVersion` must equal the validated envelope's game, adapterVersion, and
-  `state.source.domainId`. A mismatch is a local configuration-drift enrichment failure:
-  report the same host-only consumed state without terminal detail or provenance,
-  disclose it, inject no state, never retry, and stop. After identity matches, the host passes the
-  nested state to `Assert-AdapterDigestDocument` under that same snapshot before any
-  guidance use. Adapter rejection or validator infrastructure failure is local
-  `[protocol]` outside `New-TurnContextDetail`, with host-only
-  `consumptionState: consumed` because the transport-valid exit-0 envelope has already
-  been selected. It carries no terminal detail or diagnostic provenance, injects
-  nothing, never retries, and stops; a transport-valid core shape is not a substitute
-  for active-adapter validity. Same-version edits to `ambientExtraPaths` remain eligible when those
-  acquisition identities agree; a valid `diffExcludePaths` edit changes adapterVersion
-  under section 8 and therefore takes the mismatch path.
+  dialog; later answers stay incremental. `Get-ValidatedTurnContext.ps1` has already
+  transport-validated the exact child stdout, resolved a fresh Acquisition config,
+  checked its identity against the envelope, and adapter-admitted nested state before
+  returning exit 0. Configuration resolution, identity mismatch, adapter rejection, or
+  validator infrastructure failure after the consuming child exits successfully becomes
+  `[protocol]` with `consumptionState: consumed` and `envelope-invalid`; the script emits
+  no envelope, never retries, and stops. A transport-valid core shape is not a substitute
+  for active-adapter validity.
   Envelope delivery closes the acquisition transaction and invalidates its private
-  snapshot; optional walk-back is a separate guidance transaction. Resolving after
-  transport validation deliberately lets the current presentation policy govern
-  enrichment, including edits made after envelope creation. Carrying the wrapper snapshot
-  or serializing its walk policy in the envelope was rejected because either would extend
-  acquisition-snapshot lifetime and freeze stale presentation policy into the consuming
-  protocol. The guidance snapshot instead lives only through trigger evaluation and
-  walk-result validation. Evaluate the opening diff through `Test-UneventfulDiff` with that snapshot's
+  snapshot; optional walk-back is a separate guidance transaction. For the opening-diff
+  trigger only, resolve a new Acquisition config and hold it through trigger evaluation
+  and walk-result validation. This later snapshot deliberately lets current presentation
+  policy govern enrichment, including same-version `ambientExtraPaths` edits made after
+  envelope creation. Its failure blocks only the walk-back enrichment: disclose the
+  enrichment failure and brief from the already-admitted current state. Carrying either
+  transaction snapshot or serializing its walk policy in the envelope was rejected
+  because that would extend snapshot lifetime or freeze stale presentation policy into
+  the consuming protocol. Evaluate the opening diff through `Test-UneventfulDiff` with that snapshot's
   `ambientExtraPaths`. When it is UNEVENTFUL per 7.4's definition (canonical-empty, or
   differing only in `hasUnrepresentedChanges`, `sessionChange`, and/or
   ambient-tolerated `extraChanges`; the current DE configuration declares
@@ -4315,8 +4358,8 @@ Standing rules for future Companion sessions:
   `current-commit-failed`; producer envelope uses `protocol` /
   `adapter-validator-infrastructure-failed`. Separately fail host guidance adapter
   admission after transport-valid exit-0 envelope selection and require local
-  `[protocol]`, host-only `consumptionState: consumed`, no terminal detail or diagnostic
-  provenance, no state or diff injection, no retry, and immediate stop.
+  `[protocol]`, host-only `consumptionState: consumed`, detail `envelope-invalid`, null
+  diagnostic provenance, no state or diff injection, no retry, and immediate stop.
   Assert that raw payloads are immutable `CompanionJsonValue` objects and private
   payloads are `TurnContextPayloadCandidate` objects whose nested diff and state retain
   exact RootElement numbers. Attempts may change only CacheDegraded and the final warning
@@ -4432,6 +4475,9 @@ Standing rules for future Companion sessions:
   then one byte more on each stream. Exact caps reach ordinary protocol validation;
   cap-plus-one latches overflow, retains no later bytes, terminates within the grace, and
   reports host-only `[protocol]` with unknown consumption.
+  Inject a final validated-entry stdout failure after a nonempty prefix. The entry emits
+  one `[delivery]` `stdout-write-failed` diagnostic with consumed state; the calling host
+  rejects the partial stdout, injects nothing, and never reruns the transaction.
   `Read-TurnContextDiagnostic` accepts wrapper-emitted `unknown` only for the exact
   attempt-result-invalid tuple and rejects it everywhere else. The host does not trust
   provenance from rejected bytes.
@@ -4635,8 +4681,8 @@ Standing rules for future Companion sessions:
   acquisition reprocesses under the new version rather than reinterpreting C1's diff.
   Seed baseline B and deliver consumed C1 target S. For transient fresh-config
   resolution or host adapter-admission failure that leaves C1 active, require host-only
-  `consumptionState: consumed`, no terminal detail or diagnostic provenance, no
-  injection or retry, then require the next transaction to compare S to S without
+  `consumptionState: consumed`, detail `envelope-invalid`, null diagnostic provenance,
+  no injection or retry, then require the next transaction to compare S to S without
   replaying the B-to-S notice. For a retained game, adapterVersion, or source-domain
   mismatch, require the same consumed disclosure and no injection, then reprocess under
   C2 and take the documented baseline-reset path rather than a literal C1 S-to-S

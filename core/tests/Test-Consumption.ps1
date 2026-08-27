@@ -431,13 +431,18 @@ Invoke-InCompanionModule {
             @{ class = 'stale-target'; detail = 'target-precedes-baseline' },
             @{ class = 'emit'; detail = 'payload-serialize-failed' },
             @{ class = 'emit'; detail = 'stdout-write-failed' })) {
-        $legalResult = New-ConsumptionResult -OutcomeClass $legal.class -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $legal.detail
+        $targetDocument = if ($legal.class -ceq 'stale-target' -or ($legal.class -ceq 'compute' -and $legal.detail -cin @('baseline-read-failed', 'payload-or-diff-failed'))) { $digest } else { $null }
+        $legalResult = New-ConsumptionResult -OutcomeClass $legal.class -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $legal.detail -TargetDocument $targetDocument
         Assert-OrdinalEqual -Actual $legalResult.detail -Expected $legal.detail -Message "The detail registry admits '$($legal.detail)' for class '$($legal.class)'."
     }
+
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'stale-target' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'target-precedes-baseline' }
+    Assert-ThrowsType -TypeName 'System.ArgumentException' -Action { New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'baseline-read-failed' }
 
     [IO.File]::WriteAllText((Join-Path $Root 'state/baseline.json'), $DigestJson.Replace('T11:00:00', 'T13:00:00'), [Text.UTF8Encoding]::new($false, $true))
     $stale = Invoke-CompanionConsumption -AdapterConfig $config -CompanionRoot $Root -DeliveryMode rawStdout -WarningSink (New-CompanionWarningSink -Profile GetDiff) -WriteStdout { param($Text) }
     Assert-Equal -Actual $stale.outcomeClass -Expected 'stale-target' -Message 'A target that precedes the baseline never rewinds it.'
+    Assert-True -Condition ($stale.targetDocument -is [CompanionJsonValue]) -Message 'A stale-target result carries the admitted locked-final target document.'
 
     [IO.File]::Delete((Join-Path $Root 'state/baseline.json'))
     $floor = @{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'C.ntwtf.zip'; savedAt = '2026-08-10T13:00:00.0000000Z' }

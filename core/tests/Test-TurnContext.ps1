@@ -33,9 +33,44 @@ Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
     Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'config' } @($invalidReasonDiagnostic)
 }
 
+$configDiagnostic = $invalidReasonDiagnostic.Replace('"detail":"unregistered-reason"', '"detail":"adapter-resolution-failed"')
+$configWithProvenance = $configDiagnostic.Replace('"sourceIdentity":null', '"sourceIdentity":{"domainId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","saveFile":"B.ntwtf.zip","savedAt":"2026-08-10T11:00:00.0000000Z"}').Replace('"generationTimestamp":null', '"generationTimestamp":"2026-08-10T12:00:00.0000000Z"')
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'config' } @($configWithProvenance)
+}
+
+$configWithFreeText = $configDiagnostic.Replace('"detail":"adapter-resolution-failed"', '"detail":"adapter-resolution-failed arbitrary-text"')
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'config' } @($configWithFreeText)
+}
+
+$configWithOversizedDetail = $configDiagnostic.Replace('"detail":"adapter-resolution-failed"', '"detail":"adapter-resolution-failed ' + ('a' * 513) + '"')
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'config' } @($configWithOversizedDetail)
+}
+
 $attempt = [pscustomobject]@{ outcomeClass = 'reset-write:not-consumed'; consumptionState = 'notConsumed'; envelopeJson = '{}'; cacheDegraded = $false; diagnostic = [ordered]@{} }
 Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
     Invoke-InCompanionModule { param($Value) Assert-TurnContextAttemptResult -Value $Value } @($attempt)
+}
+
+$emitAttempt = [pscustomobject]@{ outcomeClass = 'emit'; consumptionState = 'none'; envelopeJson = $null; cacheDegraded = $false; diagnostic = [ordered]@{} }
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { param($Value) Assert-TurnContextAttemptResult -Value $Value } @($emitAttempt)
+}
+
+$mismatchedDiagnosticState = [ordered]@{
+    outcomeClass = 'protocol'
+    consumptionState = 'none'
+    lockStage = $null
+    sourceIdentity = [ordered]@{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' }
+    generationTimestamp = '2026-08-10T12:00:00.0000000Z'
+    detail = 'envelope-invalid'
+    warnings = @()
+}
+$mismatchedAttemptState = [pscustomobject]@{ outcomeClass = 'protocol'; consumptionState = 'consumed'; envelopeJson = $null; cacheDegraded = $false; diagnostic = $mismatchedDiagnosticState }
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { param($Value) Assert-TurnContextAttemptResult -Value $Value } @($mismatchedAttemptState)
 }
 if ($Only -eq 'DuplicateSurfaceMatrix') {
     $duplicateDiagnostic = $successDiagnostic.Replace('"warnings":[]', '"warnings":[],"warnings":[]')
@@ -110,7 +145,8 @@ Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $deliveryRoot 'attempt-t
 # The real diagnostic validator admits the delivery class with the consumed state
 # (the host trusts this consumptionState per the acquisition protocol).
 $deliveryDiagnostic = Invoke-InCompanionModule {
-    $diagnostic = New-TurnContextDiagnosticObject -Class 'delivery' -ConsumptionState 'consumed' -Detail (New-TurnContextDetail -Class delivery -Reason stdout-write-failed) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+    $sourceIdentity = [ordered]@{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' }
+    $diagnostic = New-TurnContextDiagnosticObject -Class 'delivery' -ConsumptionState 'consumed' -Detail (New-TurnContextDetail -Class delivery -Reason stdout-write-failed) -SourceIdentity $sourceIdentity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z' -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
     $json = ConvertTo-CompanionJson -InputObject $diagnostic -Budget config
 
     return (Read-TurnContextDiagnostic -Json $json -ExpectedClass delivery).Materialized['detail']
@@ -877,16 +913,14 @@ $consumeOutcome = Invoke-InCompanionModule {
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
-            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass $outcome -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $consumeDetail[$outcome] }
+            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass $outcome -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $consumeDetail[$outcome] -TargetDocument $(if ($outcome -ceq 'stale-target') { $stateDoc } else { $null }) }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ outcome = $outcome; resultClass = $res.outcomeClass; detail = $res.diagnostic.detail; lockStage = $res.diagnostic.lockStage })
 
-        # Prove the (class, reason, lockStage) combination is registry-valid through
-        # the real diagnostic reader using a serializable minimal shape; a reason
-        # absent from that class's registry (the old diff-compute-failed bug) throws.
-        $lockJson = if ($outcome -in @('busy', 'lock')) { '"consume"' } else { 'null' }
-        $diagJson = '{"outcomeClass":"' + $outcome + '","consumptionState":"none","lockStage":' + $lockJson + ',"sourceIdentity":null,"generationTimestamp":null,"detail":"' + $expectedReason[$outcome] + '","warnings":[]}'
+        # Prove the actual emitted diagnostic is registry-valid and carries the
+        # required consume-stage provenance through the real diagnostic reader.
+        $diagJson = ConvertTo-CompanionJson -InputObject $res.diagnostic -Budget config
         $round = if ($outcome -in @('busy', 'lock')) {
             Read-TurnContextDiagnostic -Json $diagJson -ExpectedClass $outcome -ExpectedLockStage 'consume'
         }
@@ -895,7 +929,25 @@ $consumeOutcome = Invoke-InCompanionModule {
         }
         $registryChecks.Add($round.Materialized['outcomeClass'])
     }
-    return [pscustomobject]@{ rows = @($rows); registry = @($registryChecks) }
+    $olderFloor = [ordered]@{ domainId = $Domain; saveFile = 'A.ntwtf.zip'; savedAt = '2026-08-10T10:00:00.0000000Z' }
+    $preflightBusy = Invoke-TurnContextConsumption -CompanionRoot $Root -AdapterConfig $Config -AttemptWarnings (New-CompanionWarningSink -Profile TurnAttempt) -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass busy -ConsumptionState none -Payload $null -CacheDegraded $false -Detail consume-lock-busy }
+    } -Floor $olderFloor -AdmittedTarget $stateDoc -RefreshAttempts 0 -RefreshCommitted $false -Pass 2
+
+    $lockedStateJson = $Template.Replace('GEN', '2026-08-10T12:01:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'C.ntwtf.zip').Replace('SAVE', '2026-08-10T11:01:00.0000000Z')
+    $lockedState = Read-DigestDocument -Json $lockedStateJson
+    $lockedStale = Invoke-TurnContextConsumption -CompanionRoot $Root -AdapterConfig $Config -AttemptWarnings (New-CompanionWarningSink -Profile TurnAttempt) -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+        Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass stale-target -ConsumptionState none -Payload $null -CacheDegraded $false -Detail target-precedes-baseline -TargetDocument $lockedState }
+    } -Floor $olderFloor -AdmittedTarget $stateDoc -RefreshAttempts 0 -RefreshCommitted $false -Pass 2
+
+    return [pscustomobject]@{
+        rows = @($rows)
+        registry = @($registryChecks)
+        preflightSourceFile = $preflightBusy.terminalResult.diagnostic.sourceIdentity.saveFile
+        preflightGeneration = $preflightBusy.terminalResult.diagnostic.generationTimestamp
+        lockedSourceFile = $lockedStale.terminalResult.diagnostic.sourceIdentity.saveFile
+        lockedGeneration = $lockedStale.terminalResult.diagnostic.generationTimestamp
+    }
 } @($consumeOutcomeRoot, $turnContextDigestTemplate, $turnContextDomain, $consumeOutcomeFixture.Config, $consumeOutcomeFixture.SavePath)
 $consumeOutcomeExpectedReason = @{ busy = 'lock-timeout'; lock = 'lock-open-failed'; 'stale-target' = 'target-precedes-baseline'; freshness = 'target-below-floor' }
 foreach ($row in $consumeOutcome.rows) {
@@ -904,6 +956,10 @@ foreach ($row in $consumeOutcome.rows) {
 }
 Assert-True -Condition (@($consumeOutcome.rows | Where-Object { $_.outcome -in @('busy', 'lock') -and $_.lockStage -cne 'consume' }).Count -eq 0) -Message 'Busy and lock final-pass diagnostics carry the consume lock stage.'
 Assert-Equal -Actual @($consumeOutcome.registry).Count -Expected 4 -Message 'Every consume outcome reason round-trips through Read-TurnContextDiagnostic.'
+Assert-OrdinalEqual -Actual $consumeOutcome.preflightSourceFile -Expected 'B.ntwtf.zip' -Message 'A consume-lock failure reports the admitted preflight target identity rather than an older source floor.'
+Assert-OrdinalEqual -Actual $consumeOutcome.preflightGeneration -Expected '2026-08-10T12:00:00.0000000Z' -Message 'A consume-lock failure reports the admitted preflight target generation.'
+Assert-OrdinalEqual -Actual $consumeOutcome.lockedSourceFile -Expected 'C.ntwtf.zip' -Message 'A payloadless failure after the locked target freeze reports the final target identity.'
+Assert-OrdinalEqual -Actual $consumeOutcome.lockedGeneration -Expected '2026-08-10T12:01:00.0000000Z' -Message 'A payloadless failure after the locked target freeze reports the final target generation.'
 
 # Reset-write stage passthrough: the attempt's diagnostic detail is exactly the
 # consumption detail, validated against the class-owned registry.
@@ -1031,7 +1087,7 @@ $computeDetails = Invoke-InCompanionModule {
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
-            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass compute -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail }
+            Consumption = { param($Floor, $Ctx, $Sink) New-ConsumptionResult -OutcomeClass compute -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail -TargetDocument $(if ($case.detail -cin @('baseline-read-failed', 'payload-or-diff-failed')) { $stateDoc } else { $null }) }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ detail = $case.detail; expected = $case.expected; class = $res.outcomeClass; diagnosticDetail = $res.diagnostic['detail'] })
@@ -1064,7 +1120,7 @@ $retryTaxonomy = Invoke-InCompanionModule {
             GetSaveCandidates = { param($Unused) @([IO.FileInfo]::new($SavePath)) }
             ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'valid'; document = $stateDoc; reason = $null } }
             ConfirmConfig = { param($Unused) }
-            Consumption = { param($Floor, $Ctx, $Sink) $consumptions.Add(1); New-ConsumptionResult -OutcomeClass $case.name -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail }
+            Consumption = { param($Floor, $Ctx, $Sink) $consumptions.Add(1); New-ConsumptionResult -OutcomeClass $case.name -ConsumptionState none -Payload $null -CacheDegraded $false -Detail $case.detail -TargetDocument $(if ($case.name -ceq 'stale-target') { $stateDoc } else { $null }) }
         }
         $res = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations $operations
         $rows.Add([pscustomobject]@{ name = $case.name; calls = $consumptions.Count; expectedCalls = $case.expectedCalls; class = $res.outcomeClass; expectedClass = $case.expectedClass })
@@ -1235,9 +1291,9 @@ Assert-OrdinalEqual -Actual $lockEnum.limitIdentityFile -Expected 'B.ntwtf.zip' 
 $diagRoundTrip = Invoke-InCompanionModule {
     $sink = New-CompanionWarningSink -Profile TurnOperational
     $floor = [pscustomobject]@{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = [datetime]'2026-08-10T11:00:00.0000000Z' }
-    $diag = New-TurnContextDiagnosticObject -Class busy -ConsumptionState none -Detail (New-TurnContextDetail -Class busy -Reason lock-timeout) -SourceIdentity $floor -GenerationTimestamp $null -LockStage consume -OperationalWarnings $sink
+    $diag = New-TurnContextDiagnosticObject -Class busy -ConsumptionState none -Detail (New-TurnContextDetail -Class busy -Reason lock-timeout) -SourceIdentity $floor -GenerationTimestamp $null -LockStage cycle -OperationalWarnings $sink
     $json = ConvertTo-CompanionJson -InputObject $diag -Budget config
-    $parsed = Read-TurnContextDiagnostic -Json $json -ExpectedClass busy -ExpectedLockStage consume
+    $parsed = Read-TurnContextDiagnostic -Json $json -ExpectedClass busy -ExpectedLockStage cycle
     $id = $parsed.RootElement.GetProperty('sourceIdentity')
     return [pscustomobject]@{ generationNull = ($parsed.RootElement.GetProperty('generationTimestamp').ValueKind -eq [Text.Json.JsonValueKind]::Null); savedAt = $id.GetProperty('savedAt').GetString(); file = $id.GetProperty('saveFile').GetString() }
 }

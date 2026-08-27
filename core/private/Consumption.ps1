@@ -41,9 +41,9 @@ function New-ConsumePayload {
 }
 
 function New-ConsumptionResult {
-    param([Parameter(Mandatory)] [string] $OutcomeClass, [Parameter(Mandatory)] [string] $ConsumptionState, [AllowNull()] $Payload, [bool] $CacheDegraded, [AllowNull()] [string] $Detail)
+    param([Parameter(Mandatory)] [string] $OutcomeClass, [Parameter(Mandatory)] [string] $ConsumptionState, [AllowNull()] $Payload, [bool] $CacheDegraded, [AllowNull()] [string] $Detail, [AllowNull()] $TargetDocument)
 
-    return [ConsumeResult]::new($OutcomeClass, $ConsumptionState, $Payload, $CacheDegraded, $Detail)
+    return [ConsumeResult]::new($OutcomeClass, $ConsumptionState, $Payload, $CacheDegraded, $Detail, $TargetDocument)
 }
 
 function Complete-ConsumedResetResult {
@@ -103,7 +103,7 @@ function Invoke-CompanionConsumption {
         }
 
         $baselineRead = & $ReadBaseline $CompanionRoot
-        if ($baselineRead.outcome -eq 'infrastructure-failure') { return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'baseline-read-failed' }
+        if ($baselineRead.outcome -eq 'infrastructure-failure') { return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'baseline-read-failed' -TargetDocument $target }
         $baseline = $baselineRead.document
         if ($baselineRead.outcome -eq 'valid') {
             try {
@@ -111,7 +111,7 @@ function Invoke-CompanionConsumption {
             }
             catch {
                 if (-not ($_.Exception -is [CompanionContentException]) -or (Test-ValidatorInfrastructureFailure -Exception $_.Exception)) {
-                    return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'
+                    return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed' -TargetDocument $target
                 }
                 $baselineRead = [pscustomobject]@{ outcome = 'content-invalid'; document = $null }
                 $baseline = $null
@@ -125,7 +125,7 @@ function Invoke-CompanionConsumption {
         }
         else {
             $relation = Compare-SourceIdentity -Left (Get-ConsumptionSourceIdentity -Document $target) -Right (Get-ConsumptionSourceIdentity -Document $baseline)
-            if ($relation.comparable -and $relation.order -lt 0) { return New-ConsumptionResult -OutcomeClass 'stale-target' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'target-precedes-baseline' }
+            if ($relation.comparable -and $relation.order -lt 0) { return New-ConsumptionResult -OutcomeClass 'stale-target' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'target-precedes-baseline' -TargetDocument $target }
         }
 
         try {
@@ -134,7 +134,7 @@ function Invoke-CompanionConsumption {
             $payload = if ($DeliveryMode -ceq 'rawStdout') { New-ConsumePayload -DeliveryMode rawStdout -Diff $diff } else { New-ConsumePayload -DeliveryMode privateResult -Diff $diff -State $target -Context $Context }
         }
         catch {
-            return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'payload-or-diff-failed'
+            return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'payload-or-diff-failed' -TargetDocument $target
         }
         if ($DeliveryMode -ceq 'rawStdout') {
             try {

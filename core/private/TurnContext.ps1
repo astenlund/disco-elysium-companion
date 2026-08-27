@@ -21,6 +21,8 @@ $script:TurnContextInternalReasons = @{
     'cycle-cache' = @('adapter-validator-infrastructure-failed', 'diff-compatibility-failed', 'diff-compute-failed', 'diff-validation-failed', 'cache-serialize-failed', 'cache-temp-write-failed', 'cache-replace-failed')
     'cycle-bookkeeping' = @('bookkeeping-serialize-failed', 'bookkeeping-temp-write-failed', 'bookkeeping-replace-failed')
 }
+$script:TurnContextAttemptClasses = @('success', 'config', 'busy', 'lock', 'stale-target', 'no-saves', 'stability', 'source', 'dump', 'digest', 'refresh', 'freshness', 'compute', 'reset-write:not-consumed', 'reset-write:consumed', 'protocol')
+$script:TurnContextDiagnosticClasses = @($script:TurnContextAttemptClasses) + 'delivery'
 $script:TurnContextCycleCommitReasons = @('current-read-failed', 'current-write-failed')
 
 function Test-TurnContextReason {
@@ -38,23 +40,31 @@ function Test-TurnContextReason {
     return $false
 }
 
+function Get-TurnContextDetailAtomNames {
+    param([Parameter(Mandatory)] [string] $Reason)
+
+    $names = switch ($Reason) {
+        'lock-timeout' { @('timeoutSeconds') }
+        'command-timeout' { @('timeoutSeconds') }
+        'stability-exhausted' { @('attempts') }
+        'command-exit-nonzero' { @('exitCode') }
+        'schema-version-mismatch' { @('expectedVersion', 'actualVersion') }
+        'adapter-version-mismatch' { @('expectedVersion', 'actualVersion') }
+        default { @() }
+    }
+
+    return $names
+}
+
 function New-TurnContextDetail {
     param([Parameter(Mandatory)] [string] $Class, [Parameter(Mandatory)] [string] $Reason, [hashtable] $Atoms = @{})
 
     $reasons = if ($script:TurnContextReasons.ContainsKey($Class)) { $script:TurnContextReasons[$Class] } elseif ($script:TurnContextInternalReasons.ContainsKey($Class)) { $script:TurnContextInternalReasons[$Class] } else { $null }
     if ($null -eq $reasons -or -not (Test-TurnContextReason -Reason $Reason -Allowed $reasons)) { throw [TurnContextProtocolException]::new('Invalid turn-context detail.') }
-    $allowedAtom = switch ($Reason) {
-        'lock-timeout' { 'timeoutSeconds' }
-        'command-timeout' { 'timeoutSeconds' }
-        'stability-exhausted' { 'attempts' }
-        'command-exit-nonzero' { 'exitCode' }
-        'schema-version-mismatch' { @('expectedVersion', 'actualVersion') }
-        'adapter-version-mismatch' { @('expectedVersion', 'actualVersion') }
-        default { @() }
-    }
+    $allowedAtom = Get-TurnContextDetailAtomNames -Reason $Reason
     foreach ($name in $Atoms.Keys) {
         $value = $Atoms[$name]
-        if ($name -notin $allowedAtom -or $value -isnot [int] -and $value -isnot [long] -or ($name -eq 'attempts' -and ($value -lt 0 -or $value -gt [int]::MaxValue)) -or ($name -eq 'timeoutSeconds' -and ($value -le 0 -or $value -gt [int]::MaxValue)) -or ($name -eq 'exitCode' -and ($value -lt [int]::MinValue -or $value -gt [int]::MaxValue))) { throw [TurnContextProtocolException]::new('Invalid turn-context detail atoms.') }
+        if ($name -cnotin $allowedAtom -or $value -isnot [int] -and $value -isnot [long] -or ($name -ceq 'attempts' -and ($value -lt 0 -or $value -gt [int]::MaxValue)) -or ($name -ceq 'timeoutSeconds' -and ($value -le 0 -or $value -gt [int]::MaxValue)) -or ($name -ceq 'exitCode' -and ($value -lt [int]::MinValue -or $value -gt [int]::MaxValue))) { throw [TurnContextProtocolException]::new('Invalid turn-context detail atoms.') }
     }
     $order = @('attempts', 'timeoutSeconds', 'exitCode', 'expectedVersion', 'actualVersion')
     $parts = foreach ($name in $order) { if ($Atoms.ContainsKey($name)) { "$name=$($Atoms[$name])" } }
@@ -128,7 +138,7 @@ function Assert-TurnContextWarnings {
             $code = Test-String (Get-Property $warning code)
             $detailElement = Get-Property $warning detail
             $detail = if ($detailElement.ValueKind -eq [Text.Json.JsonValueKind]::Null) { $null } else { Test-String $detailElement }
-            if ($code -notin $legal -or ($code -eq 'pipeline-reaper-discovery-limit-exceeded' -and $detail -notin @('tmp', 'state')) -or ($code -eq 'diff-exclude-path-unused' -and ($null -eq $detail -or -not $detail.StartsWith('/', [StringComparison]::Ordinal))) -or ($code -notin @('pipeline-reaper-discovery-limit-exceeded', 'diff-exclude-path-unused') -and $null -ne $detail)) { throw [TurnContextProtocolException]::new('Invalid turn-context warnings.') }
+            if ($code -cnotin $legal -or ($code -ceq 'pipeline-reaper-discovery-limit-exceeded' -and $detail -cnotin @('tmp', 'state')) -or ($code -ceq 'diff-exclude-path-unused' -and ($null -eq $detail -or -not $detail.StartsWith('/', [StringComparison]::Ordinal))) -or ($code -cnotin @('pipeline-reaper-discovery-limit-exceeded', 'diff-exclude-path-unused') -and $null -ne $detail)) { throw [TurnContextProtocolException]::new('Invalid turn-context warnings.') }
             $key = $code + [char]0 + [string] $detail
             if ($null -ne $previous -and [string]::CompareOrdinal($previous, $key) -ge 0) { throw [TurnContextProtocolException]::new('Invalid turn-context warnings.') }
             $previous = $key
@@ -138,8 +148,94 @@ function Assert-TurnContextWarnings {
     catch { throw [TurnContextProtocolException]::new('Invalid turn-context warnings.') }
 }
 
+function Read-TurnContextDetailReason {
+    param([Parameter(Mandatory)] [string] $Class, [Parameter(Mandatory)] [string] $Detail)
+
+    if (@($Detail.EnumerateRunes()).Count -gt $script:TurnContextDetailScalarCap) {
+        throw [TurnContextProtocolException]::new('Turn-context detail exceeds scalar cap.')
+    }
+    $separatorIndex = $Detail.IndexOf(' ', [StringComparison]::Ordinal)
+    $reason = if ($separatorIndex -lt 0) { $Detail } else { $Detail.Substring(0, $separatorIndex) }
+    if (-not $script:TurnContextReasons.ContainsKey($Class) -or -not (Test-TurnContextReason -Reason $reason -Allowed $script:TurnContextReasons[$Class])) {
+        throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+    }
+    if ($separatorIndex -lt 0) {
+        return $reason
+    }
+
+    $suffix = $Detail.Substring($separatorIndex)
+    if (-not $suffix.StartsWith(' [', [StringComparison]::Ordinal) -or -not $suffix.EndsWith(']', [StringComparison]::Ordinal)) {
+        throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+    }
+    $atomText = $suffix.Substring(2, $suffix.Length - 3)
+    if ([string]::IsNullOrEmpty($atomText)) {
+        throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+    }
+
+    $allowedAtoms = Get-TurnContextDetailAtomNames -Reason $reason
+    $seenAtoms = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $atoms = [hashtable]::new()
+    foreach ($part in $atomText.Split(',', [StringSplitOptions]::None)) {
+        $equalsIndex = $part.IndexOf('=', [StringComparison]::Ordinal)
+        if ($equalsIndex -le 0 -or $equalsIndex -eq ($part.Length - 1) -or $part.IndexOf('=', $equalsIndex + 1) -ge 0) {
+            throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+        }
+        $name = $part.Substring(0, $equalsIndex)
+        $valueText = $part.Substring($equalsIndex + 1)
+        if ($name -cnotin $allowedAtoms -or -not $seenAtoms.Add($name)) {
+            throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+        }
+        $value = 0L
+        if (-not [long]::TryParse($valueText, [Globalization.NumberStyles]::AllowLeadingSign, [Globalization.CultureInfo]::InvariantCulture, [ref] $value) -or -not [string]::Equals($valueText, $value.ToString([Globalization.CultureInfo]::InvariantCulture), [StringComparison]::Ordinal)) {
+            throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+        }
+        $atoms[$name] = $value
+    }
+    $canonical = New-TurnContextDetail -Class $Class -Reason $reason -Atoms $atoms
+    if (-not [string]::Equals($Detail, $canonical, [StringComparison]::Ordinal)) {
+        throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.')
+    }
+
+    return $reason
+}
+
+function Test-TurnContextDiagnosticProvenance {
+    param(
+        [Parameter(Mandatory)] [string] $Class,
+        [Parameter(Mandatory)] [string] $ConsumptionState,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Reason,
+        [AllowNull()] [string] $LockStage,
+        [Parameter(Mandatory)] [bool] $HasSource,
+        [Parameter(Mandatory)] [bool] $HasGeneration,
+        [switch] $HostGenerated
+    )
+
+    if ($Class -cin @('config', 'no-saves')) { return -not $HasSource -and -not $HasGeneration }
+    if ($Class -ceq 'source') { return -not $HasGeneration }
+    if ($Class -cin @('stability', 'dump', 'digest', 'refresh')) { return $HasSource -and -not $HasGeneration }
+    if ($Class -cin @('busy', 'lock')) {
+        if ($LockStage -ceq 'cycle') {
+            return $HasSource -and -not $HasGeneration
+        }
+
+        return $HasSource -and $HasGeneration
+    }
+    if ($Class -cin @('freshness', 'compute')) { return $HasSource }
+    if ($Class -ceq 'protocol') {
+        if ($ConsumptionState -ceq 'unknown') { return -not $HasSource -and -not $HasGeneration }
+        if ($HostGenerated -and -not $HasSource -and -not $HasGeneration) {
+            return ($ConsumptionState -ceq 'none' -and $Reason -ceq 'attempt-result-invalid') -or ($ConsumptionState -ceq 'consumed' -and $Reason -ceq 'envelope-invalid')
+        }
+
+        return $HasSource -and $HasGeneration
+    }
+    if ($Class -cin @('stale-target', 'reset-write:not-consumed', 'reset-write:consumed', 'success', 'delivery')) { return $HasSource -and $HasGeneration }
+
+    return $false
+}
+
 function Read-TurnContextDiagnostic {
-    param([Parameter(Mandatory)] [string] $Json, [Parameter(Mandatory)] [string] $ExpectedClass, [AllowNull()] [string] $ExpectedLockStage)
+    param([Parameter(Mandatory)] [string] $Json, [Parameter(Mandatory)] [string] $ExpectedClass, [AllowNull()] [string] $ExpectedLockStage, [switch] $HostGenerated)
 
     try {
         $bytes = [Text.UTF8Encoding]::new($false, $true).GetByteCount($Json)
@@ -149,20 +245,20 @@ function Read-TurnContextDiagnostic {
         Test-ExactFields $root @('outcomeClass', 'consumptionState', 'lockStage', 'sourceIdentity', 'generationTimestamp', 'detail', 'warnings')
         $class = Test-String (Get-Property $root outcomeClass)
         $consumption = Test-String (Get-Property $root consumptionState)
-        if (-not [string]::Equals($class, $ExpectedClass, [StringComparison]::Ordinal) -or $class -notin (@($script:TurnContextReasons.Keys) + 'success') -or $consumption -notin @('none', 'notConsumed', 'consumed', 'unknown')) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
+        if (-not [string]::Equals($class, $ExpectedClass, [StringComparison]::Ordinal) -or $class -cnotin $script:TurnContextDiagnosticClasses -or $consumption -cnotin @('none', 'notConsumed', 'consumed', 'unknown')) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
         $lock = Get-Property $root lockStage
         $lockStage = if ($lock.ValueKind -eq [Text.Json.JsonValueKind]::Null) { $null } else { Test-String $lock }
-        if (($class -in @('busy', 'lock')) -ne ($null -ne $lockStage) -or ($null -ne $lockStage -and $lockStage -notin @('cycle', 'consume')) -or ($PSBoundParameters.ContainsKey('ExpectedLockStage') -and -not [string]::Equals($lockStage, $ExpectedLockStage, [StringComparison]::Ordinal))) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
+        if (($class -cin @('busy', 'lock')) -ne ($null -ne $lockStage) -or ($null -ne $lockStage -and $lockStage -cnotin @('cycle', 'consume')) -or ($PSBoundParameters.ContainsKey('ExpectedLockStage') -and -not [string]::Equals($lockStage, $ExpectedLockStage, [StringComparison]::Ordinal))) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
         $source = Get-Property $root sourceIdentity; $generation = Get-Property $root generationTimestamp; $detailElement = Get-Property $root detail
         $detail = if ($detailElement.ValueKind -eq [Text.Json.JsonValueKind]::Null) { $null } else { Test-String $detailElement }
-        if (($class -eq 'success' -and ($consumption -cne 'consumed' -or $null -ne $detail)) -or ($class -eq 'reset-write:not-consumed' -and $consumption -cne 'notConsumed') -or ($class -eq 'reset-write:consumed' -and $consumption -cne 'consumed') -or ($class -eq 'delivery' -and $consumption -cne 'consumed') -or ($class -notin @('success', 'reset-write:not-consumed', 'reset-write:consumed', 'protocol', 'delivery') -and $consumption -cne 'none') -or ($null -eq $detail -and $class -cne 'success')) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
+        if (($class -ceq 'success' -and ($consumption -cne 'consumed' -or $null -ne $detail)) -or ($class -ceq 'reset-write:not-consumed' -and $consumption -cne 'notConsumed') -or ($class -ceq 'reset-write:consumed' -and $consumption -cne 'consumed') -or ($class -ceq 'delivery' -and $consumption -cne 'consumed') -or ($class -cnotin @('success', 'reset-write:not-consumed', 'reset-write:consumed', 'protocol', 'delivery') -and $consumption -cne 'none') -or ($null -eq $detail -and $class -cne 'success')) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
         if ($consumption -ceq 'unknown' -and ($class -cne 'protocol' -or $detail -cne 'attempt-result-invalid' -or $source.ValueKind -ne [Text.Json.JsonValueKind]::Null -or $generation.ValueKind -ne [Text.Json.JsonValueKind]::Null)) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
-        if ($null -ne $detail) {
-            $reason = $detail.Split(' ', 2, [StringSplitOptions]::None)[0]
-            if ($reason -notin $script:TurnContextReasons[$class]) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
-        }
+        $reason = if ($null -eq $detail) { '' } else { Read-TurnContextDetailReason -Class $class -Detail $detail }
         if ($source.ValueKind -ne [Text.Json.JsonValueKind]::Null) { [void] (Get-TurnContextIdentity -Element $source) }
         if ($generation.ValueKind -ne [Text.Json.JsonValueKind]::Null) { Test-Utc $generation }
+        $hasSource = $source.ValueKind -ne [Text.Json.JsonValueKind]::Null
+        $hasGeneration = $generation.ValueKind -ne [Text.Json.JsonValueKind]::Null
+        if (-not (Test-TurnContextDiagnosticProvenance -Class $class -ConsumptionState $consumption -Reason $reason -LockStage $lockStage -HasSource $hasSource -HasGeneration $hasGeneration -HostGenerated:$HostGenerated)) { throw [TurnContextProtocolException]::new('Invalid turn-context diagnostic.') }
         Assert-TurnContextWarnings -Element (Get-Property $root warnings) -OperationalOnly
         return $document
     }
@@ -173,10 +269,11 @@ function Read-TurnContextDiagnostic {
 function Test-TurnContextAttemptInvariants {
     param([Parameter(Mandatory)] [string] $Class, [Parameter(Mandatory)] [string] $State, [AllowNull()] [string] $EnvelopeJson, [bool] $CacheDegraded)
 
-    if (($Class -in @('success', 'reset-write:consumed')) -and ($State -cne 'consumed' -or [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
+    if ($Class -cnotin $script:TurnContextAttemptClasses) { return $false }
+    if (($Class -cin @('success', 'reset-write:consumed')) -and ($State -cne 'consumed' -or [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
     if ($Class -ceq 'reset-write:not-consumed' -and ($State -cne 'notConsumed' -or [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
-    if ($Class -ceq 'protocol' -and ($State -notin @('none', 'notConsumed', 'consumed') -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
-    if ($Class -notin @('success', 'reset-write:consumed', 'reset-write:not-consumed', 'protocol') -and ($State -cne 'none' -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
+    if ($Class -ceq 'protocol' -and ($State -cnotin @('none', 'notConsumed', 'consumed') -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
+    if ($Class -cnotin @('success', 'reset-write:consumed', 'reset-write:not-consumed', 'protocol') -and ($State -cne 'none' -or -not [string]::IsNullOrEmpty($EnvelopeJson))) { return $false }
     if ($CacheDegraded -ne ($Class -ceq 'reset-write:consumed')) { return $false }
 
     return $true
@@ -196,13 +293,14 @@ function Assert-TurnContextAttemptResult {
     try {
         $properties = @($Value.PSObject.Properties | ForEach-Object Name)
         $expected = @('outcomeClass', 'consumptionState', 'envelopeJson', 'cacheDegraded', 'diagnostic')
-        if ($properties.Count -ne $expected.Count -or @($expected | Where-Object { $_ -notin $properties }).Count -ne 0) { throw [TurnContextProtocolException]::new('Invalid attempt result.') }
+        if ($properties.Count -ne $expected.Count -or @($expected | Where-Object { $_ -cnotin $properties }).Count -ne 0) { throw [TurnContextProtocolException]::new('Invalid attempt result.') }
         $class = $Value.outcomeClass
         $state = $Value.consumptionState
         if ($class -isnot [string] -or $state -isnot [string] -or $Value.cacheDegraded -isnot [bool] -or ($null -ne $Value.envelopeJson -and $Value.envelopeJson -isnot [string])) { throw [TurnContextProtocolException]::new('Invalid attempt result.') }
         if (-not (Test-TurnContextAttemptInvariants -Class $class -State $state -EnvelopeJson $Value.envelopeJson -CacheDegraded $Value.cacheDegraded)) { throw [TurnContextProtocolException]::new('Invalid attempt result.') }
         $diagnosticJson = ConvertTo-CompanionJson -InputObject $Value.diagnostic -Budget config
-        [void] (Read-TurnContextDiagnostic -Json $diagnosticJson -ExpectedClass $class)
+        $diagnostic = Read-TurnContextDiagnostic -Json $diagnosticJson -ExpectedClass $class
+        if (-not [string]::Equals($state, $diagnostic.Materialized['consumptionState'], [StringComparison]::Ordinal)) { throw [TurnContextProtocolException]::new('Invalid attempt result.') }
 
         return $Value
     }
@@ -284,10 +382,10 @@ function Merge-TurnContextCycleWarnings {
     param([Parameter(Mandatory)] [object] $Warnings, [Parameter(Mandatory)] [CompanionWarningSink] $AttemptWarnings, [Parameter(Mandatory)] [CompanionWarningSink] $OperationalWarnings)
 
     foreach ($warning in $Warnings) {
-        if ($warning.code -in $script:CompanionWarningProfiles['TurnOperational']) {
+        if ($warning.code -cin $script:CompanionWarningProfiles['TurnOperational']) {
             Add-CompanionWarning -Sink $OperationalWarnings -Code $warning.code -Detail $warning.detail
         }
-        elseif ($warning.code -notin @('pipeline-baseline-absent', 'pipeline-baseline-content-invalid')) {
+        elseif ($warning.code -cnotin @('pipeline-baseline-absent', 'pipeline-baseline-content-invalid')) {
             Add-CompanionWarning -Sink $AttemptWarnings -Code $warning.code -Detail $warning.detail
         }
     }
@@ -510,6 +608,7 @@ function Invoke-TurnContextConsumption {
         [Parameter(Mandatory)] [CompanionWarningSink] $OperationalWarnings,
         [Parameter(Mandatory)] [hashtable] $Operations,
         [Parameter(Mandatory)] $Floor,
+        [Parameter(Mandatory)] [CompanionJsonValue] $AdmittedTarget,
         [Parameter(Mandatory)] [int] $RefreshAttempts,
         [Parameter(Mandatory)] [bool] $RefreshCommitted,
         [Parameter(Mandatory)] [int] $Pass
@@ -537,13 +636,13 @@ function Invoke-TurnContextConsumption {
         }
         # Reset-write details are registry literals. Re-validating here routes an
         # invalid detail through the attempt's protocol catch-all.
-        $resultDetail = if ($consume.outcomeClass -in @('reset-write:not-consumed', 'reset-write:consumed')) { New-TurnContextDetail -Class $consume.outcomeClass -Reason $consume.detail } else { $null }
+        $resultDetail = if ($consume.outcomeClass -cin @('reset-write:not-consumed', 'reset-write:consumed')) { New-TurnContextDetail -Class $consume.outcomeClass -Reason $consume.detail } else { $null }
         $terminalResult = New-TurnContextTerminalResult -Class $consume.outcomeClass -OperationalWarnings $OperationalWarnings -ConsumptionState $consume.consumptionState -Detail $resultDetail -SourceIdentity $payloadSource -GenerationTimestamp $payloadGeneration -EnvelopeJson $json -CacheDegraded $consume.cacheDegraded
 
         return [pscustomobject]@{ action = 'terminal'; terminalResult = $terminalResult }
     }
 
-    if ($consume.outcomeClass -in @('freshness', 'stale-target') -and $Pass -lt ($script:TurnContextRefreshAttemptCap - 1)) {
+    if ($consume.outcomeClass -cin @('freshness', 'stale-target') -and $Pass -lt ($script:TurnContextRefreshAttemptCap - 1)) {
         return [pscustomobject]@{ action = 'retry'; terminalResult = $null }
     }
     $consumptionDetail = switch ($consume.outcomeClass) {
@@ -556,8 +655,11 @@ function Invoke-TurnContextConsumption {
             New-TurnContextDetail -Class compute -Reason $computeReason
         }
     }
-    $consumptionLockStage = if ($consume.outcomeClass -in @('busy', 'lock')) { 'consume' } else { $null }
-    $terminalResult = New-TurnContextTerminalResult -Class $consume.outcomeClass -OperationalWarnings $OperationalWarnings -Detail $consumptionDetail -SourceIdentity $Floor -LockStage $consumptionLockStage
+    $consumptionLockStage = if ($consume.outcomeClass -cin @('busy', 'lock')) { 'consume' } else { $null }
+    $diagnosticTarget = if ($consume.targetDocument -is [CompanionJsonValue]) { $consume.targetDocument } else { $AdmittedTarget }
+    $diagnosticSource = $diagnosticTarget.RootElement.GetProperty('source')
+    $diagnosticGeneration = $diagnosticTarget.RootElement.GetProperty('generatedAt').GetString()
+    $terminalResult = New-TurnContextTerminalResult -Class $consume.outcomeClass -OperationalWarnings $OperationalWarnings -Detail $consumptionDetail -SourceIdentity $diagnosticSource -GenerationTimestamp $diagnosticGeneration -LockStage $consumptionLockStage
 
     return [pscustomobject]@{ action = 'terminal'; terminalResult = $terminalResult }
 }
@@ -588,7 +690,7 @@ function Invoke-TurnContextAttempt {
             if ($current.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -OperationalWarnings $OperationalWarnings -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
             $fresh = $current.outcome -ceq 'valid' -and (Compare-SourceIdentity -Left $current.document.Materialized['source'] -Right $floor).order -ge 0
             if (-not $fresh) {
-                if ($current.outcome -in @('absent', 'content-invalid', 'stale')) { Add-CompanionWarning -Sink $attemptWarnings -Code pipeline-current-self-healed -Detail $null }
+                if ($current.outcome -cin @('absent', 'content-invalid', 'stale')) { Add-CompanionWarning -Sink $attemptWarnings -Code pipeline-current-self-healed -Detail $null }
                 $refresh = Invoke-TurnContextRefresh -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Pass $pass -Floor $floor
                 $floor = $refresh.floor
                 if ($null -ne $refresh.commitObserved) {
@@ -601,7 +703,7 @@ function Invoke-TurnContextAttempt {
             }
             $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
             if ($target.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -OperationalWarnings $OperationalWarnings -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
-            if ($target.outcome -ne 'valid') {
+            if ($target.outcome -cne 'valid') {
                 if ($null -ne $cycleWarningCode) { return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason $target.reason -SourceIdentity $floor }
                 $lastFreshnessReason = $target.reason
 
@@ -634,7 +736,7 @@ function Invoke-TurnContextAttempt {
             if ($null -ne $cycleWarningCode) {
                 Add-CompanionWarning -Sink $attemptWarnings -Code $cycleWarningCode -Detail $null
             }
-            $consumption = Invoke-TurnContextConsumption -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Floor $floor -RefreshAttempts $refreshAttempts -RefreshCommitted $refreshCommitted -Pass $pass
+            $consumption = Invoke-TurnContextConsumption -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Floor $floor -AdmittedTarget $target.document -RefreshAttempts $refreshAttempts -RefreshCommitted $refreshCommitted -Pass $pass
             if ($consumption.action -ceq 'retry') { continue }
 
             return $consumption.terminalResult

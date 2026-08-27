@@ -13,22 +13,22 @@ Before answering ANY game-related message (game world, mechanics, lore, the play
 or choices, saves, or state-derived guidance; a mixed message qualifies if any part
 does), perform exactly ONE acquisition transaction:
 
-1. Run `pwsh -NoProfile -File core/Get-TurnContext.ps1` once. The wrapper owns freshness
-   checking, any pipeline refresh, the consuming read, and its own single permitted
-   retry; never invoke it twice for one turn and never run `Update-CompanionState.ps1`
-   or consuming `Get-Diff.ps1` as a substitute for it in a game turn.
-2. On exit 0, stdout is exactly one turn-context envelope. Validate it with
-   `Read-TurnContextEnvelope -Json <stdout> -TransportOnly` (import `core/DigestDiff.psm1`
-   first), then resolve one fresh Acquisition config with
-   `Get-AdapterConfig -Profile Acquisition` and require its `game`, `adapterVersion`,
-   and `sourceDomainId` to equal the envelope's top level and `state.source.domainId`.
-   Pass the nested state through `Assert-AdapterDigestDocument` under that same config.
-   Only then use the envelope's `diff` and `state` for the turn, under the notice,
-   baseline-reset, research-cache, and guidance rules. A config-resolution failure,
-   identity mismatch, or admission failure is disclosed as consumed-but-not-injected:
-   inject nothing, never retry, stop.
-3. On exit 1, stderr carries one line `[turn-context:<class>] {json}`; validate it with
-   `Read-TurnContextDiagnostic` and trust its `consumptionState` field, never prose
+1. Run `pwsh -NoProfile -File core/Get-ValidatedTurnContext.ps1` once. This host-neutral
+   entry point invokes `Get-TurnContext.ps1` exactly once, captures both streams, and
+   performs transport validation, fresh Acquisition-config identity checks, and nested
+   adapter admission. The inner wrapper owns freshness checking, any pipeline refresh,
+   the consuming read, and its own single permitted retry. Never invoke either script
+   twice for one turn, never invoke `Get-TurnContext.ps1` directly, and never run
+   `Update-CompanionState.ps1` or consuming `Get-Diff.ps1` as a substitute.
+2. On exit 0, stdout is exactly one complete validated turn-context envelope. Use its
+   `diff` and `state` for the turn under the notice, baseline-reset, research-cache, and
+   guidance rules. The entry point has already validated the exact inner stdout and
+   admitted the nested state under one fresh Acquisition config; do not repeat those
+   steps or start another acquisition. If the calling tool truncates or otherwise does
+   not deliver the complete stdout value, inject nothing, never retry, and disclose the
+   transaction as consumed-but-not-injected.
+3. On exit 1, stderr carries one already-validated line
+   `[turn-context:<class>] {json}`. Trust its `consumptionState` field, never prose
    inference. Route by class:
    - `[protocol]` or `[delivery]`: inject nothing, never retry, disclose the validated
      consumption state (`unknown` for invalid exit-1 framing).

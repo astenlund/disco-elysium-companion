@@ -309,14 +309,18 @@ class ConsumeResult {
     [object] $payload
     [bool] $cacheDegraded
     [AllowNull()] [string] $detail
+    [AllowNull()] [object] $targetDocument
 
-    ConsumeResult([string] $OutcomeClass, [string] $ConsumptionState, [object] $Payload, [bool] $CacheDegraded, [string] $Detail) {
+    ConsumeResult([string] $OutcomeClass, [string] $ConsumptionState, [object] $Payload, [bool] $CacheDegraded, [string] $Detail, [object] $TargetDocument) {
         $success = $OutcomeClass -ceq 'success' -and $ConsumptionState -ceq 'consumed' -and $null -ne $Payload -and -not $CacheDegraded -and [string]::IsNullOrEmpty($Detail)
         $notConsumed = $OutcomeClass -ceq 'reset-write:not-consumed' -and $ConsumptionState -ceq 'notConsumed' -and $null -ne $Payload -and -not $CacheDegraded -and -not [string]::IsNullOrEmpty($Detail)
         $consumed = $OutcomeClass -ceq 'reset-write:consumed' -and $ConsumptionState -ceq 'consumed' -and $null -ne $Payload -and $CacheDegraded -and -not [string]::IsNullOrEmpty($Detail)
         $none = $OutcomeClass -in @('busy', 'lock', 'freshness', 'stale-target', 'compute') -and $ConsumptionState -ceq 'none' -and $null -eq $Payload -and -not $CacheDegraded -and -not [string]::IsNullOrEmpty($Detail)
         $emit = $OutcomeClass -ceq 'emit' -and $ConsumptionState -ceq 'none' -and $null -eq $Payload -and -not $CacheDegraded -and -not [string]::IsNullOrEmpty($Detail)
-        if (-not ($success -or $notConsumed -or $consumed -or $none -or $emit) -or ($null -ne $Detail -and @($Detail.EnumerateRunes()).Count -gt $script:TurnContextDetailScalarCap)) { throw [ArgumentException]::new('Invalid consumption result.') }
+        $targetRequired = $OutcomeClass -ceq 'stale-target' -or ($OutcomeClass -ceq 'compute' -and $Detail -cin @('baseline-read-failed', 'payload-or-diff-failed'))
+        $targetOptional = $OutcomeClass -ceq 'compute' -and $Detail -ceq 'adapter-validator-infrastructure-failed'
+        $targetAllowed = if ($targetRequired) { $TargetDocument -is [CompanionJsonValue] -and $null -eq $Payload } elseif ($targetOptional) { $null -eq $TargetDocument -or $TargetDocument -is [CompanionJsonValue] } else { $null -eq $TargetDocument }
+        if (-not ($success -or $notConsumed -or $consumed -or $none -or $emit) -or -not $targetAllowed -or ($null -ne $Detail -and @($Detail.EnumerateRunes()).Count -gt $script:TurnContextDetailScalarCap)) { throw [ArgumentException]::new('Invalid consumption result.') }
         if (-not [string]::IsNullOrEmpty($Detail) -and $Detail -cnotin $script:ConsumeResultDetailRegistry[$OutcomeClass]) { throw [ArgumentException]::new('Invalid consumption result.') }
 
         $this.outcomeClass = $OutcomeClass
@@ -324,6 +328,7 @@ class ConsumeResult {
         $this.payload = $Payload
         $this.cacheDegraded = $CacheDegraded
         $this.detail = if ([string]::IsNullOrEmpty($Detail)) { $null } else { $Detail }
+        $this.targetDocument = $TargetDocument
     }
 }
 

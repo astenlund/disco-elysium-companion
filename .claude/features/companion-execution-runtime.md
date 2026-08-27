@@ -72,12 +72,18 @@ consumption until the coordinator exists and is replaced, not wrapped, when the
 coordinator ships. See the FEATURES.md entry, which excludes it from the slice
 breakdown.
 
-Provide `core/Get-TurnContext.ps1` as the host-facing entry point for the current
-CLI companion while the persistent runtime remains unimplemented. The host calls
-one acquisition transaction at the start of each game-related turn and skips it for
-repository, backlog, and feature-design conversation. The transaction includes the
-single prescribed not-consumed in-process attempt retry when needed. The host invokes
-the wrapper once; it never invokes or captures an individual attempt.
+Provide `core/Get-ValidatedTurnContext.ps1` as the host-facing entry point for the
+current CLI companion while the persistent runtime remains unimplemented. The host
+calls it once at the start of each game-related turn and skips it for repository,
+backlog, and feature-design conversation. It invokes `core/Get-TurnContext.ps1`
+exactly once as a child, captures its complete streams, validates the selected envelope
+or terminal diagnostic, resolves one fresh Acquisition config, and adapter-admits the
+nested state before returning the original complete envelope unchanged. This gives
+Codex and Claude Code one identical command and removes host-authored capture and
+validation scripts. The transaction includes the single prescribed not-consumed
+in-process attempt retry when needed. Neither host-facing layer invokes or captures an
+individual attempt. If the final raw-byte write fails, the entry returns a consumed
+`[delivery]` diagnostic; any partial stdout is rejected rather than injected.
 
 `Get-TurnContext.ps1` captures candidate envelopes and typed consumption results in
 private memory, validates them, selects the final result, and discards rejected or
@@ -85,17 +91,17 @@ superseded full envelopes before returning. It emits only one selected envelope 
 0 or one bounded terminal diagnostic on exit 1. A malformed or invariant-breaking
 candidate is fail-closed `[protocol]`; a consumed cache failure selects that attempt
 with `cacheDegraded: true`; and a not-consumed baseline failure permits exactly one new
-attempt, which may select a newer save. The host validates successful stdout once more
-before injection and never infers consumption from free-form stderr. Successful stderr
-is empty; typed degraded-state notices travel in the envelope's validated `warnings`
-array. Failure records use canonical unbracketed class tokens in both their terminal
-prefix and JSON diagnostic. Section 7.5's
+attempt, which may select a newer save. `Get-ValidatedTurnContext.ps1` validates the
+inner successful stdout once more before returning it and never infers consumption from
+free-form stderr. Successful stderr is empty; typed degraded-state notices travel in
+the envelope's validated `warnings` array. Failure records use canonical unbracketed
+class tokens in both their terminal prefix and JSON diagnostic. Section 7.5's
 structured result contract and exhaustive transaction table are authoritative.
 
 The authoritative acquisition algorithm, source-identity order, exact envelope,
 failure taxonomy, consumption lock, retry behavior, and verification matrix live
 in section 7.5 of
-[State extraction](../specs/state-extraction.md#75-game-turn-acquisition-get-turncontextps1--adapter-name--companionroot-path).
+[State extraction](../specs/state-extraction.md#75-game-turn-acquisition-validated-host-entry-and-consuming-transaction).
 The bridge returns each diff with the exact digest source receipt it targets. Candidate
 payload values are built before baseline mutation but remain private until transaction
 selection, preventing a superseded retry payload from entering the host transcript.
