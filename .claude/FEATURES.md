@@ -243,6 +243,10 @@ freshness and error status, native dialogs, a deferred-results inbox, and
 per-adapter presentation. Candidate slices separate the terminal shell from
 advanced dialogs, inbox presentation, theming, and model-effort controls.
 
+### [Streaming speech playback](features/streaming-speech-playback.md)
+
+Add optional, low-latency speech playback to the TUI through a configured Speaches service. Single-message and continuous modes share a protected playback queue, streamed responses carry speak-first prose alternatives for visual blocks, and the runtime persists repairs, validates alternatives in the background, and adapts model concurrency to local or cloud providers. The feature remains a draft until the TUI and runtime background-work boundaries graduate.
+
 ### [Adaptive guidance knowledge](features/adaptive-guidance-knowledge.md)
 
 Build a game-specific, evidence-backed knowledge graph that silently reconstructs
