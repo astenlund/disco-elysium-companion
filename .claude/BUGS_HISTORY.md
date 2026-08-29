@@ -1,131 +1,33 @@
 # Bugs (history)
 
-Fixed bugs, archived from `BUGS.md` so the active list stays scannable
-on session start. **Archaeological**: read only when consulted, not at
-session start. When a bug is fixed, append its entry here rather than
-to the active file.
+Fixed bugs, archived from `BUGS.md` so the active list stays scannable on session start. **Archaeological**: read only when consulted, not at session start. When a bug is fixed, append its entry here rather than to the active file.
 
-The bug breakout file at `bugs/<slug>.md` (when present) stays in place
-as the historical diagnosis record; the entry here is a brief
-description of the fix and the commit it landed in.
+The bug breakout file at `bugs/<slug>.md` (when present) stays in place as the historical diagnosis record; the entry here is a brief description of the fix and the commit it landed in.
 
 ## Cross-reference resolution
 
-`/nightshift:ready` does **not** scan this file. When a bug is fixed, every other
-`**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is
-edited at the same time to drop the now-satisfied reference (mirror of
-the `FEATURES.md` convention). The active `Requires:` lines therefore
-describe what is *currently* blocking; this file is purely
-archaeological.
+`/nightshift:ready` does **not** scan this file. When a bug is fixed, every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is edited at the same time to drop the now-satisfied reference (mirror of the `FEATURES.md` convention). The active `Requires:` lines therefore describe what is *currently* blocking; this file is purely archaeological.
 
 ## Entries
 
-- Watcher repeat-processed an unchanged save after PowerShell 7.6 JSON reads converted
-  ISO timestamps to `DateTime`, then string parameter binding discarded fractional
-  ticks and UTC kind. All shared JSON read and canonical-value paths now use
-  `-DateKind String`; exact provenance and date-like array regressions plus an idle
-  watcher probe cover the fix (no-git workspace, 2026-08-08).
-- The Disco Elysium mapper reported healing-item charges as Health and Morale. Vitals
-  now use the current `characterSheet.endurance.value` and `.volition.value`; a
-  discriminating adapter fixture, four fail-closed source cases, isolated version-reset
-  coverage, and live full/damaged Morale saves cover the correction (no-git workspace,
-  2026-08-09).
-- Crash-killed test harnesses leaked scratch roots under `.tmp` indefinitely (2,467
-  dirs; `Register-EngineEvent PowerShell.Exiting` cleanup fires only on orderly exit).
-  Added module-private `Clear-StaleScratchRoots` in `core/tests/TestSupport.psm1`,
-  invoked from `New-ScratchCompanionRoot`, which sweeps only exact scratch-shape dirs
-  (`<prefix>-<pid>-<32hex>`) directly under `.tmp` whose embedded PID is no longer live;
-  reparse points, live-PID roots, and migration artifacts are never touched. Verified:
-  `.tmp` went 2,533 to 58 dirs with all 19 durable artifacts preserved (no-git
-  workspace, 2026-08-11).
-- Verification evidence was accepted without freshness or provenance binding
-  (`bugs/evidence-adoption.md`). The evidence-adoption path now binds to the fresh
-  checkpoint state so adopted evidence cannot be taken out of context. Folded into the
-  full state-extraction-v2 revise pass (2026-08-12).
-- The cutover helper could not resume after two mutation-before-checkpoint crashes
-  (`bugs/cutover-resume-stalls.md`). Both resume-stall windows now adopt the 
-  checkpoint-owned intermediate state. Folded into the revise pass (2026-08-12).
-- Null-detail turn-context warnings could not round-trip through the envelope
-  (`bugs/warning-detail-null-roundtrip.md`). Null-detail warning records now survive the
-  sink freeze and envelope serialization as JSON null. Folded into the revise pass
-  (2026-08-12).
-- The turn-context staging diagnostic rejected a `[pscustomobject]` sourceIdentity
-  (`bugs/turn-context-sourceidentity-kind.md`). The diagnostic now renders the identity
-  through the shared source-identity helpers, and the wrapper terminal paths reuse
-  `New-TurnContextDiagnosticObject`. Folded into the revise pass (2026-08-12).
-- Walk result receipts used `[datetime]` savedAt while the span serialized `'o'` strings
-  (`bugs/walk-savedat-type-mismatch.md`). Walk receipts and spans now share one UTC `'o'`
-  identity render via `ConvertTo-WalkIdentity`. Folded into the revise pass (2026-08-12).
-- `CompanionJsonValue` had no `Dispose` while `Invoke-CompanionCycle` disposes documents
-  (`bugs/companion-json-value-dispose.md`). The value wrapper gained a no-op `Dispose`
-  so the cycle document cleanup path is safe. Folded into the revise pass (2026-08-12).
-- The handoff atomic writer had an unresumable `.next` sibling crash window
-  (`bugs/handoff-next-sibling-window.md`). The handoff publication now reconciles the
-  sibling on resume. Folded into the revise pass (2026-08-12).
-- Auxiliary writers lacked power-loss durability (`bugs/aux-writer-durability.md`). The
-  aux checkpoint writers now use WriteThrough + Flush before the atomic replace. Folded
-  into the revise pass (2026-08-12).
-- The mapper did not sort thought arrays (`bugs/mapper-thought-sorting.md`). Thought
-  arrays are now ordinal-sorted before emission (matching the DE extra validator).
-  Folded into the revise pass (2026-08-12).
-- Reputation mapping was not fixture-observable for section-11 claim 11
-  (`bugs/mapper-reputation-observability.md`). Resolved 2026-08-12 via the documented
-  option-b narrowing: `section11-11` is now wired to a genuine
-  `Test-Build-Digest.ps1#MapperReputationSemantics` selector that asserts all ten digest
-  paths against distinct sentinel store values plus the wrong-kind rejection; the
-  misspelled-entry / duplicate-vendor / bad-initial-value clauses are spec-deferred (no
-  vendored-DB or mapper-source fixture seam exists in the fixed mapper CLI). Wired
-  alongside `section11-12` (thought-sorting) to `MapperThoughtOrdering`, advancing the
-  section-11 registry 60 -> 62/77.
-- Reset-write failures collapsed to two hard-coded details while five registry stage
-  reasons had no producers. The atomic writer now throws typed stages (the
-  `CompanionStateWriteException` landed by `feat(state-files): classify atomic write
-  failures by typed stage`), and consumption threads baseline serialize/temp-write/
-  replace and cache target/compare/serialize/temp-write/replace details through the
-  attempt unchanged (`fix(consumption): thread stage-distinct reset-write reasons`,
-  2026-08-14).
-- `adapter-validator-infrastructure-failed` had zero producers; validator machinery
-  crashes were laundered into content-invalid fallbacks or the blanket protocol catch.
-  `Assert-AdapterDigestDocument` now throws a typed infrastructure exception that every
-  spec boundary maps to its registry owner, with the watcher keeping its skip-the-poll
-  rule (`fix(turn-context): classify adapter-validator infrastructure failures`,
-  2026-08-14).
-- The locked target read exposed three ad-hoc freshness details and the attempt
-  hard-coded `target-below-floor`. `Read-CompanionCurrent` now classifies all nine
-  registry freshness reasons, threaded through consumption, the attempt, and the
-  `Get-Diff.ps1` advisory prefilter (`fix(consumption): widen locked-read freshness
-  reasons to the registry`, 2026-08-14).
-- The turn-context refresh fed the pre-lock save selection to the cycle and never
-  called `Test-FileWriteStable`, leaving the spec's stability and gate-disappearance
-  retry classes unreachable. The attempt now re-enumerates, raises the floor, and
-  stability-gates inside `cycle.lock` (`fix(turn-context): re-enumerate and
-  stability-gate after cycle lock`, 2026-08-14).
-- The turn-context attempt collapsed every permanent cycle failure to
-  `refresh/current-commit-failed`, so post-commit cache and bookkeeping failures
-  discarded usable current state. The bridge now validates and classifies every cycle
-  outcome, maps initialization to `source/state-setup-failed`, revalidates targets after
-  a commit or guard discard, emits the matching null-detail degradation warning on
-  success, and reports the observed freshness reason or `cycle-outcome-invalid` on
-  failure (`fix(turn-context): classify cycle bridge outcomes`, 2026-08-18).
-- The turn-context attempt skipped the spec-required save observation after freezing and
-  admitting a target. It now re-enumerates after stage-4 admission, raises the retained
-  floor monotonically, reacquires when the target falls below that floor, keeps an empty
-  observation non-terminal, and preserves authoritative source identity and generation
-  provenance across retry and failure paths (`fix(turn-context): restore post-target save
-  observation`, primary commit `01fffcd` with review fixups through `0ecfc32`, 2026-08-19).
-- The process-runner fixture rebuilt the `cmd.exe` path from the optional `WINDIR`
-  process variable, which some hosts omit while `ComSpec` points at the interpreter.
-  The fixture now resolves through a `Get-TestShellExecutable` helper preferring
-  `ComSpec` (an existing `cmd.exe` only) with a platform system-directory fallback for
-  absent or invalid values, and the `RelativeExecutableResolution` test runs with
-  `WINDIR` stripped plus explicit absent/nonexistent/non-interpreter ComSpec fallback
-  coverage (`fix(process-runner): resolve fixture shell via ComSpec not WINDIR`,
-  2026-08-19).
-- The turn-context wrapper's stdout delivery-failure diagnostic passed null for
-  `sourceIdentity` and `generationTimestamp`, dropping the consumed target's
-  authoritative identity and generation that the state-extraction provenance matrix
-  requires of a `delivery` outcome. The delivery catch now maps the selected attempt's
-  diagnostic provenance through, and the staged wrapper harness models a consumed
-  success attempt's latched provenance so regression coverage asserts both fields
-  survive a failed delivery (`fix(turn-context): preserve consumed-target provenance on
-  delivery failure`, 2026-08-19).
+- Watcher repeat-processed an unchanged save after PowerShell 7.6 JSON reads converted ISO timestamps to `DateTime`, then string parameter binding discarded fractional ticks and UTC kind. All shared JSON read and canonical-value paths now use `-DateKind String`; exact provenance and date-like array regressions plus an idle watcher probe cover the fix (no-git workspace, 2026-08-08).
+- The Disco Elysium mapper reported healing-item charges as Health and Morale. Vitals now use the current `characterSheet.endurance.value` and `.volition.value`; a discriminating adapter fixture, four fail-closed source cases, isolated version-reset coverage, and live full/damaged Morale saves cover the correction (no-git workspace, 2026-08-09).
+- Crash-killed test harnesses leaked scratch roots under `.tmp` indefinitely (2,467 dirs; `Register-EngineEvent PowerShell.Exiting` cleanup fires only on orderly exit). Added module-private `Clear-StaleScratchRoots` in `core/tests/TestSupport.psm1`, invoked from `New-ScratchCompanionRoot`, which sweeps only exact scratch-shape dirs (`<prefix>-<pid>-<32hex>`) directly under `.tmp` whose embedded PID is no longer live; reparse points, live-PID roots, and migration artifacts are never touched. Verified: `.tmp` went 2,533 to 58 dirs with all 19 durable artifacts preserved (no-git workspace, 2026-08-11).
+- Verification evidence was accepted without freshness or provenance binding (`bugs/evidence-adoption.md`). The evidence-adoption path now binds to the fresh checkpoint state so adopted evidence cannot be taken out of context. Folded into the full state-extraction-v2 revise pass (2026-08-12).
+- The cutover helper could not resume after two mutation-before-checkpoint crashes (`bugs/cutover-resume-stalls.md`). Both resume-stall windows now adopt the checkpoint-owned intermediate state. Folded into the revise pass (2026-08-12).
+- Null-detail turn-context warnings could not round-trip through the envelope (`bugs/warning-detail-null-roundtrip.md`). Null-detail warning records now survive the sink freeze and envelope serialization as JSON null. Folded into the revise pass (2026-08-12).
+- The turn-context staging diagnostic rejected a `[pscustomobject]` sourceIdentity (`bugs/turn-context-sourceidentity-kind.md`). The diagnostic now renders the identity through the shared source-identity helpers, and the wrapper terminal paths reuse `New-TurnContextDiagnosticObject`. Folded into the revise pass (2026-08-12).
+- Walk result receipts used `[datetime]` savedAt while the span serialized `'o'` strings (`bugs/walk-savedat-type-mismatch.md`). Walk receipts and spans now share one UTC `'o'` identity render via `ConvertTo-WalkIdentity`. Folded into the revise pass (2026-08-12).
+- `CompanionJsonValue` had no `Dispose` while `Invoke-CompanionCycle` disposes documents (`bugs/companion-json-value-dispose.md`). The value wrapper gained a no-op `Dispose` so the cycle document cleanup path is safe. Folded into the revise pass (2026-08-12).
+- The handoff atomic writer had an unresumable `.next` sibling crash window (`bugs/handoff-next-sibling-window.md`). The handoff publication now reconciles the sibling on resume. Folded into the revise pass (2026-08-12).
+- Auxiliary writers lacked power-loss durability (`bugs/aux-writer-durability.md`). The aux checkpoint writers now use WriteThrough + Flush before the atomic replace. Folded into the revise pass (2026-08-12).
+- The mapper did not sort thought arrays (`bugs/mapper-thought-sorting.md`). Thought arrays are now ordinal-sorted before emission (matching the DE extra validator). Folded into the revise pass (2026-08-12).
+- Reputation mapping was not fixture-observable for section-11 claim 11 (`bugs/mapper-reputation-observability.md`). Resolved 2026-08-12 via the documented option-b narrowing: `section11-11` is now wired to a genuine `Test-Build-Digest.ps1#MapperReputationSemantics` selector that asserts all ten digest paths against distinct sentinel store values plus the wrong-kind rejection; the misspelled-entry / duplicate-vendor / bad-initial-value clauses are spec-deferred (no vendored-DB or mapper-source fixture seam exists in the fixed mapper CLI). Wired alongside `section11-12` (thought-sorting) to `MapperThoughtOrdering`, advancing the section-11 registry 60 -> 62/77.
+- Reset-write failures collapsed to two hard-coded details while five registry stage reasons had no producers. The atomic writer now throws typed stages (the `CompanionStateWriteException` landed by `feat(state-files): classify atomic write failures by typed stage`), and consumption threads baseline serialize/temp-write/ replace and cache target/compare/serialize/temp-write/replace details through the attempt unchanged (`fix(consumption): thread stage-distinct reset-write reasons`, 2026-08-14).
+- `adapter-validator-infrastructure-failed` had zero producers; validator machinery crashes were laundered into content-invalid fallbacks or the blanket protocol catch. `Assert-AdapterDigestDocument` now throws a typed infrastructure exception that every spec boundary maps to its registry owner, with the watcher keeping its skip-the-poll rule (`fix(turn-context): classify adapter-validator infrastructure failures`, 2026-08-14).
+- The locked target read exposed three ad-hoc freshness details and the attempt hard-coded `target-below-floor`. `Read-CompanionCurrent` now classifies all nine registry freshness reasons, threaded through consumption, the attempt, and the `Get-Diff.ps1` advisory prefilter (`fix(consumption): widen locked-read freshness reasons to the registry`, 2026-08-14).
+- The turn-context refresh fed the pre-lock save selection to the cycle and never called `Test-FileWriteStable`, leaving the spec's stability and gate-disappearance retry classes unreachable. The attempt now re-enumerates, raises the floor, and stability-gates inside `cycle.lock` (`fix(turn-context): re-enumerate and stability-gate after cycle lock`, 2026-08-14).
+- The turn-context attempt collapsed every permanent cycle failure to `refresh/current-commit-failed`, so post-commit cache and bookkeeping failures discarded usable current state. The bridge now validates and classifies every cycle outcome, maps initialization to `source/state-setup-failed`, revalidates targets after a commit or guard discard, emits the matching null-detail degradation warning on success, and reports the observed freshness reason or `cycle-outcome-invalid` on failure (`fix(turn-context): classify cycle bridge outcomes`, 2026-08-18).
+- The turn-context attempt skipped the spec-required save observation after freezing and admitting a target. It now re-enumerates after stage-4 admission, raises the retained floor monotonically, reacquires when the target falls below that floor, keeps an empty observation non-terminal, and preserves authoritative source identity and generation provenance across retry and failure paths (`fix(turn-context): restore post-target save observation`, primary commit `01fffcd` with review fixups through `0ecfc32`, 2026-08-19).
+- The process-runner fixture rebuilt the `cmd.exe` path from the optional `WINDIR` process variable, which some hosts omit while `ComSpec` points at the interpreter. The fixture now resolves through a `Get-TestShellExecutable` helper preferring `ComSpec` (an existing `cmd.exe` only) with a platform system-directory fallback for absent or invalid values, and the `RelativeExecutableResolution` test runs with `WINDIR` stripped plus explicit absent/nonexistent/non-interpreter ComSpec fallback coverage (`fix(process-runner): resolve fixture shell via ComSpec not WINDIR`, 2026-08-19).
+- The turn-context wrapper's stdout delivery-failure diagnostic passed null for `sourceIdentity` and `generationTimestamp`, dropping the consumed target's authoritative identity and generation that the state-extraction provenance matrix requires of a `delivery` outcome. The delivery catch now maps the selected attempt's diagnostic provenance through, and the staged wrapper harness models a consumed success attempt's latched provenance so regression coverage asserts both fields survive a failed delivery (`fix(turn-context): preserve consumed-target provenance on delivery failure`, 2026-08-19).

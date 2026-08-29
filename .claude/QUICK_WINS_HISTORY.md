@@ -1,403 +1,67 @@
 # Quick wins (history)
 
-Implemented quick wins, archived from `QUICK_WINS.md` so the active
-backlog stays scannable. **Archaeological**: loaded on demand, not at
-session start. When a quick win lands, append its entry here rather
-than to the active file.
+Implemented quick wins, archived from `QUICK_WINS.md` so the active backlog stays scannable. **Archaeological**: loaded on demand, not at session start. When a quick win lands, append its entry here rather than to the active file.
 
-Entries appear in the order they shipped. Write each with enough
-context to recover the reasoning from the entry alone: investigation
-findings, reverted approaches, benchmarks, the commit or scope it
-landed in. Negative-knowledge findings (approaches attempted and
-reverted, with the reason) are the most valuable content here for
-preventing re-attempts; consider promoting those into the relevant
-`.claude/patterns/<slug>.md` Cautionary tales section when touching
-the pattern doc, leaving a one-line redirect here if cross-referenced.
+Entries appear in the order they shipped. Write each with enough context to recover the reasoning from the entry alone: investigation findings, reverted approaches, benchmarks, the commit or scope it landed in. Negative-knowledge findings (approaches attempted and reverted, with the reason) are the most valuable content here for preventing re-attempts; consider promoting those into the relevant `.claude/patterns/<slug>.md` Cautionary tales section when touching the pattern doc, leaving a one-line redirect here if cross-referenced.
 
 ## Cross-reference resolution
 
-`/nightshift:ready` does **not** scan this file. When a quick win lands, every
-other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced
-it is edited at the same time to drop the now-satisfied reference. The
-active `Requires:` lines therefore describe what is *currently*
-blocking. This file is purely archaeological — read it when you want
-to know what already shipped or to mine negative-knowledge findings,
-not to resolve dependencies.
+`/nightshift:ready` does **not** scan this file. When a quick win lands, every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is edited at the same time to drop the now-satisfied reference. The active `Requires:` lines therefore describe what is *currently* blocking. This file is purely archaeological — read it when you want to know what already shipped or to mine negative-knowledge findings, not to resolve dependencies.
 
 ## Entries
 
-- State-extraction-v2 cutover-gated hardening landed 2026-08-12 (scratch-only, no-git; all
-  suite-exercised items verified by the full `Test-StateExtractionV2Cutover.ps1` crash matrix,
-  which ends `PASS: cutover helper preflight`):
-  - Evidence-adoption content binding: `RecordVerificationArtifact` now runs a closed per-name
-    validator on every non-envelope evidence artifact (rejecting foreign or malformed bytes), and
-    `section-11-results.json` carries producing-input fingerprints (`specSha256`/`coverageSha256`/
-    `assertionRegistrySha256`) that re-adoption must match against the current on-disk files. The
-    recorded 2026-08-12 fix only covered the `BeginVerification` fresh-root requirement; this closes
-    the mid-session stale-adoption path the plan's Task 16 Step 4 contract calls for.
-  - Smoke-receipt `.next` sibling adoption: `ExecuteSmoke` now adopts an owned `.state-extraction-v2.next`
-    sibling left by a crash between the sibling write and rename (new `smoke-sibling-written` hook +
-    `Test-SmokeReceiptSiblingWindowAdoptsOwnedSibling`).
-  - Static-hygiene gate: the producer previously failed on a scratch `.tmp` doc's missing newline
-    and never failed on live forbidden tokens. It now scans production code only (excludes tests,
-    Legacy, docs-dir, and scratch `.tmp`), tightens `schemaVersion.*1` to `schemaVersion\s*[:=]\s*1\b`
-    (avoids runtime-prose false positives), and fails on any `removed`-disposition match. Verified
-    to flag the live v1 bridge's `LegacyDigestDiff` import pre-cutover (disappears post-cutover).
-    Also appended trailing newlines to three migration helpers that lacked them.
-  - Retirement legacy-test wiring: `RetireScaffold` now also deletes the three `Test-Legacy*.ps1`
-    scripts (which import `LegacyDigestDiff.psm1`) so retirement leaves no dangling imports; the
-    retirement manifest and crash-matrix fixture now carry the full seven-target set.
-  - Aux-writer durability: four remaining buffered writers (verification evidence, turn capture,
-    cleanup checkpoint, rollback finalize marker) switched to `FileStream` `WriteThrough` +
-    `Flush(true)` before the atomic replace, matching the section-11 and checkpoint writers.
-  - Negative-knowledge note: the four `.claude/bugs/{evidence-adoption,cutover-resume-stalls,
-    handoff-next-sibling-window,aux-writer-durability}.md` entries were already fixed and walked to
-    `BUGS_HISTORY.md` in the 2026-08-12 revise pass; the files are historical diagnosis records, so
-    reopen checks should verify against current code rather than trusting the file's open wording.
+- State-extraction-v2 cutover-gated hardening landed 2026-08-12 (scratch-only, no-git; all suite-exercised items verified by the full `Test-StateExtractionV2Cutover.ps1` crash matrix, which ends `PASS: cutover helper preflight`):
+  - Evidence-adoption content binding: `RecordVerificationArtifact` now runs a closed per-name validator on every non-envelope evidence artifact (rejecting foreign or malformed bytes), and `section-11-results.json` carries producing-input fingerprints (`specSha256`/`coverageSha256`/ `assertionRegistrySha256`) that re-adoption must match against the current on-disk files. The recorded 2026-08-12 fix only covered the `BeginVerification` fresh-root requirement; this closes the mid-session stale-adoption path the plan's Task 16 Step 4 contract calls for.
+  - Smoke-receipt `.next` sibling adoption: `ExecuteSmoke` now adopts an owned `.state-extraction-v2.next` sibling left by a crash between the sibling write and rename (new `smoke-sibling-written` hook + `Test-SmokeReceiptSiblingWindowAdoptsOwnedSibling`).
+  - Static-hygiene gate: the producer previously failed on a scratch `.tmp` doc's missing newline and never failed on live forbidden tokens. It now scans production code only (excludes tests, Legacy, docs-dir, and scratch `.tmp`), tightens `schemaVersion.*1` to `schemaVersion\s*[:=]\s*1\b` (avoids runtime-prose false positives), and fails on any `removed`-disposition match. Verified to flag the live v1 bridge's `LegacyDigestDiff` import pre-cutover (disappears post-cutover). Also appended trailing newlines to three migration helpers that lacked them.
+  - Retirement legacy-test wiring: `RetireScaffold` now also deletes the three `Test-Legacy*.ps1` scripts (which import `LegacyDigestDiff.psm1`) so retirement leaves no dangling imports; the retirement manifest and crash-matrix fixture now carry the full seven-target set.
+  - Aux-writer durability: four remaining buffered writers (verification evidence, turn capture, cleanup checkpoint, rollback finalize marker) switched to `FileStream` `WriteThrough` + `Flush(true)` before the atomic replace, matching the section-11 and checkpoint writers.
+  - Negative-knowledge note: the four `.claude/bugs/{evidence-adoption,cutover-resume-stalls, handoff-next-sibling-window,aux-writer-durability}.md` entries were already fixed and walked to `BUGS_HISTORY.md` in the 2026-08-12 revise pass; the files are historical diagnosis records, so reopen checks should verify against current code rather than trusting the file's open wording.
 
-- Git-ify the companion, shipped 2026-08-13: `git init -b main` in the companion root, in
-  place rather than at the entry's suggested `C:\Git\` home; the relocation was split into
-  its own quick win because it changes the Claude/Codex project identity (auto-memory and
-  hooks are keyed to the AppData path) and needs its own acquisition-path verification.
-  `.gitignore` decisions: exclude `state/` (privacy: reputation values and objective state
-  are effectively permanent once in pushed history; churn: autosave-driven writes plus the
-  live `consume.lock`/`cycle.lock`), `.tmp/` (work copies of real save bytes plus scratch),
-  `adapters/disco_elysium/releases/` (binary plus vendored game DBs), `dedump.exe`
-  (rebuildable from the versioned `dump-tool` Go source via `build.ps1`), and the
-  machine-local overlays `CLAUDE.local.md` and `.claude/settings.local.json`. Root commit
-  `ed168d8` (87 files, 22484 insertions). Repo-local `user.email a.stenlund@gmail.com` was
-  set because the machine's global git config carries only `user.name`. Pushed to a new
-  private GitHub repo `astenlund/disco-elysium-companion`.
+- Git-ify the companion, shipped 2026-08-13: `git init -b main` in the companion root, in place rather than at the entry's suggested `C:\Git\` home; the relocation was split into its own quick win because it changes the Claude/Codex project identity (auto-memory and hooks are keyed to the AppData path) and needs its own acquisition-path verification. `.gitignore` decisions: exclude `state/` (privacy: reputation values and objective state are effectively permanent once in pushed history; churn: autosave-driven writes plus the live `consume.lock`/`cycle.lock`), `.tmp/` (work copies of real save bytes plus scratch), `adapters/disco_elysium/releases/` (binary plus vendored game DBs), `dedump.exe` (rebuildable from the versioned `dump-tool` Go source via `build.ps1`), and the machine-local overlays `CLAUDE.local.md` and `.claude/settings.local.json`. Root commit `ed168d8` (87 files, 22484 insertions). Repo-local `user.email a.stenlund@gmail.com` was set because the machine's global git config carries only `user.name`. Pushed to a new private GitHub repo `astenlund/disco-elysium-companion`.
 
-- Sweep the pre-migration `.tmp/` debris, shipped 2026-08-13 (208M reclaimed, disk-only;
-  `.tmp/` is gitignored). Deleted the enumerated set (revise/build round files and logs,
-  the debug scratch directories, the two re-fetchable editor clones after confirming the
-  only repo references are attributional provenance notes in `knowledge.md`,
-  `state-extraction.md`, and the vendored-from comment in `lua_parser.go`) plus the
-  unenumerated migration-era scratch (task3/task10/task15 artifacts, `verify-*` files
-  including the `verify-save.zip` save-byte work copy, wiring/parse/probe scripts,
-  `go-cache`, `explore`, `sync-gists-skill`) and the 2026-08-13 cutover-morning debug
-  leftovers (`tw.bak`, `amb.log`, `walk-validate-live.ps1`, an orphaned `walk-staged-*`
-  staging dir; no watcher process was running). Kept `state-extraction-v2-entry-fence.lock`
-  (permanent fence) and `nightshift-ambiguity-proposal-2026-08-12.md` (drafted proposal
-  belonging to the nightshift repo, flagged to the user rather than deleted). Finding
-  during the sweep: the on-disk `revise-state.md` belonged to the converged v2 code loop;
-  the Find-LastEventfulSpan plan-revise scratch that
-  `memory/projects/find-last-eventful-span-resume.md` lists as read-order items 1-3 was
-  already gone before the sweep (overwritten by the later v2 loop), and the referenced
-  plan `.claude/plans/2026-08-08-find-last-eventful-span.md` is also absent, so that
-  resume path was already broken independently of this cleanup. Resolution (user,
-  2026-08-13): the plan-hardening loop is obsolete (`core/Find-LastEventfulSpan.ps1`
-  shipped and is live in the guidance rules); the resume memory and its `AGENTS.md`
-  pointer were retired, and the stranded nightshift phase-advance wording proposal was
-  deleted as not worth pursuing.
+- Sweep the pre-migration `.tmp/` debris, shipped 2026-08-13 (208M reclaimed, disk-only; `.tmp/` is gitignored). Deleted the enumerated set (revise/build round files and logs, the debug scratch directories, the two re-fetchable editor clones after confirming the only repo references are attributional provenance notes in `knowledge.md`, `state-extraction.md`, and the vendored-from comment in `lua_parser.go`) plus the unenumerated migration-era scratch (task3/task10/task15 artifacts, `verify-*` files including the `verify-save.zip` save-byte work copy, wiring/parse/probe scripts, `go-cache`, `explore`, `sync-gists-skill`) and the 2026-08-13 cutover-morning debug leftovers (`tw.bak`, `amb.log`, `walk-validate-live.ps1`, an orphaned `walk-staged-*` staging dir; no watcher process was running). Kept `state-extraction-v2-entry-fence.lock` (permanent fence) and `nightshift-ambiguity-proposal-2026-08-12.md` (drafted proposal belonging to the nightshift repo, flagged to the user rather than deleted). Finding during the sweep: the on-disk `revise-state.md` belonged to the converged v2 code loop; the Find-LastEventfulSpan plan-revise scratch that `memory/projects/find-last-eventful-span-resume.md` lists as read-order items 1-3 was already gone before the sweep (overwritten by the later v2 loop), and the referenced plan `.claude/plans/2026-08-08-find-last-eventful-span.md` is also absent, so that resume path was already broken independently of this cleanup. Resolution (user, 2026-08-13): the plan-hardening loop is obsolete (`core/Find-LastEventfulSpan.ps1` shipped and is live in the guidance rules); the resume memory and its `AGENTS.md` pointer were retired, and the stranded nightshift phase-advance wording proposal was deleted as not worth pursuing.
 
-- Validator-lease piercing and per-poll re-import, shipped 2026-08-13 (commit `23b0f3c`,
-  from the v2 review tech-debt list). `Acquire-AdapterValidatorLease` now returns the
-  lease carrying the validated callable (`AdapterValidatorLease.Command`, nulled on
-  dispose), so `Get-AdapterConfig` no longer reads `$script:AdapterValidatorCache`
-  outside the lock or re-derives the cache key. Import amortization: a new
-  `WatcherValidatorWarmHold` on the default `WatcherRuntimeServices` bundle keeps one
-  extra lease on the most recently resolved validator path (adopted after each
-  successful poll resolve, swapped on release-path change, disposed in
-  `Invoke-CompanionWatcher`'s terminal finally), so per-poll snapshot disposal never
-  hits refcount zero and one release imports once per watcher run instead of once per
-  poll. The spec's at-zero-unload teardown and poison semantics are untouched; the
-  warm hold is documented as a lifecycle paragraph in spec section 8 (adoption failure
-  never gates a poll, nothing reads callables through the hold). Custom test-built
-  service bundles carry no hold and forgo amortization. New `WarmHold` selector in
-  `Test-AdapterConfig.ps1` pins hold-resident module retention, reuse without
-  re-import, failed-adoption inertness, and unload on hold disposal.
+- Validator-lease piercing and per-poll re-import, shipped 2026-08-13 (commit `23b0f3c`, from the v2 review tech-debt list). `Acquire-AdapterValidatorLease` now returns the lease carrying the validated callable (`AdapterValidatorLease.Command`, nulled on dispose), so `Get-AdapterConfig` no longer reads `$script:AdapterValidatorCache` outside the lock or re-derives the cache key. Import amortization: a new `WatcherValidatorWarmHold` on the default `WatcherRuntimeServices` bundle keeps one extra lease on the most recently resolved validator path (adopted after each successful poll resolve, swapped on release-path change, disposed in `Invoke-CompanionWatcher`'s terminal finally), so per-poll snapshot disposal never hits refcount zero and one release imports once per watcher run instead of once per poll. The spec's at-zero-unload teardown and poison semantics are untouched; the warm hold is documented as a lifecycle paragraph in spec section 8 (adoption failure never gates a poll, nothing reads callables through the hold). Custom test-built service bundles carry no hold and forgo amortization. New `WarmHold` selector in `Test-AdapterConfig.ps1` pins hold-resident module retention, reuse without re-import, failed-adoption inertness, and unload on hold disposal.
 
-- Walk-policy writer and pointer-tokenizer dedupe, shipped 2026-08-13 (commit `79f93d6`,
-  from the v2 review tech-debt list). `Get-AdapterWalkPolicyId` now shares one
-  `$writeUInt32BigEndian` scriptblock between the length prefix and the set counts, and
-  one `$copySortedOrdinal` scriptblock for the null-tolerant copy-plus-ordinal-sort of
-  both policy sets; `Get-AdapterPointerArray` calls `ConvertFrom-DiffPointer` instead of
-  hand-rolling the RFC 6901 tokenizer. Byte-layout equivalence of the walkPolicyId hash
-  was probe-verified against a verbatim replica of the prior algorithm (populated and
-  empty inputs) since the id is persisted and compared by the walk protocol.
+- Walk-policy writer and pointer-tokenizer dedupe, shipped 2026-08-13 (commit `79f93d6`, from the v2 review tech-debt list). `Get-AdapterWalkPolicyId` now shares one `$writeUInt32BigEndian` scriptblock between the length prefix and the set counts, and one `$copySortedOrdinal` scriptblock for the null-tolerant copy-plus-ordinal-sort of both policy sets; `Get-AdapterPointerArray` calls `ConvertFrom-DiffPointer` instead of hand-rolling the RFC 6901 tokenizer. Byte-layout equivalence of the walkPolicyId hash was probe-verified against a verbatim replica of the prior algorithm (populated and empty inputs) since the id is persisted and compared by the walk protocol.
 
-- State-file-name and work-lease-grammar single-sourcing, shipped 2026-08-13 (commit
-  `3c7dda7`, from the v2 review tech-debt list). `$script:StateFileNames` (ordered map
-  Current/Baseline/DiffCache/Bookkeeping) is now the one authority in `StateFiles.ps1`;
-  `$script:StateFileTargets` derives from its values and every read/write helper plus
-  the watcher's `readBookkeeping` closure (previously a hardcoded
-  `state/last-processed.json` join) references the map through
-  `Get-CompanionStatePath`. The work-file naming grammar moved beside its writer in
-  `Acquisition.ps1` (`$script:WorkNoncePattern`, `$script:WorkWalkIndexPattern`,
-  composed `$script:WorkLeaseNamePattern`); the reaper's lease regex and the
-  `Invoke-SaveDigest` stem validation both derive from it. The composed lease pattern
-  factors the shared nonce suffix out of the old alternation and drops the stem
-  check's redundant `{0,9}` digit bound (the following `[int]::TryParse` already
-  rejects over-range indexes with the same exception); both rewrites probe-verified
-  equivalent against boundary cases.
+- State-file-name and work-lease-grammar single-sourcing, shipped 2026-08-13 (commit `3c7dda7`, from the v2 review tech-debt list). `$script:StateFileNames` (ordered map Current/Baseline/DiffCache/Bookkeeping) is now the one authority in `StateFiles.ps1`; `$script:StateFileTargets` derives from its values and every read/write helper plus the watcher's `readBookkeeping` closure (previously a hardcoded `state/last-processed.json` join) references the map through `Get-CompanionStatePath`. The work-file naming grammar moved beside its writer in `Acquisition.ps1` (`$script:WorkNoncePattern`, `$script:WorkWalkIndexPattern`, composed `$script:WorkLeaseNamePattern`); the reaper's lease regex and the `Invoke-SaveDigest` stem validation both derive from it. The composed lease pattern factors the shared nonce suffix out of the old alternation and drops the stem check's redundant `{0,9}` digit bound (the following `[int]::TryParse` already rejects over-range indexes with the same exception); both rewrites probe-verified equivalent against boundary cases.
 
-- Consumption complete-guard and source-floor dedupe, shipped 2026-08-13 (commit
-  `61f20e0`, from the v2 review tech-debt list). New `Complete-ConsumePayload` helper
-  replaces the four `if ($payload -is [TurnContextPayloadCandidate]) {
-  $payload.Complete($bool, $WarningSink.Freeze()) }` copies in
-  `Invoke-CompanionConsumption` (the boolean is the cache-degraded flag, now a named
-  parameter); new `Test-ConsumptionMeetsSourceFloor` replaces the copy-pasted
-  comparable-and-at-or-above-floor predicate in `New-ConsumePayload` and the
-  consumption source-floor gate. The target-precedes-baseline comparison behind the
-  `stale-target` outcome deliberately stays separate: there incomparable identities
-  are not a failure, so it is a different predicate, not a third copy.
+- Consumption complete-guard and source-floor dedupe, shipped 2026-08-13 (commit `61f20e0`, from the v2 review tech-debt list). New `Complete-ConsumePayload` helper replaces the four `if ($payload -is [TurnContextPayloadCandidate]) { $payload.Complete($bool, $WarningSink.Freeze()) }` copies in `Invoke-CompanionConsumption` (the boolean is the cache-degraded flag, now a named parameter); new `Test-ConsumptionMeetsSourceFloor` replaces the copy-pasted comparable-and-at-or-above-floor predicate in `New-ConsumePayload` and the consumption source-floor gate. The target-precedes-baseline comparison behind the `stale-target` outcome deliberately stays separate: there incomparable identities are not a failure, so it is a different predicate, not a third copy.
 
-- DocumentValidation/CompanionJson double-validation and accounting dedupe, shipped
-  2026-08-13 (commit `fcb4280`, from the v2 review tech-debt list). Four sub-findings:
-  (1) the `Read-DiffDocument` barrier wrapper's boolean re-checks (hasChanges,
-  hasUnrepresentedChanges, locationChanged, equippedChanged, fromPresent/toPresent)
-  duplicated validations the inner implementation had already run on the same admitted
-  document; removed. (2) The diff-objectives composite (parentId, id) key was built in
-  two places with a real divergence: the inner uniqueness check used `parent + NUL +
-  id` with no null-parent disambiguator while the wrapper's ordering check prefixed
-  non-null parents with `[char]1`. Extracted `Get-DiffObjectiveKey` using the
-  disambiguated form for both; the only behavior delta is that a pathological document
-  whose parentId begins with NUL no longer collides with a null-parent sibling in the
-  uniqueness set, which is the correct reading of a composite key. (3)
-  `Measure-CompanionJsonElement`/`Measure-CompanionJsonValue` accounting constants are
-  now the named vocabulary `Add-CompanionJsonContainerCharge`/`TextCharge`/
-  `ScalarCharge`. (4) The JSON-serializable number-type set was enumerated in
-  `Write-CompanionJsonValue` and approximated as `[ValueType]` in
-  `Measure-CompanionJsonValue` (the measurer admitted datetime/guid/char that the
-  writer then rejected); both now dispatch through `Test-CompanionJsonNumber` over
-  `$script:CompanionJsonNumberTypes`, so a non-JSON scalar fails at measurement with
-  the same `CompanionJsonParseException` the writer would have thrown.
+- DocumentValidation/CompanionJson double-validation and accounting dedupe, shipped 2026-08-13 (commit `fcb4280`, from the v2 review tech-debt list). Four sub-findings: (1) the `Read-DiffDocument` barrier wrapper's boolean re-checks (hasChanges, hasUnrepresentedChanges, locationChanged, equippedChanged, fromPresent/toPresent) duplicated validations the inner implementation had already run on the same admitted document; removed. (2) The diff-objectives composite (parentId, id) key was built in two places with a real divergence: the inner uniqueness check used `parent + NUL + id` with no null-parent disambiguator while the wrapper's ordering check prefixed non-null parents with `[char]1`. Extracted `Get-DiffObjectiveKey` using the disambiguated form for both; the only behavior delta is that a pathological document whose parentId begins with NUL no longer collides with a null-parent sibling in the uniqueness set, which is the correct reading of a composite key. (3) `Measure-CompanionJsonElement`/`Measure-CompanionJsonValue` accounting constants are now the named vocabulary `Add-CompanionJsonContainerCharge`/`TextCharge`/ `ScalarCharge`. (4) The JSON-serializable number-type set was enumerated in `Write-CompanionJsonValue` and approximated as `[ValueType]` in `Measure-CompanionJsonValue` (the measurer admitted datetime/guid/char that the writer then rejected); both now dispatch through `Test-CompanionJsonNumber` over `$script:CompanionJsonNumberTypes`, so a non-JSON scalar fails at measurement with the same `CompanionJsonParseException` the writer would have thrown.
 
-- Warning-sink profile ValidateSet registry sourcing, shipped 2026-08-13 (commit
-  `24d618d`, from the v2 review tech-debt list). `New-CompanionWarningSink` now uses
-  `[ValidateSet([CompanionWarningProfileNames])]` where the class implements
-  `IValidateSetValuesGenerator` over `$script:CompanionWarningProfiles.Keys`, so
-  adding a profile to the registry automatically extends the parameter validation.
-  Probe-verified that the generator resolves the module-scope registry at binding
-  time (valid profile admitted, unknown profile rejected). The companion observation
-  that the warning vertical lives inside `SourceIdentity.ps1` (a misnamed module
-  boundary) was already noted as consolidated in the backlog entry and remains a
-  file-naming nit only.
+- Warning-sink profile ValidateSet registry sourcing, shipped 2026-08-13 (commit `24d618d`, from the v2 review tech-debt list). `New-CompanionWarningSink` now uses `[ValidateSet([CompanionWarningProfileNames])]` where the class implements `IValidateSetValuesGenerator` over `$script:CompanionWarningProfiles.Keys`, so adding a profile to the registry automatically extends the parameter validation. Probe-verified that the generator resolves the module-scope registry at binding time (valid profile admitted, unknown profile rejected). The companion observation that the warning vertical lives inside `SourceIdentity.ps1` (a misnamed module boundary) was already noted as consolidated in the backlog entry and remains a file-naming nit only.
 
-- Save-digest reason-vocabulary single-sourcing, shipped 2026-08-13 (commit `64da26b`,
-  from the v2 review tech-debt list). The copy/dump/digest reason lists now live once
-  as `$script:SaveDigestCopyReasons`/`DumpReasons`/`DigestReasons` beside
-  `SaveDigestStageException` in `DigestDiff.psm1` (digest = dump + the digest-only
-  reasons); the exception's legal-reasons switch reads them at construction
-  (probe-verified that a module class constructor resolves module-scope variables),
-  and `$script:TurnContextReasons` derives its `source` (four pre-copy reasons + the
-  copy list), `dump`, and `digest` classes from the same lists. Reason sets are
-  membership-checked only, so the `source` class's internal reordering is
-  behavior-neutral.
+- Save-digest reason-vocabulary single-sourcing, shipped 2026-08-13 (commit `64da26b`, from the v2 review tech-debt list). The copy/dump/digest reason lists now live once as `$script:SaveDigestCopyReasons`/`DumpReasons`/`DigestReasons` beside `SaveDigestStageException` in `DigestDiff.psm1` (digest = dump + the digest-only reasons); the exception's legal-reasons switch reads them at construction (probe-verified that a module class constructor resolves module-scope variables), and `$script:TurnContextReasons` derives its `source` (four pre-copy reasons + the copy list), `dump`, and `digest` classes from the same lists. Reason sets are membership-checked only, so the `source` class's internal reordering is behavior-neutral.
 
-- Source-identity validation-grammar centralization, shipped 2026-08-13 (commit
-  `db405d6`, from the v2 review tech-debt list). `DocumentValidation.ps1` now owns
-  `Test-Sha256Hex`, `Test-SourceIdentityGrammar` (domainId sha256, saveFile without
-  path separators, savedAt canonical UTC), and `Test-SourceIdentityFields` (the
-  exact three-field shape plus grammar). `Test-Source` (the five-field digest
-  source), the WalkProtocol span from/to validation, and
-  `Get-TurnContextIdentity` all dispatch through them instead of hand-rolling the
-  regex/separator/UTC checks. `Get-TurnContextIdentity`'s failure surface is
-  unchanged: the helper's `CompanionDocumentValidationException` falls through the
-  existing generic catch and re-emerges as the same
-  `TurnContextProtocolException('Invalid source identity.')`.
+- Source-identity validation-grammar centralization, shipped 2026-08-13 (commit `db405d6`, from the v2 review tech-debt list). `DocumentValidation.ps1` now owns `Test-Sha256Hex`, `Test-SourceIdentityGrammar` (domainId sha256, saveFile without path separators, savedAt canonical UTC), and `Test-SourceIdentityFields` (the exact three-field shape plus grammar). `Test-Source` (the five-field digest source), the WalkProtocol span from/to validation, and `Get-TurnContextIdentity` all dispatch through them instead of hand-rolling the regex/separator/UTC checks. `Get-TurnContextIdentity`'s failure surface is unchanged: the helper's `CompanionDocumentValidationException` falls through the existing generic catch and re-emerges as the same `TurnContextProtocolException('Invalid source identity.')`.
 
-- Dead watcher status and payload-candidate scaffolding removal, shipped 2026-08-13
-  (commit `1b96154`, from the v2 review tech-debt list). `WatcherCurrentReadResult`
-  dropped `adapter-invalid` from its legal status set (no producer ever emitted it;
-  the default watcher `readCurrent` closure maps everything non-valid/absent/stale
-  to `core-invalid`, and the spec's "adapter-invalid" mentions are freshness-condition
-  prose, not this enum). `TurnContextPayloadCandidate` dropped the never-called
-  `MarkSerialized`/`Invalidate` methods and, transitively, the `Serialized`/
-  `Invalidated` flags and `AssertUsable`/`AssertMutable` guards that only those
-  methods could trip; `Complete` keeps its null-warnings check.
+- Dead watcher status and payload-candidate scaffolding removal, shipped 2026-08-13 (commit `1b96154`, from the v2 review tech-debt list). `WatcherCurrentReadResult` dropped `adapter-invalid` from its legal status set (no producer ever emitted it; the default watcher `readCurrent` closure maps everything non-valid/absent/stale to `core-invalid`, and the spec's "adapter-invalid" mentions are freshness-condition prose, not this enum). `TurnContextPayloadCandidate` dropped the never-called `MarkSerialized`/`Invalidate` methods and, transitively, the `Serialized`/ `Invalidated` flags and `AssertUsable`/`AssertMutable` guards that only those methods could trip; `Complete` keeps its null-warnings check.
 
-- Test-harness dedupe, shipped 2026-08-13 in four commits (from the v2 review
-  tech-debt list):
-  - `32aed58`: `Test-Watcher.ps1`'s ~19 seven-positional-scriptblock
-    `WatcherRuntimeServices` constructions became named-slot specs through a
-    module-injected `New-WatcherStubServices` factory (defined via
-    `Invoke-InCompanionModule` so the module-private type resolves); every
-    unoverridden slot now throws 'not reached', which strengthened tests that had
-    stubbed unreached slots with `$null`. All watcher `-Only` selectors were run
-    explicitly since the gated blocks do not run under the default pass.
-  - `2efa5c6`: the adapter fixture release-tree mechanics duplicated between
-    `Test-AdapterConfig.ps1` and `Test-Acquisition.ps1` moved to
-    `New-AdapterFixtureTree` in `TestSupport.psm1` (adapter.json verbatim,
-    validator, Build-Digest stub, optional tool.exe, release-local core
-    placeholder); each suite keeps its own thin `New-AdapterFixture` wrapper with
-    its JSON default. Test-Walk's live stub adapter is a different fixture kind
-    (executable mapper) and was left alone.
-  - `d223713`: `Test-StagedOneShotKeepsPreCycleOrdering` no longer scans
-    `Update-CompanionState.ps1` source for literal call lines; it stages the
-    script beside stub EntryFence/DigestDiff modules whose functions append to a
-    trace file and asserts the executed sequence
-    (config,reaper,cycle-lock,confirmation,candidates,reaper,cycle). The
-    recursive-lock guard stays a static scan anchored on function names only.
-  - `be491de`: `Test-Build-Digest.ps1` loads `skill_key_map.json` once into
-    `$script:SkillKeyMap` (three loads before); the map is read-only in every
-    consumer.
-  (The fifth review sub-finding, `Test-TurnContext.ps1`'s ghost `ConfigDrift`
-  selector, was already removed before this pass.)
+- Test-harness dedupe, shipped 2026-08-13 in four commits (from the v2 review tech-debt list):
+  - `32aed58`: `Test-Watcher.ps1`'s ~19 seven-positional-scriptblock `WatcherRuntimeServices` constructions became named-slot specs through a module-injected `New-WatcherStubServices` factory (defined via `Invoke-InCompanionModule` so the module-private type resolves); every unoverridden slot now throws 'not reached', which strengthened tests that had stubbed unreached slots with `$null`. All watcher `-Only` selectors were run explicitly since the gated blocks do not run under the default pass.
+  - `2efa5c6`: the adapter fixture release-tree mechanics duplicated between `Test-AdapterConfig.ps1` and `Test-Acquisition.ps1` moved to `New-AdapterFixtureTree` in `TestSupport.psm1` (adapter.json verbatim, validator, Build-Digest stub, optional tool.exe, release-local core placeholder); each suite keeps its own thin `New-AdapterFixture` wrapper with its JSON default. Test-Walk's live stub adapter is a different fixture kind (executable mapper) and was left alone.
+  - `d223713`: `Test-StagedOneShotKeepsPreCycleOrdering` no longer scans `Update-CompanionState.ps1` source for literal call lines; it stages the script beside stub EntryFence/DigestDiff modules whose functions append to a trace file and asserts the executed sequence (config,reaper,cycle-lock,confirmation,candidates,reaper,cycle). The recursive-lock guard stays a static scan anchored on function names only.
+  - `be491de`: `Test-Build-Digest.ps1` loads `skill_key_map.json` once into `$script:SkillKeyMap` (three loads before); the map is read-only in every consumer. (The fifth review sub-finding, `Test-TurnContext.ps1`'s ghost `ConfigDrift` selector, was already removed before this pass.)
 
-- Dump-tool Go dedupe and dead-export removal, shipped 2026-08-13 (commit `f6457dd`,
-  from the v2 review tech-debt list). The projected-TLV-key grammar moved into the
-  parser package as `parser.ValidProjectedKey` (beside the `keyProjector` that emits
-  it); main.go's two validator call sites dispatch through it. The top-level table
-  count became `expectedTopLevelTableCount` in `limits.go`, shared by
-  `validateTopLevelTables` and the assembled-output `allTables` check.
-  `findVariableStore` now probes candidates through new non-copying
-  `Table.StringEntry`/`Table.EachStringEntry` accessors and calls `StringMap()`
-  exactly once, on the single match. `validateJSONMember` returns the admitted
-  member bytes without the defensive copy (archive member bytes are immutable once
-  read). `archive.go`'s `requiredSuffixes` and `memberDestinations` literals are now
-  keyed by the `memberKind` constants, and the prefix seed compares against
-  `headerMember` instead of raw 0. `LuaParser.R` was unexported to `reader` (no
-  consumer outside the package). Verified with gofmt, `go vet`, and `go test ./...`;
-  the installed immutable release keeps its previously built `dedump.exe` until the
-  next staged release rebuilds it from this source.
+- Dump-tool Go dedupe and dead-export removal, shipped 2026-08-13 (commit `f6457dd`, from the v2 review tech-debt list). The projected-TLV-key grammar moved into the parser package as `parser.ValidProjectedKey` (beside the `keyProjector` that emits it); main.go's two validator call sites dispatch through it. The top-level table count became `expectedTopLevelTableCount` in `limits.go`, shared by `validateTopLevelTables` and the assembled-output `allTables` check. `findVariableStore` now probes candidates through new non-copying `Table.StringEntry`/`Table.EachStringEntry` accessors and calls `StringMap()` exactly once, on the single match. `validateJSONMember` returns the admitted member bytes without the defensive copy (archive member bytes are immutable once read). `archive.go`'s `requiredSuffixes` and `memberDestinations` literals are now keyed by the `memberKind` constants, and the prefix seed compares against `headerMember` instead of raw 0. `LuaParser.R` was unexported to `reader` (no consumer outside the package). Verified with gofmt, `go vet`, and `go test ./...`; the installed immutable release keeps its previously built `dedump.exe` until the next staged release rebuilds it from this source.
 
-- Section graduation note, 2026-08-13: the eleven entries above closed out the
-  "State-extraction-v2 review tech-debt" section deferred from the 2026-08-12
-  `/nightshift:revise-code` pass (which converged with phase 1 and phase 2, all 63
-  dimension cells inactive; confirmed defects were fixed and gate-verified during the
-  review itself). Context that lived inline with that section: the formerly
-  cutover-gated review items all landed with the 2026-08-13 cutover and Task 16
-  verification (12 live/Go section-11 rows wired to genuine live probes and passed,
-  the immutable `releases/2/schema-2` bundle re-staged and installed, the
-  save-read-only probe executed against the activated runtime); and the 2026-08-12
-  hardening batch (evidence-adoption content binding with per-name artifact
-  validators and producing-input fingerprints, smoke-receipt `.next` sibling
-  adoption, `ExecuteSmoke` sibling adoption, the static-hygiene forbidden-token
-  failure, retirement legacy-test wiring, WriteThrough durability for the remaining
-  aux writers) was verified by the passing cutover crash-matrix suite where
-  suite-exercised, with no open tracked bugs (`mapper-reputation-observability`
-  resolved via option-b; the named duplicate-vendor/misspelled/bad-initial clauses
-  are spec-deferred). The only remaining v2-review descendants are the three
-  turn-context fixture entries (claims 40-42) still active in `QUICK_WINS.md`.
+- Section graduation note, 2026-08-13: the eleven entries above closed out the "State-extraction-v2 review tech-debt" section deferred from the 2026-08-12 `/nightshift:revise-code` pass (which converged with phase 1 and phase 2, all 63 dimension cells inactive; confirmed defects were fixed and gate-verified during the review itself). Context that lived inline with that section: the formerly cutover-gated review items all landed with the 2026-08-13 cutover and Task 16 verification (12 live/Go section-11 rows wired to genuine live probes and passed, the immutable `releases/2/schema-2` bundle re-staged and installed, the save-read-only probe executed against the activated runtime); and the 2026-08-12 hardening batch (evidence-adoption content binding with per-name artifact validators and producing-input fingerprints, smoke-receipt `.next` sibling adoption, `ExecuteSmoke` sibling adoption, the static-hygiene forbidden-token failure, retirement legacy-test wiring, WriteThrough durability for the remaining aux writers) was verified by the passing cutover crash-matrix suite where suite-exercised, with no open tracked bugs (`mapper-reputation-observability` resolved via option-b; the named duplicate-vendor/misspelled/bad-initial clauses are spec-deferred). The only remaining v2-review descendants are the three turn-context fixture entries (claims 40-42) still active in `QUICK_WINS.md`.
 
-- Concurrent consume-lock fixture for claim 40 (Equal-identity target freeze), shipped
-  2026-08-13 (commit `f61c5ee`, plus enabling commits `52d3b40` TestSupport
-  `Start-BoundedPwsh`/`Complete-BoundedPwsh`/`Stop-BoundedPwsh`/`Wait-TestSentinel` and
-  `1f5b8ea` `New-StagedGetDiffFixture` dedupe). The new
-  `Test-Consumption.ps1 -Only EqualIdentityTargetFreeze` selector runs two real
-  `Get-Diff.ps1` processes contending on the real `consume.lock` in a staged scratch
-  core whose `Consumption.ps1` copy carries env-gated sentinel barriers (pre-lock
-  arrive/park; post-freeze park). Both spec orderings are covered: A parked pre-lock
-  while B publishes baseline H2 (A then freezes H2, emits the empty diff, baseline
-  never rewinds to H1), and H2 landing after A's locked H1 freeze (transition stays
-  pending for B, which reports exactly the H1-to-H2 delta). Falsified deliberately: a
-  temporary freeze-before-lock mutation of the production sequence made the fixture
-  fail on "Consumer A freezes H2 under the lock", and anchor-count guards catch seam
-  drift. The single-process equal-identity retention half remains covered by the
-  Watcher `EqualIdentityRetention` selector.
+- Concurrent consume-lock fixture for claim 40 (Equal-identity target freeze), shipped 2026-08-13 (commit `f61c5ee`, plus enabling commits `52d3b40` TestSupport `Start-BoundedPwsh`/`Complete-BoundedPwsh`/`Stop-BoundedPwsh`/`Wait-TestSentinel` and `1f5b8ea` `New-StagedGetDiffFixture` dedupe). The new `Test-Consumption.ps1 -Only EqualIdentityTargetFreeze` selector runs two real `Get-Diff.ps1` processes contending on the real `consume.lock` in a staged scratch core whose `Consumption.ps1` copy carries env-gated sentinel barriers (pre-lock arrive/park; post-freeze park). Both spec orderings are covered: A parked pre-lock while B publishes baseline H2 (A then freezes H2, emits the empty diff, baseline never rewinds to H1), and H2 landing after A's locked H1 freeze (transition stays pending for B, which reports exactly the H1-to-H2 delta). Falsified deliberately: a temporary freeze-before-lock mutation of the production sequence made the fixture fail on "Consumer A freezes H2 under the lock", and anchor-count guards catch seam drift. The single-process equal-identity retention half remains covered by the Watcher `EqualIdentityRetention` selector.
 
-- Staged wrapper fixture for claim 41 (Turn-context failure injection), shipped
-  2026-08-13. The headline transaction fixture (`Test-TurnContext.ps1 -Only
-  WrapperTransactionSelection`, commit `3adc346`) runs the REAL `Get-TurnContext.ps1`
-  end-to-end for the first time in the suite: a runnable stub adapter release (per the
-  Test-Walk recipe), an env-gated one-shot baseline-write failure patched into the
-  staged `Consumption.ps1` that also drops a newer save at the failure point, and
-  assertions that only attempt B's envelope (the newer save) reaches stdout with the
-  baseline settled at B. The failure-injection boundary matrix landed across several
-  commits: envelope-serialize consumption-state preservation (`ce51d1a`, production
-  fix + `EnvelopeSerializeStatePreserved`), wrapper stdout [delivery] class
-  (`e79d424`, production fix + `WrapperDeliveryFailure`), raw emit reason split
-  (`4219dcc`), once-only payload-candidate completion (`c535290`), class-owned
-  `ConsumeResult.detail` registry policing (`4c73236`), and the private-mode /
-  boundary coverage batch (`e5dec33`: private compute path, private
-  cache-target-invalid, cache repair, stale/content-invalid fallbacks, context
-  constructor guards, poisoned-detail no-leak sweep) plus the wrapper
-  `degraded-select` scenario (`3adc346`). Both regression-guard fixtures run under
-  `-Group All`; the claim-verification fixtures are selector-gated per suite
-  convention. The claim's residual halves (per-stage reset-write reasons, the
-  nine-boundary adapter-validator matrix, freshness reason forcing) are filed as the
-  three reason-taxonomy bugs in `BUGS.md` (2026-08-13) and ride their fixes.
+- Staged wrapper fixture for claim 41 (Turn-context failure injection), shipped 2026-08-13. The headline transaction fixture (`Test-TurnContext.ps1 -Only WrapperTransactionSelection`, commit `3adc346`) runs the REAL `Get-TurnContext.ps1` end-to-end for the first time in the suite: a runnable stub adapter release (per the Test-Walk recipe), an env-gated one-shot baseline-write failure patched into the staged `Consumption.ps1` that also drops a newer save at the failure point, and assertions that only attempt B's envelope (the newer save) reaches stdout with the baseline settled at B. The failure-injection boundary matrix landed across several commits: envelope-serialize consumption-state preservation (`ce51d1a`, production fix + `EnvelopeSerializeStatePreserved`), wrapper stdout [delivery] class (`e79d424`, production fix + `WrapperDeliveryFailure`), raw emit reason split (`4219dcc`), once-only payload-candidate completion (`c535290`), class-owned `ConsumeResult.detail` registry policing (`4c73236`), and the private-mode / boundary coverage batch (`e5dec33`: private compute path, private cache-target-invalid, cache repair, stale/content-invalid fallbacks, context constructor guards, poisoned-detail no-leak sweep) plus the wrapper `degraded-select` scenario (`3adc346`). Both regression-guard fixtures run under `-Group All`; the claim-verification fixtures are selector-gated per suite convention. The claim's residual halves (per-stage reset-write reasons, the nine-boundary adapter-validator matrix, freshness reason forcing) are filed as the three reason-taxonomy bugs in `BUGS.md` (2026-08-13) and ride their fixes.
 
-- Staged acquisition fixture for claim 42 (Acquisition retry taxonomy), shipped
-  2026-08-13. The baseline-write-failure half landed with the claim-41 transaction
-  fixture (commit `3adc346`: the real wrapper's one-shot baseline failure and sole
-  retry). Commit `b8e7e18` added the in-process pass-count matrix (freshness and
-  stale-target consumption outcomes and retryable vanished/changed cycle outcomes
-  draw all three passes; busy and non-retryable outcomes make one initial pass) and
-  the cross-process decline: a competing process holding the real `consume.lock`
-  makes the real wrapper terminate `[turn-context:busy]` / `lock-timeout` /
-  `lockStage consume` with no retry, inside the `WrapperTransactionSelection`
-  selector. Commit `4a3b8f9` fixed a real production bug the two-sample fixture
-  exposed: `Test-FileWriteStable` reported a MISSING candidate as stable because
-  PowerShell swallows the `FileInfo.Length` getter's FileNotFoundException; explicit
-  Exists guards now make both samples throw the typed retryable `vanished` (and the
-  generic catch the non-retryable `unreadable`), covered by the new
-  `FileWriteStableClassification` selector in `Test-Acquisition.ps1` (missing at
-  first sample, deleted-during-delay at second sample, invalid-path unreadable). The
-  pump/flood/tree-kill transport matrix was already covered by
-  `Test-ProcessRunner.ps1`; the typed stability and gate-disappearance retry classes
-  are unreachable through the turn-context path until the post-lock stability-gate
-  bug in `BUGS.md` ships, and their fixtures ride that fix.
+- Staged acquisition fixture for claim 42 (Acquisition retry taxonomy), shipped 2026-08-13. The baseline-write-failure half landed with the claim-41 transaction fixture (commit `3adc346`: the real wrapper's one-shot baseline failure and sole retry). Commit `b8e7e18` added the in-process pass-count matrix (freshness and stale-target consumption outcomes and retryable vanished/changed cycle outcomes draw all three passes; busy and non-retryable outcomes make one initial pass) and the cross-process decline: a competing process holding the real `consume.lock` makes the real wrapper terminate `[turn-context:busy]` / `lock-timeout` / `lockStage consume` with no retry, inside the `WrapperTransactionSelection` selector. Commit `4a3b8f9` fixed a real production bug the two-sample fixture exposed: `Test-FileWriteStable` reported a MISSING candidate as stable because PowerShell swallows the `FileInfo.Length` getter's FileNotFoundException; explicit Exists guards now make both samples throw the typed retryable `vanished` (and the generic catch the non-retryable `unreadable`), covered by the new `FileWriteStableClassification` selector in `Test-Acquisition.ps1` (missing at first sample, deleted-during-delay at second sample, invalid-path unreadable). The pump/flood/tree-kill transport matrix was already covered by `Test-ProcessRunner.ps1`; the typed stability and gate-disappearance retry classes are unreachable through the turn-context path until the post-lock stability-gate bug in `BUGS.md` ships, and their fixtures ride that fix.
 
-- Terminal-result builder in `Invoke-TurnContextAttempt`, shipped 2026-08-13 (commit
-  `6f5f0fd`). The twelve terminal sites in `core/private/TurnContext.ps1` each built
-  their result through the same three-level
-  `New-TurnContextAttemptResult(... New-TurnContextDiagnosticObject(... New-TurnContextDetail ...))`
-  call on one dense line. A nested `New-TurnContextTerminalResult` builder now takes
-  the class, an optional registry reason (or a precomputed detail for the two sites
-  that map consumption outcomes), and the varying identity/lock/envelope atoms;
-  consumption state defaults to `none`, envelope/cacheDegraded/generation/lock default
-  to their empty values, and the attempt's `$OperationalWarnings` binds via dynamic
-  scope. Behavior-preserving; verified by the `TurnContext` test group. Deferred from
-  the 2026-08-13 revise-code run, which judged it too invasive for an inline review
-  fix in a hot path.
+- Terminal-result builder in `Invoke-TurnContextAttempt`, shipped 2026-08-13 (commit `6f5f0fd`). The twelve terminal sites in `core/private/TurnContext.ps1` each built their result through the same three-level `New-TurnContextAttemptResult(... New-TurnContextDiagnosticObject(... New-TurnContextDetail ...))` call on one dense line. A nested `New-TurnContextTerminalResult` builder now takes the class, an optional registry reason (or a precomputed detail for the two sites that map consumption outcomes), and the varying identity/lock/envelope atoms; consumption state defaults to `none`, envelope/cacheDegraded/generation/lock default to their empty values, and the attempt's `$OperationalWarnings` binds via dynamic scope. Behavior-preserving; verified by the `TurnContext` test group. Deferred from the 2026-08-13 revise-code run, which judged it too invasive for an inline review fix in a hot path.
 
-- Section 11 save-write stability and historical-save immutability live claims,
-  shipped 2026-08-17. A single read-only joint monitor now backs selectors
-  `Section11-56`, `Section11-59`, and `Section11-56-59`: it counts archives created
-  since the running game process began, requires a live autosave, applies the production
-  two-sample stability gate before copying into project `.tmp` for ZIP validation,
-  fingerprints surviving older candidates after later saves, records rotation and
-  non-save rewrites separately, and requires operator confirmation of cloud sync.
-  Fixture coverage lives in `Test-Section11LiveProbeSupport.ps1` under the Watcher test
-  group. The live session passed with 5 save events, 5 stable archives, 0 unzip failures,
-  3 manual events, 1 quicksave, 1 autosave, 1 live autosave, rotation observed, cloud
-  sync enabled, 0 older-candidate mutations, and 0 observed non-save in-place rewrites.
-  The monitor began at 23:42:08 UTC and retained archives establish that the manual save
-  at 23:45:48 survived both the quicksave at 23:47:20 and autosave at 23:55:22, while the
-  quicksave also survived that autosave. Those timestamps provide at least three
-  non-vacuous survivor comparisons and independently place the autosave after the live
-  boundary. The section 11 rows now carry those results instead of provisional markers.
+- Section 11 save-write stability and historical-save immutability live claims, shipped 2026-08-17. A single read-only joint monitor now backs selectors `Section11-56`, `Section11-59`, and `Section11-56-59`: it counts archives created since the running game process began, requires a live autosave, applies the production two-sample stability gate before copying into project `.tmp` for ZIP validation, fingerprints surviving older candidates after later saves, records rotation and non-save rewrites separately, and requires operator confirmation of cloud sync. Fixture coverage lives in `Test-Section11LiveProbeSupport.ps1` under the Watcher test group. The live session passed with 5 save events, 5 stable archives, 0 unzip failures, 3 manual events, 1 quicksave, 1 autosave, 1 live autosave, rotation observed, cloud sync enabled, 0 older-candidate mutations, and 0 observed non-save in-place rewrites. The monitor began at 23:42:08 UTC and retained archives establish that the manual save at 23:45:48 survived both the quicksave at 23:47:20 and autosave at 23:55:22, while the quicksave also survived that autosave. Those timestamps provide at least three non-vacuous survivor comparisons and independently place the autosave after the live boundary. The section 11 rows now carry those results instead of provisional markers.
 
-- Companion repository relocation to `C:\Git\disco-elysium-companion`, shipped
-  2026-08-17. A verified copy and authority cutover preserved `.git`, ignored adapter
-  releases and dump tooling, scratch data, and live `state/`. Recursive source and
-  destination manifests of relative paths, byte lengths, and SHA-256 hashes matched
-  before the new root became authoritative. The source contents were then cleared; a
-  temporary shell held the empty old root until it exited, and the old root is now
-  absent. Acquisition remains rooted in `adapter.json`'s absolute
-  `C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium\SaveGames` path; the
-  repository hard limit now names that path explicitly instead of the invalidated
-  sibling-relative relationship. Claude auto-memory, Claude's project map and repository
-  mapping, and Codex's trust and SessionStart hook-state keys use the new root. By user
-  choice, pre-relocation Claude prompt-history project fields and Codex thread
-  working-directory fields retain the old identity; new sessions use the new root. The
-  running Codex session required a reopen at the new root because its active workspace
-  identity was not rewritten in place.
+- Companion repository relocation to `C:\Git\disco-elysium-companion`, shipped 2026-08-17. A verified copy and authority cutover preserved `.git`, ignored adapter releases and dump tooling, scratch data, and live `state/`. Recursive source and destination manifests of relative paths, byte lengths, and SHA-256 hashes matched before the new root became authoritative. The source contents were then cleared; a temporary shell held the empty old root until it exited, and the old root is now absent. Acquisition remains rooted in `adapter.json`'s absolute `C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium\SaveGames` path; the repository hard limit now names that path explicitly instead of the invalidated sibling-relative relationship. Claude auto-memory, Claude's project map and repository mapping, and Codex's trust and SessionStart hook-state keys use the new root. By user choice, pre-relocation Claude prompt-history project fields and Codex thread working-directory fields retain the old identity; new sessions use the new root. The running Codex session required a reopen at the new root because its active workspace identity was not rewritten in place.
 
-- `Invoke-TurnContextAttempt` decomposition, shipped 2026-08-19 (primary commits
-  `01fffcd` and `53eaeba`, with review fixups through `0ecfc32`). The coordinator now
-  delegates terminal construction, save observation, refresh-cycle handling, and
-  consumption mapping to file-scoped helpers while retaining target admission and the
-  stage-5 post-target observation in the visible attempt loop. The shared save helper
-  owns enumeration, maximum-candidate selection, identity conversion, and monotonic
-  floor raising; caller-specific empty handling remains at each boundary.
+- `Invoke-TurnContextAttempt` decomposition, shipped 2026-08-19 (primary commits `01fffcd` and `53eaeba`, with review fixups through `0ecfc32`). The coordinator now delegates terminal construction, save observation, refresh-cycle handling, and consumption mapping to file-scoped helpers while retaining target admission and the stage-5 post-target observation in the visible attempt loop. The shared save helper owns enumeration, maximum-candidate selection, identity conversion, and monotonic floor raising; caller-specific empty handling remains at each boundary.
 
-- Extract successful-consumption fixture construction, shipped 2026-08-19 (from the
-  active `QUICK_WINS.md`). `Test-TurnContext.ps1` repeated the successful
-  private-result consumption staging (build payload, complete it, return a
-  `success`/`consumed` `New-ConsumptionResult`) across seven attempt-scenario
-  blocks. A new `New-ConsumePrivateSuccess -Target -Context -Sink` helper in
-  `TestSupport.psm1` constructs the payload inside DigestDiff module scope (via
-  `Invoke-InCompanionModule`) with `State` defaulting to `Target`; the seven generic
-  sites now call it, with the count/floor-observation lines and the scenario's own
-  target (post-target re-selected, `targetC`, `s2Doc`, `stateDoc`) and assertions
-  left at each call site. The two `$case`-driven sites in the reset-write and
-  envelope-serialize selectors vary `Complete`/`-CacheDegraded`/outcome/state/detail
-  per table row and stay inline (a distinct shape, not a copy). The pairing and
-  freshness blocks' now-redundant prebuilt empty-diff locals (`$diffDoc`, `$diff2`)
-  were dropped. Verified: full `Test-TurnContext.ps1 -Only All` and
-  `Test-Consumption.ps1` both end `PASS`.
+- Extract successful-consumption fixture construction, shipped 2026-08-19 (from the active `QUICK_WINS.md`). `Test-TurnContext.ps1` repeated the successful private-result consumption staging (build payload, complete it, return a `success`/`consumed` `New-ConsumptionResult`) across seven attempt-scenario blocks. A new `New-ConsumePrivateSuccess -Target -Context -Sink` helper in `TestSupport.psm1` constructs the payload inside DigestDiff module scope (via `Invoke-InCompanionModule`) with `State` defaulting to `Target`; the seven generic sites now call it, with the count/floor-observation lines and the scenario's own target (post-target re-selected, `targetC`, `s2Doc`, `stateDoc`) and assertions left at each call site. The two `$case`-driven sites in the reset-write and envelope-serialize selectors vary `Complete`/`-CacheDegraded`/outcome/state/detail per table row and stay inline (a distinct shape, not a copy). The pairing and freshness blocks' now-redundant prebuilt empty-diff locals (`$diffDoc`, `$diff2`) were dropped. Verified: full `Test-TurnContext.ps1 -Only All` and `Test-Consumption.ps1` both end `PASS`.
