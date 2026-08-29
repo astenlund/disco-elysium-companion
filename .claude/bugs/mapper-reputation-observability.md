@@ -4,7 +4,7 @@ Found during Section 11 registry wiring (2026-08-11).
 
 ## Symptom
 
-The mapper's reputation mapping is a hardcoded static property (`Build-Digest.ps1` `$reputationMap`). Section 11 claim 11 (Reputation mapping) requires fixtures that duplicate a vendor name, add a case variant, or use a misspelled mapping entry — each would require editing the vendored `variables_reputation.json` or the mapper source, not a dump fixture. No passing selector can exist without a mapper/design change. The registry row `section11-11` therefore has no genuine selector.
+The mapper's reputation mapping is a hardcoded static property (`Build-Digest.ps1` `$reputationMap`). Section 11 claim 11 (Reputation mapping) requires fixtures that duplicate a vendor name, add a case variant, or use a misspelled mapping entry. Each would require editing the vendored `variables_reputation.json` or the mapper source, not a dump fixture. No passing selector can exist without a mapper/design change. The registry row `section11-11` therefore has no genuine selector.
 
 ## Fix options
 
