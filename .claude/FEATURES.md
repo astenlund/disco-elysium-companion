@@ -80,16 +80,30 @@ The parent entry stays in its themed section until the **last** slice ships, at 
 
 ### [Companion execution runtime](features/companion-execution-runtime.md)
 
-Host the persistent agent session, supervise the existing state core, own the single consuming diff reader and durable state-event handoff, and execute background work configured by domain features. The already-shipped turn-context acquisition bridge (`core/Get-TurnContext.ps1`, state-extraction spec section 7.5) carries live consumption until the coordinator replaces it; the bridge is not part of the slice breakdown below. Declared design seams are settled and specified in the [runtime-work-projection-persistence-boundaries pattern](patterns/runtime-work-projection-persistence-boundaries.md): consumer-transaction outbox coupling, play-session lifecycle, playthrough identity (signed-in Windows principal), process recovery, and the session-host seam.
+Host the persistent agent session, supervise the existing state core, own the single consuming diff reader and durable state-event handoff, and execute background work configured by domain features. The runtime owns stable play-session identity, interaction IDs, capability-pending and projection-pending recovery, typed adapter handoff ordering, and the resumable adapter-handoff identity and gate. The already-shipped turn-context acquisition bridge (`core/Get-TurnContext.ps1`, state-extraction spec section 7.5) carries live consumption until the coordinator replaces it; the bridge is not part of the slice breakdown below. Declared design seams are settled and specified in the [runtime-work-projection-persistence-boundaries pattern](patterns/runtime-work-projection-persistence-boundaries.md): durable domain outbox and runtime journal ownership, play-session lifecycle, playthrough identity (signed-in Windows principal), process recovery, and the session-host seam.
 
 **Slices:**
 
-- **Single-session state coordinator (MVP).** Host one configured agent session and one adapter behind the session-host seam; supervise existing core commands; own the only consuming diff reader with durable outbox-committed state events; expose streaming chat, live freshness and classified error state, replay of unacknowledged events after restart, and clean shutdown without abandoning consumption or presentation state. Declared gates are the Claude Agent SDK (streaming mode) and the settled process/session/identity seams.
+- **Single-session state coordinator (MVP).** Host one configured agent session and one adapter behind the runtime-owned `SessionHostV1` contract; supervise existing core commands; own the only consuming diff reader with durable outbox-committed state events; expose streaming chat, live freshness and classified error state, replay of unacknowledged events after restart, and clean shutdown without abandoning consumption or presentation state. Declared gates are `SessionHostV1`, the Claude Agent SDK (streaming mode), and the settled process/session/identity seams.
 - **Background work broker.** Execute domain-supplied work with bounded concurrency, priority, cancellation, retry, offline handling, and coordinated shutdown. The broker knows how to run and persist attempts, never what is useful, player-visible, or spoiler-safe.
 - **Adapter catalog and session isolation.** Enumerate installed adapters and isolate agent sessions, state-event journals, domain persistence, and user preferences by (adapter, signed-in principal). A single-adapter runtime can ship before this generalization.
 - **Proactive notice delivery.** Deliver domain-produced, spoiler-projected notices between questions; preserve ordering with pending state events and ordinary responses; retain notices until acknowledged by a presentation client.
 
 **Requires:** none.
+
+## Guidance
+
+### [Session focus](features/session-focus.md)
+
+Declare what kind of progress the player wants now through a runtime-scoped focus that starts balanced and honors six adapter-seeded presets. Canonical selection is ID-only after conversational resolution and requires the runtime's current stable play-session identity. Continuations connect the projection to recommendation and enrichment priority without weakening spoiler, evidence, or classification boundaries, add adaptive ad hoc vocabulary, pair the TUI integration contract, and provide deferred Seeded focus management and Promoted focus management continuations. ComparatorV1 and adapter-handoff contracts are inert compatibility groundwork in the MVP; their live adaptive comparison and handoff behavior remains deferred to the named slices.
+
+**Slices:**
+
+- **Preset focus domain (MVP).** Own the durable finite-capacity canonical catalog and finite serialized wire and comparator representations with typed fail-closed overflow outcomes, plus runtime-transient active selection; support balanced and canonical-ID selection through explicit conversation and runtime commands when a current play-session ID is available; apply startup, session-end, and eight-hour inactivity resets; and expose the provider-neutral focus projection, including typed chat keepalive events.
+
+All non-MVP Session focus slices remain deferred while their exploratory upstream contracts are not graduated, including guidance integration, ad hoc activation, semantic comparison, promotion domain, Promotion delivery and restart rebind, TUI integration, Seeded focus management, and Promoted focus management. Their directional designs and dependency order remain in [Session focus](features/session-focus.md); deferred continuations, including management controls, are not parser-visible work units until graduation.
+
+**Requires:** [Companion execution runtime: Single-session state coordinator (MVP)](features/companion-execution-runtime.md).
 
 ## Exploring
 
@@ -118,10 +132,6 @@ Add BG3 as the second game: a full save-reading adapter over Larian's LSV/LSF sa
 ### [Death Stranding Director's Cut adapter](features/death-stranding-directors-cut-adapter.md)
 
 Add the PC Director's Cut as a state-aware logistics companion centered on a porter brief: current orders, cargo and equipment, preparation gaps, useful order batching, and recent progress. Product fit is strong, but implementation is gated on a read-only feasibility spike proving that binary `checkpoint.dat` saves expose enough stable semantic state; automatic map routing and live online structure tracking are outside the initial scope.
-
-### [Session focus](features/session-focus.md)
-
-A session-scoped dial declaring what kind of progress the player wants this session: an exclusive selector with a balanced default meaning the learned interest profile alone steers, plus adapter-declared focuses (white checks, loot and money for Disco Elysium). A declared focus is an explicitly-sourced priority nudge into the adaptive-guidance interest machinery, steering recommendation ranking and enrichment priority but never spoiler standards, evidence standards, or the classification itself. Includes session-phase-aware learning so late-session question patterns do not over-weight the start of the next session under balanced.
 
 ## (add sections as features emerge)
 
