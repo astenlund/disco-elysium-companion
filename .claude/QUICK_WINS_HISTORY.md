@@ -6,7 +6,7 @@ Entries appear in the order they shipped. Write each with enough context to reco
 
 ## Cross-reference resolution
 
-`/nightshift:ready` does **not** scan this file. When a quick win lands, every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is edited at the same time to drop the now-satisfied reference. The active `Requires:` lines therefore describe what is *currently* blocking. This file is purely archaeological; read it when you want to know what already shipped or to mine negative-knowledge findings, not to resolve dependencies.
+`/nightshift:ready` does **not** parse this file for work; only the line-discipline check reads it. When a quick win lands, every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is edited at the same time to drop the now-satisfied reference. The active `Requires:` lines therefore describe what is *currently* blocking. This file is purely archaeological; read it when you want to know what already shipped or to mine negative-knowledge findings, not to resolve dependencies.
 
 ## Entries
 

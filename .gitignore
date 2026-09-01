@@ -14,3 +14,4 @@ dedump.exe
 # Machine-local instruction/settings overlays.
 CLAUDE.local.md
 .claude/settings.local.json
+.claude/plans/

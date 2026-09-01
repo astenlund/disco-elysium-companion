@@ -6,7 +6,7 @@ The bug breakout file at `bugs/<slug>.md` (when present) stays in place as the h
 
 ## Cross-reference resolution
 
-`/nightshift:ready` does **not** scan this file. When a bug is fixed, every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is edited at the same time to drop the now-satisfied reference (mirror of the `FEATURES.md` convention). The active `Requires:` lines therefore describe what is *currently* blocking; this file is purely archaeological.
+`/nightshift:ready` does **not** parse this file for work; only the line-discipline check reads it. When a bug is fixed, every other `**Requires:**` line in `FEATURES.md` / `BUGS.md` that referenced it is edited at the same time to drop the now-satisfied reference (mirror of the `FEATURES.md` convention). The active `Requires:` lines therefore describe what is *currently* blocking; this file is purely archaeological.
 
 ## Entries
 
