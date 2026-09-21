@@ -9,7 +9,7 @@
 https://github.com/ig4e/disco-elysium-editor/blob/ef1b126bd756e724587c2be7d2d3a09bb1dc4bb3/scraper/parser/lua_parser.go
 
 The adapted parser differs from the reference as documented in section 5.2 of
-`.claude/specs/state-extraction.md`.
+`.nightshift/features/state-extraction.md`.
 
 The upstream repository provides the following license:
 

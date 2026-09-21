@@ -9,7 +9,7 @@ use Nightshift's native Claude tools, environment, hooks, and model pins instead
 
 ## Stable project layout
 
-- Keep `.claude/` as Nightshift's shared backlog-data namespace. Do not rename it.
+- Keep `.nightshift/` as Nightshift's shared backlog-data namespace. Durable product designs live in `.nightshift/features/`; completed corrections are recorded in the backlog histories. The former standalone specs and plans have been retired.
 - `AGENTS.md` is the canonical project instruction file.
 - `CLAUDE.md` is only the `@AGENTS.md` bridge for Claude Code.
 - Backlog indexes are consulted on demand. Do not create project session hooks solely

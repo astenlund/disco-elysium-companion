@@ -2,7 +2,7 @@
 
 Spoiler-safe notes for Companion sessions. Mechanical examples only. Derived during
 state-extraction implementation (2026-08-07) from the real Day 4 save and the
-disco-elysium-editor repo; authoritative design in .claude/specs/state-extraction.md.
+disco-elysium-editor repo; authoritative design in .nightshift/features/state-extraction.md.
 
 ## Save anatomy
 

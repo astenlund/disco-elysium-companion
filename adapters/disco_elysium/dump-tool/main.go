@@ -1,5 +1,5 @@
 // dedump: Disco Elysium save zip in, complete parsed state JSON out.
-// Contract: spec section 5.1 of companion/.claude/specs/state-extraction.md.
+// Contract: spec section 5.1 of companion/.nightshift/features/state-extraction.md.
 package main
 
 import (

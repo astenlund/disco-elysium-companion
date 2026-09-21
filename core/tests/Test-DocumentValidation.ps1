@@ -120,7 +120,7 @@ function Get-SectionBody {
 }
 
 function Test-SchemaMirror {
-    $specPath = Join-Path (Split-Path $PSScriptRoot -Parent) '../.claude/specs/state-extraction.md'
+    $specPath = Join-Path (Split-Path $PSScriptRoot -Parent) '../.nightshift/features/state-extraction.md'
     $schemaPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'digest-schema.md'
     $specBytes = [IO.File]::ReadAllBytes($specPath)
     $schemaBytes = [IO.File]::ReadAllBytes($schemaPath)

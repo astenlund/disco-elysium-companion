@@ -10,4 +10,4 @@ The feature breakout file at `features/<slug>.md` stays in place as the historic
 
 ## Entries
 
-Nothing yet.
+- [State extraction tooling](features/state-extraction.md): the schema-v2 state-extraction core and Disco Elysium adapter completed cutover on 2026-08-13, with later hardening recorded in BUGS_HISTORY.md and QUICK_WINS_HISTORY.md. The retained design covers save dumping, digest mapping and admission, diff consumption, idle walk-back, validated turn acquisition, watcher operation, and the verification matrix. Its full contract and section anchors were absorbed from the former standalone spec into this shipped feature record on 2026-09-21; no new implementation work is implied.

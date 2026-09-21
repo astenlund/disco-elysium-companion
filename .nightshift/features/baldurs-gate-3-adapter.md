@@ -10,7 +10,7 @@ Captured 2026-08-15 from a user idea. Confirmed at capture time: full save-readi
 
 ## State extraction
 
-BG3 saves are Larian's package format: `.lsv` save packages containing LSF binary resources, a substantially bigger parsing lift than Disco Elysium's save format. Norbyte's open-source LSLib handles the format and is the obvious foundation; it is a .NET library, which suits the PowerShell core. Open questions live below; the working assumption is that the adapter follows the schema-v2 contract (`.claude/specs/state-extraction.md`) so the acquisition pipeline, digest admission, and diff machinery are reused rather than forked.
+BG3 saves are Larian's package format: `.lsv` save packages containing LSF binary resources, a substantially bigger parsing lift than Disco Elysium's save format. Norbyte's open-source LSLib handles the format and is the obvious foundation; it is a .NET library, which suits the PowerShell core. Open questions live below; the working assumption is that the adapter follows the schema-v2 contract (`.nightshift/features/state-extraction.md`) so the acquisition pipeline, digest admission, and diff machinery are reused rather than forked.
 
 BG3's state space is far larger than Disco Elysium's (party of four plus companions, inventories, spell slots, class resources, quest flags across three acts, dice-roll checks everywhere). Deciding what the digest projects, and what stays unextracted, is a core design task, not an afterthought.
 
