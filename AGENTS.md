@@ -212,6 +212,4 @@ Backlog prose is one paragraph or one bullet per physical line, never hard-wrapp
 
 Compatible governing-text changes that remain within the accepted digest continue autonomously after a cited contract-fit check.
 
-When a final governing design is presented, invoke /nightshift:spec-agreement in final-presentation mode before asking for agreement.
-
 Existing agreement is fresh only when the complete current candidate matches or passes contract-fit evaluation in the same session.
