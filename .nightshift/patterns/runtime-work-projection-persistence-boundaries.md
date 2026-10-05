@@ -115,7 +115,7 @@ The domain may replace its outbox row with a bounded settlement tombstone after 
 
 ## Play-session lifecycle
 
-A play session is one period of companion-engaged play: the boundary the [session focus](session-focus.md) dial auto-reverts on, the [psychologist persona](psychologist-persona.md) emits its end-of-session report on, and the runtime's process lifecycle brackets. The runtime owns the session boundary, validates an OS-backed `gameProcessInstanceIdentity` that is stable for one process lifetime and distinct across PID reuse, mints one collision-resistant stable `playSessionId` at session start, and emits one durable session-end event that every domain consumer reacts to; no feature or client owns session identity or end detection.
+A play session is one period of companion-engaged play: the boundary the [session focus](../features/session-focus.md) dial auto-reverts on, the [psychologist persona](../features/psychologist-persona.md) emits its end-of-session report on, and the runtime's process lifecycle brackets. The runtime owns the session boundary, validates an OS-backed `gameProcessInstanceIdentity` that is stable for one process lifetime and distinct across PID reuse, mints one collision-resistant stable `playSessionId` at session start, and emits one durable session-end event that every domain consumer reacts to; no feature or client owns session identity or end detection.
 
 Start:
 
