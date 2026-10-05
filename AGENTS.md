@@ -209,7 +209,3 @@ The `/nightshift:ready` skill parses each entry's `**Requires:**` line (in-backl
 Readiness and graduation are not approval: before spec-governed work, present the current decision-complete digest and obtain explicit agreement in this session.
 
 Backlog prose is one paragraph or one bullet per physical line, never hard-wrapped at a column: a search hit then shows the whole entry, the parsers anchor on whole lines, and an edit shows as one changed line instead of a reflowed block. `/nightshift:ready` reports a hard-wrapped file as a notice and `/nightshift:init-backlog` unwraps it.
-
-Compatible governing-text changes that remain within the accepted digest continue autonomously after a cited contract-fit check.
-
-Existing agreement is fresh only when the complete current candidate matches or passes contract-fit evaluation in the same session.
