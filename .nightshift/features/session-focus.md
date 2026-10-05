@@ -12,7 +12,7 @@ While Adaptive Guidance and the TUI remain Exploring, only the Preset focus doma
 
 Create the focus aggregate, initialize the adapter's canonical seed catalog, accept balanced and canonical selection commands, expose the provider-neutral focus projection, and apply runtime-start, play-session-end, and inactivity resets. Explicit conversation may select a canonical preset through the runtime command surface only after the runtime admits a current stable play-session ID. A missing play-session ID cannot mutate selection, activation, or audit state; when the request is at or after expiry, normal expiry-first processing still applies before the typed configuration rejection. Canonical-ID requests that do not name an available entry preserve focus identity, label, catalog, and activation history; conversational ambiguity is resolved before the domain command and is not a domain result. While a focus is active, the separate expiry-only keepalive may still change expiry and revision.
 
-This slice requires the [Companion execution runtime: Single-session state coordinator (MVP)](companion-execution-runtime.md). It does not depend on the TUI or on the broader adaptive-guidance feature family.
+This slice requires the [Companion execution runtime: Domain command and projection host](companion-execution-runtime.md#domain-command-and-projection-host), which supplies the admitted interaction context, command surface, deadline timer, runtime-start signal, outbox settlement, and projection acquisition this slice consumes. Through that slice it also depends on the runtime's Play-session lifecycle slice, which supplies `playSessionId` and the session-end events, and on the coordinator MVP beneath both. It does not depend on the TUI or on the broader adaptive-guidance feature family.
 
 ### Guidance integration
 
@@ -32,7 +32,7 @@ Add automatic promotion into the canonical catalog, matched-entry removal, activ
 
 ### Promotion delivery and restart rebind
 
-Add promotion delivery compatibility and restart rebinding through the runtime event lifecycle. This slice requires [Session focus: Promotion domain and active-selection conversion](session-focus.md#promotion-domain-and-active-selection-conversion) and the runtime's [Single-session state coordinator (MVP)](companion-execution-runtime.md#single-session-state-coordinator-mvp). Promotion delivery state is runtime-owned; the focus domain supplies the stable handoff, origin evidence, and complete post-transition projection needed for rebinding. Compatibility schemas and fixtures may land earlier, but promotion emission, application, and rendering remain inert until the promotion domain and delivery slices are available.
+Add promotion delivery compatibility and restart rebinding through the runtime event lifecycle. This slice requires [Session focus: Promotion domain and active-selection conversion](session-focus.md#promotion-domain-and-active-selection-conversion) and the runtime's [Domain command and projection host](companion-execution-runtime.md#domain-command-and-projection-host), which owns restart rebind. Promotion delivery state is runtime-owned; the focus domain supplies the stable handoff, origin evidence, and complete post-transition projection needed for rebinding. Compatibility schemas and fixtures may land earlier, but promotion emission, application, and rendering remain inert until the promotion domain and delivery slices are available.
 
 ### TUI integration contract
 
