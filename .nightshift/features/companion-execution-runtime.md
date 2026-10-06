@@ -377,7 +377,7 @@ Startup is a fixed sequence of phases, and each command runs a stated subset:
 | B. Take the single-instance guard. | Yes | Yes | Yes | No |
 | C. Mint the runtime identities, terminate a watcher the previous `runtime.json` records that still runs, then write `runtime.json`. | Yes | Yes | Yes | No |
 | D. Delete temp siblings, and load the journal or, when its directory is empty, create `journal.json` with `historyVerified` false and a cursor at 0. | Yes | Yes | Yes | Reads only |
-| E. Resume incomplete operation records; with none incomplete, evaluate the `operationLost`, `header`, `cursor`, and `gap` causes, then replay the resync of any `recordRejected` outcome whose file remains. | A release, then a repair, then the evaluation | A release only | A release, then a repair, then the evaluation | No |
+| E. Resume incomplete operation records; with none incomplete, evaluate the `header`, `cursor`, `operationLost`, and `gap` causes in that order (one repair per start, so a later cause waits for the next), then replay the resync of any `recordRejected` outcome whose file remains. | A release, then a repair, then the evaluation | A release only | A release, then a repair, then the evaluation | No |
 | F. Drain the outbox and send pending settlements. | Yes | No | Yes | No |
 | G. Run the startup acquisition and drain again. | Yes | No | No | No |
 | H. Run the retention pass. | Yes | No | Yes | No |
