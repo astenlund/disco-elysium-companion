@@ -52,7 +52,7 @@ try {
     if (($Resync -and (-not $repairSupplied -or -not (Test-CompanionOpaqueToken -Value $RepairOperationId))) -or (-not $Resync -and $repairSupplied) -or ($Resync -and $RequireRecord)) { Write-StateEventConfigTerminal -Reason repair-operation-invalid }
 
     try { $config = Get-AdapterConfig -CompanionRoot $root -Adapter $Adapter -Profile Acquisition }
-    catch { Write-StateEventConfigTerminal -Reason adapter-resolution-failed }
+    catch { Write-StateEventConfigTerminal -Reason (Get-StateEventAdapterResolutionReason -Exception $_.Exception) }
 
     $operational = New-CompanionWarningSink -Profile TurnOperational
     # 7.6 advisory ownership preflight, without the lock: a non-owner ends as terminal config

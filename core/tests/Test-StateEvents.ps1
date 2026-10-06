@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence')]
+    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence')]
     [string] $Only = 'All'
 )
 
@@ -120,6 +120,14 @@ function Get-RecordInfo {
     $record = Read-StateEventRecord -Bytes $bytes
 
     return [pscustomobject]@{ name = $Name; bytes = $bytes; sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant(); logicalOutboxId = $record.logicalOutboxId; sequence = $record.sequence; kind = $record.kind; record = $record }
+}
+
+# Gives a parsed record, its diff and its state another adapter version: structurally valid,
+# rejected only by producer-mode admission under the fixture configuration.
+function Set-RecordAdapterVersion {
+    param([Parameter(Mandatory)] [Text.Json.Nodes.JsonNode] $Node, [long] $Version = 1)
+
+    foreach ($document in @($Node, $Node['diff'], $Node['state'])) { $document['adapterVersion'] = [Text.Json.Nodes.JsonValue]::Create($Version) }
 }
 
 function Invoke-Settle {
@@ -295,6 +303,23 @@ if (Test-Selected 'Arguments') {
         Assert-Equal -Actual $fenced.ExitCode -Expected 1 -Message "$name is fenced by a maintenance sentinel."
         Assert-OrdinalEqual -Actual $fenced.StdErr.Trim() -Expected '[maintenance] state extraction maintenance is active' -Message "$name emits the fixed maintenance line."
     }
+
+    # A corrupt validator package keeps its 7.5 configuration reason through the publisher, and
+    # the refusal comes before any consumed state changes; other resolution failures stay
+    # adapter-resolution-failed.
+    $releaseFixture = New-RuntimeFixture -Prefix 'state-event-release-corrupt'
+    $validatorPath = Join-Path $releaseFixture.Adapter 'releases/2/schema-2/adapters/stub/Validate-Digest.psm1'
+    foreach ($case in @(
+            @{ Name = 'a validator that cannot be imported'; Module = 'function Assert-AdapterDigestSemantics { ' },
+            @{ Name = 'a validator missing its export'; Module = "function SomethingElse { }`nExport-ModuleMember -Function SomethingElse`n" },
+            @{ Name = 'a validator with an extra export'; Module = "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [object] `$Document) }`nfunction Extra { }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics, Extra`n" })) {
+        [IO.File]::WriteAllText($validatorPath, $case.Module, $script:Utf8)
+        $before = Get-ConsumedStateFingerprint -Fixture $releaseFixture
+        Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-release-corrupt -Message "Publish with $($case.Name)"
+        Assert-OrdinalEqual -Actual (Get-ConsumedStateFingerprint -Fixture $releaseFixture) -Expected $before -Message "A publish refused for $($case.Name) mutates nothing."
+    }
+    [IO.File]::WriteAllText((Join-Path $releaseFixture.Adapter 'adapter.json'), '{', $script:Utf8)
+    Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-resolution-failed -Message 'Publish with an unparseable adapter.json'
 }
 
 # ---------------------------------------------------------------------------------
@@ -559,6 +584,65 @@ if (Test-Selected 'RecordValidation') {
     Assert-ThrowsDerived -TypeName 'CompanionContentException' -Action { [void] (Read-StateEventRecord -Json $deep) } -Message 'Depth 70'
     [void] (Read-StateEventRecord -Bytes $consumed.bytes -ExpectedSequence $consumed.sequence)
     [void] (Read-StateEventRecord -Bytes $snapshot.bytes -ExpectedSequence $snapshot.sequence)
+
+    # Producer mode admits the record under the held configuration; a miscased mode is refused
+    # at binding instead of silently validating structurally.
+    $foreign = & $mutate $consumed.bytes { param($Node) Set-RecordAdapterVersion -Node $Node }
+    $config = Get-AdapterConfig -CompanionRoot $fixture.Root -Adapter stub -Profile Acquisition
+    try {
+        [void] (Read-StateEventRecord -Json $foreign -Mode Structural -AdapterConfig $config)
+        Assert-ThrowsDerived -TypeName 'AdapterDigestValidationException' -Action { [void] (Read-StateEventRecord -Json $foreign -Mode Producer -AdapterConfig $config) } -Message 'Producer mode under another adapter version'
+        foreach ($mode in 'producer', 'PRODUCER', 'structural') { Assert-ThrowsDerived -TypeName 'ParameterBindingException' -Action { [void] (Read-StateEventRecord -Json $foreign -Mode $mode -AdapterConfig $config) } -Message "The miscased mode $mode" }
+    }
+    finally { $config.Dispose() }
+    Assert-ThrowsDerived -TypeName 'ArgumentException' -Action { [void] (Read-StateEventRecord -Json $foreign -Mode Producer) } -Message 'Producer mode without an adapter configuration'
+}
+
+# ---------------------------------------------------------------------------------
+if (Test-Selected 'CanonicalTokens') {
+    # Every closed-token parameter of the 7.6 code is case-sensitive, so a miscased token is
+    # refused at binding rather than reaching a case-sensitive branch it then misses.
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../private/StateEvents.ps1'), [ref] $tokens, [ref] $parseErrors)
+    Assert-Equal -Actual $parseErrors.Count -Expected 0 -Message 'StateEvents.ps1 parses.'
+    $sets = @($ast.FindAll({ param($Node) $Node -is [Management.Automation.Language.AttributeAst] -and $Node.TypeName.Name -ceq 'ValidateSet' }, $true))
+    Assert-True -Condition ($sets.Count -gt 0) -Message 'StateEvents.ps1 declares closed-token parameters.'
+    foreach ($set in $sets) {
+        $ignoreCase = @($set.NamedArguments | Where-Object { $_.ArgumentName -ceq 'IgnoreCase' })
+        Assert-True -Condition ($ignoreCase.Count -eq 1 -and $ignoreCase[0].Argument.Extent.Text -ceq '$false') -Message "The closed-token set at line $($set.Extent.StartLineNumber) is case-sensitive."
+    }
+    $tokenFixture = New-StateEventFixture -Prefix 'state-event-canonical'
+    Assert-ThrowsDerived -TypeName 'ParameterBindingException' -Action { [void] (Get-CompanionOwnershipFailure -CompanionRoot $tokenFixture.Root -Role Runtime) } -Message 'A miscased ownership role'
+    Assert-OrdinalEqual -Actual ([string] (Get-CompanionOwnershipFailure -CompanionRoot $tokenFixture.Root -Role runtime)) -Expected 'consumer-not-owner' -Message 'The canonical runtime role on a root without a marker'
+
+    # The diagnostic reader admits only canonical class tokens, and the settlement and consumer
+    # scripts' protocol failure only with consumption state unknown.
+    $diagnostic = {
+        param([string] $Class, [string] $State, [string] $Detail)
+        ConvertTo-CompanionJson -InputObject ([ordered]@{ outcomeClass = $Class; consumptionState = $State; lockStage = $null; sourceIdentity = $null; generationTimestamp = $null; detail = $Detail; warnings = @() }) -Budget config
+    }
+    foreach ($case in @(
+            @{ Script = 'Settlement'; Class = 'config'; State = 'none'; Detail = 'consumer-not-owner' },
+            @{ Script = 'Consumer'; Class = 'config'; State = 'none'; Detail = 'owner-argument-invalid' },
+            @{ Script = 'Settlement'; Class = 'protocol'; State = 'unknown'; Detail = 'attempt-result-invalid' },
+            @{ Script = 'Consumer'; Class = 'protocol'; State = 'unknown'; Detail = 'attempt-result-invalid' },
+            @{ Script = 'Publish'; Class = 'protocol'; State = 'unknown'; Detail = 'attempt-result-invalid' })) {
+        [void] (Read-StateEventDiagnostic -Json (& $diagnostic $case.Class $case.State $case.Detail) -ExpectedClass $case.Class -Script $case.Script)
+    }
+    foreach ($case in @(
+            @{ Script = 'Settlement'; Class = 'CONFIG'; State = 'none'; Detail = 'consumer-not-owner' },
+            @{ Script = 'Consumer'; Class = 'Config'; State = 'none'; Detail = 'owner-argument-invalid' },
+            @{ Script = 'Settlement'; Class = 'Busy'; State = 'none'; Detail = 'lock-timeout' },
+            @{ Script = 'Consumer'; Class = 'Compute'; State = 'none'; Detail = 'baseline-read-failed' },
+            @{ Script = 'Settlement'; Class = 'Delivery'; State = 'none'; Detail = 'stdout-write-failed' },
+            @{ Script = 'Settlement'; Class = 'Protocol'; State = 'unknown'; Detail = 'attempt-result-invalid' },
+            @{ Script = 'Settlement'; Class = 'protocol'; State = 'none'; Detail = 'attempt-result-invalid' },
+            @{ Script = 'Consumer'; Class = 'protocol'; State = 'none'; Detail = 'attempt-result-invalid' },
+            @{ Script = 'Consumer'; Class = 'protocol'; State = 'notConsumed'; Detail = 'attempt-result-invalid' })) {
+        Assert-ThrowsDerived -TypeName 'TurnContextProtocolException' -Action { [void] (Read-StateEventDiagnostic -Json (& $diagnostic $case.Class $case.State $case.Detail) -ExpectedClass $case.Class -Script $case.Script) } -Message "The $($case.Script) diagnostic $($case.Class)/$($case.State)"
+    }
+    Assert-ThrowsDerived -TypeName 'TurnContextProtocolException' -Action { [void] (Format-StateEventDiagnosticLine -Script Settlement -Diagnostic ([ordered]@{ outcomeClass = 'Config'; consumptionState = 'none'; lockStage = $null; sourceIdentity = $null; generationTimestamp = $null; detail = 'consumer-not-owner'; warnings = @() })) } -Message 'Formatting a miscased class'
 }
 
 # ---------------------------------------------------------------------------------
@@ -591,7 +675,7 @@ if (Test-Selected 'Settlement') {
         [void] (Read-Receipt -Result (Invoke-Publish -Fixture $quarantineFixture) -Message "The $($case.Name) quarantine fixture record")
         $original = Get-RecordInfo -Fixture $quarantineFixture -Name @(Get-RecordNames -Fixture $quarantineFixture)[0]
         $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($original.bytes))
-        if ($case.Name -ceq 'trusted') { foreach ($document in @($node, $node['diff'], $node['state'])) { $document['adapterVersion'] = [Text.Json.Nodes.JsonValue]::Create(1) } }
+        if ($case.Name -ceq 'trusted') { Set-RecordAdapterVersion -Node $node }
         else { $node['diff']['character']['xpDelta'] = [Text.Json.Nodes.JsonValue]::Create('many') }
         $rejectedBytes = $script:Utf8.GetBytes($node.ToJsonString())
         [IO.File]::WriteAllBytes((Join-Path (Get-OutboxPath -Fixture $quarantineFixture) $original.name), $rejectedBytes)
@@ -1064,7 +1148,7 @@ if (Test-Selected 'VersionChange') {
     $first = Read-Receipt -Result (Invoke-Publish -Fixture $fixture -RepairOperationId 'jr-damaged') -Message 'The first resync'
     $info = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[-1]
     $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($info.bytes))
-    foreach ($document in @($node, $node['diff'], $node['state'])) { $document['adapterVersion'] = [Text.Json.Nodes.JsonValue]::Create(1) }
+    Set-RecordAdapterVersion -Node $node
     [IO.File]::WriteAllBytes((Join-Path (Get-OutboxPath -Fixture $fixture) $info.name), $script:Utf8.GetBytes($node.ToJsonString()))
     $second = Read-Receipt -Result (Invoke-Publish -Fixture $fixture -RepairOperationId 'jr-damaged') -Message 'The repeated resync after damage'
     Assert-OrdinalEqual -Actual $second['outcome'] -Expected 'committed' -Message 'A quarantined resync is not replayed.'
@@ -1127,7 +1211,7 @@ if (Test-Selected 'VersionChange') {
         Assert-OrdinalEqual -Actual $consumed['kind'] -Expected 'consumed' -Message "The $case newer save commits a consumed record."
         $info = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[-1]
         $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($info.bytes))
-        foreach ($document in @($node, $node['diff'], $node['state'])) { $document['adapterVersion'] = [Text.Json.Nodes.JsonValue]::Create(1) }
+        Set-RecordAdapterVersion -Node $node
         $asidePath = Join-Path (Get-OutboxPath -Fixture $fixture) $info.name
         [IO.File]::WriteAllBytes($asidePath, $script:Utf8.GetBytes($node.ToJsonString()))
         $fenced = { @((Read-Ledger -Fixture $fixture)['settled'] | Where-Object { $_['sequence'] -eq $info.sequence -and $_['outcome'] -ceq 'quarantined' }).Count -eq 1 }

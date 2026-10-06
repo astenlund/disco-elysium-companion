@@ -26,7 +26,23 @@ $script:StateEventReceiptWarningCodes = @($script:CompanionWarningProfiles['Turn
 
 $script:StateEventConsumerReasons = @('consumer-not-owner', 'consumer-owner-invalid', 'consumer-owner-unreadable', 'consumer-outbox-pending')
 $script:StateEventOutboxReasons = @('outbox-setup-failed', 'outbox-record-invalid', 'outbox-apply-failed', 'outbox-full', 'outbox-sequence-exhausted', 'outbox-write-failed')
-$script:StateEventReasons = @{
+
+# The per-script class registries match class tokens ordinally; a hashtable literal folds case
+# and would admit a miscased class.
+function ConvertTo-StateEventOrdinalRegistry {
+    param([Parameter(Mandatory)] [hashtable] $Registry)
+
+    $ordinal = [hashtable]::new([StringComparer]::Ordinal)
+    foreach ($scriptEntry in $Registry.GetEnumerator()) {
+        $classes = [hashtable]::new([StringComparer]::Ordinal)
+        foreach ($classEntry in $scriptEntry.Value.GetEnumerator()) { $classes[$classEntry.Key] = $classEntry.Value }
+        $ordinal[$scriptEntry.Key] = $classes
+    }
+
+    return $ordinal
+}
+
+$script:StateEventReasons = ConvertTo-StateEventOrdinalRegistry @{
     Publish = @{
         config = @($script:TurnContextReasons['config']) + @('principal-invalid', 'repair-operation-invalid')
         outbox = $script:StateEventOutboxReasons
@@ -187,6 +203,17 @@ function Test-StateEventLogicalOutboxIdText {
     return Test-StateEventSequenceValue -Value $sequence
 }
 
+# The 7.5 configuration reason for a failed adapter resolution: a corrupt validator package,
+# which Get-AdapterConfig raises with the reason token as its message, keeps
+# adapter-release-corrupt; every other failure is adapter-resolution-failed.
+function Get-StateEventAdapterResolutionReason {
+    param([Parameter(Mandatory)] [Exception] $Exception)
+
+    if ($Exception -is [AdapterConfigurationException] -and [string]::Equals($Exception.Message, 'adapter-release-corrupt', [StringComparison]::Ordinal)) { return 'adapter-release-corrupt' }
+
+    return 'adapter-resolution-failed'
+}
+
 function Test-StateEventSha256Text {
     param([AllowNull()] [object] $Value)
 
@@ -240,7 +267,7 @@ function Get-StateEventRecordFileNames {
 # The authoritative ownership check of 7.6. Returns null to proceed, otherwise the config
 # reason. The bridge role counts record files without consulting the ledger.
 function Get-CompanionOwnershipFailure {
-    param([Parameter(Mandatory)] [string] $CompanionRoot, [Parameter(Mandatory)] [ValidateSet('bridge', 'runtime')] [string] $Role)
+    param([Parameter(Mandatory)] [string] $CompanionRoot, [Parameter(Mandatory)] [ValidateSet('bridge', 'runtime', IgnoreCase = $false)] [string] $Role)
 
     $marker = Read-CompanionConsumerMarker -CompanionRoot $CompanionRoot
     if ($marker.outcome -ceq 'content-invalid') { return 'consumer-owner-invalid' }
@@ -260,7 +287,7 @@ function Get-CompanionOwnershipFailure {
 }
 
 function Write-CompanionConsumerMarker {
-    param([Parameter(Mandatory)] [string] $CompanionRoot, [Parameter(Mandatory)] [ValidateSet('bridge', 'runtime')] [string] $Owner)
+    param([Parameter(Mandatory)] [string] $CompanionRoot, [Parameter(Mandatory)] [ValidateSet('bridge', 'runtime', IgnoreCase = $false)] [string] $Owner)
 
     $document = [ordered]@{ consumerVersion = 1; owner = $Owner; changedAt = (Get-StateEventUtcNow) }
     Write-CompanionStateJson -Path (Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:ConsumerMarkerFileName) -Document $document -Budget config
@@ -386,7 +413,7 @@ function Write-StateEventLedger {
 function New-StateEventTombstone {
     param(
         [Parameter(Mandatory)] [long] $Sequence,
-        [Parameter(Mandatory)] [ValidateSet('delivered', 'abandoned', 'quarantined')] [string] $Outcome,
+        [Parameter(Mandatory)] [ValidateSet('delivered', 'abandoned', 'quarantined', IgnoreCase = $false)] [string] $Outcome,
         [Parameter(Mandatory)] [string] $RecordSha256,
         [AllowNull()] $LogicalOutboxId,
         [AllowNull()] $Kind,
@@ -447,7 +474,7 @@ function Read-StateEventRecord {
     param(
         [Parameter(Mandatory, ParameterSetName = 'Bytes')] [AllowEmptyCollection()] [byte[]] $Bytes,
         [Parameter(Mandatory, ParameterSetName = 'Json')] [string] $Json,
-        [Parameter()] [ValidateSet('Structural', 'Producer')] [string] $Mode = 'Structural',
+        [Parameter()] [ValidateSet('Structural', 'Producer', IgnoreCase = $false)] [string] $Mode = 'Structural',
         [Parameter()] [AllowNull()] [AdapterCompatibilityConfig] $AdapterConfig,
         [Parameter()] [long] $ExpectedSequence = 0
     )
@@ -670,7 +697,7 @@ function Invoke-StateEventResyncFence {
 function Invoke-StateEventReconciliation {
     param(
         [Parameter(Mandatory)] [string] $CompanionRoot,
-        [Parameter(Mandatory)] [ValidateSet('Normal', 'Resync', 'Abandon')] [string] $Mode,
+        [Parameter(Mandatory)] [ValidateSet('Normal', 'Resync', 'Abandon', IgnoreCase = $false)] [string] $Mode,
         [Parameter(Mandatory)] [CompanionWarningSink] $OperationalWarnings,
         [Parameter()] [AllowNull()] [CompanionWarningSink] $ReceiptWarnings,
         [Parameter()] [AllowNull()] [AdapterCompatibilityConfig] $AdapterConfig,
@@ -794,7 +821,7 @@ function Invoke-StateEventReconciliation {
 # --- Diagnostics, receipts, and results ----------------------------------------------
 
 function New-StateEventDetail {
-    param([Parameter(Mandatory)] [ValidateSet('Publish', 'Settlement', 'Consumer')] [string] $Script, [Parameter(Mandatory)] [string] $Class, [Parameter(Mandatory)] [string] $Reason, [hashtable] $Atoms = @{})
+    param([Parameter(Mandatory)] [ValidateSet('Publish', 'Settlement', 'Consumer', IgnoreCase = $false)] [string] $Script, [Parameter(Mandatory)] [string] $Class, [Parameter(Mandatory)] [string] $Reason, [hashtable] $Atoms = @{})
 
     $registry = $script:StateEventReasons[$Script]
     if (-not $registry.ContainsKey($Class) -or -not (Test-TurnContextReason -Reason $Reason -Allowed $registry[$Class])) { throw [TurnContextProtocolException]::new('Invalid state-event detail.') }
@@ -823,7 +850,7 @@ function Read-StateEventDetailReason {
 }
 
 function Read-StateEventDiagnostic {
-    param([Parameter(Mandatory)] [string] $Json, [Parameter(Mandatory)] [string] $ExpectedClass, [Parameter(Mandatory)] [ValidateSet('Publish', 'Settlement', 'Consumer')] [string] $Script)
+    param([Parameter(Mandatory)] [string] $Json, [Parameter(Mandatory)] [string] $ExpectedClass, [Parameter(Mandatory)] [ValidateSet('Publish', 'Settlement', 'Consumer', IgnoreCase = $false)] [string] $Script)
 
     try {
         if ($script:CompanionJsonUtf8.GetByteCount($Json) -gt $script:StateEventDiagnosticByteCap) { throw [TurnContextProtocolException]::new('State-event diagnostic exceeds byte cap.') }
@@ -850,7 +877,9 @@ function Read-StateEventDiagnostic {
             'notConsumed' { $class -ceq 'outbox-write:not-consumed' }
             'consumed' { $Script -ceq 'Publish' -and $class -ceq 'delivery' }
             'unknown' { $class -ceq 'protocol' -and $reason -ceq 'attempt-result-invalid' -and -not $hasSource -and -not $hasGeneration }
-            default { $class -cne 'outbox-write:not-consumed' }
+            # The settlement and consumer scripts' protocol failure always carries unknown; the
+            # publisher keeps the 7.5 protocol rules.
+            default { $class -cne 'outbox-write:not-consumed' -and ($Script -ceq 'Publish' -or $class -cne 'protocol') }
         }
         if (-not $consumptionLegal) { throw [TurnContextProtocolException]::new('Invalid state-event diagnostic.') }
         $provenanceLegal = if ($Script -cne 'Publish') { -not $hasSource -and -not $hasGeneration }
@@ -867,7 +896,7 @@ function Read-StateEventDiagnostic {
 }
 
 function Format-StateEventDiagnosticLine {
-    param([Parameter(Mandatory)] [ValidateSet('Publish', 'Settlement', 'Consumer')] [string] $Script, [Parameter(Mandatory)] $Diagnostic)
+    param([Parameter(Mandatory)] [ValidateSet('Publish', 'Settlement', 'Consumer', IgnoreCase = $false)] [string] $Script, [Parameter(Mandatory)] $Diagnostic)
 
     $json = ConvertTo-CompanionJson -InputObject $Diagnostic -Budget config
     [void] (Read-StateEventDiagnostic -Json $json -ExpectedClass $Diagnostic.outcomeClass -Script $Script)
@@ -936,7 +965,7 @@ function New-StateEventTargetIdentity {
 
 function New-StateEventOperationResult {
     param(
-        [Parameter(Mandatory)] [ValidateSet('committed', 'unchanged', 'replayed', 'failure')] [string] $Outcome,
+        [Parameter(Mandatory)] [ValidateSet('committed', 'unchanged', 'replayed', 'failure', IgnoreCase = $false)] [string] $Outcome,
         [string] $ConsumptionState = 'none',
         [AllowNull()] [string] $Class,
         [AllowNull()] [string] $Reason,
@@ -1201,7 +1230,7 @@ function Invoke-StateEventSettlement {
 function Invoke-CompanionConsumerSwitch {
     param(
         [Parameter(Mandatory)] [string] $CompanionRoot,
-        [Parameter(Mandatory)] [ValidateSet('bridge', 'runtime')] [string] $Owner,
+        [Parameter(Mandatory)] [ValidateSet('bridge', 'runtime', IgnoreCase = $false)] [string] $Owner,
         [switch] $DeliveryConfirmed,
         [switch] $AbandonUndelivered,
         [Parameter(Mandatory)] [CompanionWarningSink] $OperationalWarnings,
