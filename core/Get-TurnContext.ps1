@@ -40,6 +40,12 @@ catch {
 
 try {
     $operational = New-CompanionWarningSink -Profile TurnOperational
+    # 7.6 advisory ownership preflight, without the lock: a non-owner ends as terminal
+    # config before any refresh work. The locked check inside consumption is authoritative.
+    $ownership = Get-CompanionOwnershipFailure -CompanionRoot ([IO.Path]::GetFullPath($CompanionRoot)) -Role bridge
+    if ($null -ne $ownership) {
+        Write-TurnContextTerminal (New-TurnContextDiagnosticObject -Class 'config' -ConsumptionState 'none' -Detail (New-TurnContextDetail -Class config -Reason $ownership) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $operational)
+    }
     $first = Invoke-TurnContextAttempt -CompanionRoot ([IO.Path]::GetFullPath($CompanionRoot)) -AdapterConfig $config -OperationalWarnings $operational
     [void] (Assert-TurnContextAttemptResult -Value $first)
     $selected = $first

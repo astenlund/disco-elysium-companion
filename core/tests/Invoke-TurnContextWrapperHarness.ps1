@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select')]
+    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select', 'not-owner')]
     [string] $Scenario,
 
     [Parameter(Mandatory)]
@@ -53,6 +53,12 @@ function Get-AdapterConfig {
     $config | Add-Member -MemberType ScriptMethod -Name Dispose -Value {}
 
     return $config
+}
+
+function Get-CompanionOwnershipFailure {
+    param([string] $CompanionRoot, [string] $Role)
+
+    if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'not-owner') { return 'consumer-not-owner' }
 }
 
 function New-CompanionWarningSink {

@@ -40,6 +40,12 @@ does), perform exactly ONE acquisition transaction:
    - A `pipeline-reaper-discovery-limit-exceeded` warning is persistent: stop all
      companion processes, reduce the named `tmp` or `state` root below its ceilings,
      rerun.
+   - A validated `config` reason `consumer-not-owner` or `consumer-outbox-pending`
+     means the companion runtime owns consumption for this root: inject nothing, never
+     retry, and direct the user to continue in the runtime client or to release
+     ownership through the runtime's release command. For `consumer-owner-invalid` or
+     `consumer-owner-unreadable`, direct the user to rerun `Set-CompanionConsumer.ps1`.
+     Never run another consuming command as a substitute.
    - Every other class: disclose and stop without answering from stale or absent state;
      include the last good digest timestamp when available. Never re-enter a branch
      after the wrapper's own retry is exhausted.

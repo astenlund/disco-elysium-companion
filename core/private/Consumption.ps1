@@ -65,6 +65,7 @@ function Invoke-CompanionConsumption {
         [Parameter()] [scriptblock] $WriteStdout = { param([string] $Text) [Console]::Out.Write($Text) },
         [Parameter()] [scriptblock] $SerializePayload = { param($Payload) ConvertTo-CompanionJson -InputObject $Payload -Budget diff },
         [Parameter()] [scriptblock] $EnterConsumeLock = { param([string] $Root) Enter-CompanionConsumeLock -CompanionRoot $Root },
+        [Parameter()] [scriptblock] $CheckOwnership = { param([string] $Root) Get-CompanionOwnershipFailure -CompanionRoot $Root -Role bridge },
         [Parameter()] [scriptblock] $ReadCurrent = { param([string] $Root, [AdapterCompatibilityConfig] $Config) Read-CompanionCurrent -CompanionRoot $Root -AdapterConfig $Config },
         [Parameter()] [scriptblock] $ReadBaseline = { param([string] $Root) Read-CompanionBaseline -CompanionRoot $Root },
         [Parameter()] [scriptblock] $WriteBaseline = { param([string] $Root, [CompanionJsonValue] $Document) Write-CompanionBaseline -CompanionRoot $Root -Document $Document },
@@ -82,6 +83,11 @@ function Invoke-CompanionConsumption {
     }
 
     try {
+        # The authoritative 7.6 ownership check: under the lock, before any target freeze.
+        $ownership = & $CheckOwnership $CompanionRoot
+        if ($null -ne $ownership) {
+            return New-ConsumptionResult -OutcomeClass 'config' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail $ownership
+        }
         $current = & $ReadCurrent $CompanionRoot $AdapterConfig
         if ($current.outcome -ceq 'validator-infrastructure') {
             return New-ConsumptionResult -OutcomeClass 'compute' -ConsumptionState 'none' -Payload $null -CacheDegraded $false -Detail 'adapter-validator-infrastructure-failed'

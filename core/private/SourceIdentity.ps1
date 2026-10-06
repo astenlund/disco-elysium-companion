@@ -29,9 +29,17 @@ public sealed class CompanionWarningSink
     }
     public ReadOnlyCollection<CompanionWarning> Freeze()
     {
-        if (frozen == null) { warnings.Sort((left, right) => { int value = StringComparer.Ordinal.Compare(left.code, right.code); return value != 0 ? value : StringComparer.Ordinal.Compare(left.detail, right.detail); }); frozen = new ReadOnlyCollection<CompanionWarning>(warnings); }
+        if (frozen == null) { warnings.Sort(Order); frozen = new ReadOnlyCollection<CompanionWarning>(warnings); }
         return frozen;
     }
+    // A sorted copy of the warnings so far that leaves the sink open for later records.
+    public ReadOnlyCollection<CompanionWarning> Peek()
+    {
+        var copy = new List<CompanionWarning>(warnings);
+        copy.Sort(Order);
+        return new ReadOnlyCollection<CompanionWarning>(copy);
+    }
+    private static int Order(CompanionWarning left, CompanionWarning right) { int value = StringComparer.Ordinal.Compare(left.code, right.code); return value != 0 ? value : StringComparer.Ordinal.Compare(left.detail, right.detail); }
 }
 '@ -ErrorAction Stop
 }
@@ -41,6 +49,7 @@ $script:CompanionWarningProfiles = @{
     GetDiff = @('pipeline-baseline-absent', 'pipeline-baseline-content-invalid', 'consume-cache-fallback', 'diff-exclude-path-unused')
     TurnAttempt = @('pipeline-cache-degraded', 'pipeline-bookkeeping-degraded', 'pipeline-baseline-unreadable', 'pipeline-guard-discarded', 'pipeline-current-self-healed', 'consume-cache-fallback', 'diff-exclude-path-unused')
     TurnOperational = @('pipeline-cleanup-degraded', 'pipeline-reaper-discovery-limit-exceeded')
+    StateEventReceipt = @('consume-cache-fallback', 'outbox-apply-deferred', 'outbox-ledger-rebuilt', 'outbox-quarantine-deferred')
     Walk = @('pipeline-cleanup-degraded', 'pipeline-reaper-discovery-limit-exceeded', 'diff-exclude-path-unused', 'walk-max-saves-clamped', 'walk-max-age-hours-clamped')
 }
 

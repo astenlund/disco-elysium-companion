@@ -101,7 +101,7 @@ function Assert-ThrowsType {
 
 function New-BoundedPwshStartInfo {
     param(
-        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string[]] $Arguments,
         [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
         [Parameter()] [hashtable] $Environment = @{}
     )
@@ -124,7 +124,7 @@ function New-BoundedPwshStartInfo {
 
 function Start-BoundedPwsh {
     param(
-        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string[]] $Arguments,
         [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
         [Parameter()] [hashtable] $Environment = @{}
     )
@@ -142,7 +142,7 @@ function Start-BoundedPwsh {
 
 function Invoke-BoundedPwshBytes {
     param(
-        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string[]] $Arguments,
         [Parameter()] [int] $TimeoutMilliseconds = 30000,
         [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
         [Parameter()] [hashtable] $Environment = @{}
@@ -268,7 +268,7 @@ function Stop-BoundedPwsh {
 
 function Invoke-BoundedPwsh {
     param(
-        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string[]] $Arguments,
         [Parameter()] [int] $TimeoutMilliseconds = 30000,
         [Parameter()] [string] $WorkingDirectory = $script:ProjectRoot,
         [Parameter()] [hashtable] $Environment = @{}
@@ -350,6 +350,33 @@ param([string] $Save, [string] $Dump)
     [System.IO.File]::WriteAllText((Join-Path $packageCore 'DigestDiff.psm1'), "`n", $encoding)
     [System.IO.File]::WriteAllText((Join-Path $packageAdapter 'Validate-Digest.psm1'), "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [object] `$Document) }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics`n", $encoding)
     [System.IO.File]::WriteAllText((Join-Path $packageAdapter 'Build-Digest.ps1'), $DigestScript.TrimStart("`r", "`n"), $encoding)
+}
+
+# Stages a scratch companion root that acquires through the stub adapter: a copied core
+# with the named entry scripts, the stub release and its adapter.json, and one save.
+# Callers must have DigestDiff imported, because adapter.json is written with its writer.
+function New-StagedStubAcquisitionRoot {
+    param(
+        [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9-]*$')] [string] $Prefix,
+        [Parameter()] [string[]] $EntryScripts = @(),
+        [Parameter()] [string] $SaveName = 's-a.zip',
+        [Parameter()] [string] $SaveContent = 'save-a'
+    )
+
+    $root = New-ScratchCompanionRoot -Prefix $Prefix
+    $core = Join-Path $root 'core'
+    $saves = Join-Path $root 'saves'
+    $adapter = Join-Path $root 'adapters/stub'
+    foreach ($directory in @($saves, (Join-Path $root '.tmp'))) { [void] [System.IO.Directory]::CreateDirectory($directory) }
+    Copy-CompanionCoreTree -Destination $core -EntryScripts $EntryScripts
+    Install-StubAdapterRelease -AdapterDirectory $adapter
+    $config = New-StubAdapterCommandConfig -SaveDirectory $saves
+    [System.IO.File]::WriteAllText((Join-Path $adapter 'adapter.json'), (Invoke-InCompanionModule { param($Config) ConvertTo-CompanionJson -InputObject $Config -Budget config } @(, $config)), [System.Text.UTF8Encoding]::new($false, $true))
+    $save = Join-Path $saves $SaveName
+    [System.IO.File]::WriteAllText($save, $SaveContent, [System.Text.UTF8Encoding]::new($false, $true))
+    [System.IO.File]::SetLastWriteTimeUtc($save, [System.DateTime]::UtcNow.AddMinutes(-5))
+
+    return [pscustomobject]@{ Root = $root; Core = $core; Saves = $saves; Adapter = $adapter; State = (Join-Path $root 'state'); Save = $save }
 }
 
 function New-StubAdapterCommandConfig {
@@ -594,4 +621,4 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess

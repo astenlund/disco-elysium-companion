@@ -1,6 +1,8 @@
 $script:StateFileNames = [ordered]@{ Current = 'current.json'; Baseline = 'baseline.json'; DiffCache = 'diff-since-last-read.json'; Bookkeeping = 'last-processed.json' }
 $script:StateFileTargets = @($script:StateFileNames.Values)
-$script:StateTempReaperPattern = '^(?:' + (@($script:StateFileTargets | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) }) -join '|') + ')\.json\.[0-9a-f]{32}\.tmp$'
+# The reaper's exact state temp targets: the four state files plus the 7.6 consumer marker.
+$script:StateTempReaperTargets = @($script:StateFileTargets) + 'consumer.json'
+$script:StateTempReaperPattern = '^(?:' + (@($script:StateTempReaperTargets | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) }) -join '|') + ')\.json\.[0-9a-f]{32}\.tmp$'
 $script:StateTempAge = [TimeSpan]::FromHours(1)
 $script:StateReaperMaximumEntries = 65536
 $script:StateReaperMaximumNameBytes = 16777216
@@ -36,7 +38,11 @@ function Write-CompanionStateBytes {
         [Parameter()] [scriptblock] $Move = { param($Temp, $Target) [IO.File]::Move($Temp, $Target, $true) },
         [Parameter()] [scriptblock] $Replace = { param($Temp, $Target, $Backup) [IO.File]::Replace($Temp, $Target, $Backup, $true) },
         [Parameter()] [scriptblock] $Delay = { param($Milliseconds) [Threading.Thread]::Sleep($Milliseconds) },
-        [Parameter()] [scriptblock] $DeleteTemp = { param($Temp) [IO.File]::Delete($Temp) }
+        [Parameter()] [scriptblock] $DeleteTemp = { param($Temp) [IO.File]::Delete($Temp) },
+        # Create-only mode (7.6 record commit): the move never overwrites, so an existing
+        # target fails the write at the replace stage and is never touched.
+        [Parameter()] [switch] $CreateOnly,
+        [Parameter()] [scriptblock] $MoveCreateOnly = { param($Temp, $Target) [IO.File]::Move($Temp, $Target, $false) }
     )
 
     $target = [IO.Path]::GetFullPath($Path)
@@ -60,14 +66,17 @@ function Write-CompanionStateBytes {
         }
         catch { throw [CompanionStateWriteException]::new('temp-write', $_.Exception) }
 
-        $targetExists = [IO.File]::Exists($target)
+        $targetExists = -not $CreateOnly -and [IO.File]::Exists($target)
         if ($targetExists) {
             $backup = Join-Path $directory ("$([IO.Path]::GetFileName($target)).$([Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()).bak")
         }
         try {
             foreach ($attempt in 1..5) {
                 try {
-                    if ($targetExists) {
+                    if ($CreateOnly) {
+                        & $MoveCreateOnly $temp $target
+                    }
+                    elseif ($targetExists) {
                         & $Replace $temp $target $backup
                         $backupOwned = $true
                     }

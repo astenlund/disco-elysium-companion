@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Json', 'Documents', 'Diff', 'Config', 'Process', 'State', 'Adapter', 'Acquisition', 'Consumption', 'TurnContext', 'Watcher', 'Walk', 'All')]
+    [ValidateSet('Json', 'Documents', 'Diff', 'Config', 'Process', 'State', 'Adapter', 'Acquisition', 'Consumption', 'TurnContext', 'Watcher', 'Walk', 'StateEvent', 'All')]
     [string] $Group
 )
 
@@ -41,6 +41,7 @@ $groupScripts = [ordered]@{
         (Join-Path $PSScriptRoot 'Test-Section11LiveProbeSupport.ps1')
     )
     Walk = @((Join-Path $PSScriptRoot 'Test-Walk.ps1'))
+    StateEvent = @((Join-Path $PSScriptRoot 'Test-StateEvents.ps1'))
 }
 $mandatoryTaskOneScripts = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($mandatoryPath in @($groupScripts.State[0])) {

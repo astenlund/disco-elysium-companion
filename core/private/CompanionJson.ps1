@@ -7,6 +7,7 @@ $script:CompanionJsonProfiles = @{
     diff = [pscustomobject]@{ MaxBytes = 16777216; MaxTokens = 1000000; MaxTextBytes = 8388608 }
     'walk-result' = [pscustomobject]@{ MaxBytes = 16777216; MaxTokens = 1000000; MaxTextBytes = 8388608 }
     'turn-context' = [pscustomobject]@{ MaxBytes = 33554432; MaxTokens = 2000000; MaxTextBytes = 16777216 }
+    'state-event' = [pscustomobject]@{ MaxBytes = 33554432; MaxTokens = 2000000; MaxTextBytes = 16777216 }
 }
 
 if ($null -eq ('CompanionJsonScanner' -as [type])) {

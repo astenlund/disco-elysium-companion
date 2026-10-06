@@ -1,5 +1,5 @@
 $script:TurnContextReasons = @{
-    config = @('adapter-resolution-failed', 'adapter-config-invalid', 'adapter-release-corrupt', 'adapter-config-confirmation-failed', 'adapter-config-changed', 'companion-root-invalid')
+    config = @('adapter-resolution-failed', 'adapter-config-invalid', 'adapter-release-corrupt', 'adapter-config-confirmation-failed', 'adapter-config-changed', 'companion-root-invalid', 'consumer-not-owner', 'consumer-owner-invalid', 'consumer-owner-unreadable', 'consumer-outbox-pending')
     busy = @('lock-timeout')
     lock = @('lock-open-failed')
     'stale-target' = @('target-precedes-baseline')
@@ -642,6 +642,12 @@ function Invoke-TurnContextConsumption {
         return [pscustomobject]@{ action = 'terminal'; terminalResult = $terminalResult }
     }
 
+    # A 7.6 consumer reason from the locked ownership check: config clears provenance.
+    if ($consume.outcomeClass -ceq 'config') {
+        $terminalResult = New-TurnContextTerminalResult -Class config -OperationalWarnings $OperationalWarnings -Detail (New-TurnContextDetail -Class config -Reason $consume.detail)
+
+        return [pscustomobject]@{ action = 'terminal'; terminalResult = $terminalResult }
+    }
     if ($consume.outcomeClass -cin @('freshness', 'stale-target') -and $Pass -lt ($script:TurnContextRefreshAttemptCap - 1)) {
         return [pscustomobject]@{ action = 'retry'; terminalResult = $null }
     }
@@ -736,7 +742,8 @@ function Invoke-TurnContextAttempt {
             if ($null -ne $cycleWarningCode) {
                 Add-CompanionWarning -Sink $attemptWarnings -Code $cycleWarningCode -Detail $null
             }
-            $consumption = Invoke-TurnContextConsumption -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Floor $floor -AdmittedTarget $target.document -RefreshAttempts $refreshAttempts -RefreshCommitted $refreshCommitted -Pass $pass
+            # 7.6's Publish-StateEvent.ps1 replaces only this stage-6 consumption.
+            $consumption = if ($Operations.ContainsKey('ConsumeStage')) { & $Operations.ConsumeStage ([pscustomobject]@{ Floor = $floor; AdmittedTarget = $target.document; RefreshAttempts = $refreshAttempts; RefreshCommitted = $refreshCommitted; Pass = $pass; AttemptWarnings = $attemptWarnings }) } else { Invoke-TurnContextConsumption -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Floor $floor -AdmittedTarget $target.document -RefreshAttempts $refreshAttempts -RefreshCommitted $refreshCommitted -Pass $pass }
             if ($consumption.action -ceq 'retry') { continue }
 
             return $consumption.terminalResult

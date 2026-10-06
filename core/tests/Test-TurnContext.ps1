@@ -109,6 +109,14 @@ Assert-OrdinalEqual -Actual $retrySuccess.StdOut -Expected '{"attempt":"B"}' -Me
 Assert-Equal -Actual $retrySuccess.StdErr -Expected '' -Message 'A selected retry envelope has no terminal stderr record.'
 Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $retrySuccessRoot 'attempt-trace.txt')).Trim()) -Expected "1`n2" -Message 'The retry-success wrapper trace proves exactly two attempts.'
 
+# 7.6 advisory ownership preflight: a non-owner ends as terminal config before attempt A.
+$notOwnerRoot = New-ScratchCompanionRoot -Prefix 'turn-context-not-owner'
+$notOwner = Invoke-BoundedPwsh -Arguments @('-File', $wrapperHarness, '-Scenario', 'not-owner', '-ScratchRoot', $notOwnerRoot, '-StagedWrapperPath', (Join-Path $PSScriptRoot '../Get-TurnContext.ps1')) -WorkingDirectory $notOwnerRoot
+Assert-Equal -Actual $notOwner.ExitCode -Expected 1 -Message 'A non-owning bridge wrapper exits 1.'
+Assert-True -Condition $notOwner.StdErr.StartsWith('[turn-context:config] ', [StringComparison]::Ordinal) -Message 'The ownership preflight ends as terminal config.'
+Assert-True -Condition $notOwner.StdErr.Contains('"detail":"consumer-not-owner"', [StringComparison]::Ordinal) -Message 'The ownership preflight carries the consumer reason.'
+Assert-False -Condition ([IO.File]::Exists((Join-Path $notOwnerRoot 'attempt-trace.txt'))) -Message 'The ownership preflight stops before any acquisition attempt.'
+
 $retryTerminalRoot = New-ScratchCompanionRoot -Prefix 'turn-context-retry-terminal'
 $retryTerminal = Invoke-BoundedPwsh -Arguments @('-File', $wrapperHarness, '-Scenario', 'retry-terminal', '-ScratchRoot', $retryTerminalRoot, '-StagedWrapperPath', (Join-Path $PSScriptRoot '../Get-TurnContext.ps1')) -WorkingDirectory $retryTerminalRoot
 Assert-Equal -Actual $retryTerminal.ExitCode -Expected 1 -Message 'A terminal second attempt terminates the wrapper after the permitted retry.'
@@ -1319,19 +1327,10 @@ if ($Only -eq 'WrapperTransactionSelection') {
     # (reset-write:not-consumed) and drops a newer save at the failure point. The
     # wrapper's sole retry must consume the newer target, only attempt B's envelope
     # may reach stdout, and attempt A's envelope is discarded.
-    $txRoot = New-ScratchCompanionRoot -Prefix 'turn-context-transaction'
-    $txCore = Join-Path $txRoot 'core'
-    $txSaves = Join-Path $txRoot 'saves'
-    $txAdapter = Join-Path $txRoot 'adapters/stub'
-    foreach ($txDir in @($txSaves, (Join-Path $txRoot '.tmp'))) { [void] [IO.Directory]::CreateDirectory($txDir) }
-    Copy-CompanionCoreTree -Destination $txCore -EntryScripts @('Get-TurnContext.ps1')
-    Install-StubAdapterRelease -AdapterDirectory $txAdapter
-    $txConfig = New-StubAdapterCommandConfig -SaveDirectory $txSaves
-    [IO.File]::WriteAllText((Join-Path $txAdapter 'adapter.json'), (Invoke-InCompanionModule { param($Config) ConvertTo-CompanionJson -InputObject $Config -Budget config } @(, $txConfig)), [Text.UTF8Encoding]::new($false, $true))
-
-    $txSaveA = Join-Path $txSaves 's-a.zip'
-    [IO.File]::WriteAllText($txSaveA, 'save-a', [Text.UTF8Encoding]::new($false, $true))
-    [IO.File]::SetLastWriteTimeUtc($txSaveA, [DateTime]::UtcNow.AddMinutes(-5))
+    $txFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-transaction' -EntryScripts @('Get-TurnContext.ps1')
+    $txRoot = $txFixture.Root
+    $txCore = $txFixture.Core
+    $txSaves = $txFixture.Saves
 
     # One-shot env-gated failure at the staged baseline-write call site: the first
     # consuming attempt records the marker, drops the newer save, and throws.
