@@ -43,7 +43,7 @@ $operational = New-CompanionWarningSink -Profile TurnOperational
 try {
     if (($PSBoundParameters.ContainsKey('CompanionRoot') -and -not [IO.Path]::IsPathFullyQualified($CompanionRoot)) -or -not [IO.Directory]::Exists([IO.Path]::GetFullPath($CompanionRoot))) { Write-SettlementTerminal -Class config -Reason companion-root-invalid -ConsumptionState none -OperationalWarnings $operational }
     $root = [IO.Path]::GetFullPath($CompanionRoot)
-    if (-not (Test-StateEventLogicalOutboxIdText -Value $LogicalOutboxId) -or $RecordSha256 -cnotmatch '^[0-9a-f]{64}$' -or -not (Test-CompanionOpaqueToken -Value $JournalId) -or -not (Test-CompanionOpaqueToken -Value $EventId)) { Write-SettlementTerminal -Class config -Reason settlement-argument-invalid -ConsumptionState none -OperationalWarnings $operational }
+    if (-not (Test-StateEventLogicalOutboxIdText -Value $LogicalOutboxId) -or -not (Test-StateEventSha256Text -Value $RecordSha256) -or -not (Test-CompanionOpaqueToken -Value $JournalId) -or -not (Test-CompanionOpaqueToken -Value $EventId)) { Write-SettlementTerminal -Class config -Reason settlement-argument-invalid -ConsumptionState none -OperationalWarnings $operational }
     try { [void] [IO.Directory]::CreateDirectory((Join-Path $root 'state')) }
     catch { Write-SettlementTerminal -Class lock -Reason lock-open-failed -ConsumptionState none -OperationalWarnings $operational }
 

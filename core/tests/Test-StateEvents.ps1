@@ -277,6 +277,8 @@ if (Test-Selected 'Arguments') {
             @{ Name = 'malformed identifier'; Arguments = @('-LogicalOutboxId', 'abc-1', '-RecordSha256', ('a' * 64), '-JournalId', 'j', '-EventId', 'e') },
             @{ Name = 'sequence zero'; Arguments = @('-LogicalOutboxId', ('0' * 32 + '-0'), '-RecordSha256', ('a' * 64), '-JournalId', 'j', '-EventId', 'e') },
             @{ Name = 'uppercase hash'; Arguments = @('-LogicalOutboxId', ('0' * 32 + '-1'), '-RecordSha256', ('A' * 64), '-JournalId', 'j', '-EventId', 'e') },
+            @{ Name = 'identifier with a trailing line feed'; Arguments = @('-LogicalOutboxId', ('0' * 32 + "-1`n"), '-RecordSha256', ('a' * 64), '-JournalId', 'j', '-EventId', 'e') },
+            @{ Name = 'hash with a trailing line feed'; Arguments = @('-LogicalOutboxId', ('0' * 32 + '-1'), '-RecordSha256', (('a' * 64) + "`n"), '-JournalId', 'j', '-EventId', 'e') },
             @{ Name = 'missing event'; Arguments = @('-LogicalOutboxId', ('0' * 32 + '-1'), '-RecordSha256', ('a' * 64), '-JournalId', 'j') })) {
         Assert-Terminal -Result (Invoke-CoreScript -Fixture $fixture -Name 'Set-StateEventSettlement.ps1' -Arguments $case.Arguments) -Script Settlement -Class config -Detail settlement-argument-invalid -Message "Settlement rejects a $($case.Name)"
     }
@@ -531,6 +533,14 @@ if (Test-Selected 'RecordValidation') {
     & $reject (& $mutate $consumed.bytes { param($Node) $Node['extra'] = [Text.Json.Nodes.JsonValue]::Create(1) }) 'An extra root field'
     & $reject (& $mutate $consumed.bytes { param($Node) $Node['stateEventVersion'] = [Text.Json.Nodes.JsonValue]::Create(2) }) 'Another record version'
     & $reject (& $mutate $consumed.bytes { param($Node) $Node['logicalOutboxId'] = [Text.Json.Nodes.JsonValue]::Create(('f' * 32) + '-1') }) 'A logical identifier from another incarnation'
+    # The identifier is recomposed from the malformed incarnation, so only the incarnation
+    # grammar can reject the record.
+    & $reject (& $mutate $consumed.bytes { param($Node) $incarnation = $Node['incarnationId'].GetValue[string]() + "`n"; $Node['incarnationId'] = [Text.Json.Nodes.JsonValue]::Create($incarnation); $Node['logicalOutboxId'] = [Text.Json.Nodes.JsonValue]::Create($incarnation + '-' + $Node['sequence'].GetValue[long]()) }) 'An incarnation with a trailing line feed'
+    $hex = 'a' * 32
+    Assert-True -Condition (Test-StateEventLogicalOutboxIdText -Value "$hex-1") -Message 'A canonical logical identifier passes its grammar.'
+    foreach ($text in "$hex-1`n", "$hex`n-1") { Assert-False -Condition (Test-StateEventLogicalOutboxIdText -Value $text) -Message 'A logical identifier with a line feed fails its grammar.' }
+    Assert-True -Condition (Test-StateEventSha256Text -Value ('a' * 64)) -Message 'A lowercase SHA-256 passes its grammar.'
+    foreach ($text in (('a' * 64) + "`n"), ('A' * 64)) { Assert-False -Condition (Test-StateEventSha256Text -Value $text) -Message 'A SHA-256 with a line feed or an uppercase digit fails its grammar.' }
     & $reject (& $mutate $consumed.bytes { param($Node) $Node['kind'] = [Text.Json.Nodes.JsonValue]::Create('other') }) 'An unknown kind'
     & $reject (& $mutate $consumed.bytes { param($Node) $Node['repairOperationId'] = [Text.Json.Nodes.JsonValue]::Create('jr-x') }) 'A repair operation on a consumed record'
     & $reject (& $mutate $consumed.bytes { param($Node) $Node['baselineReset'] = [Text.Json.Nodes.JsonValue]::Create($false) }) 'A reset flag that disagrees with the baseline'
@@ -901,6 +911,27 @@ if (Test-Selected 'Reconciliation') {
     $afterEmptyLedger = Read-Receipt -Result (Invoke-Publish -Fixture $fixture) -Message 'A publish after the ledger was truncated to zero bytes'
     Assert-True -Condition (@($afterEmptyLedger['warnings'] | Where-Object { $_['code'] -ceq 'outbox-ledger-rebuilt' }).Count -eq 1) -Message 'A zero-byte ledger is rebuilt with outbox-ledger-rebuilt.'
     Assert-True -Condition ((Read-Ledger -Fixture $fixture)['incarnationId'] -cne $newIncarnation) -Message 'The ledger rebuilt from zero bytes gets a fresh incarnation.'
+
+    # A ledger outside its exact grammars is content-invalid and rebuilt rather than trusted:
+    # an uppercase tombstone hash, then an incarnation with a trailing line feed, whose rebuild
+    # gives the next record an identifier that settles.
+    $grammarFixture = New-RuntimeFixture -Prefix 'state-event-ledger-grammar'
+    [void] (Read-Receipt -Result (Invoke-Publish -Fixture $grammarFixture) -Message 'The ledger grammar fixture record')
+    Assert-Equal -Actual (Invoke-Settle -Fixture $grammarFixture -Info (Get-RecordInfo -Fixture $grammarFixture -Name @(Get-RecordNames -Fixture $grammarFixture)[0])).ExitCode -Expected 0 -Message 'The ledger grammar fixture settles its record.'
+    $grammarLedger = Join-Path (Get-OutboxPath -Fixture $grammarFixture) 'ledger.json'
+    foreach ($case in @(
+            @{ Name = 'an uppercase tombstone hash'; Change = { param($Node) $Node['settled'][0]['recordSha256'] = [Text.Json.Nodes.JsonValue]::Create($Node['settled'][0]['recordSha256'].GetValue[string]().ToUpperInvariant()) } },
+            @{ Name = 'an incarnation with a trailing line feed'; Change = { param($Node) $Node['incarnationId'] = [Text.Json.Nodes.JsonValue]::Create($Node['incarnationId'].GetValue[string]() + "`n") } })) {
+        $node = [Text.Json.Nodes.JsonNode]::Parse([IO.File]::ReadAllText($grammarLedger, $script:Utf8))
+        & $case.Change $node
+        [IO.File]::WriteAllText($grammarLedger, $node.ToJsonString(), $script:Utf8)
+        Assert-OrdinalEqual -Actual (Read-StateEventLedger -CompanionRoot $grammarFixture.Root).outcome -Expected 'content-invalid' -Message "A ledger with $($case.Name) is content-invalid."
+        $rebuilt = Read-Receipt -Result (Invoke-Publish -Fixture $grammarFixture -RequireRecord) -Message "A publish beside a ledger with $($case.Name)"
+        Assert-True -Condition (@($rebuilt['warnings'] | Where-Object { $_['code'] -ceq 'outbox-ledger-rebuilt' }).Count -eq 1) -Message "A ledger with $($case.Name) is rebuilt with outbox-ledger-rebuilt."
+        Assert-True -Condition (Test-StateEventLogicalOutboxIdText -Value $rebuilt['logicalOutboxId']) -Message "The record committed after rebuilding a ledger with $($case.Name) has a canonical identifier."
+        $grammarRecord = Get-RecordInfo -Fixture $grammarFixture -Name ('event-{0:D16}.json' -f $rebuilt['sequence'])
+        Assert-Equal -Actual (Invoke-Settle -Fixture $grammarFixture -Info $grammarRecord).ExitCode -Expected 0 -Message "The record committed after rebuilding a ledger with $($case.Name) settles."
+    }
 
     # A repair killed between its fencing ledger write and the quarantine move.
     $fenceFixture = New-RuntimeFixture -Prefix 'state-event-repair-fence'

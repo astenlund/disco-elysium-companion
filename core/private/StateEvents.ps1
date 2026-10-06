@@ -2,8 +2,13 @@ $script:ConsumerMarkerFileName = 'consumer.json'
 $script:StateEventOutboxName = 'outbox'
 $script:StateEventLedgerFileName = 'ledger.json'
 $script:StateEventQuarantineName = 'quarantine'
-$script:StateEventRecordNamePattern = '^event-([0-9]{16})\.json$'
-$script:StateEventSiblingPattern = '^.+\.[0-9a-f]{32}\.(?:tmp|bak)$'
+# The 7.6 closed grammars end in '\z': '$' would also match before one trailing line feed.
+$script:StateEventRecordNamePattern = '\Aevent-([0-9]{16})\.json\z'
+$script:StateEventSiblingPattern = '\A.+\.[0-9a-f]{32}\.(?:tmp|bak)\z'
+$script:StateEventIncarnationFragment = '[0-9a-f]{32}'
+$script:StateEventIncarnationPattern = '\A' + $script:StateEventIncarnationFragment + '\z'
+$script:StateEventLogicalOutboxIdPattern = '\A(' + $script:StateEventIncarnationFragment + ')-([1-9][0-9]{0,15})\z'
+$script:StateEventSha256Pattern = '\A[0-9a-f]{64}\z'
 $script:StateEventSequenceMaximum = 9007199254740991L
 $script:StateEventPendingLimit = 16
 $script:StateEventChildLimit = 1024
@@ -175,11 +180,17 @@ function Test-StateEventSequenceValue {
 function Test-StateEventLogicalOutboxIdText {
     param([AllowNull()] [object] $Value)
 
-    if ($Value -isnot [string] -or $Value -cnotmatch '^([0-9a-f]{32})-([1-9][0-9]{0,15})$') { return $false }
+    if ($Value -isnot [string] -or $Value -cnotmatch $script:StateEventLogicalOutboxIdPattern) { return $false }
     $sequence = 0L
     if (-not [long]::TryParse($Matches[2], [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref] $sequence)) { return $false }
 
     return Test-StateEventSequenceValue -Value $sequence
+}
+
+function Test-StateEventSha256Text {
+    param([AllowNull()] [object] $Value)
+
+    return $Value -is [string] -and $Value -cmatch $script:StateEventSha256Pattern
 }
 
 # --- Consumer ownership ------------------------------------------------------------
@@ -264,7 +275,7 @@ function ConvertFrom-StateEventLedgerDocument {
     Test-ExactFields $root @('outboxLedgerVersion', 'incarnationId', 'highWaterSequence', 'settled')
     if ((Test-Integer (Get-Property $root outboxLedgerVersion)) -ne 1) { Fail-Document }
     $incarnation = Test-String (Get-Property $root incarnationId)
-    if ($incarnation -cnotmatch '^[0-9a-f]{32}$') { Fail-Document }
+    if ($incarnation -cnotmatch $script:StateEventIncarnationPattern) { Fail-Document }
     $highWater = Test-Integer (Get-Property $root highWaterSequence) $true
     if ($highWater -gt $script:StateEventSequenceMaximum) { Fail-Document }
     $settledElement = Get-Property $root settled
@@ -278,7 +289,8 @@ function ConvertFrom-StateEventLedgerDocument {
         $previous = $sequence
         $outcome = Test-String (Get-Property $entry outcome)
         if ($outcome -cnotin $script:StateEventTombstoneOutcomes) { Fail-Document }
-        $sha = Test-Sha256Hex (Get-Property $entry recordSha256)
+        $sha = Test-String (Get-Property $entry recordSha256)
+        if (-not (Test-StateEventSha256Text -Value $sha)) { Fail-Document }
         $logicalElement = Get-Property $entry logicalOutboxId
         $kindElement = Get-Property $entry kind
         $logical = $null
@@ -452,7 +464,7 @@ function Read-StateEventRecord {
     Test-ExactFields $root $script:StateEventRecordFields
     if ((Test-Integer (Get-Property $root stateEventVersion)) -ne 1) { Fail-Document }
     $incarnation = Test-String (Get-Property $root incarnationId)
-    if ($incarnation -cnotmatch '^[0-9a-f]{32}$') { Fail-Document }
+    if ($incarnation -cnotmatch $script:StateEventIncarnationPattern) { Fail-Document }
     $sequence = Test-Integer (Get-Property $root sequence) $false $true
     if (-not (Test-StateEventSequenceValue -Value $sequence) -or ($ExpectedSequence -ne 0 -and $sequence -ne $ExpectedSequence)) { Fail-Document }
     if (-not [string]::Equals((Test-String (Get-Property $root logicalOutboxId)), (Get-StateEventLogicalOutboxId -IncarnationId $incarnation -Sequence $sequence), [StringComparison]::Ordinal)) { Fail-Document }
