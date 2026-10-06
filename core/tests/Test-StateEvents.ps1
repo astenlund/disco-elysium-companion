@@ -302,6 +302,7 @@ if (Test-Selected 'Ownership') {
         'valid-bridge' = (Get-MarkerJson -Owner bridge)
         'valid-runtime' = (Get-MarkerJson -Owner runtime)
         unparseable = '{"consumerVersion":1,'
+        'zero-byte' = ''
         'extra-field' = (Get-MarkerJson -Owner runtime -Extra ',"note":"x"')
         'wrong-version' = (Get-MarkerJson -Owner runtime -Version 2)
         'unknown-owner' = (Get-MarkerJson -Owner agent)
@@ -651,6 +652,10 @@ if (Test-Selected 'Consumer') {
     $repaired = & $result (Invoke-Switch -Fixture $fixture -Owner runtime)
     Assert-True -Condition $repaired['changed'] -Message 'A hand-over repairs a content-invalid marker.'
     Assert-OrdinalEqual -Actual $repaired['previousOwner'] -Expected 'invalid' -Message 'A content-invalid marker reports previousOwner invalid.'
+    Write-Marker -Fixture $fixture -Json ''
+    $emptyRepaired = & $result (Invoke-Switch -Fixture $fixture -Owner runtime)
+    Assert-True -Condition $emptyRepaired['changed'] -Message 'A hand-over repairs a zero-byte marker.'
+    Assert-OrdinalEqual -Actual $emptyRepaired['previousOwner'] -Expected 'invalid' -Message 'A zero-byte marker is content-invalid, not unreadable.'
 
     # A settled event the runtime never delivered, then a root that is not releasing: an
     # absent marker (deleted by hand) or a bridge marker, an empty outbox, and a baseline.
@@ -890,6 +895,12 @@ if (Test-Selected 'Reconciliation') {
     $third = Read-Receipt -Result (Invoke-Publish -Fixture $fixture -RequireRecord) -Message 'The first commit after the rebuild'
     Assert-False -Condition $issued.Contains($third['logicalOutboxId']) -Message 'The first identifier after a rebuild was never issued before.'
     Assert-True -Condition $third['logicalOutboxId'].StartsWith($newIncarnation, [StringComparison]::Ordinal) -Message 'New records carry the new incarnation.'
+    # A zero-byte ledger was read completely and fails to parse, so it is rebuilt as
+    # content-invalid rather than refused as unreadable.
+    [IO.File]::WriteAllBytes((Join-Path (Get-OutboxPath -Fixture $fixture) 'ledger.json'), [byte[]] @())
+    $afterEmptyLedger = Read-Receipt -Result (Invoke-Publish -Fixture $fixture) -Message 'A publish after the ledger was truncated to zero bytes'
+    Assert-True -Condition (@($afterEmptyLedger['warnings'] | Where-Object { $_['code'] -ceq 'outbox-ledger-rebuilt' }).Count -eq 1) -Message 'A zero-byte ledger is rebuilt with outbox-ledger-rebuilt.'
+    Assert-True -Condition ((Read-Ledger -Fixture $fixture)['incarnationId'] -cne $newIncarnation) -Message 'The ledger rebuilt from zero bytes gets a fresh incarnation.'
 
     # A repair killed between its fencing ledger write and the quarantine move.
     $fenceFixture = New-RuntimeFixture -Prefix 'state-event-repair-fence'
@@ -901,6 +912,67 @@ if (Test-Selected 'Reconciliation') {
     $resumed = Read-Receipt -Result (Invoke-Publish -Fixture $fenceFixture -RepairOperationId 'jr-fence') -Message 'The resync after the fence kill'
     Assert-False -Condition ([IO.File]::Exists((Join-Path (Get-OutboxPath -Fixture $fenceFixture) 'event-0000000000000002.json'))) -Message 'The next reconciliation completes the quarantine move.'
     Assert-True -Condition ($resumed['sequence'] -gt 2) -Message 'The fenced sequence is never reissued.'
+
+    # A zero-byte record is invalid content, not an unreadable outbox: an ordinary publish
+    # refuses it with outbox-record-invalid, and both repairs quarantine it under the SHA-256
+    # of zero bytes.
+    $emptySha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]] @())).ToLowerInvariant()
+    foreach ($repair in 'resync', 'abandon') {
+        $emptyFixture = New-RuntimeFixture -Prefix "state-event-empty-$repair"
+        [void] (Read-Receipt -Result (Invoke-Publish -Fixture $emptyFixture) -Message "The $repair empty-record fixture record")
+        $emptyOne = Get-RecordInfo -Fixture $emptyFixture -Name @(Get-RecordNames -Fixture $emptyFixture)[0]
+        $emptyPath = Join-Path (Get-OutboxPath -Fixture $emptyFixture) 'event-0000000000000002.json'
+        [IO.File]::WriteAllBytes($emptyPath, [byte[]] @())
+        $before = Get-ConsumedStateFingerprint -Fixture $emptyFixture
+        Assert-Terminal -Result (Invoke-Publish -Fixture $emptyFixture) -Script Publish -Class outbox -Detail outbox-record-invalid -Message "An ordinary publish beside a zero-byte record ($repair)"
+        Assert-OrdinalEqual -Actual (Get-ConsumedStateFingerprint -Fixture $emptyFixture) -Expected $before -Message "The refused publish beside a zero-byte record mutates nothing ($repair)."
+        if ($repair -ceq 'resync') {
+            [void] (Read-Receipt -Result (Invoke-Publish -Fixture $emptyFixture -RepairOperationId 'jr-empty') -Message 'A resync beside a zero-byte record')
+        }
+        else {
+            $abandon = Invoke-Switch -Fixture $emptyFixture -Owner bridge -Switches @('-AbandonUndelivered')
+            Assert-Equal -Actual $abandon.ExitCode -Expected 0 -Message "An abandon release beside a zero-byte record completes ($($abandon.StdErr))."
+            Assert-OrdinalEqual -Actual (Read-CompanionConsumerMarker -CompanionRoot $emptyFixture.Root).owner -Expected 'bridge' -Message 'The abandon release beside a zero-byte record names the bridge.'
+        }
+        $emptyTombstone = @((Read-Ledger -Fixture $emptyFixture)['settled'] | Where-Object { $_['sequence'] -eq 2 })
+        Assert-Equal -Actual $emptyTombstone.Count -Expected 1 -Message "The $repair writes one tombstone for the zero-byte record."
+        Assert-OrdinalEqual -Actual $emptyTombstone[0]['outcome'] -Expected 'quarantined' -Message "The $repair quarantines the zero-byte record."
+        Assert-OrdinalEqual -Actual $emptyTombstone[0]['recordSha256'] -Expected $emptySha -Message "The $repair tombstones the zero-byte record under the SHA-256 of zero bytes."
+        Assert-False -Condition ([IO.File]::Exists($emptyPath)) -Message "The $repair moves the zero-byte record out of the outbox."
+        $emptyQuarantine = @([IO.Directory]::GetFiles((Join-Path (Get-OutboxPath -Fixture $emptyFixture) 'quarantine')))
+        Assert-Equal -Actual $emptyQuarantine.Count -Expected 1 -Message "The $repair keeps one quarantine entry."
+        Assert-Equal -Actual ([IO.FileInfo]::new($emptyQuarantine[0]).Length) -Expected 0L -Message "The $repair quarantine entry keeps the zero bytes."
+        if ($repair -ceq 'resync') {
+            $emptyIdentity = [pscustomobject]@{ logicalOutboxId = ($emptyOne.logicalOutboxId.Split('-')[0] + '-2'); sha256 = $emptySha; sequence = 2 }
+            Assert-Terminal -Result (Invoke-Settle -Fixture $emptyFixture -Info $emptyIdentity) -Script Settlement -Class settlement -Detail settlement-quarantined -Message 'A settlement naming the zero-byte record'
+        }
+    }
+
+    # An oversized record is quarantined under the SHA-256 of all its bytes, not of the prefix
+    # the validator retains. A record one byte over the budget is retained whole and one two
+    # bytes over is not, so the pair brackets the point where prefix and file part. Both are
+    # spaces, so the retained prefix of the longer record is exactly the shorter record.
+    $maxBytes = Invoke-InCompanionModule { (Get-CompanionJsonBudget -Budget 'state-event').MaxBytes }
+    $largeFixture = New-RuntimeFixture -Prefix 'state-event-oversized'
+    [void] (Read-Receipt -Result (Invoke-Publish -Fixture $largeFixture) -Message 'The oversized-record fixture record')
+    $largeOne = Get-RecordInfo -Fixture $largeFixture -Name @(Get-RecordNames -Fixture $largeFixture)[0]
+    $largeHashes = @{}
+    foreach ($size in @{ Sequence = 2; Length = $maxBytes + 1 }, @{ Sequence = 3; Length = $maxBytes + 2 }) {
+        $largeBytes = [byte[]]::new($size.Length)
+        [Array]::Fill($largeBytes, [byte] 0x20)
+        [IO.File]::WriteAllBytes((Join-Path (Get-OutboxPath -Fixture $largeFixture) ('event-{0:D16}.json' -f $size.Sequence)), $largeBytes)
+        $largeHashes[$size.Sequence] = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($largeBytes)).ToLowerInvariant()
+    }
+    [void] (Read-Receipt -Result (Invoke-Publish -Fixture $largeFixture -RepairOperationId 'jr-oversized') -Message 'A resync beside two oversized records')
+    foreach ($sequence in 2, 3) {
+        $largeTombstone = @((Read-Ledger -Fixture $largeFixture)['settled'] | Where-Object { $_['sequence'] -eq $sequence })
+        Assert-OrdinalEqual -Actual $largeTombstone[0]['outcome'] -Expected 'quarantined' -Message "Oversized record $sequence is quarantined."
+        Assert-OrdinalEqual -Actual $largeTombstone[0]['recordSha256'] -Expected $largeHashes[$sequence] -Message "The quarantine tombstone of record $sequence carries the SHA-256 of all its bytes."
+        $largeIdentity = [pscustomobject]@{ logicalOutboxId = ($largeOne.logicalOutboxId.Split('-')[0] + "-$sequence"); sha256 = $largeHashes[$sequence]; sequence = $sequence }
+        Assert-Terminal -Result (Invoke-Settle -Fixture $largeFixture -Info $largeIdentity) -Script Settlement -Class settlement -Detail settlement-quarantined -Message "A settlement naming the full hash of oversized record $sequence"
+    }
+    $prefixIdentity = [pscustomobject]@{ logicalOutboxId = ($largeOne.logicalOutboxId.Split('-')[0] + '-3'); sha256 = $largeHashes[2]; sequence = 3 }
+    Assert-Terminal -Result (Invoke-Settle -Fixture $largeFixture -Info $prefixIdentity) -Script Settlement -Class settlement -Detail settlement-unknown -Message 'A settlement naming only the retained prefix of an oversized record'
 
     # Equal-source records: a revived record beside a later digest stays superseded, and an
     # outstanding apply after a backwards clock step is still applied.

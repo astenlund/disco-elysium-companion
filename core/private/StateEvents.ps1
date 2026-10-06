@@ -101,10 +101,45 @@ function Get-StateEventLogicalOutboxId {
     return $IncarnationId + '-' + $Sequence.ToString([Globalization.CultureInfo]::InvariantCulture)
 }
 
-function Get-StateEventSha256 {
-    param([Parameter(Mandatory)] [byte[]] $Bytes)
+# Reads a 7.6 file in one bounded pass, retaining only the budget plus one byte for validation.
+# With -Hash the pass continues to the end of the file, so a quarantined oversized record keeps
+# the SHA-256 of its exact bytes rather than of the retained prefix.
+function Read-StateEventFileBytes {
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Budget, [switch] $Hash)
 
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
+    $maximumRead = (Get-CompanionJsonBudget -Budget $Budget).MaxBytes + 1
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $hasher = if ($Hash) { [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256) } else { $null }
+    try {
+        $buffer = [IO.MemoryStream]::new()
+        $chunk = [byte[]]::new(81920)
+        while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
+            if ($null -ne $hasher) { $hasher.AppendData($chunk, 0, $read) }
+            $remaining = $maximumRead - $buffer.Length
+            if ($remaining -gt 0) { $buffer.Write($chunk, 0, [Math]::Min($read, [int] $remaining)) }
+            elseif ($null -eq $hasher) { break }
+        }
+        $sha256 = if ($null -ne $hasher) { [Convert]::ToHexString($hasher.GetHashAndReset()).ToLowerInvariant() } else { $null }
+    }
+    finally {
+        if ($null -ne $hasher) { $hasher.Dispose() }
+        $stream.Dispose()
+    }
+
+    return [pscustomobject]@{ bytes = $buffer.ToArray(); sha256 = $sha256 }
+}
+
+# Parses the bytes of a 7.6 file. A zero-byte file was read completely and then fails to parse,
+# which 7.6 defines as invalid content, so it raises the parse failure here; the shared reader
+# would reject its empty input at parameter binding, which callers report as unreadable.
+function ConvertFrom-StateEventJsonBytes {
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes, [Parameter(Mandatory)] [string] $Budget)
+
+    if ($Bytes.Length -eq 0) { throw [CompanionJsonParseException]::new('Companion JSON is empty.') }
+    try { $json = $script:CompanionJsonUtf8.GetString($Bytes) }
+    catch { throw [CompanionJsonParseException]::new('Companion JSON is not strict UTF-8.', $_.Exception) }
+
+    return Read-CompanionJson -Json $json -Budget $Budget
 }
 
 function New-StateEventIncarnationId {
@@ -153,7 +188,7 @@ function Read-CompanionConsumerMarker {
     param([Parameter(Mandatory)] [string] $CompanionRoot)
 
     $path = Get-CompanionStatePath -CompanionRoot $CompanionRoot -Name $script:ConsumerMarkerFileName
-    try { $document = Read-CompanionJson -Path $path -Budget config }
+    try { $document = ConvertFrom-StateEventJsonBytes -Bytes (Read-StateEventFileBytes -Path $path -Budget config).bytes -Budget config }
     catch [IO.FileNotFoundException] { return [pscustomobject]@{ outcome = 'absent'; owner = $null } }
     catch [IO.DirectoryNotFoundException] { return [pscustomobject]@{ outcome = 'absent'; owner = $null } }
     catch [CompanionContentException] { return [pscustomobject]@{ outcome = 'content-invalid'; owner = $null } }
@@ -284,7 +319,7 @@ function Read-StateEventLedger {
     param([Parameter(Mandatory)] [string] $CompanionRoot)
 
     $path = Join-Path (Get-StateEventOutboxPath -CompanionRoot $CompanionRoot) $script:StateEventLedgerFileName
-    try { $document = Read-CompanionJson -Path $path -Budget config }
+    try { $document = ConvertFrom-StateEventJsonBytes -Bytes (Read-StateEventFileBytes -Path $path -Budget config).bytes -Budget config }
     catch [IO.FileNotFoundException] { return [pscustomobject]@{ outcome = 'absent'; ledger = $null } }
     catch [IO.DirectoryNotFoundException] { return [pscustomobject]@{ outcome = 'absent'; ledger = $null } }
     catch [CompanionContentException] { return [pscustomobject]@{ outcome = 'content-invalid'; ledger = $null } }
@@ -358,24 +393,7 @@ function New-StateEventTombstone {
 function Read-StateEventRecordBytes {
     param([Parameter(Mandatory)] [string] $Path)
 
-    $budget = Get-CompanionJsonBudget -Budget 'state-event'
-    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
-    try {
-        $buffer = [IO.MemoryStream]::new()
-        $chunk = [byte[]]::new(81920)
-        $maximumRead = $budget.MaxBytes + 1
-        while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
-            $remaining = $maximumRead - $buffer.Length
-            if ($remaining -le 0) { break }
-            $buffer.Write($chunk, 0, [Math]::Min($read, [int] $remaining))
-        }
-        $bytes = $buffer.ToArray()
-    }
-    finally {
-        $stream.Dispose()
-    }
-
-    return [pscustomobject]@{ bytes = $bytes; sha256 = (Get-StateEventSha256 -Bytes $bytes) }
+    return Read-StateEventFileBytes -Path $Path -Budget 'state-event' -Hash
 }
 
 function Test-StateEventWarningArray {
@@ -415,7 +433,7 @@ function Test-StateEventDiffEmpty {
 function Read-StateEventRecord {
     [CmdletBinding(DefaultParameterSetName = 'Bytes')]
     param(
-        [Parameter(Mandatory, ParameterSetName = 'Bytes')] [byte[]] $Bytes,
+        [Parameter(Mandatory, ParameterSetName = 'Bytes')] [AllowEmptyCollection()] [byte[]] $Bytes,
         [Parameter(Mandatory, ParameterSetName = 'Json')] [string] $Json,
         [Parameter()] [ValidateSet('Structural', 'Producer')] [string] $Mode = 'Structural',
         [Parameter()] [AllowNull()] [AdapterCompatibilityConfig] $AdapterConfig,
@@ -425,10 +443,11 @@ function Read-StateEventRecord {
     if ($Mode -ceq 'Producer' -and $null -eq $AdapterConfig) { throw [ArgumentException]::new('Producer-mode record validation requires an adapter configuration.') }
     if ($PSCmdlet.ParameterSetName -ceq 'Bytes') {
         if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { throw [CompanionJsonParseException]::new('State-event record carries a byte order mark.') }
-        try { $Json = $script:CompanionJsonUtf8.GetString($Bytes) }
-        catch { throw [CompanionJsonParseException]::new('State-event record is not strict UTF-8.', $_.Exception) }
+        $document = ConvertFrom-StateEventJsonBytes -Bytes $Bytes -Budget 'state-event'
     }
-    $document = Read-CompanionJson -Json $Json -Budget 'state-event'
+    else {
+        $document = Read-CompanionJson -Json $Json -Budget 'state-event'
+    }
     $root = $document.RootElement
     Test-ExactFields $root $script:StateEventRecordFields
     if ((Test-Integer (Get-Property $root stateEventVersion)) -ne 1) { Fail-Document }
