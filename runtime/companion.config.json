@@ -1,0 +1,11 @@
+{
+  "configVersion": 1,
+  "adapter": "disco_elysium",
+  "game": "disco_elysium",
+  "provider": {
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "questionOverride": { "model": "claude-opus-5-5", "effort": "high" }
+  },
+  "watcher": { "enabled": true }
+}
