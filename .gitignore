@@ -15,3 +15,7 @@ dedump.exe
 CLAUDE.local.md
 .claude/settings.local.json
 /.nightshift/runs/
+
+# Runtime dependencies and private identity-scoped state.
+runtime/node_modules/
+runtime-data/
