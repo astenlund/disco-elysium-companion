@@ -379,6 +379,30 @@ function New-StagedStubAcquisitionRoot {
     return [pscustomobject]@{ Root = $root; Core = $core; Saves = $saves; Adapter = $adapter; State = (Join-Path $root 'state'); Save = $save }
 }
 
+# Produces one real core outbox record inside an owned scratch root. Runtime integration
+# tests share the actual ownership/publication recipe instead of staging synthetic records.
+function New-StagedStateEventRoot {
+    param(
+        [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9-]*$')] [string] $Prefix,
+        [Parameter()] [string[]] $EntryScripts = @(),
+        [Parameter()] [string] $Principal = 'S-1-5-21-1000-1001-1002-1003',
+        [Parameter()] [switch] $SkipPublication
+    )
+
+    foreach ($requiredEntry in @('Set-CompanionConsumer.ps1', 'Publish-StateEvent.ps1', 'Get-TurnContext.ps1', 'Update-CompanionState.ps1', 'Get-Diff.ps1')) {
+        if ($EntryScripts -cnotcontains $requiredEntry) { $EntryScripts += $requiredEntry }
+    }
+    $fixture = New-StagedStubAcquisitionRoot -Prefix $Prefix -EntryScripts $EntryScripts
+    $switched = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $fixture.Core 'Set-CompanionConsumer.ps1'), '-CompanionRoot', $fixture.Root, '-Owner', 'runtime') -WorkingDirectory $fixture.Root -TimeoutMilliseconds 120000
+    if ($switched.ExitCode -ne 0) { throw [InvalidOperationException]::new("Private fixture ownership failed: $($switched.StdErr)") }
+    if (-not $SkipPublication) {
+        $published = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $fixture.Core 'Publish-StateEvent.ps1'), '-CompanionRoot', $fixture.Root, '-Principal', $Principal) -WorkingDirectory $fixture.Root -TimeoutMilliseconds 120000
+        if ($published.ExitCode -ne 0) { throw [InvalidOperationException]::new("Private fixture publication failed: $($published.StdErr)") }
+    }
+
+    return $fixture
+}
+
 function New-StubAdapterCommandConfig {
     param(
         [Parameter(Mandatory)] [string] $SaveDirectory,
@@ -621,4 +645,102 @@ function Invoke-InCompanionModule {
     return & $module $ScriptBlock @ArgumentList
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess
+# Shared raw transport fixture; it is not a complete core digest admission fixture.
+function New-RuntimePayloadSample {
+    param([Parameter()] [ValidateRange(0, 16777216)] [int] $PaddingBytes = 0)
+
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $escape = [string][char]92
+    $time = '2026-10-07T01:23:45.1234567Z'
+    $sourceIdentity = '{"domainId":"' + ('a' * 64) + '","saveFile":"save.zip","savedAt":"' + $time + '","byteLength":1,"contentSha256":"' + ('b' * 64) + '"}'
+    $floor = '{"domainId":"' + ('a' * 64) + '","saveFile":"save.zip","savedAt":"' + $time + '"}'
+    $padding = if ($PaddingBytes -gt 0) { '"padding":"' + ('x' * $PaddingBytes) + '",' } else { '' }
+    $rawState = '{"schemaVersion":2,"adapterVersion":1,"game":"game","generatedAt":"' + $time + '","source":' + $sourceIdentity + ',"extra":{' + $padding + '"number":9007199254740993,"decimal":0.123456789012345678901,"negativeZero":-0,"exponent":1e400,"escaped":"' + $escape + 'u0061","timestamp":"' + $time + '"}}'
+    $diff = '{"schemaVersion":2,"adapterVersion":1,"game":"game","currentGeneratedAt":"' + $time + '","currentSource":' + $sourceIdentity + ',"baselineGeneratedAt":null}'
+    $logical = ('c' * 32) + '-1'
+    $sourceText = '{"stateEventVersion":1,"logicalOutboxId":"' + $logical + '","incarnationId":"' + ('c' * 32) + '","sequence":1,"kind":"consumed","createdAt":"' + $time + '","principal":"principal","repairOperationId":null,"adapterVersion":1,"game":"game","baseline":null,"sourceFloor":' + $floor + ',"refresh":{"attempted":false,"commitObserved":false,"attempts":0},"warnings":[],"baselineReset":true,"diff":' + $diff + ',"state":' + $rawState + '}'
+    $source = $utf8.GetBytes($sourceText)
+    $hash = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($source))
+    $metadata = [ordered]@{
+        eventVersion = 1; journalId = 'journal'; sequence = 1; eventId = ('d' * 32); type = 'state.consumed'; occurredAt = $time
+        runtimeInstanceId = ('e' * 32); adapter = 'game'; adapterBindingEpoch = ('f' * 32); principal = 'principal'
+        logicalOutboxId = $logical; recordSha256 = $hash; coreRepairOperationId = $null; attemptRef = $null
+        schemaVersion = 2; adapterVersion = 1; settlement = 'pending'; acceptance = $null; acknowledgedAt = $null; compacted = $false
+    }
+
+    return @{ Time = $time; Floor = $floor; RawState = $rawState; Diff = $diff; SourceText = $sourceText; Source = $source; Hash = $hash; Metadata = $metadata }
+}
+
+function New-RuntimeAcceptedPayloadSample {
+    param()
+
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $sample = New-RuntimePayloadSample
+    $escape = [string][char]92
+    $nested = '"redelivery":false,"nested":{"redelivery":false},"events":[{"redelivery":false}],"text":"' + $escape + '"redelivery' + $escape + '":false",'
+    $rawState = $sample.RawState.Replace('"extra":{', ('"extra":{' + $nested))
+    $rawDiff = $sample.Diff.Insert(1, $nested)
+    $sample.Source = $utf8.GetBytes($sample.SourceText.Replace($sample.RawState, $rawState).Replace($sample.Diff, $rawDiff))
+    $sample.RawState = $rawState
+    $sample.Diff = $rawDiff
+    $sample.Metadata.recordSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($sample.Source))
+    $metadata = $sample.Metadata
+    $pending = [Companion.Runtime.PayloadCodec]::CreateEvent($sample.Source, $utf8.GetBytes((ConvertTo-Json -InputObject $metadata -Depth 8 -Compress)))
+    $metadata.settlement = 'accepted'
+    $metadata.acceptance = [ordered]@{ journalId = 'journal'; eventId = ('d' * 32); generation = ('1' * 32) }
+    $accepted = [Companion.Runtime.PayloadCodec]::RewriteEvent($pending, $utf8.GetBytes((ConvertTo-Json -InputObject $metadata -Depth 8 -Compress)), $false)
+
+    return @{ Sample = $sample; Metadata = $metadata; Pending = $pending; Accepted = $accepted }
+}
+
+function New-StagedRuntimeCoordinatorRoot {
+    param(
+        [Parameter(Mandatory)] [string] $Prefix,
+        [Parameter()] [string[]] $EntryScripts = @(),
+        [Parameter()] [switch] $Owned,
+        [Parameter()] [switch] $EmptyOutbox
+    )
+
+    if ($EmptyOutbox -and -not $Owned) { throw [ArgumentException]::new('EmptyOutbox requires an owned runtime fixture.') }
+    $fixture = if ($Owned) {
+        $principal = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        New-StagedStateEventRoot -Prefix $Prefix -EntryScripts $EntryScripts -Principal $principal -SkipPublication:$EmptyOutbox
+    } else { New-StagedStubAcquisitionRoot -Prefix $Prefix -EntryScripts $EntryScripts }
+    $runtime = Join-Path $fixture.Root 'runtime'
+    [void] [IO.Directory]::CreateDirectory((Join-Path $runtime 'instructions'))
+    $config = [ordered]@{
+        configVersion = 1
+        adapter = 'stub'
+        game = 'stubgame'
+        provider = [ordered]@{ model = 'fixture-model'; effort = 'medium'; questionOverride = [ordered]@{ model = 'fixture-override'; effort = 'high' } }
+        watcher = [ordered]@{ enabled = $false }
+    }
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    [IO.File]::WriteAllText((Join-Path $runtime 'companion.config.json'), ($config | ConvertTo-Json -Depth 5 -Compress), $utf8)
+    [IO.File]::WriteAllText((Join-Path $fixture.Root 'CLAUDE.md'), "Private runtime coordinator fixture. Use only supplied state.`r`n", $utf8)
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../runtime/instructions/runtime-mode.md') -Destination (Join-Path $runtime 'instructions/runtime-mode.md')
+
+    return $fixture
+}
+
+function New-StagedRuntimeContextRoot {
+    param(
+        [Parameter(Mandatory)] [string] $Prefix,
+        [Parameter()] [AllowEmptyCollection()] [byte[]] $EventBytes = @()
+    )
+
+    $root = New-ScratchCompanionRoot -Prefix $Prefix
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $scopeBytes = $utf8.GetBytes('{"runtimeScopeVersion":1,"game":"game","principal":"principal"}')
+    $safetyBytes = $utf8.GetBytes('{"stateSafetyVersion":1,"generation":"' + ('1' * 32) + '","pendingCheck":null,"correction":null,"recoveryWitness":null}')
+    [IO.File]::WriteAllBytes((Join-Path $root 'scope.json'), $scopeBytes)
+    [IO.File]::WriteAllBytes((Join-Path $root 'state-safety.json'), $safetyBytes)
+    if ($EventBytes.Length -gt 0) {
+        [void] [IO.Directory]::CreateDirectory((Join-Path $root 'journal/events'))
+        [IO.File]::WriteAllBytes((Join-Path $root 'journal/events/0000000000000001.json'), $EventBytes)
+    }
+
+    return [pscustomobject]@{ Root = $root; ScopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes)); SafetySha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($safetyBytes)) }
+}
+
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
