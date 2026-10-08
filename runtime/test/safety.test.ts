@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { SafetyStore } from '../src/safety.ts';
+import { RecoveryCoordinator } from '../src/backend/recovery.ts';
+import type { Kernel } from '../src/backend/kernel.ts';
+import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
+import { SafetyStore, type SafetyProof } from '../src/safety.ts';
 import { SafetyUnavailableError, type StateSafety } from '../src/safety-records.ts';
 import type { ScopeStorage } from '../src/storage.ts';
 
@@ -32,6 +35,31 @@ const proved = { verify: async () => true };
 const unproved = { verify: async () => false };
 
 describe('durable safety transitions', () => {
+  it('keeps the shared deadline through recovery witness verification', async () => {
+    const { state, safety } = fixture();
+    await safety.prepareWitness(owner);
+    let now = 119999;
+    const deadline = Deadline.fromStart(0, 120000, () => now);
+    let receivedDeadline: Deadline | undefined;
+    const kernel = { scope: { bindingSha256: scopeHash }, guard: { held: true }, operations: {
+      read: async (_id: string, supplied?: Deadline) => {
+        receivedDeadline = supplied;
+        await Promise.resolve();
+        now += 2;
+        supplied?.check();
+        return { status: 'valid', value: { kind: 'repair', operationId: owner.operationId, scopeSha256: scopeHash,
+          recovery: { episodes: [{ activationId: owner.activationId }] } }, sha256: 'e'.repeat(64) };
+      },
+    } } as unknown as Kernel;
+    const recovery = new RecoveryCoordinator(kernel);
+    const proof = (recovery as unknown as { ownerProof: (value: typeof owner) => SafetyProof }).ownerProof(owner);
+
+    await assert.rejects(safety.activateWitness(owner, proof, deadline), DeadlineExceededError);
+    assert.equal(receivedDeadline, deadline);
+    assert.equal(state.value.recoveryWitness?.phase, 'preparing');
+    assert.equal(state.writes, 1);
+  });
+
   it('keeps a check outstanding until its exact observation and consequences are proved', async () => {
     const { state, safety } = fixture();
     const armed = await safety.armCheck();
