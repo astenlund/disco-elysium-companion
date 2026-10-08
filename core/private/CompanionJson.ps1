@@ -2,6 +2,7 @@ $script:CompanionJsonUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
 $script:CompanionJsonMaxDepth = 64
 $script:CompanionJsonProfiles = @{
     config = [pscustomobject]@{ MaxBytes = 1048576; MaxTokens = 65536; MaxTextBytes = 524288 }
+    'outbox-ledger' = [pscustomobject]@{ MaxBytes = 8388608; MaxTokens = 65536; MaxTextBytes = 4194304 }
     dump = [pscustomobject]@{ MaxBytes = 16777216; MaxTokens = 2000000; MaxTextBytes = 8388608 }
     digest = [pscustomobject]@{ MaxBytes = 8388608; MaxTokens = 500000; MaxTextBytes = 4194304 }
     diff = [pscustomobject]@{ MaxBytes = 16777216; MaxTokens = 1000000; MaxTextBytes = 8388608 }

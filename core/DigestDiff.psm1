@@ -398,6 +398,7 @@ function Get-CoreSchemaVersion {
 . (Join-Path $PSScriptRoot 'private/Consumption.ps1')
 . (Join-Path $PSScriptRoot 'private/TurnContext.ps1')
 . (Join-Path $PSScriptRoot 'private/StateEvents.ps1')
+. (Join-Path $PSScriptRoot 'private/StateEventStorage.ps1')
 . (Join-Path $PSScriptRoot 'private/Watcher.ps1')
 . (Join-Path $PSScriptRoot 'private/WalkProtocol.ps1')
 

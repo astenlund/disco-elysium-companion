@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence')]
+    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence', 'LedgerBudget', 'Capacity', 'QuarantineCapacity', 'Retirement', 'SequenceDomain', IgnoreCase = $false)]
     [string] $Only = 'All'
 )
 
@@ -139,10 +139,21 @@ function Invoke-Settle {
     return Invoke-CoreScript -Fixture $Fixture -Name 'Set-StateEventSettlement.ps1' -Arguments @('-LogicalOutboxId', $Info.logicalOutboxId, '-RecordSha256', $sha, '-JournalId', $JournalId, '-EventId', $event)
 }
 
+function Invoke-LocalSettlement {
+    param([Parameter(Mandatory)] $Fixture, [Parameter(Mandatory)] $Info, [string] $JournalId = 'journal-a', [string] $EventId)
+
+    if ([string]::IsNullOrEmpty($EventId)) { $EventId = 'event-' + $Info.sequence }
+
+    return Invoke-InCompanionModule {
+        param($Root, $Info, $JournalId, $EventId)
+        Invoke-StateEventSettlement -CompanionRoot $Root -LogicalOutboxId $Info.logicalOutboxId -RecordSha256 $Info.sha256 -JournalId $JournalId -EventId $EventId -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+    } @($Fixture.Root, $Info, $JournalId, $EventId)
+}
+
 function Read-Ledger {
     param([Parameter(Mandatory)] $Fixture)
 
-    return (Read-CompanionJson -Path (Join-Path (Get-OutboxPath -Fixture $Fixture) 'ledger.json') -Budget config).Materialized
+    return (Read-CompanionJson -Path (Join-Path (Get-OutboxPath -Fixture $Fixture) 'ledger.json') -Budget 'outbox-ledger').Materialized
 }
 
 function Get-FileHashOrNull {
@@ -241,7 +252,7 @@ function Invoke-InModuleAttempt {
             $resync = -not [string]::IsNullOrEmpty($RepairOperationId)
             $result = Invoke-StateEventAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings $operational -ReceiptWarnings $receipt -Principal $Principal -RequireRecord:$RequireRecord -Resync:$resync -RepairOperationId $(if ($resync) { $RepairOperationId } else { $null }) -ConsumptionSeams $Seams
 
-            return [pscustomobject]@{ result = $result; receiptWarnings = @($receipt.Freeze() | ForEach-Object { $_.code }) }
+            return [pscustomobject]@{ result = $result; receiptWarnings = @($receipt.Freeze() | ForEach-Object { $_.code }); operationalWarnings = @($operational.Peek() | ForEach-Object { $_.code }) }
         }
         finally { $config.Dispose() }
     } @($Fixture.Root, $Seams, [bool] $RequireRecord, $RepairOperationId, $script:Principal)
@@ -249,12 +260,16 @@ function Invoke-InModuleAttempt {
 
 # ---------------------------------------------------------------------------------
 if (Test-Selected 'Constants') {
-    $constants = Invoke-InCompanionModule { [pscustomobject]@{ age = $script:StateEventTombstoneMaximumAge; count = $script:StateEventTombstoneMaximumCount; pending = $script:StateEventPendingLimit; quarantine = $script:StateEventQuarantineMaximumEntries; children = $script:StateEventChildLimit; sequence = $script:StateEventSequenceMaximum; budget = (Get-CompanionJsonBudget -Budget 'state-event'); turnBudget = (Get-CompanionJsonBudget -Budget 'turn-context') } }
+    $constants = Invoke-InCompanionModule { [pscustomobject]@{ age = $script:StateEventTombstoneMaximumAge; count = $script:StateEventTombstoneMaximumCount; pending = $script:StateEventPendingLimit; quarantine = $script:StateEventQuarantineMaximumEntries; children = $script:StateEventChildLimit; discovery = $script:StateEventDiscoveryLimit; ledgerBudget = (Get-CompanionJsonBudget -Budget 'outbox-ledger'); sequence = $script:StateEventSequenceMaximum; budget = (Get-CompanionJsonBudget -Budget 'state-event'); turnBudget = (Get-CompanionJsonBudget -Budget 'turn-context') } }
     Assert-Equal -Actual $constants.age -Expected ([TimeSpan]::FromDays(180)) -Message 'Tombstones older than exactly 180 days are prunable.'
     Assert-Equal -Actual $constants.count -Expected 512 -Message 'The tombstone count bound is exactly 512.'
     Assert-Equal -Actual $constants.pending -Expected 16 -Message 'The pending record bound is exactly 16.'
     Assert-Equal -Actual $constants.quarantine -Expected 64 -Message 'The quarantine keeps at most 64 entries.'
-    Assert-Equal -Actual $constants.children -Expected 1024 -Message 'Reconciliation enumerates at most 1,024 children.'
+    Assert-Equal -Actual $constants.children -Expected 1024 -Message 'Ordinary allocation stays within 1,024 children.'
+    Assert-Equal -Actual $constants.discovery -Expected 1032 -Message 'Bounded recovery discovery admits at most 1,032 children.'
+    Assert-Equal -Actual $constants.ledgerBudget.MaxBytes -Expected 8388608 -Message 'Ledger bytes have their dedicated bounded profile.'
+    Assert-Equal -Actual $constants.ledgerBudget.MaxTokens -Expected 65536 -Message 'Ledger token count remains bounded.'
+    Assert-Equal -Actual $constants.ledgerBudget.MaxTextBytes -Expected 4194304 -Message 'Ledger decoded text has its dedicated bound.'
     Assert-Equal -Actual $constants.sequence -Expected 9007199254740991L -Message 'Sequences end at 2^53 - 1.'
     foreach ($name in 'MaxBytes', 'MaxTokens', 'MaxTextBytes') { Assert-Equal -Actual $constants.budget.$name -Expected $constants.turnBudget.$name -Message "The state-event budget's $name equals the turn-context profile's." }
 }
@@ -541,10 +556,19 @@ if (Test-Selected 'RecordValidation') {
     $names = @(Get-RecordNames -Fixture $fixture)
     $consumed = Get-RecordInfo -Fixture $fixture -Name $names[0]
     $snapshot = Get-RecordInfo -Fixture $fixture -Name $names[1]
-    $reject = {
-        param([string] $Json, [string] $Message, [long] $Sequence = 0)
-        Assert-ThrowsDerived -TypeName 'CompanionContentException' -Action { [void] (Read-StateEventRecord -Json $Json -ExpectedSequence $Sequence) } -Message $Message
+    $validate = {
+        param([string] $Json, [Nullable[long]] $Sequence = $null)
+        $arguments = @{ Json = $Json }
+        if ($null -ne $Sequence) { $arguments.ExpectedSequence = [long] $Sequence }
+
+        return Read-StateEventRecord @arguments
     }
+    $reject = {
+        param([string] $Json, [string] $Message, [Nullable[long]] $Sequence = $null)
+        Assert-ThrowsDerived -TypeName 'CompanionContentException' -Action { [void] (& $validate $Json $Sequence) } -Message $Message
+    }
+    [void] (& $validate $script:Utf8.GetString($consumed.bytes))
+    [void] (& $validate $script:Utf8.GetString($snapshot.bytes))
     $mutate = {
         param([byte[]] $Bytes, [scriptblock] $Change)
         $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($Bytes))
@@ -801,7 +825,7 @@ if (Test-Selected 'Consumer') {
 
     # Killing an abandon release after each of its writes, from each marker state.
     $killPoints = [ordered]@{
-        'abandon-after-baseline' = @{ Path = 'private/StateEvents.ps1'; Anchor = '    $releasingByRecord = $pendingNames.Count -gt 0' }
+        'abandon-after-baseline' = @{ Path = 'private/StateEvents.ps1'; Anchor = '    $valid = [Collections.Generic.List[object]]::new()' }
         'abandon-after-tombstones' = @{ Path = 'private/StateEvents.ps1'; Anchor = '                try { & $DeleteRecord (Join-Path (Get-StateEventOutboxPath -CompanionRoot $CompanionRoot) $entry.name) }' }
         'abandon-before-marker' = @{ Path = 'private/StateEvents.ps1'; Anchor = "        if (-not (& `$tryWriteMarker 'bridge')) { return & `$failure outbox outbox-write-failed }`n`n        return & `$done `$true `$pending.Count" }
     }
@@ -832,7 +856,7 @@ if (Test-Selected 'Consumer') {
         [void] (Invoke-Settle -Fixture $fenceFixture -Info (Get-RecordInfo -Fixture $fenceFixture -Name @(Get-RecordNames -Fixture $fenceFixture)[0]))
         [IO.File]::WriteAllBytes((Join-Path (Get-OutboxPath -Fixture $fenceFixture) 'event-0000000000000002.json'), $invalidBytes)
         if ($markerState -ceq 'absent') { [IO.File]::Delete((Join-Path $fenceFixture.State 'consumer.json')) } else { Write-Marker -Fixture $fenceFixture -Json (Get-MarkerJson -Owner bridge) }
-        Set-StagedKillPoint -Fixture $fenceFixture -RelativePath 'private/StateEvents.ps1' -Anchor '    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -WarningSink $OperationalWarnings }' -Name 'after-fence'
+        Set-StagedKillPoint -Fixture $fenceFixture -RelativePath 'private/StateEvents.ps1' -Anchor '    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -ExpectedSha256 $entry.sha256 -WarningSink $OperationalWarnings }' -Name 'after-fence'
         Invoke-Killed -Action { Invoke-Switch -Fixture $fenceFixture -Owner bridge -Switches @('-AbandonUndelivered') -Environment @{ COMPANION_TEST_STATE_EVENT_KILL = 'after-fence' } } -Message "An abandon release killed after its fence under a $markerState marker"
         $rerun = Invoke-Switch -Fixture $fenceFixture -Owner bridge -Switches @('-AbandonUndelivered')
         Assert-Equal -Actual $rerun.ExitCode -Expected 0 -Message "The rerun after the fence kill under a $markerState marker succeeds ($($rerun.StdErr))."
@@ -1021,7 +1045,7 @@ if (Test-Selected 'Reconciliation') {
     $fenceFixture = New-RuntimeFixture -Prefix 'state-event-repair-fence'
     [void] (Read-Receipt -Result (Invoke-Publish -Fixture $fenceFixture) -Message 'Repair fence fixture record')
     [IO.File]::WriteAllBytes((Join-Path (Get-OutboxPath -Fixture $fenceFixture) 'event-0000000000000002.json'), $script:Utf8.GetBytes('{"broken":true}'))
-    Set-StagedKillPoint -Fixture $fenceFixture -RelativePath 'private/StateEvents.ps1' -Anchor '    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -WarningSink $OperationalWarnings }' -Name 'repair-after-fence'
+    Set-StagedKillPoint -Fixture $fenceFixture -RelativePath 'private/StateEvents.ps1' -Anchor '    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -ExpectedSha256 $entry.sha256 -WarningSink $OperationalWarnings }' -Name 'repair-after-fence'
     Invoke-Killed -Action { Invoke-Publish -Fixture $fenceFixture -RepairOperationId 'jr-fence' -Environment @{ COMPANION_TEST_STATE_EVENT_KILL = 'repair-after-fence' } } -Message 'A resync killed after its fence'
     Assert-True -Condition ([IO.File]::Exists((Join-Path (Get-OutboxPath -Fixture $fenceFixture) 'event-0000000000000002.json'))) -Message 'The killed repair leaves the fenced file in place.'
     $resumed = Read-Receipt -Result (Invoke-Publish -Fixture $fenceFixture -RepairOperationId 'jr-fence') -Message 'The resync after the fence kill'
@@ -1286,6 +1310,544 @@ if (Test-Selected 'ReceiptIndependence') {
     $names = @(Get-RecordNames -Fixture $fixture)
     Assert-Equal -Actual @($names).Count -Expected 1 -Message 'The record of an undelivered receipt is in the outbox.'
     [void] (Read-StateEventRecord -Bytes ([IO.File]::ReadAllBytes((Join-Path (Get-OutboxPath -Fixture $fixture) $names[0]))))
+}
+
+# ---------------------------------------------------------------------------------
+if (Test-Selected 'LedgerBudget') {
+    # Arrange: a schema-valid retained ledger larger than the old shared config budget.
+    $fixture = New-RuntimeFixture -Prefix 'state-event-ledger-budget'
+    $token = [char]::ConvertFromUtf32(0x10000) * 128
+    $before = Invoke-InCompanionModule {
+        param($Root, $Token)
+        $ledger = (Read-StateEventLedger -CompanionRoot $Root).ledger
+        $settledAt = Get-StateEventUtcNow
+        foreach ($sequence in 1..512) {
+            $entry = New-StateEventTombstone -Sequence $sequence -Outcome delivered -RecordSha256 ('f' * 64) -LogicalOutboxId (Get-StateEventLogicalOutboxId -IncarnationId $ledger.incarnationId -Sequence $sequence) -Kind consumed -JournalId $Token -EventId $Token -RepairOperationId $Token
+            $entry.settledAt = $settledAt
+            $ledger.settled.Add($entry)
+        }
+        Write-StateEventLedger -CompanionRoot $Root -Ledger $ledger -ExistingRecordSequences @()
+
+        return [pscustomobject]@{ incarnation = $ledger.incarnationId; configCap = (Get-CompanionJsonBudget -Budget config).MaxBytes; ledgerCap = (Get-CompanionJsonBudget -Budget 'outbox-ledger').MaxBytes }
+    } @($fixture.Root, $token)
+    $ledgerPath = Join-Path (Get-OutboxPath -Fixture $fixture) 'ledger.json'
+    Assert-True -Condition ([IO.FileInfo]::new($ledgerPath).Length -gt $before.configCap) -Message 'The retained ledger actually exceeds the former config byte cap.'
+    Assert-True -Condition ([IO.FileInfo]::new($ledgerPath).Length -le $before.ledgerCap) -Message 'The retained ledger fits its own bounded profile.'
+    Assert-Equal -Actual @((Read-Ledger -Fixture $fixture)['settled']).Count -Expected 512 -Message 'All retained maximal-token entries round-trip.'
+
+    # Act: the next real publication and settlement cross the old failure boundary.
+    $published = Read-Receipt -Result (Invoke-Publish -Fixture $fixture -RequireRecord) -Message 'Publish beside the large retained ledger'
+    $record = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[0]
+    $settled = Invoke-Settle -Fixture $fixture -Info $record -JournalId $token -EventId $token
+    $again = Invoke-Settle -Fixture $fixture -Info $record -JournalId $token -EventId $token
+
+    # Assert: success is durable and idempotent, without an evidence-losing rebuild.
+    Assert-Equal -Actual $published['sequence'] -Expected 513L -Message 'The large ledger retained its sequence fence.'
+    Assert-False -Condition (@($published['warnings'] | Where-Object { $_['code'] -ceq 'outbox-ledger-rebuilt' }).Count -gt 0) -Message 'The large ledger was not mistaken for corrupt content.'
+    Assert-Equal -Actual $settled.ExitCode -Expected 0 -Message "Large-ledger settlement succeeds ($($settled.StdErr))."
+    Assert-OrdinalEqual -Actual (Read-StateEventSettlementResult -Json $again.StdOut).Materialized['outcome'] -Expected 'already-settled' -Message 'The large-ledger settlement retry replays its evidence.'
+    $after = Read-Ledger -Fixture $fixture
+    Assert-OrdinalEqual -Actual $after['incarnationId'] -Expected $before.incarnation -Message 'No ledger rebuild occurred.'
+    Assert-Equal -Actual @($after['settled']).Count -Expected 512 -Message 'The 513th settlement prunes to the ordinary count bound.'
+    Assert-Equal -Actual @($after['settled'] | Where-Object { $_['sequence'] -eq 1 }).Count -Expected 0 -Message 'The oldest unprotected entry is pruned.'
+    Assert-Equal -Actual @($after['settled'] | Where-Object { $_['sequence'] -eq 513 }).Count -Expected 1 -Message 'The new positive settlement is retained.'
+}
+
+# ---------------------------------------------------------------------------------
+if (Test-Selected 'Capacity') {
+    # Arrange: preserve settled files, then model a legacy directory above the operating cap.
+    $limits = Invoke-InCompanionModule { [pscustomobject]@{ children = $script:StateEventChildLimit; discovery = $script:StateEventDiscoveryLimit; quarantine = $script:StateEventQuarantineMaximumEntries } }
+    $fixture = New-RuntimeFixture -Prefix 'state-event-capacity'
+    $handles = [Collections.Generic.List[IO.FileStream]]::new()
+    try {
+        foreach ($index in 1..8) {
+            $published = Invoke-InModuleAttempt -Fixture $fixture -RequireRecord
+            Assert-OrdinalEqual -Actual $published.result.stateEventOutcome -Expected 'committed' -Message "Capacity seed $index commits."
+            $name = Invoke-InCompanionModule { param($Sequence) Get-StateEventRecordName -Sequence $Sequence } @($published.result.sequence)
+            $record = Get-RecordInfo -Fixture $fixture -Name $name
+            $handles.Add([IO.FileStream]::new((Join-Path (Get-OutboxPath -Fixture $fixture) $name), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
+            Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $record).outcome -Expected 'settled' -Message "Capacity seed $index settles while deletion is blocked."
+        }
+        Invoke-InCompanionModule { $script:StateEventChildLimit = 8; $script:StateEventDiscoveryLimit = 16 }
+        Assert-Equal -Actual @([IO.Directory]::EnumerateFileSystemEntries((Get-OutboxPath -Fixture $fixture))).Count -Expected 9 -Message 'The legacy directory exceeds the reduced operating ceiling.'
+
+        # Act: new consumption refuses, but cleanup and retry remain reachable.
+        $blocked = Invoke-InModuleAttempt -Fixture $fixture -RequireRecord
+        foreach ($handle in $handles) { $handle.Dispose() }
+        $handles.Clear()
+        $recovered = Invoke-InModuleAttempt -Fixture $fixture -RequireRecord
+        $latestName = Invoke-InCompanionModule { param($Sequence) Get-StateEventRecordName -Sequence $Sequence } @($recovered.result.sequence)
+        $latest = Get-RecordInfo -Fixture $fixture -Name $latestName
+        $release = Invoke-InCompanionModule {
+            param($Root)
+            Invoke-CompanionConsumerSwitch -CompanionRoot $Root -Owner bridge -AbandonUndelivered -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+        } @($fixture.Root)
+
+        # Assert: the original obstruction cannot turn into a permanent ceiling trap.
+        Assert-OrdinalEqual -Actual $blocked.result.reason -Expected 'outbox-full' -Message 'Ordinary allocation refuses before consuming recovery capacity.'
+        Assert-OrdinalEqual -Actual $recovered.result.stateEventOutcome -Expected 'committed' -Message 'Publication recovers after the handles close.'
+        Assert-Equal -Actual $latest.sequence -Expected 9L -Message 'A refused publication did not spend a sequence.'
+        Assert-Equal -Actual $release.outcomeClass -Expected $null -Message 'Explicit abandon remains available after capacity recovery.'
+        Assert-True -Condition $release.baselineRemoved -Message 'Abandon preserves its reset obligation.'
+        Assert-Equal -Actual @(Get-RecordNames -Fixture $fixture).Count -Expected 0 -Message 'Release retires the remaining pending record.'
+
+        # Arrange/Act/Assert: incomplete discovery must not delete a known-looking sibling.
+        $overflow = New-RuntimeFixture -Prefix 'state-event-discovery-overflow'
+        $outbox = Get-OutboxPath -Fixture $overflow
+        foreach ($index in 1..16) { [IO.File]::WriteAllText((Join-Path $outbox "unknown-$index"), 'preserve', $script:Utf8) }
+        $sibling = Join-Path $outbox ('ledger.json.' + ('a' * 32) + '.tmp')
+        [IO.File]::WriteAllText($sibling, 'preserve sibling', $script:Utf8)
+        $before = Get-TreeFingerprint -Path $outbox
+        $failed = Invoke-InModuleAttempt -Fixture $overflow -RequireRecord
+        Assert-OrdinalEqual -Actual $failed.result.reason -Expected 'outbox-setup-failed' -Message 'Discovery above its hard ceiling refuses.'
+        Assert-TreeFingerprintEqual -Actual (Get-TreeFingerprint -Path $outbox) -Expected $before -Message 'Incomplete discovery mutates no outbox child.'
+
+        # Arrange/Act/Assert: a ledger replacement cannot allocate beyond recovery capacity.
+        $workspace = New-RuntimeFixture -Prefix 'state-event-ledger-workspace'
+        [void] (Invoke-InModuleAttempt -Fixture $workspace)
+        $pending = Get-RecordInfo -Fixture $workspace -Name @(Get-RecordNames -Fixture $workspace)[0]
+        $outbox = Get-OutboxPath -Fixture $workspace
+        foreach ($index in 1..13) { [IO.File]::WriteAllText((Join-Path $outbox "preserve-$index"), 'unknown', $script:Utf8) }
+        $ledgerHash = Get-FileHashOrNull -Path (Join-Path $outbox 'ledger.json')
+        $refused = Invoke-LocalSettlement -Fixture $workspace -Info $pending
+        Assert-OrdinalEqual -Actual $refused.reason -Expected 'outbox-write-failed' -Message 'The replacement reserves both sibling slots.'
+        Assert-OrdinalEqual -Actual (Get-FileHashOrNull -Path (Join-Path $outbox 'ledger.json')) -Expected $ledgerHash -Message 'A failed reservation records no settlement.'
+        Assert-True -Condition ([IO.File]::Exists((Join-Path $outbox $pending.name))) -Message 'The pending bytes survive a refused reservation.'
+        [IO.File]::Delete((Join-Path $outbox 'preserve-13'))
+        Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $workspace -Info $pending).outcome -Expected 'settled' -Message 'Exactly enough replacement workspace permits settlement.'
+
+        # Arrange/Act/Assert: absent-ledger publication must reserve its own target slot.
+        $absent = New-RuntimeFixture -Prefix 'state-event-ledger-absent-capacity'
+        $outbox = Get-OutboxPath -Fixture $absent
+        [IO.File]::Delete((Join-Path $outbox 'ledger.json'))
+        foreach ($index in 1..16) { [IO.File]::WriteAllText((Join-Path $outbox "preserve-$index"), 'unknown', $script:Utf8) }
+        $before = Get-TreeFingerprint -Path $outbox
+        $refused = Invoke-InModuleAttempt -Fixture $absent -RequireRecord
+        Assert-OrdinalEqual -Actual $refused.result.reason -Expected 'outbox-setup-failed' -Message 'A missing ledger cannot exceed recovery discovery capacity.'
+        Assert-TreeFingerprintEqual -Actual (Get-TreeFingerprint -Path $outbox) -Expected $before -Message 'A refused missing-ledger allocation writes no sibling or target.'
+        [IO.File]::Delete((Join-Path $outbox 'preserve-16'))
+        $stillFull = Invoke-InModuleAttempt -Fixture $absent -RequireRecord
+        Assert-OrdinalEqual -Actual $stillFull.result.reason -Expected 'outbox-full' -Message 'Ledger recovery does not authorize ordinary consumption into the recovery band.'
+        Assert-OrdinalEqual -Actual (Read-StateEventLedger -CompanionRoot $absent.Root).outcome -Expected 'valid' -Message 'Exactly one free slot permits empty-ledger recovery.'
+
+        # Arrange: failed deletion of a recognized publication sibling remains charged.
+        $residue = New-RuntimeFixture -Prefix 'state-event-publication-residue'
+        [void] (Invoke-InModuleAttempt -Fixture $residue)
+        $pending = Get-RecordInfo -Fixture $residue -Name @(Get-RecordNames -Fixture $residue)[0]
+        $outbox = Get-OutboxPath -Fixture $residue
+        $sibling = Join-Path $outbox ('ledger.json.' + ('b' * 32) + '.bak')
+        [IO.File]::WriteAllText($sibling, 'retained publication residue', $script:Utf8)
+        foreach ($index in 1..12) { [IO.File]::WriteAllText((Join-Path $outbox "preserve-$index"), 'unknown', $script:Utf8) }
+        $held = [IO.FileStream]::new($sibling, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            # Act/Assert: an attempted cleanup cannot manufacture ledger workspace.
+            $blocked = Invoke-LocalSettlement -Fixture $residue -Info $pending
+            Assert-OrdinalEqual -Actual $blocked.reason -Expected 'outbox-write-failed' -Message 'An undeletable backup still consumes its slot.'
+            Assert-True -Condition ([IO.File]::Exists($sibling)) -Message 'The actual retained residue remains visible.'
+            Assert-True -Condition ([IO.File]::Exists((Join-Path $outbox $pending.name))) -Message 'A workspace refusal keeps the pending record.'
+        }
+        finally { $held.Dispose() }
+        Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $residue -Info $pending).outcome -Expected 'settled' -Message 'Cleanup recovers the exact needed workspace once the backup is deletable.'
+        Assert-False -Condition ([IO.File]::Exists($sibling)) -Message 'The next bounded cleanup removes the recognized backup.'
+    }
+    finally {
+        foreach ($handle in $handles) { $handle.Dispose() }
+        Invoke-InCompanionModule { param($Limits) $script:StateEventChildLimit = $Limits.children; $script:StateEventDiscoveryLimit = $Limits.discovery; $script:StateEventQuarantineMaximumEntries = $Limits.quarantine } @($limits)
+    }
+}
+
+# ---------------------------------------------------------------------------------
+if (Test-Selected 'QuarantineCapacity') {
+    # Arrange: both diagnostic slots are occupied and their files cannot be deleted.
+    $fixture = New-RuntimeFixture -Prefix 'state-event-quarantine-capacity'
+    [void] (Invoke-InModuleAttempt -Fixture $fixture)
+    $original = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[0]
+    $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($original.bytes))
+    Set-RecordAdapterVersion -Node $node
+    [IO.File]::WriteAllText((Join-Path (Get-OutboxPath -Fixture $fixture) $original.name), $node.ToJsonString(), $script:Utf8)
+    $quarantine = Join-Path (Get-OutboxPath -Fixture $fixture) 'quarantine'
+    [void] [IO.Directory]::CreateDirectory($quarantine)
+    $handles = [Collections.Generic.List[IO.FileStream]]::new()
+    $previousLimit = Invoke-InCompanionModule { $script:StateEventQuarantineMaximumEntries }
+    try {
+        foreach ($index in 1..2) {
+            $name = 'event-' + $index.ToString('D16', [Globalization.CultureInfo]::InvariantCulture) + '.json.' + ('a' * 31) + $index + '.invalid'
+            $file = Join-Path $quarantine $name
+            [IO.File]::WriteAllText($file, "old-$index", $script:Utf8)
+            [IO.File]::SetLastWriteTimeUtc($file, [DateTime]::UtcNow.AddMinutes(-3 + $index))
+            $handles.Add([IO.FileStream]::new($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        }
+        Invoke-InCompanionModule { $script:StateEventQuarantineMaximumEntries = 2 }
+
+        # Act: fencing succeeds, but admitting a third diagnostic does not.
+        $repair = Invoke-InModuleAttempt -Fixture $fixture -RepairOperationId 'jr-quarantine-capacity'
+
+        # Assert: failed pruning keeps the fenced source and does not exceed capacity.
+        Assert-OrdinalEqual -Actual $repair.result.stateEventOutcome -Expected 'committed' -Message 'The recovery disclosure commits before cleanup.'
+        Assert-Equal -Actual @([IO.Directory]::EnumerateFileSystemEntries($quarantine)).Count -Expected 2 -Message 'Failed pruning creates no excess diagnostic.'
+        Assert-True -Condition ([IO.File]::Exists((Join-Path (Get-OutboxPath -Fixture $fixture) $original.name))) -Message 'The fenced source remains available for retry.'
+        Assert-True -Condition ($repair.operationalWarnings -ccontains 'pipeline-cleanup-degraded') -Message 'The failed diagnostic admission is disclosed.'
+        foreach ($handle in $handles) { $handle.Dispose() }
+        $handles.Clear()
+        $resyncName = Invoke-InCompanionModule { param($Sequence) Get-StateEventRecordName -Sequence $Sequence } @($repair.result.sequence)
+        $resync = Get-RecordInfo -Fixture $fixture -Name $resyncName
+        Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $resync).outcome -Expected 'settled' -Message 'A later operation recovers after diagnostic handles close.'
+        Assert-False -Condition ([IO.File]::Exists((Join-Path (Get-OutboxPath -Fixture $fixture) $original.name))) -Message 'Recovered quarantine admission finishes the fenced move.'
+        Assert-Equal -Actual @([IO.Directory]::EnumerateFileSystemEntries($quarantine)).Count -Expected 2 -Message 'Recovered cleanup still respects the diagnostic limit.'
+    }
+    finally {
+        foreach ($handle in $handles) { $handle.Dispose() }
+        Invoke-InCompanionModule { param($Limit) $script:StateEventQuarantineMaximumEntries = $Limit } @($previousLimit)
+    }
+}
+
+# ---------------------------------------------------------------------------------
+if (Test-Selected 'Retirement') {
+    foreach ($kind in 'reformat', 'identity', 'producer', 'structural', 'resync') {
+        # Arrange: accepted H1 survives deletion, then its current bytes become H2.
+        $fixture = New-RuntimeFixture -Prefix "state-event-retirement-$kind"
+        if ($kind -ceq 'resync') { [void] (Invoke-InModuleAttempt -Fixture $fixture -RepairOperationId 'jr-retirement-resync') }
+        else { [void] (Invoke-InModuleAttempt -Fixture $fixture) }
+        $original = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[0]
+        $recordPath = Join-Path (Get-OutboxPath -Fixture $fixture) $original.name
+        $handle = [IO.FileStream]::new($recordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $original).outcome -Expected 'settled' -Message "The $kind seed has positive H1 evidence." }
+        finally { $handle.Dispose() }
+        $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($original.bytes))
+        switch ($kind) {
+            'identity' {
+                $incarnation = 'e' * 32
+                $node['incarnationId'] = [Text.Json.Nodes.JsonValue]::Create($incarnation)
+                $node['logicalOutboxId'] = [Text.Json.Nodes.JsonValue]::Create($incarnation + '-' + $original.sequence)
+            }
+            'producer' { Set-RecordAdapterVersion -Node $node }
+            'resync' { Set-RecordAdapterVersion -Node $node }
+            'structural' { $node['diff']['character']['xpDelta'] = [Text.Json.Nodes.JsonValue]::Create('many') }
+        }
+        $changedBytes = $script:Utf8.GetBytes(' ' + $node.ToJsonString())
+        [IO.File]::WriteAllBytes($recordPath, $changedBytes)
+        $currentId = if ($kind -ceq 'identity') { ('e' * 32) + '-' + $original.sequence } else { $original.logicalOutboxId }
+        $current = [pscustomobject]@{ name = $original.name; sequence = $original.sequence; logicalOutboxId = $currentId; sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($changedBytes)).ToLowerInvariant() }
+        Assert-False -Condition ([string]::Equals($current.sha256, $original.sha256, [StringComparison]::Ordinal)) -Message 'The test changed exact bytes, not only its expected hash.'
+        $baseline = Get-FileHashOrNull -Path (Join-Path $fixture.State 'baseline.json')
+
+        # Act/Assert: routine callers cannot use H1 retirement as authority over H2.
+        Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $original).reason -Expected 'outbox-setup-failed' -Message "Normal settlement preserves a $kind retirement conflict."
+        Assert-OrdinalEqual -Actual (Invoke-InModuleAttempt -Fixture $fixture -RequireRecord).result.reason -Expected 'outbox-setup-failed' -Message "Ordinary publication preserves a $kind retirement conflict."
+        foreach ($owner in 'runtime', 'bridge') {
+            $switch = Invoke-InCompanionModule {
+                param($Root, $Owner)
+                Invoke-CompanionConsumerSwitch -CompanionRoot $Root -Owner $Owner -DeliveryConfirmed:($Owner -ceq 'bridge') -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+            } @($fixture.Root, $owner)
+            Assert-OrdinalEqual -Actual $switch.reason -Expected 'outbox-setup-failed' -Message "Normal $owner switch refuses a $kind retirement conflict."
+        }
+        Assert-OrdinalEqual -Actual (Get-FileHashOrNull -Path (Join-Path $fixture.State 'baseline.json')) -Expected $baseline -Message 'Refusal does not reset or apply the changed record.'
+
+        if ($kind -cin @('producer', 'structural', 'resync')) {
+            # Arrange/Act: a resync commits its disclosure but its replacement fence fails.
+            $failed = Invoke-InModuleAttempt -Fixture $fixture -RepairOperationId "jr-retirement-$kind" -Seams @{ WriteLedger = { param($Root, $Ledger, $Existing) throw [IO.IOException]::new('injected replacement-fence failure') } }
+
+            # Assert: the old tombstone remains, and Normal still sees a conflict.
+            Assert-OrdinalEqual -Actual $failed.result.stateEventOutcome -Expected 'committed' -Message 'The resync disclosure precedes its replacement fence.'
+            Assert-True -Condition ($failed.receiptWarnings -ccontains 'outbox-quarantine-deferred') -Message 'A failed replacement fence remains owed.'
+            Assert-True -Condition ($failed.result.sequence -gt $original.sequence) -Message 'An old delivered resync cannot authorize its own replacement fence.'
+            $old = @((Read-Ledger -Fixture $fixture)['settled'] | Where-Object { $_['sequence'] -eq $original.sequence })
+            Assert-Equal -Actual $old.Count -Expected 1 -Message 'The failed fence leaves one old disposition.'
+            Assert-OrdinalEqual -Actual $old[0]['recordSha256'] -Expected $original.sha256 -Message 'The failed fence did not rewrite H1 as H2.'
+            Assert-OrdinalEqual -Actual $old[0]['outcome'] -Expected 'delivered' -Message 'The old positive disposition remains historical.'
+            Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $original).reason -Expected 'outbox-setup-failed' -Message 'A failed replacement did not turn the file into ordinary pending data.'
+
+            $resumed = Invoke-InModuleAttempt -Fixture $fixture -RepairOperationId "jr-retirement-$kind"
+            Assert-OrdinalEqual -Actual $resumed.result.stateEventOutcome -Expected 'replayed' -Message 'The same above-candidate resync pays for the retry.'
+            Assert-Equal -Actual $resumed.result.sequence -Expected $failed.result.sequence -Message 'A fence retry creates no new resync.'
+        }
+        else {
+            $refused = Invoke-InModuleAttempt -Fixture $fixture -RepairOperationId "jr-retirement-$kind"
+            Assert-OrdinalEqual -Actual $refused.result.reason -Expected 'outbox-setup-failed' -Message 'Producer-valid changed bytes still need explicit abandon authority.'
+        }
+
+        # Act: explicit abandonment is valid under absent, bridge and invalid markers too.
+        switch ($kind) {
+            'reformat' { [IO.File]::Delete((Join-Path $fixture.State 'consumer.json')) }
+            'identity' { Write-Marker -Fixture $fixture -Json (Get-MarkerJson -Owner bridge) }
+            'producer' { Write-Marker -Fixture $fixture -Json '{' }
+        }
+        $moveBlock = $null
+        try {
+            if ($kind -ceq 'reformat') { $moveBlock = [IO.FileStream]::new($recordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite) }
+            $released = Invoke-InCompanionModule {
+                param($Root)
+                Invoke-CompanionConsumerSwitch -CompanionRoot $Root -Owner bridge -AbandonUndelivered -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+            } @($fixture.Root)
+            Assert-Equal -Actual $released.outcomeClass -Expected $null -Message "Explicit abandon handles the $kind conflict."
+            Assert-False -Condition ([IO.File]::Exists((Join-Path $fixture.State 'baseline.json'))) -Message 'The baseline is gone before the new disposition is used.'
+            if ($kind -ceq 'reformat') { Assert-True -Condition ([IO.File]::Exists($recordPath)) -Message 'A failed move keeps the exact fenced source.' }
+        }
+        finally { if ($null -ne $moveBlock) { $moveBlock.Dispose() } }
+
+        if ($kind -ceq 'reformat') {
+            # A subsequent H3 is not covered by the durable H2 fence.
+            $changedBytes = $script:Utf8.GetBytes(' ' + $script:Utf8.GetString($changedBytes))
+            [IO.File]::WriteAllBytes($recordPath, $changedBytes)
+            $current.sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($changedBytes)).ToLowerInvariant()
+            $blocked = Invoke-Switch -Fixture $fixture -Owner runtime
+            Assert-Terminal -Result $blocked -Script Consumer -Class outbox -Detail outbox-setup-failed -Message 'A third hash still requires new authority'
+            Assert-Equal -Actual (Invoke-Switch -Fixture $fixture -Owner bridge -Switches @('-AbandonUndelivered')).ExitCode -Expected 0 -Message 'Repeating explicit abandon authorizes the current H3 bytes.'
+        }
+
+        # Assert: one current quarantine fence, exact bytes, reset and correct hash semantics.
+        $fence = @((Read-Ledger -Fixture $fixture)['settled'] | Where-Object { $_['sequence'] -eq $original.sequence })
+        Assert-Equal -Actual $fence.Count -Expected 1 -Message 'Supersession never duplicates a sequence.'
+        Assert-OrdinalEqual -Actual $fence[0]['outcome'] -Expected 'quarantined' -Message 'Supersession does not keep delivered meaning.'
+        Assert-OrdinalEqual -Actual $fence[0]['recordSha256'] -Expected $current.sha256 -Message 'The fence names the exact current bytes.'
+        Assert-Equal -Actual ($null -eq $fence[0]['logicalOutboxId']) -Expected ($kind -ceq 'structural') -Message 'Only structurally admitted current identity is retained.'
+        Assert-False -Condition ([IO.File]::Exists($recordPath)) -Message 'Cleanup finishes once the move obstruction is gone.'
+        $diagnostics = @([IO.Directory]::GetFiles((Join-Path (Get-OutboxPath -Fixture $fixture) 'quarantine')))
+        Assert-Equal -Actual $diagnostics.Count -Expected 1 -Message 'Exactly one current diagnostic was moved.'
+        Assert-True -Condition ([Linq.Enumerable]::SequenceEqual[byte]($changedBytes, [IO.File]::ReadAllBytes($diagnostics[0]))) -Message 'The diagnostic preserves exact current bytes.'
+        $bridge = Invoke-CoreScript -Fixture $fixture -Name 'Get-TurnContext.ps1'
+        Assert-True -Condition (Read-TurnContextEnvelope -Json $bridge.StdOut -TransportOnly).RootElement.GetProperty('baselineReset').GetBoolean() -Message 'The bridge discloses the authorized reset.'
+        Assert-Equal -Actual (Invoke-Switch -Fixture $fixture -Owner runtime).ExitCode -Expected 0 -Message 'Re-hand-over is available after retirement recovery.'
+        Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $current).reason -Expected 'settlement-quarantined' -Message 'The current exact hash is rejected.'
+        $oldReason = if ($kind -cin @('identity', 'structural')) { 'settlement-unknown' } else { 'settlement-conflict' }
+        Assert-OrdinalEqual -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $original).reason -Expected $oldReason -Message 'H1 is never falsely called quarantined because H2/H3 was rejected.'
+    }
+
+    # Each new disposition write boundary retains explicit abandon authority on restart.
+    foreach ($point in 'baseline', 'fence') {
+        # Arrange: a delivered record survives and is then reformatted under an absent marker.
+        $fixture = New-RuntimeFixture -Prefix "state-event-retirement-crash-$point"
+        [void] (Invoke-InModuleAttempt -Fixture $fixture)
+        $original = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[0]
+        $recordPath = Join-Path (Get-OutboxPath -Fixture $fixture) $original.name
+        $held = [IO.FileStream]::new($recordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { [void] (Invoke-LocalSettlement -Fixture $fixture -Info $original) }
+        finally { $held.Dispose() }
+        $changed = $script:Utf8.GetBytes(' ' + $script:Utf8.GetString($original.bytes))
+        [IO.File]::WriteAllBytes($recordPath, $changed)
+        [IO.File]::Delete((Join-Path $fixture.State 'consumer.json'))
+        $anchor = if ($point -ceq 'baseline') { '    $valid = [Collections.Generic.List[object]]::new()' } else { '    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -ExpectedSha256 $entry.sha256 -WarningSink $OperationalWarnings }' }
+        Set-StagedKillPoint -Fixture $fixture -RelativePath 'private/StateEvents.ps1' -Anchor $anchor -Name 'retirement-crash'
+
+        # Act: stop after reset or after the replacement fence, before moving the bytes.
+        Invoke-Killed -Action { Invoke-Switch -Fixture $fixture -Owner bridge -Switches @('-AbandonUndelivered') -Environment @{ COMPANION_TEST_STATE_EVENT_KILL = 'retirement-crash' } } -Message "Changed-retired abandon killed after $point"
+
+        # Assert: the ledger state is the one that actually became durable, never a duplicate.
+        Assert-False -Condition ([IO.File]::Exists((Join-Path $fixture.State 'baseline.json'))) -Message 'Reset is durable at both crash boundaries.'
+        $entry = @((Read-Ledger -Fixture $fixture)['settled'] | Where-Object { $_['sequence'] -eq $original.sequence })
+        Assert-Equal -Actual $entry.Count -Expected 1 -Message 'There is exactly one disposition after either crash.'
+        $expected = if ($point -ceq 'baseline') { 'delivered' } else { 'quarantined' }
+        Assert-OrdinalEqual -Actual $entry[0]['outcome'] -Expected $expected -Message 'The crash preserves the correct side of the fence publication.'
+        Assert-True -Condition ([IO.File]::Exists($recordPath)) -Message 'The bytes remain for the recorded recovery.'
+        Assert-Equal -Actual (Invoke-Switch -Fixture $fixture -Owner bridge -Switches @('-AbandonUndelivered')).ExitCode -Expected 0 -Message 'Explicit abandon resumes to completion.'
+        Assert-False -Condition ([IO.File]::Exists($recordPath)) -Message 'The resumed release finishes the exact-byte move.'
+        Assert-False -Condition ([IO.File]::Exists((Join-Path $fixture.State 'baseline.json'))) -Message 'Resume never restores a baseline before bridge disclosure.'
+    }
+}
+
+# ---------------------------------------------------------------------------------
+if (Test-Selected 'SequenceDomain') {
+    $invokeStateEventHelper = {
+        param([string] $Name, [hashtable] $Parameters)
+
+        return Invoke-InCompanionModule { param($CommandName, $CommandParameters) & $CommandName @CommandParameters } @($Name, $Parameters)
+    }
+    $maximum = 9007199254740991L
+    $unknownNames = @('event-0000000000000000.json', 'event-9007199254740992.json', 'event-9999999999999999.json')
+    $legalNames = @('event-0000000000000001.json', 'event-9007199254740991.json')
+    $nonce = 'a' * 32
+
+    # Arrange/Act/Assert: every owned name family shares the same inclusive numeric domain.
+    foreach ($name in $legalNames) {
+        Assert-True -Condition (& $invokeStateEventHelper 'Test-StateEventRecordName' @{ Name = $name }) -Message "A legal endpoint is a record name: $name"
+        Assert-True -Condition (& $invokeStateEventHelper 'Test-StateEventPublicationSiblingName' @{ Name = "$name.$nonce.tmp" }) -Message 'A legal record temp is owned publication residue.'
+        Assert-True -Condition (& $invokeStateEventHelper 'Test-StateEventPublicationSiblingName' @{ Name = "$name.$nonce.bak" }) -Message 'A legal record backup is owned publication residue.'
+        Assert-True -Condition (& $invokeStateEventHelper 'Test-StateEventQuarantineRecordName' @{ Name = "$name.$nonce.invalid" }) -Message 'A legal endpoint can name a quarantine diagnostic.'
+    }
+    foreach ($name in @($unknownNames) + @('event-1.json', 'EVENT-0000000000000001.json', "event-0000000000000001.json`n")) {
+        Assert-False -Condition (& $invokeStateEventHelper 'Test-StateEventRecordName' @{ Name = $name }) -Message "An out-of-namespace name is not a record: $name"
+        Assert-False -Condition (& $invokeStateEventHelper 'Test-StateEventPublicationSiblingName' @{ Name = "$name.$nonce.tmp" }) -Message 'An unknown record cannot grant temp-cleanup authority.'
+        Assert-False -Condition (& $invokeStateEventHelper 'Test-StateEventPublicationSiblingName' @{ Name = "$name.$nonce.bak" }) -Message 'An unknown record cannot grant backup-cleanup authority.'
+        Assert-False -Condition (& $invokeStateEventHelper 'Test-StateEventQuarantineRecordName' @{ Name = "$name.$nonce.invalid" }) -Message 'An unknown record cannot grant diagnostic-pruning authority.'
+        Assert-ThrowsDerived -TypeName ArgumentException -Action { [void] (& $invokeStateEventHelper 'Get-StateEventSequenceFromName' @{ Name = $name }) } -Message 'Sequence extraction refuses the same unknown names.'
+    }
+    foreach ($extension in 'tmp', 'bak') { Assert-True -Condition (& $invokeStateEventHelper 'Test-StateEventPublicationSiblingName' @{ Name = "ledger.json.$nonce.$extension" }) -Message 'Ledger publication siblings remain recognized.' }
+    foreach ($sequence in 1L, $maximum) {
+        $name = & $invokeStateEventHelper 'Get-StateEventRecordName' @{ Sequence = $sequence }
+        Assert-Equal -Actual (& $invokeStateEventHelper 'Get-StateEventSequenceFromName' @{ Name = $name }) -Expected $sequence -Message 'Both legal endpoints round-trip through filename construction.'
+    }
+    foreach ($sequence in -1L, 0L, ($maximum + 1)) {
+        Assert-ThrowsDerived -TypeName ArgumentOutOfRangeException -Action { [void] (& $invokeStateEventHelper 'Get-StateEventRecordName' @{ Sequence = $sequence }) } -Message 'The filename constructor cannot emit an illegal sequence.'
+        Assert-ThrowsDerived -TypeName ArgumentOutOfRangeException -Action { [void] (& $invokeStateEventHelper 'Get-StateEventLogicalOutboxId' @{ IncarnationId = ('a' * 32); Sequence = $sequence }) } -Message 'The logical identifier constructor cannot emit an illegal sequence.'
+        Assert-ThrowsDerived -TypeName ArgumentOutOfRangeException -Action { [void] (& $invokeStateEventHelper 'New-StateEventTombstone' @{ Sequence = $sequence; Outcome = 'quarantined'; RecordSha256 = ('a' * 64) }) } -Message 'The tombstone constructor cannot emit an illegal sequence.'
+    }
+
+    # Arrange: genuine records at both endpoints, including allocation of the maximum.
+    foreach ($sequence in 1L, $maximum) {
+        $fixture = New-RuntimeFixture -Prefix 'state-event-sequence-endpoint'
+        if ($sequence -eq $maximum) {
+            $ledger = (Read-StateEventLedger -CompanionRoot $fixture.Root).ledger
+            $ledger.highWaterSequence = $maximum - 1
+            & $invokeStateEventHelper 'Write-StateEventLedger' @{ CompanionRoot = $fixture.Root; Ledger = $ledger; ExistingRecordSequences = @() }
+        }
+        [void] (Invoke-InModuleAttempt -Fixture $fixture)
+        $info = Get-RecordInfo -Fixture $fixture -Name (& $invokeStateEventHelper 'Get-StateEventRecordName' @{ Sequence = $sequence })
+
+        # Act/Assert: omission validates content; every supplied expectation is binding.
+        [void] (Read-StateEventRecord -Bytes $info.bytes)
+        [void] (Read-StateEventRecord -Bytes $info.bytes -ExpectedSequence $sequence)
+        foreach ($expected in -1L, 0L, ($maximum + 1), $(if ($sequence -eq 1) { 2L } else { 1L })) {
+            Assert-ThrowsDerived -TypeName CompanionContentException -Action { [void] (Read-StateEventRecord -Bytes $info.bytes -ExpectedSequence $expected) } -Message 'An explicit illegal or mismatched expectation never disables validation.'
+        }
+        foreach ($invalidField in 0L, ($maximum + 1)) {
+            $node = [Text.Json.Nodes.JsonNode]::Parse($script:Utf8.GetString($info.bytes))
+            $node['sequence'] = [Text.Json.Nodes.JsonValue]::Create([long] $invalidField)
+            $node['logicalOutboxId'] = [Text.Json.Nodes.JsonValue]::Create($node['incarnationId'].GetValue[string]() + '-' + $invalidField)
+            Assert-ThrowsDerived -TypeName CompanionContentException -Action { [void] (Read-StateEventRecord -Json $node.ToJsonString()) } -Message 'An omitted expectation never relaxes the record field domain.'
+        }
+        Assert-Equal -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $info).outcome -Expected settled -Message 'A correctly named endpoint really settles.'
+        Assert-False -Condition ([IO.File]::Exists((Join-Path (Get-OutboxPath -Fixture $fixture) $info.name))) -Message 'A valid settlement can delete its committed record.'
+        Assert-Equal -Actual (Invoke-LocalSettlement -Fixture $fixture -Info $info).outcome -Expected already-settled -Message 'Valid endpoint settlement evidence survives an identical retry.'
+        if ($sequence -eq $maximum) {
+            Assert-Terminal -Result (Invoke-Publish -Fixture $fixture -RequireRecord) -Script Publish -Class outbox -Detail outbox-sequence-exhausted -Message 'The allocation after the maximum fails closed.'
+        }
+
+        # Arrange/Act/Assert: the persistence boundary refuses invalid numeric authority.
+        $ledgerPath = Join-Path (Get-OutboxPath -Fixture $fixture) 'ledger.json'
+        $beforeLedger = Get-FileHashOrNull -Path $ledgerPath
+        foreach ($badHighWater in -1L, ($maximum + 1)) {
+            $ledger = (Read-StateEventLedger -CompanionRoot $fixture.Root).ledger
+            $ledger.highWaterSequence = $badHighWater
+            Assert-ThrowsDerived -TypeName ArgumentOutOfRangeException -Action { & $invokeStateEventHelper 'Write-StateEventLedger' @{ CompanionRoot = $fixture.Root; Ledger = $ledger; ExistingRecordSequences = @() } } -Message 'An out-of-range high water is never published.'
+        }
+        foreach ($badSequence in 0L, ($maximum + 1)) {
+            $ledger = (Read-StateEventLedger -CompanionRoot $fixture.Root).ledger
+            $ledger.settled[0].sequence = $badSequence
+            Assert-ThrowsDerived -TypeName ArgumentOutOfRangeException -Action { & $invokeStateEventHelper 'Write-StateEventLedger' @{ CompanionRoot = $fixture.Root; Ledger = $ledger; ExistingRecordSequences = @() } } -Message 'An out-of-range tombstone is never published.'
+        }
+        Assert-OrdinalEqual -Actual (Get-FileHashOrNull -Path $ledgerPath) -Expected $beforeLedger -Message 'Rejected ledger publications leave the valid target byte-identical.'
+    }
+
+    foreach ($ledgerState in 'valid', 'absent', 'invalid') {
+        # Arrange: the demonstrated deferred-apply record is only under unknown names.
+        $fixture = New-RuntimeFixture -Prefix "state-event-unknown-$ledgerState"
+        $publication = Invoke-InModuleAttempt -Fixture $fixture -Seams @{ WriteBaseline = { param($Root, $Document) throw [IO.IOException]::new('Keep baseline application pending for the filename regression.') } }
+        Assert-Equal -Actual $publication.result.stateEventOutcome -Expected committed -Message 'The fixture has a genuinely committed record.'
+        Assert-False -Condition $publication.result.baselineApplied -Message 'The committed record has not yet applied its baseline.'
+        $info = Get-RecordInfo -Fixture $fixture -Name @(Get-RecordNames -Fixture $fixture)[0]
+        $outbox = Get-OutboxPath -Fixture $fixture
+        [IO.File]::Move((Join-Path $outbox $info.name), (Join-Path $outbox $unknownNames[0]), $false)
+        foreach ($name in $unknownNames[1..2]) { [IO.File]::WriteAllBytes((Join-Path $outbox $name), $info.bytes) }
+        $ledgerPath = Join-Path $outbox 'ledger.json'
+        if ($ledgerState -ceq 'absent') { [IO.File]::Delete($ledgerPath) }
+        elseif ($ledgerState -ceq 'invalid') { [IO.File]::WriteAllText($ledgerPath, '{}', $script:Utf8) }
+        $baselinePath = Join-Path $fixture.State 'baseline.json'
+
+        # Act/Assert: no unknown filename can grant admission or settlement authority.
+        foreach ($attempt in 1..2) {
+            Assert-Terminal -Result (Invoke-Settle -Fixture $fixture -Info $info) -Script Settlement -Class settlement -Detail settlement-unknown -Message 'Unknown filenames return unknown from the first settlement attempt.'
+            Assert-False -Condition ([IO.File]::Exists($baselinePath)) -Message 'Unknown record bytes never apply the deferred baseline.'
+            Assert-Equal -Actual (Read-StateEventLedger -CompanionRoot $fixture.Root).outcome -Expected valid -Message 'Settlement leaves valid bookkeeping, including after ledger recovery.'
+        }
+        Assert-Equal -Actual @(& $invokeStateEventHelper 'Get-StateEventRecordFileNames' @{ CompanionRoot = $fixture.Root }).Count -Expected 0 -Message 'Unknown names are outside the record namespace.'
+        $inventory = & $invokeStateEventHelper 'Get-StateEventInventory' @{ Path = $outbox }
+        Assert-ThrowsDerived -TypeName IOException -Action { & $invokeStateEventHelper 'Assert-StateEventAllocation' @{ OutboxPath = $outbox; AdditionalSlots = 1; Ceiling = $inventory.count } } -Message 'Unknown physical children remain charged to capacity.'
+
+        foreach ($marker in 'absent', 'bridge') {
+            # Arrange/Act/Assert: bridge ownership ignores unknown names but sees legal work.
+            if ($marker -ceq 'absent') { [IO.File]::Delete((Join-Path $fixture.State 'consumer.json')) }
+            else { Write-Marker -Fixture $fixture -Json (Get-MarkerJson -Owner bridge) }
+            Assert-True -Condition ($null -eq (Get-CompanionOwnershipFailure -CompanionRoot $fixture.Root -Role bridge)) -Message 'Unknown filenames do not falsely block bridge consumption.'
+            $legalPath = Join-Path $outbox $info.name
+            [IO.File]::WriteAllBytes($legalPath, $info.bytes)
+            Assert-Equal -Actual (Get-CompanionOwnershipFailure -CompanionRoot $fixture.Root -Role bridge) -Expected consumer-outbox-pending -Message 'A genuinely legal pending filename remains the blocking control.'
+            [IO.File]::Delete($legalPath)
+            Assert-Equal -Actual (Invoke-Switch -Fixture $fixture -Owner runtime).ExitCode -Expected 0 -Message 'Hand-over preserves and ignores unknown numeric filenames.'
+            Assert-False -Condition ([IO.File]::Exists($baselinePath)) -Message 'Hand-over never adopts the unknown payload as a baseline.'
+        }
+
+        # Act: legitimate work proceeds through publication, resync, settlement and release.
+        $normal = Invoke-InModuleAttempt -Fixture $fixture
+        Assert-Equal -Actual $normal.result.stateEventOutcome -Expected committed -Message 'Unknown high digits do not exhaust normal sequence allocation.'
+        $normalInfo = Get-RecordInfo -Fixture $fixture -Name @(& $invokeStateEventHelper 'Get-StateEventRecordFileNames' @{ CompanionRoot = $fixture.Root })[0]
+        Assert-Equal -Actual $normalInfo.sequence -Expected 1L -Message 'Unknown numeric names never reserve the first valid sequence.'
+        [void] (Invoke-LocalSettlement -Fixture $fixture -Info $normalInfo)
+        [void] (Read-Receipt -Result (Invoke-Publish -Fixture $fixture -RepairOperationId "jr-unknown-$ledgerState") -Message 'Resync can proceed beside unknown names')
+        $resyncInfo = Get-RecordInfo -Fixture $fixture -Name @(& $invokeStateEventHelper 'Get-StateEventRecordFileNames' @{ CompanionRoot = $fixture.Root })[0]
+        Assert-Equal -Actual $resyncInfo.sequence -Expected 2L -Message 'Unknown names do not raise the resync high water.'
+        [void] (Invoke-LocalSettlement -Fixture $fixture -Info $resyncInfo)
+        $confirmedRelease = Invoke-Switch -Fixture $fixture -Owner bridge -Switches @('-DeliveryConfirmed')
+        Assert-Equal -Actual $confirmedRelease.ExitCode -Expected 0 -Message "Confirmed release does not mistake unknown bytes for pending records ($($confirmedRelease.StdErr))."
+        Assert-Equal -Actual (Invoke-Switch -Fixture $fixture -Owner runtime).ExitCode -Expected 0 -Message 'Hand-over after confirmed release remains available.'
+        $release = Invoke-Switch -Fixture $fixture -Owner bridge -Switches @('-AbandonUndelivered')
+        Assert-Equal -Actual $release.ExitCode -Expected 0 -Message 'Explicit abandon remains available beside unknown names.'
+        Assert-False -Condition ([IO.File]::Exists($baselinePath)) -Message 'Abandon still performs its independently required baseline reset.'
+
+        # Assert: every operation preserved unknown bytes and only persisted legal sequences.
+        foreach ($name in $unknownNames) {
+            Assert-OrdinalEqual -Actual (Read-StateEventRecordBytes -Path (Join-Path $outbox $name)).sha256 -Expected $info.sha256 -Message 'Unknown numeric names stay byte-identical through all operations.'
+        }
+        $ledger = Read-StateEventLedger -CompanionRoot $fixture.Root
+        Assert-Equal -Actual $ledger.outcome -Expected valid -Message 'All transitions preserve valid ledger authority.'
+        Assert-Equal -Actual $ledger.ledger.highWaterSequence -Expected 2L -Message 'The high water records only actual legal work.'
+        foreach ($entry in $ledger.ledger.settled) { Assert-True -Condition (& $invokeStateEventHelper 'Test-StateEventSequenceValue' @{ Value = $entry.sequence }) -Message 'No unknown filename enters a tombstone.' }
+    }
+
+    # Arrange: owned and unknown publication residue share the same outbox.
+    $fixture = New-RuntimeFixture -Prefix 'state-event-unknown-cleanup'
+    [void] (Invoke-InModuleAttempt -Fixture $fixture)
+    $info = Get-RecordInfo -Fixture $fixture -Name @(& $invokeStateEventHelper 'Get-StateEventRecordFileNames' @{ CompanionRoot = $fixture.Root })[0]
+    $outbox = Get-OutboxPath -Fixture $fixture
+    $ownedSiblings = foreach ($target in @($legalNames) + @('ledger.json')) { foreach ($extension in 'tmp', 'bak') { "$target.$nonce.$extension" } }
+    $unknownSiblings = foreach ($target in $unknownNames) { foreach ($extension in 'tmp', 'bak') { "$target.$nonce.$extension" } }
+    foreach ($name in @($ownedSiblings) + @($unknownSiblings)) { [IO.File]::WriteAllText((Join-Path $outbox $name), 'publication residue', $script:Utf8) }
+
+    # Act/Assert: cleanup deletes exactly the owned name domain.
+    & $invokeStateEventHelper 'Remove-StateEventPublicationSiblings' @{ Inventory = (& $invokeStateEventHelper 'Get-StateEventInventory' @{ Path = $outbox }); WarningSink = (New-CompanionWarningSink -Profile TurnOperational) }
+    foreach ($name in $ownedSiblings) { Assert-False -Condition ([IO.File]::Exists((Join-Path $outbox $name))) -Message 'A legal event or ledger publication sibling is cleaned.' }
+    foreach ($name in $unknownSiblings) { Assert-True -Condition ([IO.File]::Exists((Join-Path $outbox $name))) -Message 'An out-of-range publication sibling remains unknown bytes.' }
+
+    # Arrange: quarantine is full, but only one diagnostic is in the legal name domain.
+    $quarantine = Join-Path $outbox 'quarantine'
+    [void] [IO.Directory]::CreateDirectory($quarantine)
+    $legalDiagnostic = "$($info.name).$nonce.invalid"
+    $unknownDiagnostics = @($unknownNames | ForEach-Object { "$_.${nonce}.invalid" })
+    foreach ($name in @($unknownDiagnostics) + @($legalDiagnostic)) { [IO.File]::WriteAllText((Join-Path $quarantine $name), 'diagnostic', $script:Utf8) }
+    $observation = Invoke-InCompanionModule {
+        param($Root, $Info, $LegalDiagnostic)
+        $originalLimit = $script:StateEventQuarantineMaximumEntries
+        $originalCount = $script:StateEventTombstoneMaximumCount
+        try {
+            $script:StateEventQuarantineMaximumEntries = 4
+            $outboxPath = Get-StateEventOutboxPath -CompanionRoot $Root
+            $quarantinePath = Prepare-StateEventQuarantine -OutboxPath $outboxPath
+            $legalPruned = -not [IO.File]::Exists((Join-Path $quarantinePath $LegalDiagnostic))
+            $afterPrune = (Get-StateEventInventory -Path $quarantinePath).count
+            $anotherUnknown = 'event-0000000000000000.json.' + ('b' * 32) + '.invalid'
+            [IO.File]::WriteAllText((Join-Path $quarantinePath $anotherUnknown), 'unknown diagnostic')
+            $ledger = (Read-StateEventLedger -CompanionRoot $Root).ledger
+            $entry = New-StateEventTombstone -Sequence $Info.sequence -Outcome quarantined -RecordSha256 $Info.sha256
+            $entry.settledAt = '2000-01-01T00:00:00.0000000Z'
+            $ledger.settled.Add($entry)
+            $script:StateEventTombstoneMaximumCount = 0
+            Write-StateEventLedger -CompanionRoot $Root -Ledger $ledger -ExistingRecordSequences @()
+            $protected = $ledger.settled.Count
+            $warnings = New-CompanionWarningSink -Profile TurnOperational
+            Move-StateEventRecordToQuarantine -OutboxPath $outboxPath -Name $Info.name -ExpectedSha256 $Info.sha256 -WarningSink $warnings
+
+            return [pscustomobject]@{ legalPruned = $legalPruned; afterPrune = $afterPrune; finalCount = (Get-StateEventInventory -Path $quarantinePath).count; sourcePreserved = [IO.File]::Exists((Join-Path $outboxPath $Info.name)); protected = $protected; warnings = @($warnings.Peek() | ForEach-Object { $_.code }) }
+        }
+        finally { $script:StateEventQuarantineMaximumEntries = $originalLimit; $script:StateEventTombstoneMaximumCount = $originalCount }
+    } @($fixture.Root, $info, $legalDiagnostic)
+
+    # Assert: unknown diagnostics consume slots without granting deletion authority.
+    Assert-True -Condition $observation.legalPruned -Message 'Pruning at the real admission boundary removes a legal diagnostic.'
+    Assert-Equal -Actual $observation.afterPrune -Expected 3 -Message 'All three unknown diagnostics remain after eligible pruning.'
+    Assert-Equal -Actual $observation.finalCount -Expected 4 -Message 'A failed quarantine admission never exceeds its bound.'
+    Assert-True -Condition $observation.sourcePreserved -Message 'When unknown entries leave no eligible slot, the fenced source stays in place.'
+    Assert-True -Condition ($observation.warnings -ccontains 'pipeline-cleanup-degraded') -Message 'Unavailable quarantine capacity is disclosed.'
+    Assert-Equal -Actual $observation.protected -Expected 1 -Message 'A surviving legal file protects its tombstone from both age and count pruning.'
+    foreach ($name in $unknownDiagnostics) { Assert-True -Condition ([IO.File]::Exists((Join-Path $quarantine $name))) -Message 'Unknown diagnostic names were never deleted.' }
 }
 
 Write-Output 'PASS: state events'

@@ -3,8 +3,10 @@ $script:StateEventOutboxName = 'outbox'
 $script:StateEventLedgerFileName = 'ledger.json'
 $script:StateEventQuarantineName = 'quarantine'
 # The 7.6 closed grammars end in '\z': '$' would also match before one trailing line feed.
-$script:StateEventRecordNamePattern = '\Aevent-([0-9]{16})\.json\z'
-$script:StateEventSiblingPattern = '\A.+\.[0-9a-f]{32}\.(?:tmp|bak)\z'
+$script:StateEventRecordNameFragment = 'event-(?<sequence>[0-9]{16})\.json'
+$script:StateEventRecordNamePattern = '\A' + $script:StateEventRecordNameFragment + '\z'
+$script:StateEventSiblingPattern = '\A(?<target>ledger\.json|' + $script:StateEventRecordNameFragment + ')\.[0-9a-f]{32}\.(?:tmp|bak)\z'
+$script:StateEventQuarantinePattern = '\A(?<target>' + $script:StateEventRecordNameFragment + ')\.[0-9a-f]{32}\.invalid\z'
 $script:StateEventIncarnationFragment = '[0-9a-f]{32}'
 $script:StateEventIncarnationPattern = '\A' + $script:StateEventIncarnationFragment + '\z'
 $script:StateEventLogicalOutboxIdPattern = '\A(' + $script:StateEventIncarnationFragment + ')-([1-9][0-9]{0,15})\z'
@@ -12,6 +14,7 @@ $script:StateEventSha256Pattern = '\A[0-9a-f]{64}\z'
 $script:StateEventSequenceMaximum = 9007199254740991L
 $script:StateEventPendingLimit = 16
 $script:StateEventChildLimit = 1024
+$script:StateEventDiscoveryLimit = 1032
 $script:StateEventTombstoneMaximumAge = [TimeSpan]::FromDays(180)
 $script:StateEventTombstoneMaximumCount = 512
 $script:StateEventQuarantineMaximumEntries = 64
@@ -113,11 +116,15 @@ function Get-StateEventOutboxPath {
 function Get-StateEventRecordName {
     param([Parameter(Mandatory)] [long] $Sequence)
 
+    if (-not (Test-StateEventSequenceValue -Value $Sequence)) { throw [ArgumentOutOfRangeException]::new('Sequence') }
+
     return 'event-' + $Sequence.ToString('D16', [Globalization.CultureInfo]::InvariantCulture) + '.json'
 }
 
 function Get-StateEventLogicalOutboxId {
     param([Parameter(Mandatory)] [string] $IncarnationId, [Parameter(Mandatory)] [long] $Sequence)
+
+    if (-not (Test-StateEventSequenceValue -Value $Sequence)) { throw [ArgumentOutOfRangeException]::new('Sequence') }
 
     return $IncarnationId + '-' + $Sequence.ToString([Globalization.CultureInfo]::InvariantCulture)
 }
@@ -193,6 +200,32 @@ function Test-StateEventSequenceValue {
     return $Value -ge 1 -and $Value -le $script:StateEventSequenceMaximum
 }
 
+function Test-StateEventRecordName {
+    param([AllowNull()] [object] $Name)
+
+    if ($Name -isnot [string] -or $Name -cnotmatch $script:StateEventRecordNamePattern) { return $false }
+    $sequence = [long]::Parse($Matches['sequence'], [Globalization.CultureInfo]::InvariantCulture)
+
+    return Test-StateEventSequenceValue -Value $sequence
+}
+
+function Test-StateEventPublicationSiblingName {
+    param([AllowNull()] [object] $Name)
+
+    if ($Name -isnot [string] -or $Name -cnotmatch $script:StateEventSiblingPattern) { return $false }
+    $target = $Matches['target']
+
+    return $target -ceq $script:StateEventLedgerFileName -or (Test-StateEventRecordName -Name $target)
+}
+
+function Test-StateEventQuarantineRecordName {
+    param([AllowNull()] [object] $Name)
+
+    if ($Name -isnot [string] -or $Name -cnotmatch $script:StateEventQuarantinePattern) { return $false }
+
+    return Test-StateEventRecordName -Name $Matches['target']
+}
+
 function Test-StateEventLogicalOutboxIdText {
     param([AllowNull()] [object] $Value)
 
@@ -254,7 +287,7 @@ function Get-StateEventRecordFileNames {
     try {
         foreach ($path in [IO.Directory]::EnumerateFiles($outbox)) {
             $name = [IO.Path]::GetFileName($path)
-            if ($name -cmatch $script:StateEventRecordNamePattern) { $names.Add($name) }
+            if (Test-StateEventRecordName -Name $name) { $names.Add($name) }
         }
     }
     catch [IO.DirectoryNotFoundException] { return @() }
@@ -358,7 +391,7 @@ function Read-StateEventLedger {
     param([Parameter(Mandatory)] [string] $CompanionRoot)
 
     $path = Join-Path (Get-StateEventOutboxPath -CompanionRoot $CompanionRoot) $script:StateEventLedgerFileName
-    try { $document = ConvertFrom-StateEventJsonBytes -Bytes (Read-StateEventFileBytes -Path $path -Budget config).bytes -Budget config }
+    try { $document = ConvertFrom-StateEventJsonBytes -Bytes (Read-StateEventFileBytes -Path $path -Budget 'outbox-ledger').bytes -Budget 'outbox-ledger' }
     catch [IO.FileNotFoundException] { return [pscustomobject]@{ outcome = 'absent'; ledger = $null } }
     catch [IO.DirectoryNotFoundException] { return [pscustomobject]@{ outcome = 'absent'; ledger = $null } }
     catch [CompanionContentException] { return [pscustomobject]@{ outcome = 'content-invalid'; ledger = $null } }
@@ -387,7 +420,18 @@ function Write-StateEventLedger {
         [Parameter()] [DateTime] $Now = [DateTime]::UtcNow
     )
 
-    $existing = [Collections.Generic.HashSet[long]]::new([long[]] $ExistingRecordSequences)
+    if ($Ledger.highWaterSequence -lt 0 -or $Ledger.highWaterSequence -gt $script:StateEventSequenceMaximum) { throw [ArgumentOutOfRangeException]::new('highWaterSequence') }
+    foreach ($tombstone in $Ledger.settled) {
+        if (-not (Test-StateEventSequenceValue -Value $tombstone.sequence)) { throw [ArgumentOutOfRangeException]::new('sequence') }
+    }
+    $outbox = Get-StateEventOutboxPath -CompanionRoot $CompanionRoot
+    Assert-StateEventAllocation -OutboxPath $outbox -AdditionalSlots (Get-StateEventLedgerWriteSlots -OutboxPath $outbox)
+    $inventory = Get-StateEventInventory -Path $outbox
+    # Preserve the injected writer signature, but refresh protection after prior cleanup.
+    $existing = [Collections.Generic.HashSet[long]]::new()
+    foreach ($entry in $inventory.entries) {
+        if (Test-StateEventRecordName -Name $entry.Name) { [void] $existing.Add((Get-StateEventSequenceFromName -Name $entry.Name)) }
+    }
     $entries = [Collections.Generic.List[object]]::new()
     foreach ($tombstone in ($Ledger.settled | Sort-Object -Property { [long] $_.sequence })) { $entries.Add($tombstone) }
     foreach ($tombstone in $entries) { if ($tombstone.sequence -gt $Ledger.highWaterSequence) { $Ledger.highWaterSequence = [long] $tombstone.sequence } }
@@ -407,7 +451,7 @@ function Write-StateEventLedger {
     }
     $Ledger.settled = $kept
     $document = [ordered]@{ outboxLedgerVersion = 1; incarnationId = $Ledger.incarnationId; highWaterSequence = [long] $Ledger.highWaterSequence; settled = @($kept) }
-    Write-CompanionStateJson -Path (Join-Path (Get-StateEventOutboxPath -CompanionRoot $CompanionRoot) $script:StateEventLedgerFileName) -Document $document -Budget config
+    Write-CompanionStateJson -Path (Join-Path $outbox $script:StateEventLedgerFileName) -Document $document -Budget 'outbox-ledger'
 }
 
 function New-StateEventTombstone {
@@ -422,6 +466,7 @@ function New-StateEventTombstone {
         [AllowNull()] $RepairOperationId
     )
 
+    if (-not (Test-StateEventSequenceValue -Value $Sequence)) { throw [ArgumentOutOfRangeException]::new('Sequence') }
     $normalize = { param($Value) if ([string]::IsNullOrEmpty([string] $Value)) { $null } else { [string] $Value } }
 
     return [ordered]@{ sequence = $Sequence; outcome = $Outcome; recordSha256 = $RecordSha256; logicalOutboxId = (& $normalize $LogicalOutboxId); kind = (& $normalize $Kind); journalId = (& $normalize $JournalId); eventId = (& $normalize $EventId); repairOperationId = (& $normalize $RepairOperationId); settledAt = (Get-StateEventUtcNow) }
@@ -480,6 +525,8 @@ function Read-StateEventRecord {
     )
 
     if ($Mode -ceq 'Producer' -and $null -eq $AdapterConfig) { throw [ArgumentException]::new('Producer-mode record validation requires an adapter configuration.') }
+    $hasExpectedSequence = $PSBoundParameters.ContainsKey('ExpectedSequence')
+    if ($hasExpectedSequence -and -not (Test-StateEventSequenceValue -Value $ExpectedSequence)) { Fail-Document }
     if ($PSCmdlet.ParameterSetName -ceq 'Bytes') {
         if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { throw [CompanionJsonParseException]::new('State-event record carries a byte order mark.') }
         $document = ConvertFrom-StateEventJsonBytes -Bytes $Bytes -Budget 'state-event'
@@ -493,7 +540,7 @@ function Read-StateEventRecord {
     $incarnation = Test-String (Get-Property $root incarnationId)
     if ($incarnation -cnotmatch $script:StateEventIncarnationPattern) { Fail-Document }
     $sequence = Test-Integer (Get-Property $root sequence) $false $true
-    if (-not (Test-StateEventSequenceValue -Value $sequence) -or ($ExpectedSequence -ne 0 -and $sequence -ne $ExpectedSequence)) { Fail-Document }
+    if (-not (Test-StateEventSequenceValue -Value $sequence) -or ($hasExpectedSequence -and $sequence -ne $ExpectedSequence)) { Fail-Document }
     if (-not [string]::Equals((Test-String (Get-Property $root logicalOutboxId)), (Get-StateEventLogicalOutboxId -IncarnationId $incarnation -Sequence $sequence), [StringComparison]::Ordinal)) { Fail-Document }
     $kind = Test-String (Get-Property $root kind)
     if ($kind -cnotin $script:StateEventRecordKinds) { Fail-Document }
@@ -557,30 +604,6 @@ function Read-StateEventRecord {
 
 # --- Reconciliation ----------------------------------------------------------------
 
-function Remove-StateEventQuarantineExcess {
-    param([Parameter(Mandatory)] [string] $QuarantinePath, [Parameter(Mandatory)] [CompanionWarningSink] $WarningSink)
-
-    try {
-        $entries = @([IO.DirectoryInfo]::new($QuarantinePath).GetFiles() | Sort-Object -Property LastWriteTimeUtc, Name)
-        $excess = $entries.Count - $script:StateEventQuarantineMaximumEntries
-        for ($index = 0; $index -lt $excess; $index++) { [IO.File]::Delete($entries[$index].FullName) }
-    }
-    catch { Add-CompanionWarning -Sink $WarningSink -Code 'pipeline-cleanup-degraded' -Detail $null }
-}
-
-function Move-StateEventRecordToQuarantine {
-    param([Parameter(Mandatory)] [string] $OutboxPath, [Parameter(Mandatory)] [string] $Name, [Parameter(Mandatory)] [CompanionWarningSink] $WarningSink)
-
-    try {
-        $quarantine = Join-Path $OutboxPath $script:StateEventQuarantineName
-        [void] [IO.Directory]::CreateDirectory($quarantine)
-        $target = Join-Path $quarantine ("$Name.$(New-StateEventIncarnationId).invalid")
-        [IO.File]::Move((Join-Path $OutboxPath $Name), $target, $false)
-        Remove-StateEventQuarantineExcess -QuarantinePath $quarantine -WarningSink $WarningSink
-    }
-    catch { Add-CompanionWarning -Sink $WarningSink -Code 'pipeline-cleanup-degraded' -Detail $null }
-}
-
 # Deletes baseline.json and proves it gone. Returns whether a file existed. A file that
 # cannot be opened for any reason other than absence, or that survives the delete, throws:
 # no existence predicate may stand in for the removal that carries a reset obligation.
@@ -611,9 +634,9 @@ function Get-StateEventSequenceFromLogicalOutboxId {
 function Get-StateEventSequenceFromName {
     param([Parameter(Mandatory)] [string] $Name)
 
-    if ($Name -cnotmatch $script:StateEventRecordNamePattern) { throw [ArgumentException]::new('Not a record file name.') }
+    if (-not (Test-StateEventRecordName -Name $Name)) { throw [ArgumentException]::new('Not a record file name.') }
 
-    return [long]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+    return [long]::Parse($Name.Substring(6, 16), [Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Test-StateEventBaselineSupersedes {
@@ -643,16 +666,32 @@ function Add-StateEventQuarantineFence {
     )
 
     if ($Entries.Count -eq 0) { return }
+    $outbox = Get-StateEventOutboxPath -CompanionRoot $CompanionRoot
+    $replacement = [pscustomobject]@{ incarnationId = $Ledger.incarnationId; highWaterSequence = $Ledger.highWaterSequence; settled = [Collections.Generic.List[object]]::new($Ledger.settled) }
     foreach ($entry in $Entries) {
         $logical = if ($null -ne $entry.identity) { $entry.identity.logicalOutboxId } else { $null }
         $kind = if ($null -ne $entry.identity) { $entry.identity.kind } else { $null }
         $repair = if ($null -ne $entry.identity) { $entry.identity.repairOperationId } else { $null }
-        $Ledger.settled.Add((New-StateEventTombstone -Sequence $entry.sequence -Outcome quarantined -RecordSha256 $entry.sha256 -LogicalOutboxId $logical -Kind $kind -JournalId $null -EventId $null -RepairOperationId $repair))
+        try { Assert-StateEventRetirementHash -Path (Join-Path $outbox $entry.name) -ExpectedSha256 $entry.sha256 }
+        catch { Stop-StateEventOperation -Class outbox -Reason outbox-write-failed }
+        $previous = Find-StateEventTombstone -Ledger $replacement -Sequence $entry.sequence
+        if ($null -ne $previous) {
+            if (-not [string]::Equals($previous.recordSha256, $entry.previousSha256, [StringComparison]::Ordinal)) { Stop-StateEventOperation -Class outbox -Reason outbox-write-failed }
+            [void] $replacement.settled.Remove($previous)
+        }
+        elseif ($null -ne $entry.previousSha256) { Stop-StateEventOperation -Class outbox -Reason outbox-write-failed }
+        $replacement.settled.Add((New-StateEventTombstone -Sequence $entry.sequence -Outcome quarantined -RecordSha256 $entry.sha256 -LogicalOutboxId $logical -Kind $kind -JournalId $null -EventId $null -RepairOperationId $repair))
     }
-    try { & $WriteLedger $CompanionRoot $Ledger $RecordSequences }
+    try {
+        $outbox = Get-StateEventOutboxPath -CompanionRoot $CompanionRoot
+        $directorySlots = Get-StateEventQuarantineDirectorySlots -OutboxPath $outbox
+        Assert-StateEventAllocation -OutboxPath $outbox -AdditionalSlots ((Get-StateEventLedgerWriteSlots -OutboxPath $outbox) + $directorySlots)
+        & $WriteLedger $CompanionRoot $replacement $RecordSequences
+    }
     catch { Stop-StateEventOperation -Class outbox -Reason outbox-write-failed }
-    $outbox = Get-StateEventOutboxPath -CompanionRoot $CompanionRoot
-    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -WarningSink $OperationalWarnings }
+    $Ledger.highWaterSequence = $replacement.highWaterSequence
+    $Ledger.settled = $replacement.settled
+    foreach ($entry in $Entries) { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $entry.name -ExpectedSha256 $entry.sha256 -WarningSink $OperationalWarnings }
 }
 
 # The highest-sequence live resync carrying a repair identifier: a pending record or a delivered
@@ -674,7 +713,8 @@ function Find-StateEventLiveResync {
 }
 
 # The fence of a resync's rejected records once a live resync above them is durable. A failed
-# ledger write cannot fail the transaction: the records stay pending, and the receipt says so.
+# ledger write cannot fail the transaction: candidates retain their previous dispositions,
+# and the receipt reports the unfinished fence.
 function Invoke-StateEventResyncFence {
     param(
         [Parameter(Mandatory)] [string] $CompanionRoot,
@@ -688,12 +728,10 @@ function Invoke-StateEventResyncFence {
     catch [StateEventFailure] { Add-CompanionWarning -Sink $ReceiptWarnings -Code 'outbox-quarantine-deferred' -Detail $null }
 }
 
-# The one reconciliation of 7.6, run after every ownership check. Modes: Normal stops at
-# an invalid pending record; Resync and Abandon are repair modes. Abandon fences and quarantines
-# invalid records at once; Resync validates in producer mode and returns the records it rejects
-# for the publish to fence after its resync is durable. Abandon removes the baseline before
-# quarantine whatever the marker or the pending records, and skips the apply. Failures
-# throw StateEventFailure.
+# Reconciliation preserves unproven bytes: Normal refuses invalid pending records and
+# retirement conflicts. Abandon fences current bytes only after reset; Resync returns
+# admission-rejected candidates for fencing below its durable disclosure. Neither applies
+# a changed retired record to the baseline. Failures throw StateEventFailure.
 function Invoke-StateEventReconciliation {
     param(
         [Parameter(Mandatory)] [string] $CompanionRoot,
@@ -708,86 +746,95 @@ function Invoke-StateEventReconciliation {
 
     if ($Mode -ceq 'Resync' -and $null -eq $AdapterConfig) { throw [ArgumentException]::new('A resync reconciliation requires the held adapter configuration.') }
     $outbox = Get-StateEventOutboxPath -CompanionRoot $CompanionRoot
-    try { [void] [IO.Directory]::CreateDirectory($outbox) }
-    catch { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
     try {
-        foreach ($path in [IO.Directory]::EnumerateFiles($outbox)) {
-            if ([IO.Path]::GetFileName($path) -cmatch $script:StateEventSiblingPattern) {
-                try { [IO.File]::Delete($path) } catch { Add-CompanionWarning -Sink $OperationalWarnings -Code 'pipeline-cleanup-degraded' -Detail $null }
-            }
+        [void] [IO.Directory]::CreateDirectory($outbox)
+        $inventory = Get-StateEventInventory -Path $outbox
+        Remove-StateEventPublicationSiblings -Inventory $inventory -WarningSink $OperationalWarnings
+        $inventory = Get-StateEventInventory -Path $outbox
+        $recordNames = [Collections.Generic.List[string]]::new()
+        foreach ($entry in $inventory.entries) {
+            if ((Test-StateEventRecordName -Name $entry.Name) -and (Test-StateEventOrdinaryFile -Entry $entry)) { $recordNames.Add($entry.Name) }
         }
     }
-    catch { Add-CompanionWarning -Sink $OperationalWarnings -Code 'pipeline-cleanup-degraded' -Detail $null }
-    $recordNames = [Collections.Generic.List[string]]::new()
-    try {
-        $children = 0
-        foreach ($entry in [IO.DirectoryInfo]::new($outbox).EnumerateFileSystemInfos()) {
-            $children++
-            if ($children -gt $script:StateEventChildLimit) { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
-            if ($entry -is [IO.FileInfo] -and $entry.Name -cmatch $script:StateEventRecordNamePattern) { $recordNames.Add($entry.Name) }
-        }
-    }
-    catch [StateEventFailure] { throw }
     catch { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
     $sortedNames = $recordNames.ToArray()
     [Array]::Sort($sortedNames, [StringComparer]::Ordinal)
     $sequences = [long[]] @($sortedNames | ForEach-Object { Get-StateEventSequenceFromName -Name $_ })
-    $highestFile = if ($sequences.Count -gt 0) { [long] $sequences[-1] } else { 0L }
+    $highestFile = if ($sequences.Count -gt 0) { $sequences[-1] } else { 0L }
 
     $ledgerRead = Read-StateEventLedger -CompanionRoot $CompanionRoot
     if ($ledgerRead.outcome -ceq 'infrastructure-failure') { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
     $ledger = $ledgerRead.ledger
     if ($ledgerRead.outcome -cne 'valid') {
         $ledger = [pscustomobject]@{ incarnationId = (New-StateEventIncarnationId); highWaterSequence = $highestFile; settled = [Collections.Generic.List[object]]::new() }
-        try { & $WriteLedger $CompanionRoot $ledger $sequences }
+        try {
+            $reserve = if ($sequences.Count -gt 0) { 2 + (Get-StateEventQuarantineDirectorySlots -OutboxPath $outbox) } else { 0 }
+            Assert-StateEventAllocation -OutboxPath $outbox -AdditionalSlots (Get-StateEventLedgerWriteSlots -OutboxPath $outbox) -ReservedSlots $reserve
+            & $WriteLedger $CompanionRoot $ledger $sequences
+        }
         catch { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
         if (($ledgerRead.outcome -ceq 'content-invalid' -or $sequences.Count -gt 0) -and $null -ne $ReceiptWarnings) { Add-CompanionWarning -Sink $ReceiptWarnings -Code 'outbox-ledger-rebuilt' -Detail $null }
     }
 
-    $pendingNames = [Collections.Generic.List[string]]::new()
+    $pendingFiles = [Collections.Generic.List[object]]::new()
+    $invalid = [Collections.Generic.List[object]]::new()
     foreach ($name in $sortedNames) {
         $sequence = Get-StateEventSequenceFromName -Name $name
         $tombstone = Find-StateEventTombstone -Ledger $ledger -Sequence $sequence
-        if ($null -eq $tombstone) { $pendingNames.Add($name); continue }
-        if ($tombstone.outcome -ceq 'quarantined') { Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $name -WarningSink $OperationalWarnings; continue }
-        try { [IO.File]::Delete((Join-Path $outbox $name)) } catch { Add-CompanionWarning -Sink $OperationalWarnings -Code 'pipeline-cleanup-degraded' -Detail $null }
-    }
-
-    # The runtime journal may hold undelivered events the core cannot see, so an abandon
-    # removes the baseline even on a root that is not releasing.
-    $baselineRemoved = $false
-    if ($Mode -ceq 'Abandon') {
-        try { $baselineRemoved = [bool] (& $RemoveBaseline $CompanionRoot) }
-        catch { Stop-StateEventOperation -Class outbox -Reason outbox-write-failed }
-    }
-    $releasingByRecord = $pendingNames.Count -gt 0
-
-    $valid = [Collections.Generic.List[object]]::new()
-    $invalid = [Collections.Generic.List[object]]::new()
-    foreach ($name in $pendingNames) {
-        $sequence = Get-StateEventSequenceFromName -Name $name
+        if ($null -eq $tombstone) {
+            $pendingFiles.Add([pscustomobject]@{ name = $name; sequence = $sequence })
+            continue
+        }
         try { $file = Read-StateEventRecordBytes -Path (Join-Path $outbox $name) }
         catch { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
-        try {
-            $record = if ($Mode -ceq 'Resync') { Read-StateEventRecord -Bytes $file.bytes -Mode Producer -AdapterConfig $AdapterConfig -ExpectedSequence $sequence } else { Read-StateEventRecord -Bytes $file.bytes -ExpectedSequence $sequence }
-            $valid.Add([pscustomobject]@{ name = $name; sequence = $sequence; sha256 = $file.sha256; record = $record })
+        if ([string]::Equals($file.sha256, $tombstone.recordSha256, [StringComparison]::Ordinal)) {
+            if ($tombstone.outcome -ceq 'quarantined') {
+                Move-StateEventRecordToQuarantine -OutboxPath $outbox -Name $name -ExpectedSha256 $file.sha256 -WarningSink $OperationalWarnings
+            }
+            else {
+                try {
+                    Assert-StateEventRetirementHash -Path (Join-Path $outbox $name) -ExpectedSha256 $file.sha256
+                    [IO.File]::Delete((Join-Path $outbox $name))
+                }
+                catch { Add-CompanionWarning -Sink $OperationalWarnings -Code 'pipeline-cleanup-degraded' -Detail $null }
+            }
+            continue
         }
-        catch {
-            if ($_.Exception -isnot [CompanionContentException] -or (Test-ValidatorInfrastructureFailure -Exception $_.Exception)) {
-                if ($Mode -ceq 'Resync') { Stop-StateEventOperation -Class compute -Reason adapter-validator-infrastructure-failed }
-                throw
-            }
-            $identity = $null
-            if ($Mode -ceq 'Resync') {
-                try { $identity = Read-StateEventRecord -Bytes $file.bytes -ExpectedSequence $sequence } catch { $identity = $null }
-            }
-            $invalid.Add([pscustomobject]@{ name = $name; sequence = $sequence; sha256 = $file.sha256; identity = $identity })
+        if ($Mode -ceq 'Normal') { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
+        $admission = Get-StateEventCandidateAdmission -File $file -Sequence $sequence -Mode $Mode -AdapterConfig $AdapterConfig
+        if ($Mode -ceq 'Resync' -and $admission.accepted) { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
+        $invalid.Add([pscustomobject]@{ name = $name; sequence = $sequence; sha256 = $file.sha256; identity = (Get-StateEventIdentityMetadata -Record $admission.identity); previousSha256 = $tombstone.recordSha256 })
+    }
+
+    $releasingByRecord = $pendingFiles.Count -gt 0 -or $invalid.Count -gt 0
+    $baselineRemoved = $false
+    if ($Mode -ceq 'Abandon') {
+        try {
+            # A pending set can require both a quarantine fence and an abandon write.
+            $writes = if ($pendingFiles.Count -gt 0) { 2 } elseif ($invalid.Count -gt 0) { 1 } else { 0 }
+            $directorySlots = if ($writes -gt 0) { Get-StateEventQuarantineDirectorySlots -OutboxPath $outbox } else { 0 }
+            Assert-StateEventAllocation -OutboxPath $outbox -AdditionalSlots (2 * $writes + $directorySlots)
+            $baselineRemoved = [bool] (& $RemoveBaseline $CompanionRoot)
+        }
+        catch { Stop-StateEventOperation -Class outbox -Reason outbox-write-failed }
+    }
+
+    $valid = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $pendingFiles) {
+        try { $file = Read-StateEventRecordBytes -Path (Join-Path $outbox $entry.name) }
+        catch { Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed }
+        $admission = Get-StateEventCandidateAdmission -File $file -Sequence $entry.sequence -Mode $Mode -AdapterConfig $AdapterConfig
+        if ($admission.accepted) {
+            # Only H needs its full digest/baseline; settlement and replay use identity metadata.
+            if ($valid.Count -gt 0) { $valid[$valid.Count - 1].record = Get-StateEventIdentityMetadata -Record $valid[$valid.Count - 1].record }
+            $valid.Add([pscustomobject]@{ name = $entry.name; sequence = $entry.sequence; sha256 = $file.sha256; record = $admission.identity })
+        }
+        else {
+            $invalid.Add([pscustomobject]@{ name = $entry.name; sequence = $entry.sequence; sha256 = $file.sha256; identity = (Get-StateEventIdentityMetadata -Record $admission.identity); previousSha256 = $null })
         }
     }
     if ($invalid.Count -gt 0) {
         if ($Mode -ceq 'Normal') { Stop-StateEventOperation -Class outbox -Reason outbox-record-invalid }
-        # An abandon fences at once; a resync fences after its commit point (publish step 8), so
-        # a quarantine never becomes durable without the disclosure that follows it.
         if ($Mode -ceq 'Abandon') { Add-StateEventQuarantineFence -CompanionRoot $CompanionRoot -Ledger $ledger -Entries $invalid.ToArray() -RecordSequences $sequences -OperationalWarnings $OperationalWarnings -WriteLedger $WriteLedger }
     }
 
@@ -800,8 +847,6 @@ function Invoke-StateEventReconciliation {
         if ($baselineRead.outcome -ceq 'valid') {
             $baselineRoot = $baselineRead.document.RootElement
             $applied = Test-StateEventTargetIdentityEqual -GeneratedAt $baselineRoot.GetProperty('generatedAt') -Source $baselineRoot.GetProperty('source') -State $newest.state.RootElement
-            # An outstanding record (the baseline is its own recorded predecessor) is never
-            # superseded, whatever the generation times say.
             $predecessor = $newest.document.RootElement.GetProperty('baseline')
             $outstanding = -not $applied -and $predecessor.ValueKind -ne [Text.Json.JsonValueKind]::Null -and (Test-StateEventTargetIdentityEqual -GeneratedAt $predecessor.GetProperty('generatedAt') -Source $predecessor.GetProperty('source') -State $baselineRoot)
             if (-not $applied -and -not $outstanding) { $superseded = Test-StateEventBaselineSupersedes -Baseline $baselineRead.document -State $newest.state }
@@ -811,11 +856,49 @@ function Invoke-StateEventReconciliation {
             catch { Stop-StateEventOperation -Class outbox -Reason outbox-apply-failed }
         }
     }
-    # Assigned through a variable, so an empty list stays an empty array rather than null.
     $rejected = [object[]]::new(0)
     if ($Mode -ceq 'Resync') { $rejected = $invalid.ToArray() }
 
     return [pscustomobject]@{ ledger = $ledger; pending = $valid; recordSequences = $sequences; highestFileSequence = $highestFile; baselineRemoved = $baselineRemoved; releasingByRecord = $releasingByRecord; rejected = $rejected }
+}
+
+function Get-StateEventIdentityMetadata {
+    param([AllowNull()] $Record)
+
+    if ($null -eq $Record) { return $null }
+
+    return [pscustomobject]@{ logicalOutboxId = $Record.logicalOutboxId; kind = $Record.kind; repairOperationId = $Record.repairOperationId }
+}
+
+function Get-StateEventCandidateAdmission {
+    param(
+        [Parameter(Mandatory)] $File,
+        [Parameter(Mandatory)] [long] $Sequence,
+        [Parameter(Mandatory)] [ValidateSet('Normal', 'Resync', 'Abandon', IgnoreCase = $false)] [string] $Mode,
+        [AllowNull()] [AdapterCompatibilityConfig] $AdapterConfig
+    )
+
+    try {
+        $record = if ($Mode -ceq 'Resync') { Read-StateEventRecord -Bytes $File.bytes -Mode Producer -AdapterConfig $AdapterConfig -ExpectedSequence $Sequence } else { Read-StateEventRecord -Bytes $File.bytes -ExpectedSequence $Sequence }
+
+        return [pscustomobject]@{ accepted = $true; identity = $record }
+    }
+    catch {
+        if ($_.Exception -isnot [CompanionContentException] -or (Test-ValidatorInfrastructureFailure -Exception $_.Exception)) {
+            if ($Mode -ceq 'Resync') { Stop-StateEventOperation -Class compute -Reason adapter-validator-infrastructure-failed }
+            Stop-StateEventOperation -Class outbox -Reason outbox-setup-failed
+        }
+    }
+    $identity = $null
+    if ($Mode -ceq 'Resync') {
+        try { $identity = Read-StateEventRecord -Bytes $File.bytes -ExpectedSequence $Sequence }
+        catch {
+            if ($_.Exception -isnot [CompanionContentException]) { Stop-StateEventOperation -Class compute -Reason adapter-validator-infrastructure-failed }
+            # Invalid structural bytes have no trusted logical identity.
+        }
+    }
+
+    return [pscustomobject]@{ accepted = $false; identity = $identity }
 }
 
 # --- Diagnostics, receipts, and results ----------------------------------------------
@@ -1073,10 +1156,19 @@ function Invoke-StateEventConsumption {
             $comparisonBaseline = $baseline
         }
 
-        # A repair must commit its resync before it can drain what fills the outbox, so the
-        # bound applies to ordinary publishes; resyncs stay finite because a repair has one live
-        # resync and a fresh one commits only above a record its fence then retires.
+        # The pending-count exemption lets a repair establish disclosure before fencing.
+        # Replays use the full rejected-candidate ceiling; physical reservations bound every
+        # new record, including a replacement fence that does not reduce pending count.
         if (-not $Resync -and $reconciliation.pending.Count -ge $script:StateEventPendingLimit) { return New-StateEventOperationResult -Outcome failure -Class outbox -Reason outbox-full -ProvenanceDocument $target }
+        try {
+            $outbox = Get-StateEventOutboxPath -CompanionRoot $CompanionRoot
+            $directorySlots = Get-StateEventQuarantineDirectorySlots -OutboxPath $outbox
+            $fenceSlots = if ($Resync -and $reconciliation.rejected.Count -gt 0) { 2 } else { 0 }
+            $reserve = 2 + $directorySlots + $(if ($Resync) { 0 } else { 1 })
+            $ceiling = if ($Resync) { $script:StateEventDiscoveryLimit } else { $script:StateEventChildLimit }
+            Assert-StateEventAllocation -OutboxPath $outbox -AdditionalSlots (1 + $fenceSlots) -ReservedSlots $reserve -Ceiling $ceiling
+        }
+        catch { return New-StateEventOperationResult -Outcome failure -Class outbox -Reason outbox-full -ProvenanceDocument $target }
         $nextSequence = [Math]::Max([long] $reconciliation.ledger.highWaterSequence, [long] $reconciliation.highestFileSequence) + 1
         if ($nextSequence -gt $script:StateEventSequenceMaximum) { return New-StateEventOperationResult -Outcome failure -Class outbox -Reason outbox-sequence-exhausted -ProvenanceDocument $target }
 
