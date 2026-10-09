@@ -1,0 +1,20 @@
+{
+  "empty": {
+    "retainedHandoffs": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "nonempty": {
+    "retainedHandoffs": 2,
+    "sha256": "c7d7e12d3c6ffb7f05c198d25475ac736b4136a4b1b9aadd53db60ecfcbfb97c"
+  },
+  "identities": [
+    {
+      "logicalOutboxId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-10",
+      "recordSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "logicalOutboxId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2",
+      "recordSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}

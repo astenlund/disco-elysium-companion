@@ -31,8 +31,41 @@ try {
     $empty = Read-Inventory
     Assert-Resource ($empty.uncompactedEvents -eq 0 -and $empty.retainedHandoffs -eq 0 -and [long]$empty.freeBytes -gt 0) 'Empty inventory was not admitted.'
     Assert-Resource ($empty.pendingOutbox -eq 0) 'Empty outbox was charged sixteen speculative records.'
-    $emptyIdentityHash = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData([byte[]]@()))
-    Assert-Resource ($empty.retainedHandoffIdentitySha256 -ceq $emptyIdentityHash) 'Empty retained identity proof is invalid.'
+    $vectorFile = Join-Path $repository 'runtime/test/support/handoff-digest-vectors.json'
+    $vectors = Get-Content -LiteralPath $vectorFile -Raw | ConvertFrom-Json -DateKind String
+    Assert-Resource ($empty.retainedHandoffs -eq $vectors.empty.retainedHandoffs -and $empty.retainedHandoffIdentitySha256 -ceq $vectors.empty.sha256) 'Empty native digest differs from the fixed shared vector.'
+    $builder = Join-Path $repository 'runtime/test/support/handoff-digest-fixture.ts'
+    $recordText = @(& node $builder $scopeHash) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0) { throw ($scriptName + ': valid repair fixture construction failed') }
+    $records = @(($recordText | ConvertFrom-Json -DateKind String).operations)
+    Assert-Resource ($records.Count -eq 2) 'Digest fixture must contain two distinct full repair records.'
+    $operations = Join-Path $fixture 'operations'
+    [IO.Directory]::CreateDirectory($operations) | Out-Null
+    $recordPaths = @()
+    foreach ($record in $records) {
+        Assert-Resource ([regex]::IsMatch($record.operationId, '^jr-[0-9a-f]{32}$', [Text.RegularExpressions.RegexOptions]::CultureInvariant)) 'Digest fixture operation identity is invalid.'
+        Assert-Resource ($record.kind -ceq 'repair' -and -not $record.compacted -and $record.scopeSha256 -ceq $scopeHash) 'Digest fixture is not a full repair for this scope.'
+        $recordPaths += Join-Path $operations ($record.operationId + '.json')
+    }
+    Assert-Resource ($recordPaths[0] -cne $recordPaths[1]) 'Digest fixture operation paths must differ.'
+    [IO.File]::WriteAllText($recordPaths[0], (ConvertTo-Json -InputObject $records[0] -Depth 32 -Compress), $encoding)
+    $ordered = Read-Inventory
+    Assert-Resource ($ordered.invalidOperations -eq 0 -and $ordered.fullTerminalOperations -eq 1) 'Ordered digest fixture record was not admitted.'
+    Assert-Resource ($ordered.retainedHandoffs -eq $vectors.nonempty.retainedHandoffs -and $ordered.retainedHandoffIdentitySha256 -ceq $vectors.nonempty.sha256) 'Ordered native digest differs from the fixed shared vector.'
+    [array]::Reverse($records[0].plan.handoffs)
+    [IO.File]::WriteAllText($recordPaths[0], (ConvertTo-Json -InputObject $records[0] -Depth 32 -Compress), $encoding)
+    $reversed = Read-Inventory
+    Assert-Resource ($reversed.invalidOperations -eq 0 -and $reversed.fullTerminalOperations -eq 1) 'Reversed digest fixture record was not admitted.'
+    Assert-Resource ($reversed.retainedHandoffs -eq $vectors.nonempty.retainedHandoffs -and $reversed.retainedHandoffIdentitySha256 -ceq $vectors.nonempty.sha256) 'Native digest changed with handoff order.'
+    [IO.File]::WriteAllText($recordPaths[1], (ConvertTo-Json -InputObject $records[1] -Depth 32 -Compress), $encoding)
+    $duplicated = Read-Inventory
+    Assert-Resource ($duplicated.invalidOperations -eq 0 -and $duplicated.fullTerminalOperations -eq 2) 'Both non-compacted repair records must be admitted.'
+    Assert-Resource ($duplicated.retainedHandoffs -eq $vectors.nonempty.retainedHandoffs -and $duplicated.retainedHandoffIdentitySha256 -ceq $vectors.nonempty.sha256) 'Native digest double-counted identities retained across records.'
+    $marker = Read-Inventory $true
+    Assert-Resource ($marker.retainedHandoffs -eq $vectors.empty.retainedHandoffs -and $marker.retainedHandoffIdentitySha256 -ceq $vectors.empty.sha256) 'Marker digest did not retain its empty-set placeholder.'
+    foreach ($recordPath in $recordPaths) { [IO.File]::Delete($recordPath) }
+    $cleared = Read-Inventory
+    Assert-Resource ($cleared.fullTerminalOperations -eq 0 -and $cleared.invalidOperations -eq 0 -and $cleared.retainedHandoffs -eq $vectors.empty.retainedHandoffs -and $cleared.retainedHandoffIdentitySha256 -ceq $vectors.empty.sha256) 'Digest fixture cleanup did not restore the existing negative-test baseline.'
     $outbox = Join-Path $container 'state/outbox'
     [IO.Directory]::CreateDirectory($outbox) | Out-Null
     for ($index = 1; $index -le 16; $index++) { [IO.File]::WriteAllText((Join-Path $outbox ('event-' + $index.ToString('D16') + '.json')), '{}', $encoding) }
@@ -88,8 +121,6 @@ try {
     Assert-Resource ($damaged.uncompactedEvents -eq $EventCount -and $damaged.invalidEvents -eq $EventCount) 'Damaged event inventory was truncated or counted as clean.'
     Assert-Resource (-not (Read-Inventory $true).uncertainWorkspace) 'Marker-only inventory imported event authority.'
 
-    $operations = Join-Path $fixture 'operations'
-    [IO.Directory]::CreateDirectory($operations) | Out-Null
     [IO.File]::WriteAllText((Join-Path $operations ('jr-' + ('a' * 32) + '.json')), '{"oops":true}', $encoding)
     Assert-Resource ((Read-Inventory).invalidOperations -eq 1) 'Invalid operation authority was silently ignored.'
     [IO.File]::WriteAllText((Join-Path $fixture 'prepared-context.txt'), 'stale', $encoding)
