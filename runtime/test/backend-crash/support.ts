@@ -61,7 +61,7 @@ async function tree(root: string): Promise<Map<string, Buffer>> {
 
 export async function sourceManifest(): Promise<Record<string, string>> {
   const result: Record<string, string> = {};
-  for (const relative of ['runtime/src', 'runtime/scripts', 'runtime/test/backend-crash', 'runtime/test/support', 'runtime/test/fixtures', 'core']) {
+  for (const relative of ['runtime/src', 'runtime/scripts', 'runtime/test/backend-crash', 'runtime/test/client', 'runtime/test/support', 'runtime/test/fixtures', 'core']) {
     for (const [name, bytes] of await tree(path.join(repository, relative))) {
       if (/\.(?:ts|ps1|psm1|cs)$/.test(name)) { result[relative + '/' + name] = bytesHash(bytes); }
     }
@@ -84,9 +84,9 @@ export class CrashFixture {
     this.fixture = fixture; this.supervisor = supervisor; this.manifest = manifest; this.evidence = evidence;
   }
 
-  static async create(label: string, selected: readonly string[], allCases: readonly string[]): Promise<CrashFixture> {
+  static async create(label: string, selected: readonly string[], allCases: readonly string[], fixtureMode: 'runtime' | 'runtime-owned' = 'runtime-owned'): Promise<CrashFixture> {
     const manifest = await sourceManifest();
-    const fixture = await companionFixture('runtime-owned');
+    const fixture = await companionFixture(fixtureMode);
     const root = privateFixture(fixture.root);
     const evidence = path.join(repository, '.tmp/nightshift/backend-crash-impl', `${label}-${path.basename(root)}`);
     await fs.mkdir(evidence, { recursive: true });

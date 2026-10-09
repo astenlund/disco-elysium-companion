@@ -8,9 +8,9 @@ import type { Kernel } from '../../src/backend/kernel.ts';
 import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
 import { Deadline } from '../../src/deadline.ts';
-import type { OperationRecord, RepairOperation } from '../../src/operation-records.ts';
+import { parseOperation, type OperationRecord, type RepairOperation } from '../../src/operation-records.ts';
 import { activeRecoveryOwner } from '../../src/recovery-progress.ts';
-import type { StateSafety } from '../../src/safety-records.ts';
+import { parseStateSafety, type StateSafety } from '../../src/safety-records.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { crashExit, publicationExit, privateFixture, sourceManifest, type ChildProof, type RecoveryCut, type ReleaseCut } from './support.ts';
 
@@ -86,7 +86,33 @@ function recoveryMatch(relative: string, value: unknown, cut: RecoveryCut, prede
 }
 
 try {
-  if (mode === 'prepare') {
+  if (mode === 'first-owner-handover') {
+    const handover = await backend.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false });
+    assert.equal(handover.consumerResult?.success, true);
+    if (handover.consumerResult?.success !== true) { assert.fail('Private first-owner hand-over failed.'); }
+    assert.equal(handover.consumerResult.value.previousOwner, 'absent');
+    await backend.shutdown(true);
+    writeSync(1, JSON.stringify(proof({ boundary: 'firstOwnerHandedOver' })) + '\n');
+  } else if (mode === 'first-owner-cut') {
+    const nativeWrite = k.storage.write.bind(k.storage);
+    k.storage.write = async (relative, value, profile, expected, deadline) => {
+      const result = await nativeWrite(relative, value, profile, expected, deadline);
+      const normalized = relative.replaceAll(path.sep, '/');
+      if (!normalized.startsWith('operations/jr-') || !normalized.endsWith('.json')) { return result; }
+      const bytes = await fs.readFile(path.join(k.scope.dataRoot, normalized));
+      const repair = parseOperation(JSON.parse(bytes.toString('utf8')), k.scope.bindingSha256);
+      if (repair.compacted || repair.kind !== 'repair' || repair.cause !== 'lostJournal' || repair.recovery.episodes[0]?.phase !== 'preparing') { return result; }
+      assert.equal(bytesHash(bytes), result);
+      assert.equal(repair.recovery.activeEpisode, 0);
+      const safety = parseStateSafety(JSON.parse(await fs.readFile(path.join(k.scope.dataRoot, 'state-safety.json'), 'utf8')), k.scope.bindingSha256);
+      assert.equal(safety.recoveryWitness?.phase, 'preparing');
+      assert.deepEqual(safety.recoveryWitness?.owner, activeRecoveryOwner(repair));
+      assert.equal(safety.pendingCheck, null);
+      exitAt({ boundary: 'lostJournalPrepared', relative: normalized, sha256: result, repairId: repair.operationId }, crashExit);
+    };
+    await backend.startup({ kind: 'chat' });
+    assert.fail('The first-owner startup did not reach the lostJournal preparation cut.');
+  } else if (mode === 'prepare') {
     assert.equal((await backend.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false })).consumerResult?.success, true);
     // The first drain records lostJournal. The second executes the normal append
     // and real core settlement under that recorded owner, without a resync run.
