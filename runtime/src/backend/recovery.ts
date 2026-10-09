@@ -181,7 +181,8 @@ export class RecoveryCoordinator {
       startedAt: now, completedAt: null, outcome: null,
       plan: { lastGoodSequence: prerequisite?.kind === 'header' ? 0 : lastGood, affected: readableEvents.map(event => ({ sequence: event.metadata.sequence, eventId: event.metadata.eventId, fileSha256: event.sha256 })),
         cursorTo: prerequisite?.kind === 'cursor' && request.journal.header.status === 'valid' ? request.journal.header.value.highWaterSequence : null,
-        rejectedRecord: request.rejected ?? null, lostOperations: inventory.invalid.filter(item => item.sha256 !== null).map(item => ({ name: item.name, sha256: item.sha256!, destination: `quarantine/${item.name}.${newIdentity()}.quarantined` })), publishedVersions: null, retiredRecords: [], handoffs, correctionId: correction?.correctionId ?? null,
+        rejectedRecord: request.rejected === undefined ? null : { name: request.rejected.name, sha256: request.rejected.sha256 },
+        lostOperations: inventory.invalid.filter(item => item.sha256 !== null).map(item => ({ name: item.name, sha256: item.sha256!, destination: `quarantine/${item.name}.${newIdentity()}.quarantined` })), publishedVersions: null, retiredRecords: [], handoffs, correctionId: correction?.correctionId ?? null,
         inheritedRecovery: reservedWitness !== null && !sameRecoveryOwner(reservedWitness.owner, owner) ? reservedWitness.owner : null, skippedRanges: mergeRanges(inheritedRanges, prerequisite?.skippedRanges ?? []) },
       recovery: { attempts: [{ publication: 'due', selectedRecord: null, journalEvent: null }], episodes: [episode], activeEpisode: 0 } };
     await k.resources.preflight(path.join(k.scope.dataRoot, 'operations', operationId + '.json'), Buffer.from(stringifyProspectiveJson(record, 'state-event', 'operations/' + operationId + '.json', error => k.resources.prospectiveFailure(error))), 'state-event', deadline);
