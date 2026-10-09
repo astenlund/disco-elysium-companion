@@ -398,8 +398,8 @@ describe('Claude provider state machine', () => {
       try {
         const result = session.sendTurn(turn());
         const input = await fixture.query.waitInput();
-        fixture.query.emitMessage({ type: 'assistant', parent_tool_use_id: null, session_id: fixture.query.options.sessionId ?? fixture.query.options.resume, error, message: { content: [] } });
-        fixture.query.result(input, { subtype: 'error_during_execution', is_error: true, terminal_reason: 'api_error', api_error_status: 429 });
+        fixture.query.emitMessage({ type: 'assistant', parent_tool_use_id: null, session_id: fixture.query.options.sessionId ?? fixture.query.options.resume, uuid: input.uuid, error, message: { content: [] } });
+        fixture.query.result(input, { subtype: 'success', is_error: true, terminal_reason: 'api_error', api_error_status: 429 });
         assert.deepEqual(await result, { kind: 'failed', code: expected, retryable: true });
       } finally { await session.close(); }
     });
@@ -412,8 +412,8 @@ describe('Claude provider state machine', () => {
       try {
         const result = session.sendTurn(turn());
         const input = await fixture.query.waitInput();
-        fixture.query.emitMessage({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } });
-        fixture.query.result(input, { subtype: 'error_during_execution', is_error: true, terminal_reason: reason, api_error_status: 429 });
+        fixture.query.emitMessage({ type: 'rate_limit_event', session_id: fixture.query.options.sessionId ?? fixture.query.options.resume, uuid: input.uuid, rate_limit_info: { status: 'rejected' } });
+        fixture.query.result(input, { subtype: 'success', is_error: true, terminal_reason: reason, api_error_status: 429 });
         assert.deepEqual(await result, { kind: 'failed', code: 'providerError', retryable: true });
       } finally { await session.close(); }
     });
