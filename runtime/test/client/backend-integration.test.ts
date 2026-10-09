@@ -13,7 +13,7 @@ import { companionFixture } from '../support/companion.ts';
 import { FakeProvider, instructionHash } from './support.ts';
 
 test('real private coordinator carries accepted state through SessionHost and resumes its acknowledged binding', { timeout: 1800000 }, async () => {
-  const fixture = await companionFixture('runtime');
+  const fixture = await companionFixture('runtime-owned-empty');
   let backend: RuntimeBackend | null = null;
   let host: SessionHost | null = null;
   const progress = (stage: string): void => { process.stdout.write(`# ${new Date().toISOString()} ${stage}\n`); };
@@ -24,12 +24,24 @@ test('real private coordinator carries accepted state through SessionHost and re
     progress(`backend diagnostic ${phase}: ${message.slice(0, 4096)}`);
   };
   try {
-    progress('opening private consumer command');
+    progress('releasing the private empty runtime-owned fixture to bridge');
+    backend = await openBackend({ companionRoot: fixture.root, onDiagnostic: diagnose });
+    const release = await backend.startup({ kind: 'consumer', owner: 'bridge', abandonUndelivered: true });
+    assert.equal(release.consumerResult?.success, true);
+    if (release.consumerResult?.success !== true) { assert.fail('Private bridge release failed.'); }
+    assert.equal(release.consumerResult.value.previousOwner, 'runtime');
+    assert.equal(release.consumerResult.value.abandonedCount, 0);
+    await backend.shutdown(true); backend = null;
+    progress('opening private consumer hand-over from bridge');
     backend = await openBackend({ companionRoot: fixture.root, onDiagnostic: diagnose });
     const ownership = await backend.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false });
     assert.equal(ownership.consumerResult?.success, true);
+    if (ownership.consumerResult?.success !== true) { assert.fail('Private runtime hand-over failed.'); }
+    assert.equal(ownership.consumerResult.value.previousOwner, 'bridge');
+    const header = JSON.parse(await fs.readFile(path.join(backend.scope.dataRoot, 'journal', 'journal.json'), 'utf8')) as { historyVerified?: unknown };
+    assert.equal(header.historyVerified, true);
     await backend.shutdown(true); backend = null;
-    progress('private ownership command completed; opening chat backend');
+    progress('verified private bridge hand-over completed; opening chat backend');
 
     const events: HostEvent[] = [];
     backend = await openBackend({ companionRoot: fixture.root, onStatus: status => {
@@ -40,7 +52,7 @@ test('real private coordinator carries accepted state through SessionHost and re
     progress('private chat startup completed');
     assert.equal(startup.notOwner, false);
     assert.equal(backend.status.stateSafety.state === 'unavailable', false, JSON.stringify(backend.status));
-    assert.ok(backend.status.journal.unacknowledgedEvents > 0, `Initial recovery produced no deliverable event: ${JSON.stringify(backend.status)}`);
+    assert.ok(backend.status.journal.unacknowledgedEvents > 0, `Verified bridge hand-over produced no deliverable event: ${JSON.stringify(backend.status)}`);
     const provider = new FakeProvider();
     let delivered: Record<string, unknown> | null = null;
     provider.configure = session => {
