@@ -1,4 +1,5 @@
 import type { RuntimeConfig } from '../config.ts';
+import type { CapacityStatus } from '../capacity.ts';
 import type { ConsumerReceipt, CoreResult } from '../core-client.ts';
 import type { ProcessIdentities } from '../identity.ts';
 import type { OperationalStatus } from '../operational.ts';
@@ -26,6 +27,7 @@ export interface Freshness {
   readonly checkedAt: string | null;
 }
 export interface BackendStatus {
+  readonly capacity: CapacityStatus;
   readonly consumer: 'owner' | 'notOwner' | 'unknown';
   readonly freshness: Freshness;
   readonly operational: OperationalStatus;
@@ -59,7 +61,16 @@ export interface ProviderIdentity {
   readonly isCurrent: () => boolean;
 }
 export interface AcknowledgementOptions { readonly compactedDuringTurn: boolean; readonly compactionCapability: boolean }
-export interface BackendStartup { readonly notOwner: boolean; readonly consumerResult: CoreResult<ConsumerReceipt> | null }
+export interface CapacityRewindResult {
+  readonly affectedEvents: number | null;
+  readonly fromSequence: number | null;
+  readonly throughSequence: number | null;
+  readonly retainedHandoffs: number | null;
+  readonly replayableHandoffs: number | null;
+  readonly presentationRetiredHandoffs: number | null;
+  readonly survivingCoreRecords: number | null;
+}
+export interface BackendStartup { readonly notOwner: boolean; readonly consumerResult: CoreResult<ConsumerReceipt> | null; readonly requiredWorkCompleted: boolean; readonly capacityRewind: CapacityRewindResult | null }
 export interface BackendOptions {
   readonly companionRoot: string;
   readonly onStatus?: (status: BackendStatus) => void;

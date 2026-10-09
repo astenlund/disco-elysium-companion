@@ -7,7 +7,7 @@ import type { Kernel } from '../../src/backend/kernel.ts';
 import { replayCandidate, transferEpisode } from '../../src/recovery-progress.ts';
 import { sameRecoveryOwner, SafetyUnavailableError, type RecoveryWitness, type StateSafety } from '../../src/safety-records.ts';
 import type { SafetyProof } from '../../src/safety.ts';
-import { at, authorityModel, correctionId, generation, journal, owner, repair, witness } from './authority-fixtures.ts';
+import { admittedCapacityFixture, at, authorityModel, correctionId, generation, journal, owner, repair, witness } from './authority-fixtures.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { bytesHash } from '../../src/storage.ts';
 
@@ -120,7 +120,7 @@ describe('successor plan resume ordering', () => {
     const writes: string[] = [];
     const stop = new Error('Stop after durable pointer publication.');
     const inventory = { records: [{ record: planned, sha256: 'a'.repeat(64) }], invalid: [], fullTerminalCount: 0, handoffCount: 0 };
-    const kernel = { guard: { held: true }, scope: { bindingSha256: witness.scopeSha256 }, safety: async () => safety, carryHash: async () => null,
+    const kernel = { resources: admittedCapacityFixture(), guard: { held: true }, scope: { bindingSha256: witness.scopeSha256 }, safety: async () => safety, carryHash: async () => null,
       operations: { list: async () => inventory, read: async (id: string) => id === planned.operationId ? { status: 'valid', value: planned, sha256: 'a'.repeat(64) } : { status: 'absent' } },
       journal: { read: async () => journal() }, safetyStore: {
         read: async () => ({ status: 'valid', value: safety, sha256: 'b'.repeat(64) }),
@@ -147,7 +147,7 @@ describe('successor plan resume ordering', () => {
   it('does not allocate a replacement for a content-invalid reserved plan', async () => {
     let writes = 0;
     const safety: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: { ...witness, phase: 'preparing' } };
-    const kernel = { carryHash: async () => null, safetyStore: { read: async () => ({ status: 'valid', value: safety, sha256: 'b'.repeat(64) }), invalidate: async () => { writes++; } },
+    const kernel = { resources: admittedCapacityFixture(), carryHash: async () => null, safetyStore: { read: async () => ({ status: 'valid', value: safety, sha256: 'b'.repeat(64) }), invalidate: async () => { writes++; } },
       operations: { list: async () => ({ records: [], invalid: [{ name: `${owner.operationId}.json`, sha256: 'c'.repeat(64) }], fullTerminalCount: 0, handoffCount: 0 }),
         read: async () => ({ status: 'invalid', sha256: 'c'.repeat(64) }) } } as unknown as Kernel;
     await assert.rejects(new RecoveryCoordinator(kernel).reconcileSafety(), SafetyUnavailableError);

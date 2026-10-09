@@ -4,7 +4,8 @@ import test from 'node:test';
 
 import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { SessionHost } from '../../src/session-host.ts';
-import { credentialSourceLabel, runTextClient } from '../../src/text-client.ts';
+import { initialCapacity } from '../../src/capacity.ts';
+import { credentialSourceLabel, formatCapacity, runTextClient } from '../../src/text-client.ts';
 import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
 
 test('credential source renders SDK metadata without inferring authentication kind', () => {
@@ -77,4 +78,20 @@ test('text client explains the blocked pending-check restart without resending',
   assert.equal(backend.acquisitionCount, 1);
   input.write('/quit\n');
   await running;
+});
+
+test('capacity readout keeps fixed slot order and labels each unknown obligation', () => {
+  const initial = initialCapacity();
+  assert.match(formatCapacity(initial), /unacknowledgedEvents=unknown/);
+  assert.match(formatCapacity(initial), /historyDisclosure=unknown/);
+  const capacity = { ...initial, release: { state: 'exhausted' as const, reason: null, dimensions: ['freeSpace', 'documentBytes'] as const },
+    ordinary: { state: 'unavailable' as const, reason: 'scopeAuthority' as const, dimensions: [] as const },
+    owed: { ...initial.owed, unacknowledgedEvents: 3, safetyObligation: true } };
+  const rendered = formatCapacity(capacity);
+  assert.ok(rendered.indexOf('capacity exhausted (release: freeSpace, documentBytes)') < rendered.indexOf('capacity unavailable (ordinary: scopeAuthority)'));
+  assert.match(rendered, /unacknowledgedEvents=3/);
+  assert.match(rendered, /safetyObligation=true/);
+  for (const key of ['pendingOutboxRecords', 'unfinishedOperations', 'protectedHandoffs', 'historyDisclosure']) { assert.match(rendered, new RegExp(key + '=unknown')); }
+  assert.doesNotMatch(rendered, /\/new/);
+  assert.doesNotMatch(rendered, /journal is full/);
 });

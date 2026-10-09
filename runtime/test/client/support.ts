@@ -6,6 +6,7 @@ import type { ContextCandidate } from '../../src/prepared-context.ts';
 import type { Provider, ProviderCapabilities, ProviderExitReason, ProviderOutcome, ProviderSession, ProviderTurn } from '../../src/provider.ts';
 import type { StateSafety } from '../../src/safety-records.ts';
 import { admitNamedSession, indexCurrentBinding, type AgentSessionBinding, type AgentSessionIndex } from '../../src/session-records.ts';
+import { initialCapacity } from '../../src/capacity.ts';
 import type { BoundSession, SessionBindingProof, SessionStore } from '../../src/session-store.ts';
 import type { StoredDocument } from '../../src/storage.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
@@ -81,7 +82,7 @@ export class FakeBackend {
   binding: AgentSessionBinding | null = null;
   index: AgentSessionIndex | null = null;
   readonly status: BackendStatus = { consumer: 'owner', freshness: { state: 'fresh', class: null, reason: null, lastGoodGeneratedAt: timestamp, checkedAt: timestamp },
-    operational: { state: 'current', warnings: [] }, stateSafety: { state: 'ready', correction: null }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 }, watcher: 'disabled', previousShutdownClean: true };
+    operational: { state: 'current', warnings: [] }, stateSafety: { state: 'ready', correction: null }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 }, capacity: initialCapacity(), watcher: 'disabled', previousShutdownClean: true };
   safetyValue: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null };
   unavailable = false;
   acquireWait: Promise<void> | null = null;

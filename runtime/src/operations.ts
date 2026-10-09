@@ -1,6 +1,6 @@
 import type { Deadline } from './deadline.ts';
 import { controlHash, requireControl } from './control-values.ts';
-import { parseStrictJson, stringifyJson } from './json.ts';
+import { parseStrictJson, stringifyJson, stringifyProspectiveJson, type ProspectiveJsonFailure } from './json.ts';
 import { effectivelyUnfinished, parseOperation, pendingOperationSafety, type CompactOperation, type FullOperation, type OperationRecord, type RepairOperation } from './operation-records.ts';
 import { isRepairOperationId } from './safety-records.ts';
 import { ScopeStorage, type StoredDocument } from './storage.ts';
@@ -72,7 +72,12 @@ export class OperationStore {
   private readonly storage: ScopeStorage;
   private readonly queue = new SerialQueue();
 
-  constructor(storage: ScopeStorage) { this.storage = storage; }
+  private readonly prospectiveFailure: ProspectiveJsonFailure | undefined;
+  private readonly bind: <T>(action: () => Promise<T>) => () => Promise<T>;
+  constructor(storage: ScopeStorage, prospectiveFailure?: ProspectiveJsonFailure, bind = <T>(action: () => Promise<T>): (() => Promise<T>) => action) {
+    this.storage = storage; this.prospectiveFailure = prospectiveFailure; this.bind = bind;
+  }
+  private queued<T>(action: () => Promise<T>): Promise<T> { return this.queue.run(this.bind(action)); }
 
   read(id: string, deadline?: Deadline): Promise<StoredDocument<OperationRecord>> {
     return this.storage.read(`operations/${fileName(id)}`, 'state-event', value => {
@@ -105,9 +110,9 @@ export class OperationStore {
   }
 
   create(record: FullOperation, deadline?: Deadline): Promise<StoredOperation> {
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       deadline?.check();
-      const validated = parseOperation(parseStrictJson(Buffer.from(serialize(record), 'utf8'), 'state-event'), this.storage.scope.bindingSha256);
+      const validated = parseOperation(parseStrictJson(Buffer.from(stringifyProspectiveJson(record, 'state-event', 'operations/' + fileName(record.operationId), this.prospectiveFailure), 'utf8'), 'state-event'), this.storage.scope.bindingSha256);
       requireControl(!validated.compacted && validated.completedAt === null);
       await this.storage.ensureDirectory('operations', deadline);
       const sha256 = await this.storage.write(`operations/${fileName(record.operationId)}`, validated, 'state-event', null, deadline);
@@ -116,11 +121,11 @@ export class OperationStore {
   }
 
   update(expected: StoredOperation, change: (current: FullOperation) => FullOperation, deadline?: Deadline): Promise<StoredOperation> {
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       deadline?.check();
       const current = await this.read(expected.record.operationId, deadline);
       requireControl(current.status === 'valid' && current.sha256 === expected.sha256 && !current.value.compacted);
-      const next = parseOperation(parseStrictJson(Buffer.from(serialize(change(current.value)), 'utf8'), 'state-event'), this.storage.scope.bindingSha256);
+      const next = parseOperation(parseStrictJson(Buffer.from(stringifyProspectiveJson(change(current.value), 'state-event', 'operations/' + fileName(current.value.operationId), this.prospectiveFailure), 'utf8'), 'state-event'), this.storage.scope.bindingSha256);
       requireControl(!next.compacted);
       validateOperationTransition(current.value, next);
       const sha256 = await this.storage.write(`operations/${fileName(next.operationId)}`, next, 'state-event', current.sha256, deadline);
@@ -129,14 +134,14 @@ export class OperationStore {
   }
 
   compact(expected: StoredOperation, eligible: (record: FullOperation, deadline?: Deadline) => Promise<boolean>, deadline?: Deadline): Promise<StoredOperation> {
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       deadline?.check();
       const current = await this.read(expected.record.operationId, deadline);
       requireControl(current.status === 'valid' && current.sha256 === expected.sha256 && !current.value.compacted && !effectivelyUnfinished(current.value) && !pendingOperationSafety(current.value) && await eligible(current.value, deadline));
       const record = current.value;
       const compact: CompactOperation = { operationVersion: 1, operationId: record.operationId, scopeSha256: record.scopeSha256, kind: record.kind, cause: record.cause,
         startedAt: record.startedAt, completedAt: record.completedAt, outcome: record.outcome, compacted: true, sourceRecordSha256: current.sha256 };
-      parseOperation(parseStrictJson(Buffer.from(serialize(compact), 'utf8'), 'state-event'), this.storage.scope.bindingSha256);
+      parseOperation(parseStrictJson(Buffer.from(stringifyProspectiveJson(compact, 'state-event', 'operations/' + fileName(record.operationId), this.prospectiveFailure), 'utf8'), 'state-event'), this.storage.scope.bindingSha256);
       const sha256 = await this.storage.write(`operations/${fileName(record.operationId)}`, compact, 'state-event', current.sha256, deadline);
       return { record: compact, sha256 };
     });

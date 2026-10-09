@@ -1,4 +1,5 @@
 import { PendingStateCheckError, type DeliveryHandle, type RuntimeBackend } from './backend/api.ts';
+import { isCapacityBlocked, RuntimeCapacityError } from './capacity.ts';
 import { Dialogs } from './dialogs.ts';
 import { newIdentity } from './identity.ts';
 import { utcNow } from './json.ts';
@@ -128,7 +129,7 @@ export class SessionHost implements SessionHostV1 {
   submitChat(input: { readonly text: string; readonly questionOverride: boolean }): SubmitResult {
     if (input === null || typeof input !== 'object' || typeof input.text !== 'string' || !input.text.isWellFormed() || input.text.trim().length === 0 || typeof input.questionOverride !== 'boolean') { return { result: 'invalidInput' }; }
     if (this.active !== null) { return { result: 'turnInProgress' }; }
-    if (this.pendingCheckBlocked) { return { result: 'notReady' }; }
+    if (this.pendingCheckBlocked || isCapacityBlocked(this.options.backend.status.capacity)) { return { result: 'notReady' }; }
     if (this.lifecycle.status.state === 'failed') { return { result: 'providerUnavailable' }; }
     const status = this.options.backend.status;
     if (!this.ready || this.closing || this.switching || this.transition !== null || this.lifecycle.status.state !== 'ready'
@@ -295,8 +296,12 @@ export class SessionHost implements SessionHostV1 {
       }
     } catch (error) {
       const pendingCheck = error instanceof PendingStateCheckError;
+      const capacity = error instanceof RuntimeCapacityError;
       if (pendingCheck) { this.pendingCheckBlocked = true; }
-      this.fail(turn, pendingCheck || turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable' ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : 'providerError', !this.closing && !pendingCheck);
+      this.statusChanged();
+      const invalidated = pendingCheck || turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable';
+      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : capacity ? 'capacityBlocked' : 'providerError';
+      this.fail(turn, code, !this.closing && !pendingCheck && code !== 'capacityBlocked');
     } finally {
       if (ticket !== null) {
         try { if (turn.sent && session !== null) { this.recovery.finished(ticket, session.providerInstanceId, 'otherFailure'); } else { this.recovery.cancelBeforeSend(ticket); } }

@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 
+import { capacityTransitions, type CapacityOwed, type CapacityReason, type CapacityStatus } from './capacity.ts';
 import type { HostDialog, HostEvent, HostStatus, SessionHostV1 } from './session-host-contract.ts';
 
 export function credentialSourceLabel(source: string | null): string {
@@ -9,9 +10,44 @@ export function credentialSourceLabel(source: string | null): string {
   return source;
 }
 
+const capacityRestore: Readonly<Record<CapacityReason, string>> = {
+  inventory: 'Restore a complete resource inventory and recheck.',
+  documentInventory: 'Restore a complete document inventory and recheck.',
+  additions: 'Restore the prospective addition inventory and recheck.',
+  recoveryAuthority: 'Restore recovery authority and recheck.',
+  stateSafety: 'Restore state-safety authority and recheck.',
+  reservation: 'Restore the current reservation authority and recheck.',
+  publicationScope: 'Restore publication-scope authority and recheck.',
+  scopeAuthority: 'Restore the bound scope authority and recheck.',
+  eventFinalization: 'Restore event-finalization authority and recheck.',
+  unreservedAddition: 'Resolve the unreserved addition and recheck.',
+  workspace: 'Restore workspace authority and recheck.',
+  codecScope: 'Restore codec-scope authority and recheck.',
+  otherAuthority: 'Restore the unavailable authority and recheck.',
+};
+const owedKeys = ['unacknowledgedEvents', 'pendingOutboxRecords', 'unfinishedOperations', 'protectedHandoffs', 'safetyObligation', 'historyDisclosure'] as const satisfies readonly (keyof CapacityOwed)[];
+
+export function formatCapacityOwed(owed: CapacityOwed): string {
+  return owedKeys.map(key => `${key}=${owed[key] ?? 'unknown'}`).join(', ');
+}
+
+export function formatCapacity(capacity: CapacityStatus): string {
+  const refused = capacityTransitions.flatMap(kind => {
+    const slot = capacity[kind];
+    if (slot.state === 'unavailable') { return [`capacity unavailable (${kind}: ${slot.reason ?? 'otherAuthority'}). ${capacityRestore[slot.reason ?? 'otherAuthority']}`]; }
+    if (slot.state === 'exhausted') { return [`capacity exhausted (${kind}: ${slot.dimensions.join(', ')}). Actual resources or obligations must change before the measured limit can be passed; exit chat and run repair to recheck. Separate explicit operator choice: consumer bridge --abandon-undelivered abandons undelivered state and may be refused.`]; }
+    return [];
+  });
+  const owed = formatCapacityOwed(capacity.owed);
+  if (refused.length === 0) { return `capacity: no current refusal; owed: ${owed}`; }
+  const guidance = capacityTransitions.some(kind => capacity[kind].state === 'exhausted')
+    ? 'An unchanged retry cannot bypass a measured limit.' : 'Restore the named authority before rechecking.';
+  return `${refused.join(' ')} Owed: ${owed}. ${guidance}`;
+}
+
 export function formatStatus(status: HostStatus): string {
   const fault = status.journal.fault === null ? '' : ` (${status.journal.fault})`;
-  return `consumer: ${status.consumer}; state: ${status.freshness.state}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}`;
+  return `consumer: ${status.consumer}; state: ${status.freshness.state}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}`;
 }
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean }
@@ -53,7 +89,9 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
         && status.freshness.state === 'failed' && status.freshness.class === 'journal' && status.freshness.reason === 'settlementPending';
       line(pendingCheck
         ? 'State validation was interrupted. Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit. The question was not resent.'
-        : event.code === 'contextExhausted'
+        : event.code === 'capacityBlocked'
+          ? 'Runtime capacity blocked this turn. The current status names the refused transition and any known obligations. The question was not automatically resent.'
+          : event.code === 'contextExhausted'
           ? `The attempted combined input exceeded provider capacity. ${event.retryable ? 'Another player submission may attempt a smaller context.' : 'No further attempt is currently admitted for this unchanged input.'} Changing the question, an available model choice, or /new may help; none is guaranteed.`
           : `Turn failed: ${event.code}.`);
     } else if (event.type === 'dialog.requested') { dialog = event; question = 0; answers = {}; renderQuestion(); }

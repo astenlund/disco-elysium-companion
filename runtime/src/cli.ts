@@ -2,9 +2,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openBackend, readBackendStatus } from './backend/index.ts';
-import type { BackendCommand, BackendStartup } from './backend/api.ts';
+import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
+import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { createChatRuntime } from './runtime.ts';
-import { runTextClient } from './text-client.ts';
+import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
 
 export type CliCommand = BackendCommand | { readonly kind: 'status' };
 export function parseCommand(args: readonly string[]): CliCommand | null {
@@ -17,9 +18,39 @@ export function parseCommand(args: readonly string[]): CliCommand | null {
   return null;
 }
 
-export function operatorExitCode(kind: 'consumer' | 'repair', result: BackendStartup, journalFault: boolean): number {
+function capacityRewindExtentVerified(result: CapacityRewindResult | null): boolean {
+  if (result === null) { return true; }
+  if (result.affectedEvents === null) { return false; }
+  if (result.affectedEvents === 0) { return result.fromSequence === null && result.throughSequence === null; }
+  return result.fromSequence !== null && result.throughSequence !== null;
+}
+
+export function operatorExitCode(kind: 'consumer' | 'repair', result: BackendStartup): number {
+  if (!result.requiredWorkCompleted) { return 1; }
   if (kind === 'consumer') { return result.consumerResult?.success === true ? 0 : 1; }
-  return result.notOwner || journalFault ? 1 : 0;
+  return result.notOwner || !capacityRewindExtentVerified(result.capacityRewind) ? 1 : 0;
+}
+
+export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityOwed = unknownCapacityOwed()): string {
+  const slot = capacitySlot(error);
+  const transition = error.transition ?? 'unclassified';
+  const diagnosis = slot.state === 'unavailable' ? `capacity unavailable (${transition}: ${slot.reason})` : `capacity exhausted (${transition}: ${slot.dimensions.join(', ')})`;
+  return `${diagnosis}; owed: ${formatCapacityOwed(owed)}`;
+}
+
+export function formatCliError(error: unknown): string {
+  const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
+  const capacity = error instanceof RuntimeCapacityError ? error : error instanceof Error && error.cause instanceof RuntimeCapacityError ? error.cause : null;
+  return capacity === null ? `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}` : `${code}: ${formatCapacityError(capacity)}`;
+}
+
+export function formatCapacityRewind(result: CapacityRewindResult | null): string {
+  if (result === null) { return 'capacity rewind: none selected or resumed'; }
+  const count = (value: number | null): string => value === null ? 'unknown' : String(value);
+  const verified = capacityRewindExtentVerified(result);
+  const range = !verified ? 'unknown' : result.affectedEvents === 0 ? 'none' : `${result.fromSequence}..${result.throughSequence}`;
+  const certainty = verified ? '' : '; extent unverified; repair incomplete';
+  return `capacity rewind: affectedEvents=${verified ? count(result.affectedEvents) : 'unknown'}; inclusiveRange=${range}; retainedHandoffs=${count(result.retainedHandoffs)}; replayableHandoffs=${count(result.replayableHandoffs)}; presentationRetiredHandoffs=${count(result.presentationRetiredHandoffs)}; survivingCoreRecords=${count(result.survivingCoreRecords)}${certainty}`;
 }
 
 export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)), write: (text: string) => void = text => { process.stdout.write(`${text}\n`); }): Promise<number> {
@@ -27,7 +58,7 @@ export async function runCli(args: readonly string[], companionRoot = fileURLToP
   if (command === null) { write('Usage: chat | status | consumer <runtime|bridge> [--abandon-undelivered] | repair'); return 2; }
   if (command.kind === 'status') {
     write(JSON.stringify(await readBackendStatus(companionRoot)));
-    write('Consumer, freshness, operational warnings, watcher, provider and window recovery are available only in the running chat client.');
+    write('Consumer, freshness, operational warnings, watcher, provider, window recovery and capacity are available only in the running chat client.');
     return 0;
   }
   if (command.kind === 'chat') {
@@ -37,19 +68,26 @@ export async function runCli(args: readonly string[], companionRoot = fileURLToP
     await runTextClient(runtime.host);
     return 0;
   }
+  if (command.kind === 'repair') { write('Repair may set aside undelivered journal changes if a capacity rewind is admitted, then disclose missing history with a current-state resync. Surviving exact core records remain replayable under their retained bindings. No capacity rewind is yet known.'); }
   const backend = await openBackend({ companionRoot });
   try {
     const result = await backend.startup(command);
-    write(JSON.stringify(command.kind === 'consumer' ? result.consumerResult ?? { result: 'consumerUnavailable' } : { result: result.notOwner ? 'notOwner' : 'completed', status: backend.status }));
-    return operatorExitCode(command.kind, result, backend.status.journal.state === 'fault');
+    const exitCode = operatorExitCode(command.kind, result);
+    write(JSON.stringify(command.kind === 'consumer' ? { consumerResult: result.consumerResult ?? { result: 'consumerUnavailable' }, requiredWorkCompleted: result.requiredWorkCompleted, status: backend.status }
+      : { result: result.notOwner ? 'notOwner' : exitCode === 0 ? 'completed' : 'incomplete', capacityRewind: result.capacityRewind, status: backend.status }));
+    write(formatCapacity(backend.status.capacity));
+    if (command.kind === 'repair') { write(formatCapacityRewind(result.capacityRewind)); }
+    return exitCode;
+  } catch (error) {
+    if (error instanceof RuntimeCapacityError) { write(formatCapacity(backend.status.capacity)); write(formatCapacityError(error, backend.status.capacity.owed)); return 1; }
+    throw error;
   } finally { await backend.shutdown(true); }
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try { process.exitCode = await runCli(process.argv.slice(2)); }
   catch (error) {
-    const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
-    process.stderr.write(`${code}: ${(error as Error).message}\n`);
+    process.stderr.write(`${formatCliError(error)}\n`);
     process.exitCode = 1;
   }
 }

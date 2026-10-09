@@ -9,7 +9,7 @@ import * as BackendApi from '../../src/backend/api.ts';
 import { CoordinatorBackend } from '../../src/backend/index.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { SafetyUnavailableError } from '../../src/safety-records.ts';
-import { authorityModel, journal, repair } from './authority-fixtures.ts';
+import { admittedCapacityFixture, authorityModel, journal, repair } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
 import { eventRewriteMetadata } from '../../src/journal-records.ts';
 import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
@@ -89,7 +89,7 @@ describe('independent provider admission authority', () => {
           config: { configVersion: 1, adapter: 'stub', game: 'stubgame', provider: { model: null, effort: null, questionOverride: null }, watcher: { enabled: false } },
           identities: { runtimeInstanceId: '1'.repeat(32), runtimeSessionId: '2'.repeat(32), adapterBindingEpoch: '3'.repeat(32) },
           scope: { companionRoot: 'C:/Git/disco-elysium-companion/.tmp/never-created-admission', dataRoot: 'C:/Git/disco-elysium-companion/.tmp/never-created-admission/data', game: 'stubgame', principal: 'principal', bindingSha256: scope, createdHere: false },
-          guard: { held: true }, inspector: {}, publisher: {}, storage: {}, resources: {}, options: { companionRoot: 'unused' },
+          guard: { held: true }, inspector: {}, publisher: {}, storage: {}, resources: admittedCapacityFixture(), options: { companionRoot: 'unused' },
           supervisor: { run: async () => { calls++; throw reachedNative; }, verifyQuiescent: async () => {} },
         } as unknown as KernelInput;
         const kernel = new Kernel(input);

@@ -12,7 +12,7 @@ import { ControlDocumentError } from '../../src/control-values.ts';
 import { abandonRecovery } from '../../src/recovery-progress.ts';
 import type { RecoveryWitness, StateSafety } from '../../src/safety-records.ts';
 import type { SafetyProof } from '../../src/safety.ts';
-import { at, authorityModel, correctionId, generation, journal, owner, release, repair, scope, witness } from './authority-fixtures.ts';
+import { admittedCapacityFixture, at, authorityModel, correctionId, generation, journal, owner, release, repair, scope, witness } from './authority-fixtures.ts';
 
 describe('release obligation evidence', () => {
   const names = [eventFileName(2), eventFileName(1)];
@@ -75,7 +75,7 @@ describe('release obligation evidence', () => {
         } },
       safety: async () => ({ stateSafetyVersion: 1, generation, pendingCheck: null, correction: { correctionId, reason: 'contextUncertain', recoveryOperationId: owner.operationId }, recoveryWitness: witness }),
       outbox: { list: async () => [] }, storage: { list: async (relative: string) => { assert.equal(relative, 'journal/events'); return names; } },
-      resources: { reserve: async () => { reservations++; } } } as unknown as Kernel;
+      resources: { ...admittedCapacityFixture(), reserve: async () => { reservations++; } } } as unknown as Kernel;
     const consumer = new ConsumerCoordinator(kernel);
     await assert.rejects(consumer.switch('bridge', false), ReleaseRefusedError);
     assert.equal(reservations, 0);
@@ -94,7 +94,7 @@ describe('release obligation evidence', () => {
     const kernel = { journal: { read: async () => { throw new Error('Journal is unreadable.'); } },
       operations: { list: async () => ({ records: [], invalid: [], fullTerminalCount: 0, handoffCount: 0 }), create: async () => { mutations++; } },
       safety: async () => ({ stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null }),
-      outbox: { list: async () => [] }, storage: { list: async () => { throw denied; } }, resources: { reserve: async () => { mutations++; } } } as unknown as Kernel;
+      outbox: { list: async () => [] }, storage: { list: async () => { throw denied; } }, resources: { ...admittedCapacityFixture(), reserve: async () => { mutations++; } } } as unknown as Kernel;
     await assert.rejects(new ConsumerCoordinator(kernel).switch('bridge', true), error => error === denied);
     assert.equal(mutations, 0);
   });
@@ -102,11 +102,11 @@ describe('release obligation evidence', () => {
 
 describe('phase-E consumer routing', () => {
   it('preserves pending-first order, current release result and prior failures', async () => {
-    const consumer = new ConsumerCoordinator({} as Kernel);
+    const consumer = new ConsumerCoordinator({ resources: admittedCapacityFixture() } as unknown as Kernel);
     const calls: string[] = [];
     consumer.pending = async () => { calls.push('pending'); return true; };
     consumer.switch = async selected => { calls.push(selected); return { success: true, value: { owner: selected, previousOwner: 'runtime', changed: false, baselineRemoved: false, abandonedCount: 0 } }; };
-    assert.deepEqual(await consumer.startup({ kind: 'chat' }), { notOwner: true, consumerResult: null });
+    assert.deepEqual(await consumer.startup({ kind: 'chat' }), { notOwner: true, consumerResult: null, requiredWorkCompleted: true, capacityRewind: null });
     assert.deepEqual(calls, ['pending']);
     calls.length = 0;
     assert.equal((await consumer.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false }))?.notOwner, false);
@@ -234,7 +234,7 @@ function coordinator(completed: ReleaseOperation, retained: RepairOperation | nu
   const errors: unknown[] = [];
   const records = [completed, ...(retained === null ? [] : [retained])];
   const inventory = { records: records.map(record => ({ record, sha256: 'd'.repeat(64) })), invalid: [], fullTerminalCount: records.length, handoffCount: 0 };
-  const kernel = { operations: { list: async () => inventory, read: async (id: string) => {
+  const kernel = { resources: admittedCapacityFixture(), operations: { list: async () => inventory, read: async (id: string) => {
     if (unreadable && id === owner.operationId) { throw new Error('read refused'); }
     const value: OperationRecord | undefined = records.find(record => record.operationId === id);
     return value === undefined ? { status: 'absent' } : { status: 'valid', value, sha256: 'd'.repeat(64) };

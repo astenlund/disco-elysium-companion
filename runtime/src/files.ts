@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { DataRootUnavailableError, PathInspector, type PathAdmission } from './admission.ts';
 import type { Deadline } from './deadline.ts';
 import type { InstanceGuard } from './guard.ts';
-import { hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, stringifyJson, type JsonProfile } from './json.ts';
+import { hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type ProspectiveJsonFailure } from './json.ts';
 import { ProcessSupervisor, SupervisorError } from './process.ts';
 import { SerialQueue } from './serial.ts';
 
@@ -23,6 +23,9 @@ export interface PublicationOptions {
   readonly supervisor: ProcessSupervisor;
   readonly preflight: (target: string, bytes: Readonly<Uint8Array>, profile: JsonProfile, deadline?: Deadline) => Promise<void>;
   readonly invalidate: (target: string) => void;
+  readonly prospectiveFailure?: ProspectiveJsonFailure;
+  readonly bind?: <T>(action: () => Promise<T>) => () => Promise<T>;
+  readonly beforeWrite?: (relative: string, deadline?: Deadline) => Promise<void>;
 }
 
 const script = fileURLToPath(new URL('../scripts/Write-RuntimeFile.ps1', import.meta.url));
@@ -41,26 +44,31 @@ export class FilePublisher {
 
   // Codec and ordinary publication share this owner and queue, including cleanup failure.
   exclusive<T>(operation: (options: PublicationOptions) => Promise<T>, deadline?: Deadline): Promise<T> {
+    const captured = this.options.bind?.(() => operation(this.options)) ?? (() => operation(this.options));
     return this.queue.run(async () => {
-      deadline?.check();
-      this.requireOwnership();
-      return operation(this.options);
+      deadline?.check(); this.requireOwnership();
+      return captured();
     });
   }
 
-  block(): void { this.unavailable = true; }
+  block(): void { this.unavailable = true; this.options.invalidate(this.options.root); }
   assertAvailable(): void { this.requireOwnership(); }
 
   private requireOwnership(): void {
     if (!this.options.guard.held || this.unavailable) { throw new PublicationError('Publication ownership or workspace is unavailable.', true); }
   }
 
-  publishJson(relative: string, value: unknown, createOnly = false, deadline?: Deadline): Promise<PublicationResult> {
-    return this.publish(relative, Buffer.from(stringifyJson(value, 'config'), 'utf8'), 'config', createOnly, deadline);
+  async publishJson(relative: string, value: unknown, createOnly = false, deadline?: Deadline): Promise<PublicationResult> {
+    await this.options.beforeWrite?.(relative, deadline);
+    return this.publish(relative, Buffer.from(stringifyProspectiveJson(value, 'config', relative, this.options.prospectiveFailure), 'utf8'), 'config', createOnly, deadline);
   }
 
-  publish(relative: string, data: Uint8Array, profile: JsonProfile, createOnly = false, deadline?: Deadline): Promise<PublicationResult> {
-    if (data.byteLength > jsonBudgets[profile].maxBytes) { return Promise.reject(new PublicationError('Publication exceeds its byte budget.')); }
+  async publish(relative: string, data: Uint8Array, profile: JsonProfile, createOnly = false, deadline?: Deadline): Promise<PublicationResult> {
+    await this.options.beforeWrite?.(relative, deadline);
+    if (data.byteLength > jsonBudgets[profile].maxBytes) {
+      const error = new ProspectiveJsonBudgetError([{ dimension: 'bytes', actual: data.byteLength, limit: jsonBudgets[profile].maxBytes }], relative);
+      return Promise.reject(this.options.prospectiveFailure?.(error) ?? error);
+    }
     const bytes = Buffer.from(data);
 
     return this.exclusive(async () => {
@@ -98,7 +106,7 @@ export class FilePublisher {
           if (error instanceof SupervisorError && error.reason === 'termination-unverified') { helperEnded = false; }
         }
         if (!helperEnded || !this.options.guard.held) {
-          this.unavailable = true;
+          this.block();
           throw new PublicationError('Publication cannot be reconciled while ownership is uncertain.', true);
         }
         try {
@@ -112,12 +120,12 @@ export class FilePublisher {
             completed = actual.length === bytes.length && digest(actual) === hash;
           }
         } catch {
-          this.unavailable = true;
+          this.block();
           throw new PublicationError('Published target cannot be read back.', true);
         }
         if (!completed) { throw new PublicationError(`Target does not contain the staged publication${failure instanceof Error ? ': ' + failure.message : '.'}`); }
         cleanupComplete = hasExactKeys(reply, ['published', 'sha256', 'cleanupComplete', 'retainedSiblings']) && reply['published'] === true && reply['sha256'] === hash && reply['cleanupComplete'] === true && Array.isArray(reply['retainedSiblings']) && reply['retainedSiblings'].length === 0;
-        if (!cleanupComplete) { this.unavailable = true; }
+        if (!cleanupComplete) { this.block(); }
       } catch (error) {
         this.options.invalidate(target);
         throw error;
@@ -130,11 +138,11 @@ export class FilePublisher {
               await fs.unlink(input);
             }
           } catch {
-            this.unavailable = true;
+            this.block();
             cleanupComplete = false;
           }
         } else if (inputCreated) {
-          this.unavailable = true;
+          this.block();
           cleanupComplete = false;
         }
       }

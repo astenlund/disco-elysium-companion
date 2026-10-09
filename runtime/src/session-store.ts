@@ -1,6 +1,6 @@
 import { requireControl } from './control-values.ts';
 import type { Deadline } from './deadline.ts';
-import { parseStrictJson, stringifyJson, utcNow } from './json.ts';
+import { parseStrictJson, stringifyJson, stringifyProspectiveJson, utcNow, type ProspectiveJsonFailure } from './json.ts';
 import { admitNamedSession, indexCurrentBinding, parseSessionBinding, parseSessionIndex, type AgentSessionBinding, type AgentSessionIndex, type NamedSessionAdmission } from './session-records.ts';
 import { SerialQueue } from './serial.ts';
 import { ScopeStorage, type StoredDocument } from './storage.ts';
@@ -19,11 +19,17 @@ function sameSessionHistory(left: AgentSessionBinding, right: AgentSessionBindin
   requireControl(left.createdAt === right.createdAt && left.instructionsSha256 === right.instructionsSha256 && left.stateGeneration === right.stateGeneration && right.turnsCompleted >= left.turnsCompleted);
 }
 
+export interface SessionStoreOptions {
+  readonly mutation?: <T>(action: () => Promise<T>, deadline?: Deadline) => Promise<T>;
+  readonly bind?: <T>(action: () => Promise<T>) => () => Promise<T>;
+  readonly prospectiveFailure?: ProspectiveJsonFailure;
+}
 export class SessionStore {
   private readonly storage: ScopeStorage;
   private readonly queue = new SerialQueue();
 
-  constructor(storage: ScopeStorage) { this.storage = storage; }
+  private readonly options: SessionStoreOptions;
+  constructor(storage: ScopeStorage, options: SessionStoreOptions = {}) { this.storage = storage; this.options = options; }
 
   readBinding(deadline?: Deadline): Promise<StoredDocument<AgentSessionBinding>> {
     return this.storage.read('agent-session.json', 'config', parseSessionBinding, deadline);
@@ -60,8 +66,13 @@ export class SessionStore {
   }
 
   bind(input: AgentSessionBinding, proof: SessionBindingProof, deadline?: Deadline): Promise<BoundSession> {
-    const binding = parseSessionBinding(parseStrictJson(Buffer.from(stringifyJson(input))));
-    return this.queue.run(async () => {
+    const action = () => this.bindOwned(input, proof, deadline);
+    return this.options.mutation?.(action, deadline) ?? action();
+  }
+
+  private bindOwned(input: AgentSessionBinding, proof: SessionBindingProof, deadline?: Deadline): Promise<BoundSession> {
+    const binding = parseSessionBinding(parseStrictJson(Buffer.from(stringifyProspectiveJson(input, 'config', 'agent-session.json', this.options.prospectiveFailure))));
+    const action = async () => {
       deadline?.check();
       const previous = await this.readBinding(deadline);
       if (previous.status === 'valid') { sameSessionHistory(previous.value, binding); }
@@ -76,7 +87,8 @@ export class SessionStore {
       requireControl(await proof.verify(binding, deadline));
       const indexSha256 = await this.storage.replaceSessionIndex(nextIndex, bindingSha256, deadline);
       return { binding, bindingSha256, indexSha256 };
-    });
+    };
+    return this.queue.run(this.options.bind?.(action) ?? action);
   }
 
   ready(proof: SessionBindingProof, deadline?: Deadline): Promise<BoundSession | null> {

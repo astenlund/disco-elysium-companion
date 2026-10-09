@@ -54,12 +54,13 @@ export interface StandaloneRuntimeStatus {
   readonly watcher: 'unavailable';
   readonly provider: 'unavailable';
   readonly windowRecovery: 'unavailable';
+  readonly capacity: 'unavailable';
   readonly liveStateNotice: string;
 }
 
 const principalScript = fileURLToPath(new URL('../../scripts/Get-Principal.ps1', import.meta.url));
-const volatile = Object.freeze({ consumer: 'unavailable', freshness: 'unavailable', operational: 'unavailable', watcher: 'unavailable', provider: 'unavailable', windowRecovery: 'unavailable',
-  liveStateNotice: 'Consumer, freshness, operational warnings, watcher, provider and window recovery state are available only in the running chat client.' } as const);
+const volatile = Object.freeze({ consumer: 'unavailable', freshness: 'unavailable', operational: 'unavailable', watcher: 'unavailable', provider: 'unavailable', windowRecovery: 'unavailable', capacity: 'unavailable',
+  liveStateNotice: 'Consumer, freshness, operational warnings, watcher, provider, window recovery and capacity state are available only in the running chat client.' } as const);
 
 export class StatusIdentityError extends Error { override readonly name = 'StatusIdentityError'; readonly code = 'identityUnavailable'; }
 

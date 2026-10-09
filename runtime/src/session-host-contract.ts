@@ -46,7 +46,7 @@ export type HostNotice =
   | { readonly type: 'notice'; readonly code: 'sessionReconnected'; readonly reason: 'subprocessExited' | 'overrideReset' }
   | { readonly type: 'notice'; readonly code: 'stateRedelivered'; readonly reason: null }
   | { readonly type: 'notice'; readonly code: 'stateContextInvalidated'; readonly reason: Correction['reason'] };
-export type TurnFailure = 'interrupted' | 'subprocessExited' | 'providerError' | 'authenticationFailed' | 'rateLimited' | 'contextExhausted' | 'stateInvalidated';
+export type TurnFailure = 'interrupted' | 'subprocessExited' | 'providerError' | 'authenticationFailed' | 'rateLimited' | 'contextExhausted' | 'capacityBlocked' | 'stateInvalidated';
 export type HostEvent = HostNotice
   | ({ readonly type: 'turn.started' } & Interaction)
   | ({ readonly type: 'turn.delta'; readonly fragment: string } & Interaction)

@@ -1,5 +1,5 @@
 import { requireControl } from '../control-values.ts';
-import { RuntimeCapacityError } from '../capacity.ts';
+import { capacityTransitions, firstCapacityRefusal, RuntimeCapacityError, type CapacityStatus } from '../capacity.ts';
 import { Deadline, DeadlineExceededError } from '../deadline.ts';
 import type { CoreResult, PublishReceipt } from '../core-client.ts';
 import { hasCurrentAcceptance } from '../journal-records.ts';
@@ -21,7 +21,7 @@ import { acquireWithPolicy, newestState } from './acquisition-policy.ts';
 interface SnapshotState { readonly public: DeliverySnapshot; readonly events: readonly JournalEvent[]; readonly state: JournalEvent | null; readonly journalId: string | null; readonly cursor: number; readonly sent: number; readonly safetySha256: string; readonly correction: { readonly correctionId: string; readonly reason: string } | null }
 interface PreviewState { readonly snapshot: SnapshotState; readonly binding: AgentSessionBinding; readonly request: Record<string, unknown>; readonly relevanceFingerprint: string }
 interface OpaqueFallback { readonly text: string; readonly candidate: ContextCandidate }
-interface HandleState extends PreviewState { relevanceFingerprint: string; prepared: PreparedContext; candidate: ContextCandidate; fallback: OpaqueFallback | null; forceRedelivery: boolean; disclosure: boolean; sent: boolean; discarded: boolean }
+interface HandleState extends PreviewState { optionalMarkCapacity?: CapacityStatus; markAttempted?: boolean; relevanceFingerprint: string; prepared: PreparedContext; candidate: ContextCandidate; fallback: OpaqueFallback | null; forceRedelivery: boolean; disclosure: boolean; sent: boolean; discarded: boolean }
 
 function contextRelevance(preview: ContextPreview, fallback: string): string {
   const candidate = preview.candidates.find(item => item.stateIncluded) ?? preview.candidates[0];
@@ -104,18 +104,21 @@ export class DeliveryCoordinator {
   async acquire(interaction: BackendInteraction): Promise<DeliverySnapshot> {
     const k = this.kernel;
     k.owned();
+    this.requireCapacity();
     try { await k.resources.reserve('ordinary', { uncompactedEvents: 1 }); }
     catch (error) {
       if (!(error instanceof RuntimeCapacityError)) { throw error; }
       await this.recoverCapacity();
       await k.resources.reserve('ordinary', { uncompactedEvents: 1 });
     }
+    this.requireCapacity();
     const knownFault = k.status.journal.fault;
     if (knownFault === null) { k.emit({ freshness: { ...k.status.freshness, state: 'acquiring', checkedAt: null } }); }
     let receipt: CoreResult<PublishReceipt> | null = null;
     let journal: JournalSnapshot | null = null;
     let failure: { class: string; reason: string } | null = null;
     let gate: Deadline | null = null;
+    let capacityFailure: RuntimeCapacityError | null = null;
     try {
       const acquired = await acquireWithPolicy({ game: k.config.game, fault: () => k.status.journal.fault,
         readJournal: async () => {
@@ -128,6 +131,7 @@ export class DeliveryCoordinator {
       receipt = acquired.receipt; gate = acquired.gate;
       if (acquired.skippedFault !== null) { k.operational.unavailable(); failure = { class: 'journal', reason: acquired.skippedFault }; }
     } catch (error) {
+      capacityFailure = k.resources.captureFailure(error) ?? capacityFailure;
       k.diagnose('acquisition', error);
       k.operational.unavailable();
       failure = { class: 'supervisor', reason: typeof error === 'object' && error !== null && 'reason' in error ? String(error.reason) : 'result-invalid' };
@@ -135,7 +139,10 @@ export class DeliveryCoordinator {
     // This is the only post-acquisition settlement budget for the interaction.
     gate ??= Deadline.after(120000);
     try { journal = await k.drain(gate); }
-    catch (error) { k.diagnose('interactionDrain', error); failure ??= { class: 'journal', reason: error instanceof DeadlineExceededError ? 'settlementPending' : 'journalUnavailable' }; }
+    catch (error) {
+      capacityFailure = k.resources.captureFailure(error) ?? capacityFailure;
+      k.diagnose('interactionDrain', error); failure ??= { class: 'journal', reason: error instanceof DeadlineExceededError ? 'settlementPending' : 'journalUnavailable' };
+    }
     if (journal === null) { try { journal = await k.journal.read(gate); } catch { /* No state authority is substituted. */ } }
     // The settlement gate is now closed. Read-only safety admission for a frozen
     // disclosure never starts another settlement or extends that gate.
@@ -145,6 +152,7 @@ export class DeliveryCoordinator {
       k.emit({ stateSafety, freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: 'settlementPending', checkedAt: utcNow() } });
       throw new PendingStateCheckError();
     }
+    if (capacityFailure !== null) { throw capacityFailure; }
     if (safety?.status !== 'valid' || operations === null || !authority.providerAllowed) {
       k.emit({ stateSafety, freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: 'contextUnavailable', checkedAt: utcNow() } });
       throw new SafetyUnavailableError('State context is unavailable until durable safety reconciliation.', { cause: authority.failure });
@@ -175,6 +183,7 @@ export class DeliveryCoordinator {
   }
 
   async preview(snapshot: DeliverySnapshot, binding: AgentSessionBinding, halfPrefixBytes: number | null, providerFingerprint?: string): Promise<DeliveryPreview> {
+    this.requireCapacity();
     const source = this.snapshots.get(snapshot);
     requireControl(source !== undefined && source === this.currentSnapshot && binding.stateGeneration === snapshot.generation);
     const k = this.kernel;
@@ -195,6 +204,7 @@ export class DeliveryCoordinator {
   }
 
   async prepare(snapshot: DeliverySnapshot, preview: DeliveryPreview, candidate: ContextCandidate): Promise<DeliveryHandle> {
+    this.requireCapacity();
     const state = this.previews.get(preview);
     requireControl(state !== undefined && state.snapshot.public === snapshot && preview.preview.candidates.includes(candidate));
     const variants = await this.prepareVariants(preview.preview, candidate);
@@ -217,12 +227,15 @@ export class DeliveryCoordinator {
   async markSent(handle: DeliveryHandle): Promise<boolean> {
     const state = this.handles.get(handle);
     requireControl(state !== undefined && !state.discarded && !state.sent);
+    this.requireCapacity();
+    requireControl(!state.markAttempted); state.markAttempted = true;
     if (state.disclosure) { return true; }
     const sent = state.snapshot.events.slice(0, state.candidate.eventCount).map(event => event.metadata);
     this.kernel.sentMark = Math.max(this.kernel.sentMark, sent.at(-1)?.sequence ?? 0);
     try { await this.kernel.journal.markSent(sent, handle.snapshot.generation); return true; }
     catch (error) {
       if (!(error instanceof SentMarkPublicationError) || !this.kernel.guard.held) { throw error; }
+      if (this.kernel.resources.captureFailure(error.cause) !== null) { state.optionalMarkCapacity = this.kernel.resources.capacity.current; }
       state.forceRedelivery = true;
       return false;
     }
@@ -232,6 +245,7 @@ export class DeliveryCoordinator {
     const state = this.handles.get(handle);
     requireControl(state !== undefined && !state.sent && !state.discarded && state.snapshot === this.currentSnapshot);
     const k = this.kernel;
+    this.requireCapacity(state);
     if (binding.providerId !== state.binding.providerId || binding.providerSessionId !== state.binding.providerSessionId || binding.instructionsSha256 !== state.binding.instructionsSha256) {
       throw new SafetyUnavailableError('Prepared context belongs to a different logical provider binding.');
     }
@@ -252,6 +266,7 @@ export class DeliveryCoordinator {
       }
       requireControl(bytesHash(Buffer.from(state.fallback.text, 'utf8')) === state.fallback.candidate.sha256);
       state.candidate = state.fallback.candidate;
+      this.requireCapacity(state);
       state.sent = true;
       return { text: state.fallback.text, candidate: state.candidate, relevanceFingerprint: state.relevanceFingerprint, disclosureOnly: state.disclosure, redelivery: state.candidate.eventCount > 0 };
     }
@@ -280,9 +295,20 @@ export class DeliveryCoordinator {
     }
     const text = await this.prepareOperation(() => this.preparer.copyForSend(state.prepared));
     if (!provider.isCurrent()) { throw new SafetyUnavailableError('Provider identity changed before input.'); }
+    this.requireCapacity(state);
     state.sent = true;
     return { text, candidate: state.candidate, relevanceFingerprint: state.relevanceFingerprint, disclosureOnly: state.disclosure, redelivery: !state.disclosure && state.candidate.eventCount > 0
       && (state.forceRedelivery || state.snapshot.events.slice(0, state.candidate.eventCount).some(event => event.metadata.sequence <= state.snapshot.sent)) };
+  }
+
+  private requireCapacity(state?: HandleState): void {
+    const current = this.kernel.resources.capacity.current;
+    const failure = firstCapacityRefusal(current);
+    if (failure === null) { return; }
+    const optional = state?.optionalMarkCapacity;
+    if (state !== undefined && optional !== undefined && state.forceRedelivery && !state.sent && capacityTransitions.every(kind => current[kind].state !== 'unavailable'
+      && current[kind].state !== 'exhausted' || current[kind] === optional[kind])) { return; }
+    throw failure;
   }
 
   async discard(handle: DeliveryHandle): Promise<void> {

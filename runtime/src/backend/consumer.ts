@@ -32,20 +32,28 @@ export class ConsumerCoordinator {
   readonly kernel: Kernel;
   constructor(kernel: Kernel) { this.kernel = kernel; }
 
-  async startup(command: BackendCommand): Promise<BackendStartup | null> {
+  startup(command: BackendCommand): Promise<BackendStartup | null> {
+    return this.kernel.resources.withTransition('release', () => this.startupOwned(command));
+  }
+
+  private async startupOwned(command: BackendCommand): Promise<BackendStartup | null> {
     let released: boolean;
     try { released = await this.pending(); }
     catch (error) {
       if (command.kind !== 'consumer' || !(error instanceof ConsumerResumeError)) { throw error; }
-      return { notOwner: false, consumerResult: error.result };
+      return { notOwner: false, consumerResult: error.result, requiredWorkCompleted: false, capacityRewind: null };
     }
-    if (released && command.kind === 'chat') { return { notOwner: true, consumerResult: null }; }
+    if (released && command.kind === 'chat') { return { notOwner: true, consumerResult: null, requiredWorkCompleted: true, capacityRewind: null }; }
     if (command.kind !== 'consumer') { return null; }
     const result = await this.switch(command.owner, command.abandonUndelivered);
-    return { notOwner: result.success && result.value.owner === 'bridge', consumerResult: result };
+    return { notOwner: result.success && result.value.owner === 'bridge', consumerResult: result, requiredWorkCompleted: result.success, capacityRewind: null };
   }
 
-  async pending(): Promise<boolean> {
+  pending(): Promise<boolean> {
+    return this.kernel.resources.withTransition('release', () => this.pendingOwned());
+  }
+
+  private async pendingOwned(): Promise<boolean> {
     const inventory = await this.kernel.operations.list();
     const releases = inventory.records.flatMap(({ record }) => !record.compacted && record.kind === 'release' && record.completedAt !== null ? [record] : []);
     if (releases.length > 0) {
@@ -69,7 +77,11 @@ export class ConsumerCoordinator {
     return released;
   }
 
-  async transferPending(): Promise<boolean> {
+  transferPending(): Promise<boolean> {
+    return this.kernel.resources.withTransition('release', () => this.transferPendingOwned());
+  }
+
+  private async transferPendingOwned(): Promise<boolean> {
     const k = this.kernel;
     const inventory = await k.operations.list();
     requireControl(inventory.invalid.length === 0);
@@ -178,7 +190,11 @@ export class ConsumerCoordinator {
     }
   }
 
-  async switch(owner: 'runtime' | 'bridge', abandon: boolean): Promise<CoreResult<ConsumerReceipt>> {
+  switch(owner: 'runtime' | 'bridge', abandon: boolean): Promise<CoreResult<ConsumerReceipt>> {
+    return this.kernel.resources.withTransition('release', () => this.switchOwned(owner, abandon));
+  }
+
+  private async switchOwned(owner: 'runtime' | 'bridge', abandon: boolean): Promise<CoreResult<ConsumerReceipt>> {
     const k = this.kernel;
     const evidence = owner === 'bridge' ? await this.releaseEvidence() : null;
     if (evidence !== null && !evidence.complete && !abandon) { throw new ReleaseRefusedError(evidence.details); }

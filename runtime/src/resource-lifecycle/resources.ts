@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,12 +6,12 @@ import { fileURLToPath } from 'node:url';
 import type { PathInspector } from '../admission.ts';
 import { mergeHandoff } from '../backend/handoffs.ts';
 import type { CodecReservation } from '../codec.ts';
-import { requireCapacity, RuntimeCapacityError, type CapacityInventory, type DocumentReservation, type ResourceCounts, type TransitionReservation } from '../capacity.ts';
+import { CapacityObservation, capacityError, requireCapacity, RuntimeCapacityError, type CapacityInventory, type CapacityOwed, type CapacityReason, type CapacityTransition, type DocumentReservation, type ResourceCounts, type TransitionReservation } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { eventFileSequence } from '../journal-records.ts';
-import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, stringifyJson, type JsonProfile } from '../json.ts';
-import { effectivelyUnfinished, parseOperation, type FullOperation, type RepairOperation, type RetainedHandoff } from '../operation-records.ts';
+import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile } from '../json.ts';
+import { effectivelyUnfinished, pendingOperationSafety, parseOperation, type FullOperation, type RepairOperation, type RetainedHandoff } from '../operation-records.ts';
 import type { OperationStore } from '../operations.ts';
 import type { RuntimeScope } from '../scope.ts';
 import { parseStateSafety } from '../safety-records.ts';
@@ -38,11 +39,11 @@ export interface ResourceObservation extends CapacityInventory {
 
 function unavailable(dimension: string): never { throw new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: [dimension] }); }
 function assertProjectedDocument(value: unknown): void {
-  try { stringifyJson(value, 'state-event'); }
+  try { stringifyProspectiveJson(value, 'state-event', 'operation-finalization'); }
   catch (error) {
-    if (!(error instanceof StrictJsonError)) { throw error; }
-    const dimension = error.message.includes('byte budget') ? 'bytes' : error.message.includes('token') ? 'tokensOrText' : 'document';
-    throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: [`operationFinalization:${dimension}`] });
+    if (!(error instanceof ProspectiveJsonBudgetError)) { throw error; }
+    const dimensions = [...new Set(error.limits.map(item => item.dimension === 'bytes' ? 'operationFinalization:bytes' : 'operationFinalization:tokensOrText'))];
+    throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions }, null, { cause: error });
   }
 }
 
@@ -123,19 +124,137 @@ export function remainingRecoveryPublications(record: RepairOperation): number {
   return (publicationDue ? 1 : 0) + (episode.replacementAttempt === null ? 1 : 0);
 }
 
+export interface CapacitySource { readonly kind: CapacityTransition }
+interface CapacityLease {
+  readonly source: CapacitySource;
+  readonly epoch: number;
+  readonly reservation: TransitionReservation;
+  readonly targets: ReadonlySet<string> | null;
+  readonly newEvents: Set<string>;
+  readonly newOperations: Set<string>;
+}
+interface SourceContext { readonly source: CapacitySource; readonly bound: boolean; readonly lease: CapacityLease | null }
+
 export class ResourceAuthority {
+  readonly capacity = new CapacityObservation();
   private readonly scope: RuntimeScope;
   private readonly inspector: PathInspector;
   private readonly operations: OperationStore;
-  private reserved: TransitionReservation | null = null;
-  private markerOnly = false;
-  private uncertain = false;
-  private readonly newEvents = new Set<string>();
-  private readonly newOperations = new Set<string>();
+  private readonly context = new AsyncLocalStorage<SourceContext | null>();
+  private readonly sources = new WeakMap<CapacitySource, { lease: CapacityLease | null }>();
+  private authorityEpoch = 0;
 
   constructor(scope: RuntimeScope, inspector: PathInspector, operations: OperationStore) { this.scope = scope; this.inspector = inspector; this.operations = operations; }
 
-  invalidate(): void { this.uncertain = true; this.reserved = null; this.newEvents.clear(); this.newOperations.clear(); }
+  createSource(kind: CapacityTransition): CapacitySource {
+    const source = Object.freeze({ kind });
+    this.sources.set(source, { lease: null });
+    return source;
+  }
+
+  currentSource(): CapacitySource | null {
+    const source = this.context.getStore()?.source;
+    return source !== undefined && this.sources.has(source) ? source : null;
+  }
+
+  withSource<T>(source: CapacitySource | null, action: () => Promise<T>): Promise<T> {
+    const admitted = source !== null && this.sources.has(source);
+    return this.context.run(admitted ? { source, bound: false, lease: null } : null, action);
+  }
+
+  withTransition<T>(kind: CapacityTransition, action: () => Promise<T>): Promise<T> {
+    const source = this.currentSource();
+    return source?.kind === kind ? action() : this.withSource(this.createSource(kind), action);
+  }
+
+  bind<T>(action: () => Promise<T>): () => Promise<T> {
+    const current = this.context.getStore();
+    const captured = current == null ? null : { source: current.source, bound: true, lease: this.lease(current) };
+    return () => this.context.run(captured, action);
+  }
+
+  private lease(context = this.context.getStore()): CapacityLease | null {
+    if (context == null || !this.sources.has(context.source)) { return null; }
+    return context.bound ? context.lease : this.sources.get(context.source)!.lease;
+  }
+
+  private valid(lease: CapacityLease | null): lease is CapacityLease {
+    return lease !== null && lease.epoch === this.authorityEpoch && this.sources.get(lease.source)?.lease === lease;
+  }
+
+  assertReservation(): CapacityTransition {
+    const lease = this.lease();
+    if (!this.valid(lease)) { this.refuse(new Error('Required capacity reservation is stale.'), null, 'otherAuthority'); }
+    return lease.source.kind;
+  }
+
+  private source(kind: CapacityTransition): CapacitySource {
+    const context = this.context.getStore();
+    if (context == null || context.bound || !this.sources.has(context.source) || context.source.kind !== kind) {
+      this.refuse(new Error('Capacity source ownership is unavailable.'), null, 'otherAuthority');
+    }
+    return context.source;
+  }
+
+  invalidate(): void { this.authorityEpoch++; this.capacity.invalidate(); }
+  reportFailure(error: RuntimeCapacityError): void { this.capacity.refused(error); }
+
+  prospectiveFailure(error: ProspectiveJsonBudgetError): RuntimeCapacityError {
+    const lease = this.lease();
+    const kind = this.valid(lease) ? lease.source.kind : null;
+    const failure = capacityError(error, kind);
+    if (lease !== null) { this.sources.get(lease.source)!.lease = null; }
+    this.capacity.invalidateOwed(); this.reportFailure(failure);
+    return failure;
+  }
+
+  captureFailure(error: unknown): RuntimeCapacityError | null {
+    if (error instanceof RuntimeCapacityError) { this.reportFailure(error); return error; }
+    if (!(error instanceof ProspectiveJsonBudgetError)) { return null; }
+    const failure = capacityError(error, null);
+    this.invalidate(); this.reportFailure(failure);
+    return failure;
+  }
+
+  private refuse(error: unknown, kind: CapacityTransition | null, dependency: CapacityReason, owed: Partial<CapacityOwed> = {}): never {
+    const failure = capacityError(error, kind, dependency);
+    const source = this.currentSource();
+    if (source !== null) { this.sources.get(source)!.lease = null; }
+    if (kind === null) { this.invalidate(); } else { this.capacity.invalidateOwed(); }
+    this.capacity.observeOwed(owed); this.reportFailure(failure);
+    throw failure;
+  }
+
+  invalidatePublication(relative: string): void {
+    if (relative === 'runtime.json') { return; }
+    const fields: readonly (keyof CapacityOwed)[] = relative === 'agent-session.json' || relative === 'agent-session-index.json'
+      ? ['protectedHandoffs', 'safetyObligation', 'historyDisclosure']
+      : relative === 'state-safety.json' ? ['protectedHandoffs', 'safetyObligation', 'historyDisclosure']
+        : relative.startsWith('operations/') ? ['unfinishedOperations', 'protectedHandoffs', 'safetyObligation', 'historyDisclosure']
+          : relative.startsWith('journal/') ? ['unacknowledgedEvents', 'protectedHandoffs', 'safetyObligation', 'historyDisclosure']
+            : ['unacknowledgedEvents', 'pendingOutboxRecords', 'unfinishedOperations', 'protectedHandoffs', 'safetyObligation', 'historyDisclosure'];
+    this.capacity.invalidateOwed(fields);
+  }
+
+  async beforeWrite(relative: string, deadline?: Deadline): Promise<void> {
+    const source = this.currentSource();
+    if (source === null) { this.refuse(new Error('Publication source is absent.'), null, 'otherAuthority'); }
+    if (!this.valid(this.lease())) {
+      if (this.context.getStore()?.bound) { this.refuse(new Error('Queued publication reservation is stale.'), null, 'otherAuthority'); }
+      if (source.kind === 'runtimeMarker') { await this.reserveRuntimeMarker(deadline); }
+      else if (source.kind === 'maintenance') { await this.reserveMaintenance(deadline); }
+      else { await this.reserve(source.kind, {}, deadline); }
+    }
+    this.invalidatePublication(relative);
+  }
+
+  async sessionMutation<T>(action: () => Promise<T>, deadline?: Deadline): Promise<T> {
+    if (this.currentSource() !== null) { return action(); }
+    return this.withTransition('ordinary', async () => {
+      await this.reserveControls('ordinary', new Set(['agent-session.json', 'agent-session-index.json']), false, deadline);
+      return action();
+    });
+  }
 
   private async observe(mode: 'Inventory' | 'Marker', deadline?: Deadline): Promise<ResourceObservation> {
     const reply = await this.inspector.metadata(script, ['-Root', this.scope.dataRoot, '-ScopeSha256', this.scope.bindingSha256, '-CompanionRoot', this.scope.companionRoot, '-Mode', mode], this.scope.dataRoot, deadline?.remaining());
@@ -148,10 +267,12 @@ export class ResourceAuthority {
       potentialHandoffs: counts[2]! + counts[5]!, unfinishedOperations: counts[4]!, invalidEvents: counts[5]!, pendingOutbox: counts[7]!, freeBytes: BigInt(value['freeBytes']), uncertainWorkspace: value['uncertainWorkspace'] };
   }
 
-  async inventory(deadline?: Deadline, recovering = false): Promise<ResourceObservation> {
+  async inventory(deadline?: Deadline, recovering = false, observeOwed?: (owed: Partial<CapacityOwed>) => void): Promise<ResourceObservation> {
     try {
       const observation = await this.observe('Inventory', deadline);
       const operations = await this.operations.list(deadline);
+      observeOwed?.({ unfinishedOperations: operations.invalid.length === 0 ? operations.records.filter(entry => effectivelyUnfinished(entry.record)).length : null });
+      if (operations.records.some(entry => pendingOperationSafety(entry.record))) { observeOwed?.({ safetyObligation: true }); }
       const active = operations.records.filter(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record));
       if (active.length > 1) { unavailable('recoveryAuthority'); }
       let recoveryEvents = maximumRecoveryEvents;
@@ -174,59 +295,90 @@ export class ResourceAuthority {
         potentialHandoffs: Math.max(observation.potentialHandoffs, unique.size), recoveryEvents, activeRepair: active.length > 0,
         unfinishedOperations: operations.records.filter(entry => !entry.record.compacted && entry.record.completedAt === null).length,
         pendingConsumer: operations.records.some(entry => !entry.record.compacted && entry.record.kind !== 'repair' && entry.record.completedAt === null) };
-    } catch (error) { this.invalidate(); throw error; }
+    } catch (error) { if (observeOwed === undefined) { this.invalidate(); } throw error; }
+  }
+
+  private async readSafety(deadline?: Deadline): Promise<ReturnType<typeof parseStateSafety>> {
+    const target = path.join(this.scope.dataRoot, 'state-safety.json');
+    const admitted = await this.inspector.inspect(this.scope.dataRoot, target, false, deadline?.remaining());
+    if (admitted.kind !== 'file') { unavailable('stateSafety'); }
+    return parseStateSafety(parseStrictJson(await readBoundedFile(target, jsonBudgets.config.maxBytes)), this.scope.bindingSha256);
   }
 
   async reserve(kind: TransitionReservation['kind'], additions: Partial<ResourceCounts> = {}, deadline?: Deadline): Promise<void> {
-    this.reserved = null;
+    const source = this.source(kind);
+    const epoch = this.authorityEpoch;
+    this.sources.get(source)!.lease = null;
+    this.capacity.invalidateOwed();
+    const owedEpoch = this.capacity.epoch;
+    const owed: Partial<CapacityOwed> = {};
+    const observed = (value: Partial<CapacityOwed>): void => { Object.assign(owed, value); this.capacity.observeOwed(value, owedEpoch); };
     try {
-      const inventory = await this.inventory(deadline, kind !== 'ordinary');
+      const inventory = await this.inventory(deadline, kind !== 'ordinary', observed);
       if (kind === 'ordinary') {
-        const target = path.join(this.scope.dataRoot, 'state-safety.json');
-        const admitted = await this.inspector.inspect(this.scope.dataRoot, target, false, deadline?.remaining());
-        if (admitted.kind !== 'file') { unavailable('stateSafety'); }
-        parseStateSafety(parseStrictJson(await readBoundedFile(target, jsonBudgets.config.maxBytes)), this.scope.bindingSha256);
+        const safety = await this.readSafety(deadline);
+        if (safety.pendingCheck !== null || safety.correction !== null) { observed({ safetyObligation: true }); }
       }
-      const transition = completeReservation(kind, inventory, additions);
-      requireCapacity(inventory, transition);
-      this.reserved = transition;
-      this.markerOnly = false;
-      this.uncertain = false;
-      this.newEvents.clear(); this.newOperations.clear();
-    } catch (error) { this.invalidate(); throw error; }
+      const reservation = completeReservation(kind, inventory, additions);
+      if (epoch !== this.authorityEpoch || owedEpoch !== this.capacity.epoch) { this.refuse(new Error('Capacity inventory changed.'), null, 'otherAuthority'); }
+      requireCapacity(inventory, reservation);
+      this.sources.get(source)!.lease = { source, epoch, reservation, targets: null, newEvents: new Set(), newOperations: new Set() };
+      this.capacity.admitted(kind);
+    } catch (error) { this.refuse(error, epoch === this.authorityEpoch ? kind : null, 'inventory', owedEpoch === this.capacity.epoch ? owed : {}); }
   }
 
-  async reserveRuntimeMarker(): Promise<void> {
-    this.reserved = null;
+  async reserveRuntimeMarker(deadline?: Deadline): Promise<void> {
+    await this.reserveControls('runtimeMarker', new Set(['runtime.json']), true, deadline);
+  }
+
+  private async reserveControls(kind: 'runtimeMarker' | 'ordinary', targets: ReadonlySet<string>, complete: boolean, deadline?: Deadline): Promise<void> {
+    const source = this.source(kind);
+    const epoch = this.authorityEpoch;
+    this.sources.get(source)!.lease = null;
     try {
-      const inventory = await this.observe('Marker');
-      const transition: TransitionReservation = { kind: 'release', additions: zero, remainingControlReserve: zero,
-        documents: [{ name: 'runtime.json', profile: 'config', usage: null }], workspaceBytes: BigInt(jsonBudgets.config.maxBytes) * 3n };
-      requireCapacity(inventory, transition);
-      this.reserved = transition; this.markerOnly = true; this.uncertain = false;
-    } catch (error) { this.invalidate(); throw error; }
+      const inventory = await this.observe('Marker', deadline);
+      const reservation: TransitionReservation = { kind: 'release', additions: zero, remainingControlReserve: zero,
+        documents: [...targets].map(name => ({ name, profile: 'config', usage: null })), workspaceBytes: BigInt(jsonBudgets.config.maxBytes) * 3n };
+      if (epoch !== this.authorityEpoch) { this.refuse(new Error('Control reservation changed.'), null, 'otherAuthority'); }
+      requireCapacity(inventory, reservation);
+      this.sources.get(source)!.lease = { source, epoch, reservation, targets, newEvents: new Set(), newOperations: new Set() };
+      if (complete) { this.capacity.admitted(kind); }
+    } catch (error) { this.refuse(error, epoch === this.authorityEpoch ? kind : null, 'inventory'); }
   }
 
   async reserveMaintenance(deadline?: Deadline): Promise<void> {
-    this.reserved = null;
+    const source = this.source('maintenance');
+    const epoch = this.authorityEpoch;
+    this.sources.get(source)!.lease = null;
+    this.capacity.invalidateOwed();
+    const owedEpoch = this.capacity.epoch;
+    const owed: Partial<CapacityOwed> = {};
+    const observed = (value: Partial<CapacityOwed>): void => { Object.assign(owed, value); this.capacity.observeOwed(value, owedEpoch); };
     try {
-      const inventory = await this.inventory(deadline, true);
-      const transition: TransitionReservation = { kind: 'release', additions: zero, remainingControlReserve: zero,
+      const inventory = await this.inventory(deadline, true, observed);
+      const reservation: TransitionReservation = { kind: 'release', additions: zero, remainingControlReserve: zero,
         documents: [{ name: 'event-compaction', profile: 'state-event', usage: null }, { name: 'operation-compaction', profile: 'state-event', usage: null }],
         workspaceBytes: BigInt(jsonBudgets['state-event'].maxBytes) * 6n + BigInt(jsonBudgets.config.maxBytes) * 3n };
-      requireCapacity(inventory, transition);
-      this.reserved = transition; this.markerOnly = false; this.uncertain = false;
-      this.newEvents.clear(); this.newOperations.clear();
-    } catch (error) { this.invalidate(); throw error; }
+      if (epoch !== this.authorityEpoch || owedEpoch !== this.capacity.epoch) { this.refuse(new Error('Maintenance inventory changed.'), null, 'otherAuthority'); }
+      requireCapacity(inventory, reservation);
+      this.sources.get(source)!.lease = { source, epoch, reservation, targets: null, newEvents: new Set(), newOperations: new Set() };
+      this.capacity.admitted('maintenance');
+    } catch (error) { this.refuse(error, epoch === this.authorityEpoch ? 'maintenance' : null, 'inventory', owedEpoch === this.capacity.epoch ? owed : {}); }
   }
 
   async preflight(target: string, bytes: Readonly<Uint8Array>, profile: JsonProfile, deadline?: Deadline): Promise<void> {
+    const lease = this.lease();
+    const kind = this.valid(lease) ? lease.source.kind : null;
     try {
+      this.invalidatePublication(path.relative(this.scope.dataRoot, target).replaceAll(path.sep, '/'));
       deadline?.check();
-      const reservation = this.reserved;
-      if (this.uncertain || reservation === null || bytes.byteLength > jsonBudgets[profile].maxBytes) { unavailable('reservation'); }
+      if (!this.valid(lease)) { this.refuse(new Error('Publication owner is stale.'), null, 'otherAuthority'); }
+      const reservation = lease.reservation;
+      if (bytes.byteLength > jsonBudgets[profile].maxBytes) {
+        throw new ProspectiveJsonBudgetError([{ dimension: 'bytes', actual: bytes.byteLength, limit: jsonBudgets[profile].maxBytes }], path.relative(this.scope.dataRoot, target));
+      }
       const relative = path.relative(this.scope.dataRoot, target).replaceAll(path.sep, '/');
-      if (relative.startsWith('..') || path.isAbsolute(relative) || this.markerOnly && relative !== 'runtime.json') { unavailable('publicationScope'); }
+      if (relative.startsWith('..') || path.isAbsolute(relative) || lease.targets !== null && !lease.targets.has(relative)) { unavailable('publicationScope'); }
       const binding = path.join(this.scope.dataRoot, 'scope.json');
       const admittedBinding = await this.inspector.inspect(this.scope.dataRoot, binding, false, deadline?.remaining());
       if (admittedBinding.kind !== 'file' || bytesHash(await readBoundedFile(binding, jsonBudgets.config.maxBytes)) !== this.scope.bindingSha256) { unavailable('scopeAuthority'); }
@@ -249,37 +401,45 @@ export class ResourceAuthority {
         let exists = true;
         try { await fs.stat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') { exists = false; } else { throw error; } }
         if (!exists) {
-          const set = event ? this.newEvents : this.newOperations;
+          const set = event ? lease!.newEvents : lease!.newOperations;
           set.add(relative);
           const capacity = event ? reservation.additions.uncompactedEvents + reservation.remainingControlReserve.uncompactedEvents : reservation.additions.fullTerminalOperations + reservation.remainingControlReserve.fullTerminalOperations;
           if (set.size > capacity) { unavailable('unreservedAddition'); }
         }
       }
+      if (!this.valid(lease)) { this.refuse(new Error('Publication owner changed.'), null, 'otherAuthority'); }
       deadline?.check();
-    } catch (error) { this.invalidate(); throw error; }
+    } catch (error) { this.refuse(error, this.valid(lease) ? kind : null, 'publicationScope'); }
   }
 
   async workspace(inputBytes: number, outputBytes: number, deadline?: Deadline): Promise<void> {
+    const lease = this.lease();
+    const kind = this.valid(lease) ? lease.source.kind : null;
     try {
       deadline?.check();
-      if (this.uncertain || this.reserved === null || !Number.isSafeInteger(inputBytes) || !Number.isSafeInteger(outputBytes) || inputBytes < 0 || outputBytes < 0
-        || BigInt(inputBytes) + BigInt(outputBytes) > this.reserved.workspaceBytes) { unavailable('workspace'); }
-    } catch (error) { this.invalidate(); throw error; }
+      if (!this.valid(lease)) { this.refuse(new Error('Workspace owner is stale.'), null, 'otherAuthority'); }
+      if ( !Number.isSafeInteger(inputBytes) || !Number.isSafeInteger(outputBytes) || inputBytes < 0 || outputBytes < 0
+        || BigInt(inputBytes) + BigInt(outputBytes) > lease.reservation.workspaceBytes) { unavailable('workspace'); }
+    } catch (error) { this.refuse(error, this.valid(lease) ? kind : null, 'workspace'); }
   }
 
   async codec(reservation: CodecReservation, deadline?: Deadline): Promise<void> {
+    const lease = this.lease();
+    const kind = this.valid(lease) ? lease.source.kind : null;
     try {
+      if (!this.valid(lease)) { this.refuse(new Error('Codec owner is stale.'), null, 'otherAuthority'); }
+      if (reservation.publication) { this.invalidatePublication(path.relative(this.scope.dataRoot, reservation.target).replaceAll(path.sep, '/')); }
       await this.workspace(reservation.inputBytes + reservation.controlBytes, reservation.maximumOutputBytes, deadline);
       const relative = path.relative(this.scope.dataRoot, reservation.target).replaceAll(path.sep, '/');
       const event = relative.startsWith('journal/events/') && eventFileSequence(relative.slice('journal/events/'.length)) !== null;
-      if (this.markerOnly || (!event && relative !== 'journal/recovery-event.json' && relative !== 'codec.json') || reservation.publication && relative === 'codec.json') { unavailable('codecScope'); }
+      if (lease.targets !== null || (!event && relative !== 'journal/recovery-event.json' && relative !== 'codec.json') || reservation.publication && relative === 'codec.json') { unavailable('codecScope'); }
       const binding = path.join(this.scope.dataRoot, 'scope.json');
       const admitted = await this.inspector.inspectMany(this.scope.dataRoot, [binding, reservation.target], true, deadline?.remaining());
       if (admitted[0]!.kind !== 'file' || bytesHash(await readBoundedFile(binding, jsonBudgets.config.maxBytes)) !== this.scope.bindingSha256) { unavailable('scopeAuthority'); }
       if (event && reservation.publication && !admitted[1]!.exists) {
-        this.newEvents.add(relative);
-        if (this.newEvents.size > this.reserved!.additions.uncompactedEvents + this.reserved!.remainingControlReserve.uncompactedEvents) { unavailable('unreservedAddition'); }
+        lease!.newEvents.add(relative);
+        if (lease!.newEvents.size > lease.reservation.additions.uncompactedEvents + lease.reservation.remainingControlReserve.uncompactedEvents) { unavailable('unreservedAddition'); }
       }
-    } catch (error) { this.invalidate(); throw error; }
+    } catch (error) { this.refuse(error, this.valid(lease) ? kind : null, 'codecScope'); }
   }
 }

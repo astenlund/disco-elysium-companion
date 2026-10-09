@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { DataRootUnavailableError, type PathAdmission } from '../../src/admission.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
+import { CapacityObservation, RuntimeCapacityError } from '../../src/capacity.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
 import type { Deadline } from '../../src/deadline.ts';
 import { parseJournalCursor, parseJournalHeader } from '../../src/journal-records.ts';
@@ -12,6 +13,21 @@ import type { JournalSnapshot } from '../../src/journal.ts';
 import { parseStateSafety, SafetyUnavailableError, type CorrectionReason, type RecoveryWitness, type StateSafety } from '../../src/safety-records.ts';
 import { parseSessionBinding, parseSessionIndex, type AgentSessionIndex } from '../../src/session-records.ts';
 import { bytesHash, StorageConflictError, type ScopeStorage, type StoredDocument } from '../../src/storage.ts';
+
+// These pre-existing authority controls assume resource admission and isolate
+// durable safety predicates. The capacity integration controls use the real
+// ResourceAuthority and separately test ownership, admission and invalidation.
+export function admittedCapacityFixture() {
+  const capacity = new CapacityObservation();
+  return { capacity, reserve: async () => {}, reserveMaintenance: async () => {}, invalidate: () => capacity.invalidate(),
+    invalidatePublication: () => capacity.invalidateOwed(), assertReservation: () => 'ordinary' as const,
+    withTransition: <T>(_kind: string, action: () => Promise<T>): Promise<T> => action(),
+    bind: <T>(action: () => Promise<T>): (() => Promise<T>) => action,
+    sessionMutation: <T>(action: () => Promise<T>): Promise<T> => action(), currentSource: () => null,
+    captureFailure: (error: unknown) => error instanceof RuntimeCapacityError ? error : null,
+    reportFailure: (error: RuntimeCapacityError) => capacity.refused(error), prospectiveFailure: (error: Error) => error,
+    preflight: async () => {}, workspace: async () => {} };
+}
 
 export const at = '2026-10-08T00:00:00.0000000Z';
 export const scope = 'a'.repeat(64);
@@ -146,7 +162,7 @@ export function authorityModel(initialSafety: StateSafety = { stateSafetyVersion
     identities: { runtimeInstanceId: '5'.repeat(32), runtimeSessionId: '6'.repeat(32), adapterBindingEpoch: '7'.repeat(32) },
     scope: memory.scope, storage: memory as unknown as ScopeStorage, guard: { held: true },
     inspector: { inspect: memory.inspect.bind(memory), metadata: unexpectedNative }, supervisor: { run: unexpectedNative, verifyQuiescent: async () => {} },
-    publisher: {}, resources: { reserve: async () => {}, invalidate: () => {} },
+    publisher: {}, resources: admittedCapacityFixture(),
     options: { companionRoot: memory.scope.companionRoot, onInvalidated: (reason: CorrectionReason) => { invalidations.push(reason); }, onDiagnostic: (_: string, error: unknown) => { diagnostics.push(error); } },
   } as unknown as KernelInput);
   kernel.journal.read = async () => {

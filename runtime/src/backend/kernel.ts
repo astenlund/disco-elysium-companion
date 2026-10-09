@@ -1,4 +1,5 @@
 import { PathInspector } from '../admission.ts';
+import { capacityJournalFault, firstCapacityRefusal, type CapacityOwed } from '../capacity.ts';
 import { PayloadCodec, type CodecReservation } from '../codec.ts';
 import type { RuntimeConfig } from '../config.ts';
 import { requireControl } from '../control-values.ts';
@@ -68,14 +69,18 @@ export class Kernel {
   private admission: { request: CoreRequest; token: string | null; operationId: string | null } | null = null;
   private readonly reportedDamage = new Set<string>();
   private adapterMismatch = false;
+  private journalObservation: BackendStatus['journal'] = { state: 'healthy', fault: null, unacknowledgedEvents: 0 };
 
   constructor(input: KernelInput) {
     this.config = input.config; this.identities = input.identities; this.scope = input.scope; this.guard = input.guard; this.inspector = input.inspector;
     this.supervisor = input.supervisor; this.publisher = input.publisher; this.storage = input.storage; this.options = input.options; this.resources = input.resources;
-    this.operations = new OperationStore(input.storage); this.sessions = new SessionStore(input.storage);
-    this.status = { consumer: 'unknown', freshness: { state: 'unknown', class: null, reason: null, lastGoodGeneratedAt: null, checkedAt: null },
+    this.operations = new OperationStore(input.storage, error => this.resources.prospectiveFailure(error), action => this.resources.bind(action));
+    this.sessions = new SessionStore(input.storage, { mutation: (action, deadline) => this.resources.sessionMutation(action, deadline),
+      bind: action => this.resources.bind(action), prospectiveFailure: error => this.resources.prospectiveFailure(error) });
+    this.status = { capacity: this.resources.capacity.current, consumer: 'unknown', freshness: { state: 'unknown', class: null, reason: null, lastGoodGeneratedAt: null, checkedAt: null },
       operational: this.operational.current, stateSafety: { state: 'unavailable', correction: null }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 },
       watcher: input.config.watcher.enabled ? 'stopped' : 'disabled', previousShutdownClean: false };
+    this.resources.capacity.subscribe(() => this.emit());
     this.safetyStore = new SafetyStore({ storage: input.storage, bindingGenerations: deadline => this.bindingGenerations(deadline), suppressProvider: reason => this.options.onInvalidated?.(reason) });
     this.codec = new PayloadCodec(input.publisher, (reservation: CodecReservation, deadline?: Deadline) => this.resources.codec(reservation, deadline));
     this.journal = new Journal({ root: input.scope.dataRoot, game: input.scope.game, principal: input.scope.principal, identities: input.identities,
@@ -92,6 +97,10 @@ export class Kernel {
     this.core = new CoreClient({ companionRoot: input.scope.companionRoot, adapter: input.config.adapter, inspector: input.inspector, supervisor: input.supervisor,
       admit: async (request, deadline) => {
         this.owned();
+        const capacityKind = this.resources.assertReservation();
+        if (capacityKind === 'ordinary') {
+          const refusal = firstCapacityRefusal(this.resources.capacity.current); if (refusal !== null) { throw refusal; }
+        }
         const admission = this.admission;
         requireControl(admission !== null && stringifyJson(admission.request) === stringifyJson(request));
         const bounded = deadline instanceof Deadline ? deadline : undefined;
@@ -110,7 +119,16 @@ export class Kernel {
   }
 
   owned(): void { if (!this.guard.held || this.closing) { throw new SafetyUnavailableError('Runtime writer ownership is unavailable.'); } }
-  emit(change: Partial<BackendStatus> = {}): void { this.status = Object.freeze({ ...this.status, ...change, operational: this.operational.current }); this.options.onStatus?.(this.status); }
+  emit(change: Partial<BackendStatus> = {}): void {
+    if (change.journal !== undefined) {
+      this.journalObservation = change.journal.fault === 'runtimeCapacityExceeded'
+        ? { ...this.journalObservation, unacknowledgedEvents: change.journal.unacknowledgedEvents } : change.journal;
+    }
+    const capacity = this.resources.capacity.current;
+    const fault = capacityJournalFault(capacity, this.journalObservation.fault);
+    const journal = { ...this.journalObservation, fault, state: fault !== null ? 'fault' as const : this.journalObservation.state === 'fault' ? 'healthy' as const : this.journalObservation.state };
+    this.status = Object.freeze({ ...this.status, ...change, capacity, journal, operational: this.operational.current }); this.options.onStatus?.(this.status);
+  }
   diagnose(phase: string, error: unknown): void {
     try { this.options.onDiagnostic?.(phase, error); }
     catch { /* Diagnostics cannot replace the classified failure or its obligation. */ }
@@ -162,7 +180,10 @@ export class Kernel {
     return value.value;
   }
 
-  async reportPayloadDamage(snapshot: JournalSnapshot, deadline?: Deadline): Promise<void> {
+  reportPayloadDamage(snapshot: JournalSnapshot, deadline?: Deadline): Promise<void> {
+    return this.resources.withTransition('repair', () => this.reportPayloadDamageOwned(snapshot, deadline));
+  }
+  private async reportPayloadDamageOwned(snapshot: JournalSnapshot, deadline?: Deadline): Promise<void> {
     const safety = await this.safety(deadline);
     const identity = stringifyJson({ fault: snapshot.fault, firstBadSequence: snapshot.firstBadSequence,
       journalId: snapshot.header.status === 'valid' ? snapshot.header.value.journalId : null,
@@ -194,6 +215,8 @@ export class Kernel {
   }
 
   async observeSafety(deadline?: Deadline): Promise<SafetyObservation> {
+    this.resources.capacity.invalidateOwed(['safetyObligation', 'historyDisclosure', 'protectedHandoffs', 'unfinishedOperations']);
+    const capacityEpoch = this.resources.capacity.epoch;
     let safety: StoredDocument<StateSafety> | null = null;
     let operations: OperationInventory | null = null;
     let stateSafety: BackendStatus['stateSafety'] = { state: 'unavailable', correction: null };
@@ -206,6 +229,7 @@ export class Kernel {
       const correction = value.correction === null ? null : { correctionId: value.correction.correctionId, reason: value.correction.reason };
       stateSafety = { state: 'unavailable', correction };
       operations = await this.operations.list(deadline);
+      this.resources.capacity.observeOwed({ unfinishedOperations: operations.invalid.length === 0 ? operations.records.filter(entry => effectivelyUnfinished(entry.record)).length : null }, capacityEpoch);
       const witness = value.recoveryWitness;
       const owner = witness === null ? null : operations.records.find(entry => entry.record.operationId === witness.owner.operationId)?.record;
       const missingWitnessOwner = witness !== null && (witness.phase === 'active' || witness.phase === 'awaitingDisclosure')
@@ -219,24 +243,41 @@ export class Kernel {
         providerAllowed = hasProviderAuthority(value, operations);
       }
     } catch (error) { failure = error; stateSafety = { state: 'unavailable', correction: stateSafety.correction }; providerAllowed = false; }
+    if (safety?.status === 'valid') {
+      const value = safety.value;
+      const validatedDuty = value.pendingCheck !== null || value.correction !== null || operations?.records.some(entry => pendingOperationSafety(entry.record)) === true;
+      this.resources.capacity.observeOwed({ safetyObligation: stateSafety.state === 'unavailable' ? null : validatedDuty ? true : stateSafety.state === 'ready' ? false : null,
+        historyDisclosure: stateSafety.state === 'unavailable' ? null : value.recoveryWitness !== null ? true : null }, capacityEpoch);
+    }
     return { safety, operations, stateSafety, providerAllowed, failure };
   }
 
-  async observeStatus(snapshot?: JournalSnapshot, deadline?: Deadline): Promise<void> {
+  async observeStatus(_snapshot?: JournalSnapshot, deadline?: Deadline): Promise<void> {
     const { stateSafety } = await this.observeSafety(deadline);
-    const journal = snapshot ?? await this.journal.read(deadline);
+    const capacityEpoch = this.resources.capacity.epoch;
+    const journal = await this.journal.read(deadline);
     const count = journal.header.status === 'valid' && journal.cursor.status === 'valid' ? Math.max(0, journal.header.value.highWaterSequence - journal.cursor.value.lastAckedSequence) : 0;
+    const cursor = journal.cursor.status === 'valid' ? journal.cursor.value : null;
+    const owed: Partial<CapacityOwed> = { unacknowledgedEvents: journal.fault === null && journal.damaged.length === 0 && journal.header.status === 'valid' && cursor !== null
+      ? [...journal.events.values()].filter(event => !event.metadata.compacted && event.metadata.sequence > cursor.lastAckedSequence).length : null };
+    if (journal.header.status === 'valid' && !journal.header.value.historyVerified) { (owed as { historyDisclosure?: boolean }).historyDisclosure = true; }
+    this.resources.capacity.observeOwed(owed, capacityEpoch);
     this.emit({ stateSafety, journal: { ...this.status.journal, unacknowledgedEvents: count } });
   }
 
   async checked<T>(request: CoreRequest, action: () => Promise<CoreResult<T>>, accept: (result: CoreResult<T>, generation: string | null) => Promise<void>, deadline?: Deadline, operationId: string | null = null, completionDeadline?: () => Deadline): Promise<CoreResult<T>> {
     requireControl(this.admission === null);
+    if (this.resources.assertReservation() === 'ordinary') {
+      const failure = firstCapacityRefusal(this.resources.capacity.current); if (failure !== null) { throw failure; }
+    }
+    this.resources.capacity.invalidateOwed();
     let token: string | null = null;
     let generation: string | null = null;
     try {
       const safety = await this.safetyStore.armCheck(deadline);
       token = safety.checkToken; generation = safety.value.generation;
     } catch (error) {
+      const capacity = this.resources.captureFailure(error); if (capacity !== null) { throw capacity; }
       if (request.kind !== 'consumer' || operationId === null) { throw error; }
       const intent = await this.operations.read(operationId, deadline);
       requireControl(intent.status === 'valid' && !intent.value.compacted && intent.value.kind !== 'repair' && intent.value.safety.phase !== 'discharged');

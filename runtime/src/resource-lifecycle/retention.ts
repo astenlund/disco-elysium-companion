@@ -20,6 +20,7 @@ import type { RuntimeScope } from '../scope.ts';
 import { parseSessionBinding, parseSessionIndex } from '../session-records.ts';
 import type { ScopeStorage } from '../storage.ts';
 import type { ResourceAuthority } from './resources.ts';
+import { hasCarryAuthority, hasProviderAuthority } from '../backend/provider-authority.ts';
 
 const ticksPerDay = 864000000000n;
 const resourceScript = fileURLToPath(new URL('../../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
@@ -41,6 +42,7 @@ export interface RetentionAuthority {
   readonly provenance: ProvenanceInventory;
   readonly protectedOperations: ReadonlySet<string>;
   readonly protectedQuarantine: ReadonlySet<string>;
+  readonly protectedHandoffs: ReadonlySet<string>;
   readonly evidence: (event: EventDescription) => RetentionEvidence;
 }
 
@@ -175,7 +177,11 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
   }
   const provenance: ProvenanceInventory = { status: 'verified', ranges };
   const newestState = events.filter(event => !event.compacted && event.acceptance !== null && event.acceptance.generation === safety.generation && !rejectedIdentities.has(identity(event))).at(-1);
-  return { provenance, protectedOperations, protectedQuarantine, evidence(event) {
+  const protectedHandoffs = new Set<string>();
+  for (const { record } of operations) {
+    if (!record.compacted && record.kind === 'repair' && protectedOperations.has(record.operationId)) { for (const handoff of record.plan.handoffs) { protectedHandoffs.add(identity(handoff)); } }
+  }
+  return { provenance, protectedOperations, protectedQuarantine, protectedHandoffs, evidence(event) {
     const skip = rangeResolutionTime(event, provenance);
     const unresolvedRange = ranges.some(range => range.journalId === event.journalId && event.sequence >= range.firstSequence && event.sequence <= range.lastSequence && range.discharge === null);
     if (unresolvedGlobal || unresolvedRange || unresolvedIdentities.has(identity(event)) || unresolvedEvents.has(`${event.journalId}:${event.eventId}`) || newestState !== undefined && sameEvent(event, newestState) || event.settlement === 'pending'
@@ -209,7 +215,7 @@ export interface MaintenanceDependencies {
   readonly outbox: OutboxReader;
 }
 
-export async function maintainRuntimeStorage(deps: MaintenanceDependencies, deadline?: Deadline, options: { readonly reevaluate?: boolean } = {}): Promise<{ compactedEvents: number; compactedOperations: number; removedQuarantine: number }> {
+async function maintain(deps: MaintenanceDependencies, deadline?: Deadline, options: { readonly reevaluate?: boolean } = {}): Promise<{ compactedEvents: number; compactedOperations: number; removedQuarantine: number }> {
   const safety = await deps.safetyStore.read(deadline);
   const operations = await deps.operations.list(deadline);
   requireControl(safety.status === 'valid' && operations.invalid.length === 0);
@@ -219,6 +225,8 @@ export async function maintainRuntimeStorage(deps: MaintenanceDependencies, dead
   requireControl(binding.status !== 'invalid' && index.status !== 'invalid');
   const generations = new Set([...(binding.status === 'valid' && binding.value.stateGeneration === safety.value.generation ? [binding.value.stateGeneration] : []),
     ...(index.status === 'valid' ? index.value.sessions.filter(session => session.stateGeneration === safety.value.generation).map(session => session.stateGeneration) : [])]);
+  deps.resources.capacity.invalidateOwed(['pendingOutboxRecords']);
+  const outboxEpoch = deps.resources.capacity.epoch;
   const names = await deps.outbox.list(deadline);
   const outbox = new Set<string>();
   for (const name of names) {
@@ -226,18 +234,27 @@ export async function maintainRuntimeStorage(deps: MaintenanceDependencies, dead
     requireControl(source.status === 'valid');
     outbox.add(`${source.metadata.logicalOutboxId}:${source.sha256}`);
   }
+  deps.resources.capacity.observeOwed({ pendingOutboxRecords: names.length }, outboxEpoch);
   const carry = await deps.inspector.inspect(deps.scope.dataRoot, path.join(deps.scope.dataRoot, 'journal/recovery-event.json'), true, deadline?.remaining());
   requireControl(!carry.exists || carry.kind === 'file');
+  let carryHash: string | null = null;
   if (carry.exists) {
     const [observed] = await new EventReader(deps.scope.dataRoot, deps.inspector).read([{ path: carry.path, sequence: 0 }], deadline?.remaining());
     requireControl(observed?.status === 'valid' && !observed.metadata.compacted && operations.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair'
       && entry.record.recovery.episodes.some(episode => episode.prerequisite?.carry?.sha256 === observed.sha256)));
+    carryHash = observed.sha256;
   }
   const snapshot = await deps.journal.read(deadline);
-  requireControl(snapshot.fault === null && snapshot.damaged.length === 0 && snapshot.cursor.status === 'valid');
+  requireControl(snapshot.fault === null && snapshot.damaged.length === 0 && snapshot.cursor.status === 'valid' && snapshot.header.status === 'valid');
   const inputs: RetentionInputs = { safety: safety.value, operations: operations.records, events: [...snapshot.events.values()].map(event => event.metadata),
     outbox, outboxNames: new Set(names), sessionGenerations: generations, carryPresent: carry.exists };
   const authority = reconcileRetention(inputs);
+  const coherent = hasProviderAuthority(safety.value, operations) && hasCarryAuthority(carryHash, operations);
+  const safetyDuty = safety.value.pendingCheck !== null || safety.value.correction !== null || operations.records.some(entry => pendingOperationSafety(entry.record));
+  deps.resources.capacity.observeOwed({ protectedHandoffs: coherent ? authority.protectedHandoffs.size : null,
+    historyDisclosure: coherent ? !snapshot.header.value.historyVerified || safety.value.recoveryWitness !== null
+      || authority.provenance.status === 'verified' && authority.provenance.ranges.some(range => range.discharge === null) : null,
+    safetyObligation: safetyDuty ? true : coherent ? false : null });
   let compactedEvents = 0;
   await deps.journal.transact(async transaction => {
     const current = transaction.snapshot();
@@ -270,9 +287,18 @@ export async function maintainRuntimeStorage(deps: MaintenanceDependencies, dead
     }, deadline);
     compactedOperations++;
   }
+  deps.resources.capacity.invalidateOwed();
   const removedQuarantine = await trimQuarantine(deps, authority.protectedQuarantine, deadline);
-  if (options.reevaluate !== false) { await deps.resources.reserve('ordinary', {}, deadline); }
+  if (options.reevaluate !== false) { await deps.resources.withTransition('ordinary', () => deps.resources.reserve('ordinary', {}, deadline)); }
+  await refreshCapacityOwed(deps, deadline);
   return { compactedEvents, compactedOperations, removedQuarantine };
+}
+
+export async function maintainRuntimeStorage(deps: MaintenanceDependencies, deadline?: Deadline, options: { readonly reevaluate?: boolean } = {}): Promise<{ compactedEvents: number; compactedOperations: number; removedQuarantine: number }> {
+  try { return await deps.resources.withTransition('maintenance', () => maintain(deps, deadline, options)); }
+  catch (error) {
+    throw deps.resources.captureFailure(error) ?? error;
+  }
 }
 
 async function trimQuarantine(deps: MaintenanceDependencies, protectedPaths: ReadonlySet<string>, deadline?: Deadline): Promise<number> {
@@ -285,6 +311,73 @@ async function trimQuarantine(deps: MaintenanceDependencies, protectedPaths: Rea
   const removed = asInteger(reply['removed']);
   const remaining = asInteger(reply['remaining']);
   requireControl(removed !== undefined && removed >= 0 && remaining !== undefined && remaining >= 0);
-  if (remaining > runtimeLimits.quarantineFiles) { throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['quarantineFiles'] }); }
+  if (remaining > runtimeLimits.quarantineFiles) { throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['quarantineFiles'] }, 'maintenance'); }
   return removed;
+}
+
+export async function readOwedOutbox(outbox: OutboxReader, deadline?: Deadline): Promise<{ readonly names: readonly string[]; readonly identities: ReadonlySet<string> }> {
+  const names = await outbox.list(deadline);
+  const identities = new Set<string>();
+  for (const name of names) {
+    const source = await outbox.read(name, deadline);
+    requireControl(source.status === 'valid');
+    const key = source.metadata.logicalOutboxId + ':' + source.sha256;
+    requireControl(!identities.has(key)); identities.add(key);
+  }
+  const after = await outbox.list(deadline);
+  requireControl(names.length === after.length && names.every((name, index) => name === after[index]));
+  deadline?.check();
+  return { names, identities };
+}
+
+// Status observation never starts retention, clears a capacity slot, or converts
+// an unavailable component to zero. Each independent read may supply only itself.
+export async function refreshCapacityOwed(deps: MaintenanceDependencies, deadline?: Deadline): Promise<void> {
+  deps.resources.capacity.invalidateOwed();
+  const epoch = deps.resources.capacity.epoch;
+  let safety: Awaited<ReturnType<SafetyStore['read']>> | null = null;
+  let operations: Awaited<ReturnType<OperationStore['list']>> | null = null;
+  let snapshot: Awaited<ReturnType<Journal['read']>> | null = null;
+  let outbox: Awaited<ReturnType<typeof readOwedOutbox>> | null = null;
+  try { safety = await deps.safetyStore.read(deadline); } catch { /* Its component remains unknown. */ }
+  try {
+    operations = await deps.operations.list(deadline);
+    if (operations.invalid.length === 0) {
+      deps.resources.capacity.observeOwed({ unfinishedOperations: operations.records.filter(entry => effectivelyUnfinished(entry.record)).length }, epoch);
+    }
+  } catch { /* Its component remains unknown. */ }
+  try {
+    snapshot = await deps.journal.read(deadline);
+    if (snapshot.fault === null && snapshot.damaged.length === 0 && snapshot.header.status === 'valid' && snapshot.cursor.status === 'valid') {
+      const acked = snapshot.cursor.value.lastAckedSequence;
+      deps.resources.capacity.observeOwed({ unacknowledgedEvents: [...snapshot.events.values()].filter(event => !event.metadata.compacted && event.metadata.sequence > acked).length }, epoch);
+    }
+    if (snapshot.header.status === 'valid' && !snapshot.header.value.historyVerified) { deps.resources.capacity.observeOwed({ historyDisclosure: true }, epoch); }
+  } catch { /* Its component remains unknown. */ }
+  try { outbox = await readOwedOutbox(deps.outbox, deadline); deps.resources.capacity.observeOwed({ pendingOutboxRecords: outbox.names.length }, epoch); }
+  catch { /* A forecast or partial listing cannot supply the count. */ }
+  if (safety?.status !== 'valid') { return; }
+  const duty = safety.value.pendingCheck !== null || safety.value.correction !== null || operations?.records.some(entry => pendingOperationSafety(entry.record)) === true;
+  if (duty) { deps.resources.capacity.observeOwed({ safetyObligation: true }, epoch); }
+  if (operations === null || operations.invalid.length !== 0 || snapshot === null || snapshot.fault !== null || snapshot.damaged.length !== 0
+    || snapshot.header.status !== 'valid' || snapshot.cursor.status !== 'valid' || outbox === null) { return; }
+  try {
+    const binding = await deps.storage.read('agent-session.json', 'config', parseSessionBinding, deadline);
+    const index = await deps.storage.read('agent-session-index.json', 'config', parseSessionIndex, deadline);
+    requireControl(binding.status !== 'invalid' && index.status !== 'invalid');
+    const generations = new Set([...(binding.status === 'valid' ? [binding.value.stateGeneration] : []),
+      ...(index.status === 'valid' ? index.value.sessions.map(session => session.stateGeneration) : [])]);
+    const carry = await deps.inspector.inspect(deps.scope.dataRoot, path.join(deps.scope.dataRoot, 'journal/recovery-event.json'), true, deadline?.remaining());
+    let carryHash: string | null = null;
+    if (carry.exists) {
+      requireControl(carry.kind === 'file');
+      const [event] = await new EventReader(deps.scope.dataRoot, deps.inspector).read([{ path: carry.path, sequence: 0 }], deadline?.remaining());
+      requireControl(event?.status === 'valid' && !event.metadata.compacted); carryHash = event.sha256;
+    }
+    requireControl(hasCarryAuthority(carryHash, operations) && hasProviderAuthority(safety.value, operations));
+    const graph = reconcileRetention({ safety: safety.value, operations: operations.records, events: [...snapshot.events.values()].map(event => event.metadata),
+      outbox: outbox.identities, outboxNames: new Set(outbox.names), sessionGenerations: generations, carryPresent: carry.exists });
+    deps.resources.capacity.observeOwed({ protectedHandoffs: graph.protectedHandoffs.size, safetyObligation: duty,
+      historyDisclosure: !snapshot.header.value.historyVerified || safety.value.recoveryWitness !== null || graph.provenance.status === 'verified' && graph.provenance.ranges.some(range => range.discharge === null) }, epoch);
+  } catch { /* Unproved graph relationships remain unknown. */ }
 }

@@ -109,10 +109,12 @@ describe('complete runtime transition capacity', () => {
     const operations = { list: async () => ({ records: [], invalid: [], handoffCount: 0, fullTerminalCount: 0 }) } as unknown as OperationStore;
     const scope = { dataRoot: 'C:/fixture', bindingSha256: 'a'.repeat(64) } as RuntimeScope;
     const authority = new ResourceAuthority(scope, inspector, operations);
-    await authority.reserve('release');
-    await authority.workspace(1, 1);
-    unavailable = true;
-    await assert.rejects(() => authority.reserve('release'));
-    await assert.rejects(() => authority.workspace(1, 1));
+    await authority.withTransition('release', async () => {
+      await authority.reserve('release');
+      await authority.workspace(1, 1);
+      unavailable = true;
+      await assert.rejects(() => authority.reserve('release'));
+      await assert.rejects(() => authority.workspace(1, 1));
+    });
   });
 });

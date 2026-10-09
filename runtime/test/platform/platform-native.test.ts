@@ -101,6 +101,8 @@ describe('native runtime platform', () => {
       const initial = await snapshot(fixture.root);
       const empty = await readRuntimeStatus(fixture.root);
       assert.equal(empty.initialized, false);
+      assert.equal(empty.capacity, 'unavailable');
+      assert.match(empty.liveStateNotice, /capacity/);
       assert.deepEqual(await snapshot(fixture.root), initial);
       const reply = await inspector.metadata(path.join(scripts, 'Get-Principal.ps1'), [], fixture.root);
       const principal = parseStrictJson(reply.stdout) as { sid: string };
@@ -123,7 +125,7 @@ describe('native runtime platform', () => {
         assert.equal(status.journal.historyVerified, false);
         assert.equal(status.journal.unacknowledgedEvents, 0);
         assert.equal(status.stateSafety.state, 'ready');
-        for (const key of ['consumer', 'freshness', 'operational', 'watcher', 'provider', 'windowRecovery'] as const) { assert.equal(status[key], 'unavailable'); }
+        for (const key of ['consumer', 'freshness', 'operational', 'watcher', 'provider', 'windowRecovery', 'capacity'] as const) { assert.equal(status[key], 'unavailable'); }
         assert.deepEqual(await snapshot(fixture.root), before);
         const broken = 'jr-' + '3'.repeat(32) + '.json';
         await fs.writeFile(path.join(scope.dataRoot, 'operations', broken), '{');

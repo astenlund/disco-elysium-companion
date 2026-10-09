@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { PendingStateCheckError } from '../../src/backend/api.ts';
+import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { indexCurrentBinding } from '../../src/session-records.ts';
@@ -410,7 +411,7 @@ test('a pending checked turn blocks later client operations without changing its
   backend.acquire = async () => {
     backend.acquisitionCount += 1;
     backend.safetyValue = { ...backend.safetyValue, pendingCheck: '7'.repeat(32) };
-    Object.assign(backend.status, {
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } },
       freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'settlementPending' },
       stateSafety: { state: 'recovering', correction: null },
     });
@@ -426,6 +427,7 @@ test('a pending checked turn blocks later client operations without changing its
   assert.ok(failure?.type === 'turn.failed');
   assert.equal(failure.code, 'stateInvalidated');
   assert.equal(failure.retryable, false);
+  assert.equal(host.status.capacity.ordinary.state, 'exhausted');
   assert.equal(events.filter(event => event.type === 'turn.failed').length, 1);
   assert.equal(provider.current.requests.length, 0);
   assert.equal(backend.ackCount, 0);
@@ -475,5 +477,53 @@ test('send-time relevance replaces the unsent baseline even when candidate bytes
   assert.equal(backend.ackCount, 0);
   assert.equal(host.status.windowRecovery?.descendingFailures, 2);
   assert.equal(host.status.windowRecovery?.revalidationAvailable, true);
+  await host.shutdown();
+});
+
+test('a required capacity refusal is reported after status and blocks later input without changing the provider session', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const prior = provider.current;
+  backend.acquire = async () => {
+    backend.acquisitionCount += 1;
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'unavailable', reason: 'scopeAuthority', dimensions: [] } } });
+    throw new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: ['scopeAuthority'] }, 'ordinary');
+  };
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const statusAt = events.findIndex(event => event.type === 'status.changed' && event.status.capacity.ordinary.state === 'unavailable');
+  const failedAt = events.findIndex(event => event.type === 'turn.failed');
+  assert.ok(statusAt >= 0 && failedAt > statusAt);
+  const failure = events[failedAt];
+  assert.ok(failure?.type === 'turn.failed');
+  assert.equal(failure.code, 'capacityBlocked');
+  assert.equal(failure.retryable, false);
+  assert.equal(provider.current.requests.length, 0);
+  assert.equal(backend.ackCount, 0);
+  assert.deepEqual(host.submitChat({ text: 'again', questionOverride: false }), { result: 'notReady' });
+  assert.equal(backend.acquisitionCount, 1);
+  assert.equal(await host.startNewAgentSession(), 'started');
+  assert.equal(host.status.capacity.ordinary.state, 'unavailable');
+  assert.deepEqual(host.submitChat({ text: 'after new', questionOverride: false }), { result: 'notReady' });
+  assert.equal(prior.closed, true);
+  assert.equal(events.filter(event => event.type === 'turn.failed').length, 1);
+  await host.shutdown();
+});
+
+test('an optional sent-mark capacity failure may complete one admitted turn but blocks later input', async () => {
+  const { host, backend, provider, events } = await fixture();
+  backend.markSent = async () => {
+    backend.events.push('markSent');
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
+    host.statusChanged();
+    return false;
+  };
+  assert.equal(host.submitChat({ text: 'one send', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(provider.current.requests.length, 1);
+  assert.equal(backend.ackCount, 1);
+  assert.equal(events.filter(event => event.type === 'turn.completed').length, 1);
+  assert.equal(events.filter(event => event.type === 'turn.failed').length, 0);
+  assert.deepEqual(host.submitChat({ text: 'later', questionOverride: false }), { result: 'notReady' });
+  assert.equal(backend.acquisitionCount, 1);
   await host.shutdown();
 });

@@ -2,12 +2,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { requireControl } from '../control-values.ts';
+import { RuntimeCapacityError } from '../capacity.ts';
+import type { CapacityRewindResult } from './api.ts';
+import type { CapacitySource } from '../resource-lifecycle/resources.ts';
 import { Deadline } from '../deadline.ts';
 import { observeFile } from '../file-observation.ts';
 import { newIdentity, newOperationId } from '../identity.ts';
 import { eventFileName, eventRewriteMetadata, hasCurrentAcceptance, type EventDescription, type JournalCursor, type JournalHeader } from '../journal-records.ts';
 import type { JournalEvent, JournalSnapshot } from '../journal.ts';
-import { jsonBudgets, readBoundedFile, stringifyJson, utcNow } from '../json.ts';
+import { jsonBudgets, readBoundedFile, stringifyJson, stringifyProspectiveJson, utcNow } from '../json.ts';
 import { effectivelyUnfinished, coreAttemptToken, type RepairOperation, type RetainedHandoff, type RecoveryEpisode } from '../operation-records.ts';
 import { requireRepair, type StoredOperation } from '../operations.ts';
 import { RecoveryExecutor, RecoveryDamageError } from '../recovery-executor.ts';
@@ -40,6 +43,8 @@ export class RecoveryCoordinator {
   readonly kernel: Kernel;
   private running = false;
   private damageEpisodeCreated = false;
+  private selectedCapacityRoot: string | null = null;
+  private capacitySource: CapacitySource | null = null;
   constructor(kernel: Kernel) { this.kernel = kernel; kernel.planRecovery = (request, deadline) => this.plan(request, deadline); }
 
   private async stored(id: string, deadline?: Deadline): Promise<StoredOperation & { record: RepairOperation }> {
@@ -65,7 +70,11 @@ export class RecoveryCoordinator {
     return events;
   }
 
-  async plan(request: RepairRequest, deadline?: Deadline): Promise<StoredOperation> {
+  plan(request: RepairRequest, deadline?: Deadline): Promise<StoredOperation> {
+    return this.kernel.resources.withTransition('repair', async () => { await this.kernel.resources.reserve('repair', {}, deadline); return this.planOwned(request, deadline); });
+  }
+
+  private async planOwned(request: RepairRequest, deadline?: Deadline): Promise<StoredOperation> {
     const k = this.kernel;
     const inventory = await k.operations.list(deadline);
     const inheritedRanges = inventory.records.flatMap(entry => entry.record.compacted || entry.record.kind === 'handover' ? [] : entry.record.plan.skippedRanges.filter(range => range.discharge === null));
@@ -170,10 +179,12 @@ export class RecoveryCoordinator {
         rejectedRecord: request.rejected ?? null, lostOperations: inventory.invalid.filter(item => item.sha256 !== null).map(item => ({ name: item.name, sha256: item.sha256!, destination: `quarantine/${item.name}.${newIdentity()}.quarantined` })), publishedVersions: null, retiredRecords: [], handoffs, correctionId: correction?.correctionId ?? null,
         inheritedRecovery: reservedWitness !== null && !sameRecoveryOwner(reservedWitness.owner, owner) ? reservedWitness.owner : null, skippedRanges: mergeRanges(inheritedRanges, prerequisite?.skippedRanges ?? []) },
       recovery: { attempts: [{ publication: 'due', selectedRecord: null, journalEvent: null }], episodes: [episode], activeEpisode: 0 } };
+    await k.resources.preflight(path.join(k.scope.dataRoot, 'operations', operationId + '.json'), Buffer.from(stringifyProspectiveJson(record, 'state-event', 'operations/' + operationId + '.json', error => k.resources.prospectiveFailure(error))), 'state-event', deadline);
     const witness = (await k.safety(deadline)).recoveryWitness;
     if (witness === null) { await k.safetyStore.prepareWitness(owner, deadline); }
     else if (!sameRecoveryOwner(witness.owner, owner)) { await k.safetyStore.prepareTransfer(owner, deadline); }
     let created = await k.operations.create(record, deadline);
+    if (record.cause === 'capacity') { this.selectedCapacityRoot = record.operationId; this.capacitySource = k.resources.currentSource(); }
     await k.safetyStore.activateWitness(owner, this.ownerProof(owner), deadline);
     if (correction !== null) {
       if (correction.recoveryOperationId !== null && correction.recoveryOperationId !== operationId) {
@@ -289,7 +300,11 @@ export class RecoveryCoordinator {
       target: { path: `quarantine/${path.basename(relative)}.${newIdentity()}.quarantined`, before: null, after: sha256 } });
   }
 
-  async reconcileCarry(deadline?: Deadline): Promise<void> {
+  reconcileCarry(deadline?: Deadline): Promise<void> {
+    return this.kernel.resources.withTransition('repair', () => this.reconcileCarryOwned(deadline));
+  }
+
+  private async reconcileCarryOwned(deadline?: Deadline): Promise<void> {
     const k = this.kernel;
     const inventory = await k.operations.list(deadline);
     const sha256 = await k.carryHash(deadline);
@@ -301,7 +316,11 @@ export class RecoveryCoordinator {
     await this.plan({ cause: 'operationLost', journal: await k.journal.read(deadline), unboundCarrySha256: sha256 }, deadline);
   }
 
-  async reconcileSafety(deadline?: Deadline): Promise<void> {
+  reconcileSafety(deadline?: Deadline): Promise<void> {
+    return this.kernel.resources.withTransition('repair', () => this.reconcileSafetyOwned(deadline));
+  }
+
+  private async reconcileSafetyOwned(deadline?: Deadline): Promise<void> {
     const k = this.kernel;
     await this.reconcileCarry(deadline);
     let safetyRead = await k.safetyStore.read(deadline);
@@ -482,6 +501,7 @@ export class RecoveryCoordinator {
     const k = this.kernel;
     return new RecoveryExecutor({ scope: k.scope, inspector: k.inspector, publisher: k.publisher, codec: k.codec,
       admit: async action => {
+        k.resources.capacity.invalidateOwed();
         const current = await this.stored(operationId);
         const owner = activeRecoveryOwner(current.record);
         const safety = await k.safety();
@@ -562,10 +582,16 @@ export class RecoveryCoordinator {
     await k.safetyStore.activateWitness(successor, this.ownerProof(successor));
   }
 
-  async resume(operationId: string): Promise<void> {
+  resume(operationId: string): Promise<void> {
+    return this.kernel.resources.withTransition('repair', () => this.resumeOwned(operationId));
+  }
+
+  private async resumeOwned(operationId: string): Promise<void> {
     requireControl(!this.running);
     this.running = true;
     const k = this.kernel;
+    const original = await this.stored(operationId);
+    if (original.record.cause === 'capacity') { this.selectedCapacityRoot = operationId; this.capacitySource = k.resources.currentSource(); }
     k.emit({ journal: { ...k.status.journal, state: 'repairing', fault: null } });
     try {
       await k.resources.reserve('repair');
@@ -661,6 +687,7 @@ export class RecoveryCoordinator {
       }
       throw new SafetyUnavailableError('Recovery reached the finite outbox rewind bound.');
     } catch (error) {
+      error = k.resources.captureFailure(error) ?? error;
       k.diagnose('repair', error);
       throw error;
     } finally {
@@ -712,6 +739,7 @@ export class RecoveryCoordinator {
       requireControl(before === lost.sha256 && after === null);
       const witness = (await k.safety()).recoveryWitness;
       requireControl(witness?.phase === 'active' && witness.owner.operationId === operationId);
+      k.resources.invalidatePublication(source);
       await k.publisher.exclusive(async options => {
         const actualScript = fileURLToPath(new URL('../../scripts/Invoke-FileAction.ps1', import.meta.url));
         await options.supervisor.run('publication', { command: 'pwsh', args: ['-NoProfile', '-File', actualScript, '-Root', k.scope.dataRoot, '-Action', 'Move',
@@ -746,7 +774,11 @@ export class RecoveryCoordinator {
     k.emit({ journal: { ...k.status.journal, state: 'healthy', fault: null } });
   }
 
-  async startup(beforeResume?: () => Promise<boolean>): Promise<void> {
+  startup(beforeResume?: () => Promise<boolean>, capacityCheckpoint?: () => Promise<void>): Promise<void> {
+    return this.kernel.resources.withTransition('repair', () => this.startupOwned(beforeResume, capacityCheckpoint));
+  }
+
+  private async startupOwned(beforeResume?: () => Promise<boolean>, capacityCheckpoint?: () => Promise<void>): Promise<void> {
     const k = this.kernel;
     await this.reconcileSafety();
     if (await beforeResume?.()) { await this.reconcileSafety(); }
@@ -754,6 +786,10 @@ export class RecoveryCoordinator {
     const unfinished = inventory.records.filter(item => !item.record.compacted && item.record.kind === 'repair' && effectivelyUnfinished(item.record));
     requireControl(unfinished.length <= 1);
     if (unfinished.length === 1) { await this.resume(unfinished[0]!.record.operationId); return; }
+    const snapshot = await k.journal.read();
+    const cause = snapshot.fault === 'header' || snapshot.fault === 'cursor' ? snapshot.fault : inventory.invalid.length > 0 ? 'operationLost'
+      : snapshot.fault ?? (snapshot.damaged.length > 0 ? 'contextUncertain' : null);
+    if (cause !== null) { const record = await this.plan({ cause, journal: snapshot }); await this.resume(record.record.operationId); return; }
     const safety = await k.safety();
     const correctionRoot = safety.correction?.recoveryOperationId;
     if (correctionRoot !== null && correctionRoot !== undefined) {
@@ -771,9 +807,6 @@ export class RecoveryCoordinator {
         return;
       }
     }
-    const snapshot = await k.journal.read();
-    const cause = snapshot.fault ?? (inventory.invalid.length > 0 ? 'operationLost' : snapshot.damaged.length > 0 ? 'contextUncertain' : null);
-    if (cause !== null) { const record = await this.plan({ cause, journal: snapshot }); await this.resume(record.record.operationId); return; }
     const names = new Set(await k.outbox.list());
     for (const entry of inventory.records) {
       if (entry.record.compacted || entry.record.kind !== 'repair' || entry.record.recovery.episodes.at(-1)?.phase === 'abandonedByRelease') { continue; }
@@ -790,7 +823,73 @@ export class RecoveryCoordinator {
         return;
       }
     }
+    await capacityCheckpoint?.();
   }
+
+  async capacityCheckpoint(retain: () => Promise<void>): Promise<void> {
+    const k = this.kernel;
+    k.owned();
+    await retain();
+    const operations = await k.operations.list();
+    const safety = await k.safety();
+    const journal = await k.journal.read();
+    requireControl(operations.invalid.length === 0 && !operations.records.some(entry => effectivelyUnfinished(entry.record))
+      && safety.pendingCheck === null && journal.fault === null && journal.damaged.length === 0
+      && journal.header.status === 'valid' && journal.cursor.status === 'valid');
+    try { await k.resources.withTransition('ordinary', () => k.resources.reserve('ordinary')); return; }
+    catch (error) {
+      if (!(error instanceof RuntimeCapacityError) || error.transition !== 'ordinary' || error.state !== 'exhausted') { throw error; }
+    }
+    const plan = await this.plan({ cause: 'capacity', journal });
+    this.selectedCapacityRoot = plan.record.operationId;
+    await this.resume(plan.record.operationId);
+  }
+
+  async capacityResult(): Promise<CapacityRewindResult | null> {
+    if (this.selectedCapacityRoot === null) { return null; }
+    const unknown: CapacityRewindResult = { affectedEvents: null, fromSequence: null, throughSequence: null, retainedHandoffs: null,
+      replayableHandoffs: null, presentationRetiredHandoffs: null, survivingCoreRecords: null };
+    try {
+      const record = (await this.stored(this.selectedCapacityRoot)).record;
+      requireControl(record.cause === 'capacity');
+      const original = record.recovery.episodes[0]?.prerequisite;
+      requireControl(original?.kind === 'rewind');
+      const actions = original.actions.filter(action => action.kind === 'quarantine' && action.source.path.startsWith('journal/events/'));
+      const sequences = actions.map(action => {
+        requireControl(action.kind === 'quarantine');
+        const sequence = Number(path.basename(action.source.path, '.json'));
+        requireControl(Number.isSafeInteger(sequence) && sequence > 0 && eventFileName(sequence) === path.basename(action.source.path)
+          && record.plan.affected.some(event => event.sequence === sequence && event.fileSha256 === action.source.before));
+        return sequence;
+      }).sort((left, right) => left - right);
+      requireControl(new Set(sequences).size === sequences.length);
+      const handoffs = new Map<string, RetainedHandoff>();
+      for (const handoff of record.plan.handoffs) {
+        const key = handoff.logicalOutboxId + ':' + handoff.recordSha256;
+        const prior = handoffs.get(key);
+        handoffs.set(key, prior === undefined ? handoff : mergeHandoff(prior, handoff));
+      }
+      const values = [...handoffs.values()];
+      let survivingCoreRecords: number | null = null;
+      try {
+        await this.kernel.resources.withSource(this.capacitySource, async () => {
+          const names = await this.kernel.outbox.list();
+          let count = 0;
+          for (const name of names) {
+            const source = await this.kernel.outbox.read(name);
+            requireControl(source.status === 'valid');
+            const matches = values.filter(handoff => handoff.logicalOutboxId === source.metadata.logicalOutboxId);
+            if (matches.length > 0) { requireControl(matches.length === 1 && matches[0]!.recordSha256 === source.sha256); count++; }
+          }
+          survivingCoreRecords = count;
+        });
+      } catch { /* Missing or unreadable source evidence is reported as unknown. */ }
+      return { affectedEvents: sequences.length, fromSequence: sequences[0] ?? null, throughSequence: sequences.at(-1) ?? null,
+        retainedHandoffs: values.length, replayableHandoffs: values.filter(value => value.presentation === 'replayable').length,
+        presentationRetiredHandoffs: values.filter(value => value.presentation !== 'replayable').length, survivingCoreRecords };
+    } catch { return unknown; }
+  }
+
 }
 
 function mergeRanges(...groups: readonly (readonly SkippedRange[])[]): SkippedRange[] {

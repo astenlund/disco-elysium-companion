@@ -10,13 +10,13 @@ import { observeFile } from './file-observation.ts';
 import { FilePublisher } from './files.ts';
 import type { InstanceGuard } from './guard.ts';
 import { JournalDocumentError } from './journal-records.ts';
-import { isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, stringifyJson, StrictJsonError, type JsonProfile, type JsonValue } from './json.ts';
+import { isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, stringifyProspectiveJson, StrictJsonError, type JsonProfile, type JsonValue, type ProspectiveJsonFailure } from './json.ts';
 import { SafetyUnavailableError } from './safety-records.ts';
 import type { RuntimeScope } from './scope.ts';
 import { SerialQueue } from './serial.ts';
 
 export type StoredDocument<T> = { readonly status: 'absent' } | { readonly status: 'invalid'; readonly sha256: string | null } | { readonly status: 'valid'; readonly sha256: string; readonly value: T };
-export interface StorageOptions { readonly scope: RuntimeScope; readonly guard: Pick<InstanceGuard, 'held'>; readonly inspector: PathInspector; readonly publisher: FilePublisher }
+export interface StorageOptions { readonly scope: RuntimeScope; readonly guard: Pick<InstanceGuard, 'held'>; readonly inspector: PathInspector; readonly publisher: FilePublisher; readonly prospectiveFailure?: ProspectiveJsonFailure; readonly bind?: <T>(action: () => Promise<T>) => () => Promise<T>; readonly beforeWrite?: (relative: string, deadline?: Deadline) => Promise<void> }
 export const bytesHash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 export class StorageConflictError extends Error { override readonly name = 'StorageConflictError'; }
@@ -28,6 +28,7 @@ export class ScopeStorage {
 
   constructor(options: StorageOptions) { this.options = options; this.scope = options.scope; }
   idle(): Promise<void> { return this.queue.idle(); }
+  private queued<T>(action: () => Promise<T>): Promise<T> { return this.queue.run(this.options.bind?.(action) ?? action); }
 
   private owned(): void { if (!this.options.guard.held) { throw new DataRootUnavailableError('Runtime storage has no writer ownership.'); } }
 
@@ -43,7 +44,7 @@ export class ScopeStorage {
   }
 
   ensureDirectory(relative: string, deadline?: Deadline): Promise<void> {
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       this.owned();
       deadline?.check();
       const components = relative.replaceAll(path.win32.sep, '/').split('/');
@@ -64,7 +65,7 @@ export class ScopeStorage {
   }
 
   read<T>(relative: string, profile: JsonProfile, parse: (value: JsonValue) => T, deadline = Deadline.after(30000)): Promise<StoredDocument<T>> {
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       deadline.check();
       const target = await this.admit(relative, true, deadline);
       if (!target.exists) { return { status: 'absent' }; }
@@ -85,7 +86,7 @@ export class ScopeStorage {
 
   readMany<T>(relatives: readonly string[], profile: JsonProfile, parse: (value: JsonValue, index: number) => T, deadline = Deadline.after(30000)): Promise<readonly StoredDocument<T>[]> {
     const targets = relatives.map(relative => path.resolve(this.scope.dataRoot, relative));
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       deadline.check();
       const hashes = await readFileHashes(this.options.inspector, this.scope.dataRoot, targets, deadline, this.scope.bindingSha256);
       const results: StoredDocument<T>[] = [];
@@ -118,9 +119,10 @@ export class ScopeStorage {
     });
   }
 
-  write(relative: string, value: unknown, profile: JsonProfile, expectedSha256: string | null, deadline = Deadline.after(30000)): Promise<string> {
-    const bytes = Buffer.from(stringifyJson(value, profile), 'utf8');
-    return this.queue.run(async () => {
+  async write(relative: string, value: unknown, profile: JsonProfile, expectedSha256: string | null, deadline = Deadline.after(30000)): Promise<string> {
+    await this.options.beforeWrite?.(relative, deadline);
+    const bytes = Buffer.from(stringifyProspectiveJson(value, profile, relative, this.options.prospectiveFailure), 'utf8');
+    return this.queued(async () => {
       this.owned();
       deadline.check();
       const target = await this.admit(relative, true, deadline);
@@ -136,9 +138,10 @@ export class ScopeStorage {
 
   // This derived index alone may be reconstructed from the durable current binding.
   // Safety, scope, journal and operation authority never use this replacement path.
-  replaceSessionIndex(value: unknown, bindingSha256: string, deadline?: Deadline): Promise<string> {
-    const bytes = Buffer.from(stringifyJson(value), 'utf8');
-    return this.queue.run(async () => {
+  async replaceSessionIndex(value: unknown, bindingSha256: string, deadline?: Deadline): Promise<string> {
+    await this.options.beforeWrite?.('agent-session-index.json', deadline);
+    const bytes = Buffer.from(stringifyProspectiveJson(value, 'config', 'agent-session-index.json', this.options.prospectiveFailure), 'utf8');
+    return this.queued(async () => {
       this.owned();
       deadline?.check();
       const target = await this.admit('agent-session-index.json', true, deadline);
@@ -155,7 +158,7 @@ export class ScopeStorage {
   }
 
   list(relative: string, deadline?: Deadline): Promise<readonly string[]> {
-    return this.queue.run(async () => {
+    return this.queued(async () => {
       deadline?.check();
       const directory = await this.admit(relative, true, deadline);
       if (!directory.exists) { return []; }

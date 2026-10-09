@@ -8,7 +8,24 @@ export const jsonBudgets = {
 export type JsonProfile = keyof typeof jsonBudgets;
 export const maxDepth = 64;
 
-export class StrictJsonError extends Error { override readonly name = 'StrictJsonError'; }
+export class StrictJsonError extends Error { override readonly name: string = 'StrictJsonError'; }
+export type ProspectiveJsonDimension = 'bytes' | 'tokens' | 'text';
+export interface ProspectiveJsonLimit { readonly dimension: ProspectiveJsonDimension; readonly actual: number; readonly limit: number }
+export class ProspectiveJsonBudgetError extends StrictJsonError {
+  override readonly name = 'ProspectiveJsonBudgetError';
+  readonly limits: readonly ProspectiveJsonLimit[];
+  readonly document: string | null;
+  constructor(limits: readonly ProspectiveJsonLimit[], document: string | null = null) {
+    super('Prospective JSON document exceeds its resource budget.');
+    if (limits.length === 0 || limits.some(item => !['bytes', 'tokens', 'text'].includes(item.dimension)
+      || !Number.isSafeInteger(item.actual) || !Number.isSafeInteger(item.limit) || item.limit <= 0 || item.actual <= item.limit)) {
+      throw new RangeError('Prospective JSON limit evidence is invalid.');
+    }
+    this.limits = Object.freeze(limits.map(item => Object.freeze({ ...item }))); this.document = document;
+  }
+}
+export type ProspectiveJsonFailure = (error: ProspectiveJsonBudgetError) => Error;
+type BudgetExceeded = (limits: readonly ProspectiveJsonLimit[]) => never;
 export interface RawNumber { readonly rawJSON: string }
 export type ControlInt64 = number | bigint;
 export type JsonValue = null | boolean | string | RawNumber | JsonValue[] | { [key: string]: JsonValue };
@@ -39,7 +56,8 @@ class JsonReader {
   private readonly text: string;
   private readonly budget: JsonBudget;
 
-  constructor(text: string, budget: JsonBudget) { this.text = text; this.budget = budget; }
+  private readonly exceeded: BudgetExceeded | undefined;
+  constructor(text: string, budget: JsonBudget, exceeded?: BudgetExceeded) { this.text = text; this.budget = budget; this.exceeded = exceeded; }
 
   read(): JsonValue {
     const value = this.value(0);
@@ -60,6 +78,10 @@ class JsonReader {
       this.textBytes += Buffer.byteLength(value, 'utf8');
     }
     if (this.tokens > this.budget.maxTokens || this.textBytes > this.budget.maxTextBytes) {
+      const limits: ProspectiveJsonLimit[] = [];
+      if (this.tokens > this.budget.maxTokens) { limits.push({ dimension: 'tokens', actual: this.tokens, limit: this.budget.maxTokens }); }
+      if (this.textBytes > this.budget.maxTextBytes) { limits.push({ dimension: 'text', actual: this.textBytes, limit: this.budget.maxTextBytes }); }
+      this.exceeded?.(limits);
       throw new StrictJsonError('JSON exceeds its token or decoded-text budget.');
     }
   }
@@ -153,15 +175,22 @@ class JsonReader {
   }
 }
 
-export function parseStrictJson(bytes: Uint8Array, profile: JsonProfile | JsonBudget = 'config'): JsonValue {
+function parseJsonBytes(bytes: Uint8Array, profile: JsonProfile | JsonBudget, exceeded?: BudgetExceeded): JsonValue {
   const budget = resolveBudget(profile);
-  if (bytes.byteLength > budget.maxBytes) { throw new StrictJsonError('JSON exceeds its byte budget.'); }
+  if (bytes.byteLength > budget.maxBytes) {
+    exceeded?.([{ dimension: 'bytes', actual: bytes.byteLength, limit: budget.maxBytes }]);
+    throw new StrictJsonError('JSON exceeds its byte budget.');
+  }
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) { throw new StrictJsonError('JSON carries a byte order mark.'); }
   let text: string;
   try { text = decoder.decode(bytes); }
   catch { throw new StrictJsonError('JSON is not strict UTF-8.'); }
 
-  return new JsonReader(text, budget).read();
+  return new JsonReader(text, budget, exceeded).read();
+}
+
+export function parseStrictJson(bytes: Uint8Array, profile: JsonProfile | JsonBudget = 'config'): JsonValue {
+  return parseJsonBytes(bytes, profile);
 }
 
 export function parseStrictJsonText(text: string, profile: JsonProfile | JsonBudget = 'config'): JsonValue {
@@ -170,13 +199,28 @@ export function parseStrictJsonText(text: string, profile: JsonProfile | JsonBud
   return parseStrictJson(Buffer.from(text, 'utf8'), profile);
 }
 
-export function stringifyJson(value: unknown, profile: JsonProfile | JsonBudget = 'config'): string {
+function serializeJson(value: unknown): string {
   let text: string | undefined;
   try { text = JSON.stringify(value, (_key, item: unknown) => typeof item === 'bigint' ? JSON.rawJSON(item.toString()) : item); }
   catch { throw new StrictJsonError('Value cannot be serialized as JSON.'); }
   if (text === undefined) { throw new StrictJsonError('Value has no JSON representation.'); }
-  parseStrictJsonText(text, profile);
+  return text;
+}
 
+export function stringifyJson(value: unknown, profile: JsonProfile | JsonBudget = 'config'): string {
+  const text = serializeJson(value);
+  parseStrictJsonText(text, profile);
+  return text;
+}
+
+// Only callers about to publish a document select this budget signal. Parsing
+// existing authority and comparing retained metadata keep their original class.
+export function stringifyProspectiveJson(value: unknown, profile: JsonProfile | JsonBudget = 'config', document: string | null = null, failure?: ProspectiveJsonFailure): string {
+  const text = serializeJson(value);
+  parseJsonBytes(Buffer.from(text, 'utf8'), profile, limits => {
+    const error = new ProspectiveJsonBudgetError(limits, document);
+    throw failure?.(error) ?? error;
+  });
   return text;
 }
 
