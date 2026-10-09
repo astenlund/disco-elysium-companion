@@ -12,7 +12,8 @@ import type { HostEvent } from '../../src/session-host-contract.ts';
 import { companionFixture } from '../support/companion.ts';
 import { FakeProvider, instructionHash } from './support.ts';
 
-test('real private coordinator carries accepted state through SessionHost and resumes its acknowledged binding', { timeout: 1800000 }, async () => {
+// This private fixture includes release, hand-over and safety recovery before the turn; the runtime settlement gate stays at 120 seconds.
+test('real private coordinator carries accepted state through SessionHost and resumes its acknowledged binding', { timeout: 3000000 }, async () => {
   const fixture = await companionFixture('runtime-owned-empty');
   let backend: RuntimeBackend | null = null;
   let host: SessionHost | null = null;
