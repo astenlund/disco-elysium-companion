@@ -12,7 +12,7 @@ import { eventFileName, eventRewriteMetadata, hasCurrentAcceptance, type EventDe
 import type { JournalEvent, JournalSnapshot } from '../journal.ts';
 import { jsonBudgets, readBoundedFile, stringifyJson, stringifyProspectiveJson, utcNow } from '../json.ts';
 import { effectivelyUnfinished, coreAttemptToken, type RepairOperation, type RetainedHandoff, type RecoveryEpisode } from '../operation-records.ts';
-import { requireRepair, type StoredOperation } from '../operations.ts';
+import { requireRepair, type OperationInventory, type StoredOperation } from '../operations.ts';
 import { RecoveryExecutor, RecoveryDamageError } from '../recovery-executor.ts';
 import type { RecoveryAction, RecoveryPrerequisite } from '../recovery-manifest.ts';
 import { activeRecoveryOwner, bindRecoveryEvent, checkpointRecovery, completeRecovery, currentAttemptOrdinal, replacementCandidate, replayCandidate, selectRecoveryRecord, transferEpisode } from '../recovery-progress.ts';
@@ -20,7 +20,7 @@ import type { SkippedRange } from '../recovery-provenance.ts';
 import { sameRecoveryOwner, SafetyUnavailableError, type RecoveryOwner, type StateSafety } from '../safety-records.ts';
 import { bytesHash } from '../storage.ts';
 import { Kernel, type RepairRequest } from './kernel.ts';
-import { mergeHandoff } from './handoffs.ts';
+import { additionalHandoffCount, mergeHandoff } from './handoffs.ts';
 import { reservedWitnessMatches } from './recovery-authority.ts';
 import { hasCarryAuthority } from './provider-authority.ts';
 
@@ -70,6 +70,11 @@ export class RecoveryCoordinator {
     return events;
   }
 
+  private handoffGrowth(candidates: Iterable<Pick<RetainedHandoff, 'logicalOutboxId' | 'recordSha256'>>, inventory: OperationInventory): number {
+    const retained = inventory.records.flatMap(entry => !entry.record.compacted && entry.record.kind === 'repair' ? entry.record.plan.handoffs : []);
+    return additionalHandoffCount(candidates, retained);
+  }
+
   plan(request: RepairRequest, deadline?: Deadline): Promise<StoredOperation> {
     return this.kernel.resources.withTransition('repair', async () => { await this.kernel.resources.reserve('repair', {}, deadline); return this.planOwned(request, deadline); });
   }
@@ -110,7 +115,7 @@ export class RecoveryCoordinator {
       return existing;
     }
     const readableEvents = this.readableEvents(request.journal);
-    await k.resources.reserve('repair', { fullTerminalOperations: 1, uncompactedEvents: 2, retainedHandoffs: readableEvents.length }, deadline);
+    await k.resources.reserve('repair', { fullTerminalOperations: 1, uncompactedEvents: 2, retainedHandoffs: this.handoffGrowth(readableEvents.map(event => event.metadata), inventory) }, deadline);
     let safetyRead = await k.safetyStore.read(deadline);
     const reservedWitness = safetyRead.status === 'valid' ? safetyRead.value.recoveryWitness : null;
     const correctionRoot = safetyRead.status === 'valid' ? safetyRead.value.correction?.recoveryOperationId : null;
@@ -563,7 +568,8 @@ export class RecoveryCoordinator {
   private async transferDamage(stored: StoredOperation & { record: RepairOperation }, snapshot: JournalSnapshot): Promise<void> {
     const k = this.kernel;
     this.damageEpisodeCreated = true;
-    await k.resources.reserve('repair', { uncompactedEvents: 1, retainedHandoffs: snapshot.events.size });
+    const inventory = await k.operations.list();
+    await k.resources.reserve('repair', { uncompactedEvents: 1, retainedHandoffs: this.handoffGrowth([...snapshot.events.values()].map(event => event.metadata), inventory) });
     const activationId = await k.activationIdentity();
     const kind = snapshot.fault ?? 'gap';
     const prerequisite = await this.prerequisite({ cause: kind, journal: snapshot });
@@ -723,7 +729,7 @@ export class RecoveryCoordinator {
       }
     }
     if (retired.length !== stored.record.plan.retiredRecords.length || stringifyJson(handoffs, 'state-event') !== stringifyJson(stored.record.plan.handoffs, 'state-event')) {
-      await k.resources.reserve('repair', { retainedHandoffs: handoffs.length - stored.record.plan.handoffs.length });
+      await k.resources.reserve('repair', { retainedHandoffs: this.handoffGrowth(handoffs, await k.operations.list()) });
       await k.operations.update(stored, value => ({ ...requireRepair(value), plan: { ...requireRepair(value).plan, retiredRecords: retired, handoffs } }));
     }
   }

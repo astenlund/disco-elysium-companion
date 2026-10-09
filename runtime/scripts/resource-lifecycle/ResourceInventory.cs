@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -59,7 +60,8 @@ public static class ResourceInventory
                     var value = metadata.RootElement;
                     var eventFile = relative != "journal/recovery-event.json";
                     if (eventFile && (!EventName.IsMatch(Path.GetFileName(file)) || !long.TryParse(Path.GetFileNameWithoutExtension(file), NumberStyles.None, CultureInfo.InvariantCulture, out var sequence)
-                        || value.GetProperty("sequence").GetInt64() != sequence))
+                        || !value.TryGetProperty("sequence", out var position) || position.ValueKind != JsonValueKind.Number
+                        || !position.TryGetInt64(out var actualSequence) || actualSequence != sequence))
                     {
                         throw new DocumentInvalidException("Event position differs from filename.");
                     }
@@ -67,11 +69,12 @@ public static class ResourceInventory
                     if (eventFile && !value.GetProperty("compacted").GetBoolean())
                     {
                         uncompacted++;
-                        potentialHandoffs.Add(Identity(value));
                     }
 
                     if (eventFile)
                     {
+                        // Header recovery preserves readable compact identities too.
+                        potentialHandoffs.Add(Identity(value));
                         journalSources.Add(EventDocuments.Hex(value.GetProperty("recordSha256"), 64) + ":" + EventDocuments.LogicalSequence(value.GetProperty("logicalOutboxId")).ToString(CultureInfo.InvariantCulture));
                     }
                 }
@@ -140,7 +143,7 @@ public static class ResourceInventory
         var free = new DriveInfo(Path.GetPathRoot(root)!).AvailableFreeSpace;
         var pendingOutbox = markerOnly || string.IsNullOrEmpty(companionRoot) ? 0 : CountOutbox(companionRoot, journalSources);
 
-        return JsonSerializer.SerializeToUtf8Bytes(new { uncompactedEvents = uncompacted, retainedHandoffs = handoffs.Count, potentialHandoffs = potentialHandoffs.Count,
+        return JsonSerializer.SerializeToUtf8Bytes(new { uncompactedEvents = uncompacted, retainedHandoffs = handoffs.Count, retainedHandoffIdentitySha256 = IdentitySetHash(handoffs), potentialHandoffs = potentialHandoffs.Count,
             fullTerminalOperations = terminalOperations, unfinishedOperations, invalidEvents, invalidOperations, pendingOutbox, uncertainWorkspace = residue, freeBytes = free.ToString(CultureInfo.InvariantCulture) });
     }
 
@@ -190,6 +193,14 @@ public static class ResourceInventory
         }
 
         return count;
+    }
+
+    private static string IdentitySetHash(HashSet<string> identities)
+    {
+        var ordered = new List<string>(identities);
+        ordered.Sort(StringComparer.Ordinal);
+
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(((char)10).ToString(), ordered))));
     }
 
     private static string Identity(JsonElement value)

@@ -4,13 +4,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { PathInspector } from '../admission.ts';
-import { mergeHandoff } from '../backend/handoffs.ts';
+import { handoffIdentity, handoffIdentityDigest, mergeHandoff } from '../backend/handoffs.ts';
 import type { CodecReservation } from '../codec.ts';
 import { CapacityObservation, capacityError, requireCapacity, RuntimeCapacityError, type CapacityInventory, type CapacityOwed, type CapacityReason, type CapacityTransition, type DocumentReservation, type ResourceCounts, type TransitionReservation } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { eventFileSequence } from '../journal-records.ts';
-import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile } from '../json.ts';
+import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile } from '../json.ts';
 import { effectivelyUnfinished, pendingOperationSafety, parseOperation, type FullOperation, type RepairOperation, type RetainedHandoff } from '../operation-records.ts';
 import type { OperationStore } from '../operations.ts';
 import type { RuntimeScope } from '../scope.ts';
@@ -51,10 +51,11 @@ function assertProjectedDocument(value: unknown): void {
 // every possible pending source, both recovery publications and release control.
 export function completeReservation(kind: TransitionReservation['kind'], inventory: ResourceObservation, additions: Partial<ResourceCounts> = {}): TransitionReservation {
   for (const count of Object.values(additions)) { if (!Number.isSafeInteger(count) || count < 0) { unavailable('additions'); } }
+  if (!Number.isSafeInteger(inventory.potentialHandoffs) || inventory.potentialHandoffs < inventory.counts.retainedHandoffs) { unavailable('inventory'); }
   const recoveryEvents = inventory.recoveryEvents ?? maximumRecoveryEvents;
   const incoming = kind === 'release' ? 0 : inventory.pendingOutbox + (kind === 'ordinary' ? 1 : recoveryEvents);
   const recoveryReserve = kind === 'ordinary' ? recoveryEvents : 0;
-  const handoffGrowth = kind === 'release' ? 0 : (inventory.activeRepair && recoveryEvents === 0 ? 0 : Math.max(0, inventory.potentialHandoffs - inventory.counts.retainedHandoffs)) + incoming;
+  const handoffGrowth = kind === 'release' ? 0 : (kind === 'repair' && inventory.activeRepair && recoveryEvents === 0 ? 0 : Math.max(0, inventory.potentialHandoffs - inventory.counts.retainedHandoffs)) + incoming;
   const newRoot = kind === 'release' ? inventory.pendingConsumer ? 0 : 1 : inventory.activeRepair ? 0 : 1;
   const result: ResourceCounts = {
     uncompactedEvents: Math.max(incoming, additions.uncompactedEvents ?? 0),
@@ -256,14 +257,14 @@ export class ResourceAuthority {
     });
   }
 
-  private async observe(mode: 'Inventory' | 'Marker', deadline?: Deadline): Promise<ResourceObservation> {
+  private async observe(mode: 'Inventory' | 'Marker', deadline?: Deadline): Promise<ResourceObservation & { readonly retainedHandoffIdentitySha256: string }> {
     const reply = await this.inspector.metadata(script, ['-Root', this.scope.dataRoot, '-ScopeSha256', this.scope.bindingSha256, '-CompanionRoot', this.scope.companionRoot, '-Mode', mode], this.scope.dataRoot, deadline?.remaining());
     if (reply.exitCode !== 0) { unavailable('inventory'); }
     const value = parseStrictJson(reply.stdout);
-    if (!hasExactKeys(value, ['uncompactedEvents', 'retainedHandoffs', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox', 'uncertainWorkspace', 'freeBytes'])) { unavailable('inventory'); }
+    if (!hasExactKeys(value, ['uncompactedEvents', 'retainedHandoffs', 'retainedHandoffIdentitySha256', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox', 'uncertainWorkspace', 'freeBytes'])) { unavailable('inventory'); }
     const counts = ['uncompactedEvents', 'retainedHandoffs', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox'].map(name => asInteger(value[name]));
-    if (counts.some(count => count === undefined || count < 0) || typeof value['freeBytes'] !== 'string' || !/^[0-9]+$/.test(value['freeBytes']) || typeof value['uncertainWorkspace'] !== 'boolean') { unavailable('inventory'); }
-    return { complete: true, counts: { uncompactedEvents: counts[0]!, retainedHandoffs: counts[1]!, fullTerminalOperations: counts[3]! + counts[6]! },
+    if (!isLowerHex(value['retainedHandoffIdentitySha256'], 64) || counts.some(count => count === undefined || count < 0) || typeof value['freeBytes'] !== 'string' || !/^[0-9]+$/.test(value['freeBytes']) || typeof value['uncertainWorkspace'] !== 'boolean') { unavailable('inventory'); }
+    return { complete: true, retainedHandoffIdentitySha256: value['retainedHandoffIdentitySha256'] as string, counts: { uncompactedEvents: counts[0]!, retainedHandoffs: counts[1]!, fullTerminalOperations: counts[3]! + counts[6]! },
       potentialHandoffs: counts[2]! + counts[5]!, unfinishedOperations: counts[4]!, invalidEvents: counts[5]!, pendingOutbox: counts[7]!, freeBytes: BigInt(value['freeBytes']), uncertainWorkspace: value['uncertainWorkspace'] };
   }
 
@@ -284,11 +285,13 @@ export class ResourceAuthority {
       for (const { record } of operations.records) {
         if (record.compacted || record.kind !== 'repair') { continue; }
         for (const handoff of record.plan.handoffs) {
-          const key = `${handoff.logicalOutboxId}:${handoff.recordSha256}`;
+          const key = handoffIdentity(handoff);
           const prior = unique.get(key);
           unique.set(key, prior === undefined ? handoff : mergeHandoff(prior, handoff));
         }
       }
+      if (!recovering && operations.invalid.length === 0 && (observation.counts.retainedHandoffs !== unique.size
+        || observation.retainedHandoffIdentitySha256 !== handoffIdentityDigest(unique.values()))) { unavailable('inventory'); }
       const complete = recovering ? operations.invalid.every(entry => entry.sha256 !== null) : operations.invalid.length === 0 && observation.invalidEvents === 0;
       deadline?.check();
       return { ...observation, complete, counts: { ...observation.counts, retainedHandoffs: unique.size, fullTerminalOperations: operations.fullTerminalCount + operations.invalid.length },
@@ -320,7 +323,8 @@ export class ResourceAuthority {
         if (safety.pendingCheck !== null || safety.correction !== null) { observed({ safetyObligation: true }); }
       }
       const reservation = completeReservation(kind, inventory, additions);
-      if (epoch !== this.authorityEpoch || owedEpoch !== this.capacity.epoch) { this.refuse(new Error('Capacity inventory changed.'), null, 'otherAuthority'); }
+      if (epoch !== this.authorityEpoch) { this.refuse(new Error('Capacity authority changed.'), null, 'otherAuthority'); }
+      if (owedEpoch !== this.capacity.epoch) { unavailable('inventory'); }
       requireCapacity(inventory, reservation);
       this.sources.get(source)!.lease = { source, epoch, reservation, targets: null, newEvents: new Set(), newOperations: new Set() };
       this.capacity.admitted(kind);

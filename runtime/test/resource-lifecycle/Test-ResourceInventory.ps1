@@ -31,6 +31,8 @@ try {
     $empty = Read-Inventory
     Assert-Resource ($empty.uncompactedEvents -eq 0 -and $empty.retainedHandoffs -eq 0 -and [long]$empty.freeBytes -gt 0) 'Empty inventory was not admitted.'
     Assert-Resource ($empty.pendingOutbox -eq 0) 'Empty outbox was charged sixteen speculative records.'
+    $emptyIdentityHash = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData([byte[]]@()))
+    Assert-Resource ($empty.retainedHandoffIdentitySha256 -ceq $emptyIdentityHash) 'Empty retained identity proof is invalid.'
     $outbox = Join-Path $container 'state/outbox'
     [IO.Directory]::CreateDirectory($outbox) | Out-Null
     for ($index = 1; $index -le 16; $index++) { [IO.File]::WriteAllText((Join-Path $outbox ('event-' + $index.ToString('D16') + '.json')), '{}', $encoding) }
@@ -61,6 +63,17 @@ try {
     $compact = Read-Inventory
     $started.Stop()
     Assert-Resource ($compact.uncompactedEvents -eq 0 -and $compact.invalidEvents -eq 0) 'Complete compact history was not admitted.'
+    Assert-Resource ($compact.potentialHandoffs -eq $EventCount) 'Readable compact identities were omitted from header recovery capacity.'
+    $firstEvent = Join-Path $events '0000000000000001.json'
+    $originalEvent = [IO.File]::ReadAllText($firstEvent, $encoding)
+    foreach ($badSequence in @('1.5', '9223372036854775808', '"1"', 'null')) {
+        $invalidEvent = $originalEvent -creplace '"sequence":[0-9]+', ('"sequence":' + $badSequence)
+        [IO.File]::WriteAllText($firstEvent, $invalidEvent, $encoding)
+        $invalidSequence = Read-Inventory
+        Assert-Resource ($invalidSequence.invalidEvents -eq 1 -and $invalidSequence.uncompactedEvents -eq 1) 'Malformed event sequence did not remain invalid authority.'
+        Assert-Resource ($invalidSequence.potentialHandoffs -eq ($EventCount - 1)) 'Malformed event sequence supplied a handoff identity.'
+    }
+    [IO.File]::WriteAllText($firstEvent, $originalEvent, $encoding)
     $duplicate = Join-Path $outbox 'event-0000000000000001.json'
     [IO.File]::WriteAllText($duplicate, '{}', $encoding)
     Assert-Resource ((Read-Inventory).pendingOutbox -eq 0) 'Exact journaled source was charged as a new append.'
