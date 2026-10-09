@@ -385,4 +385,49 @@ describe('Claude provider state machine', () => {
       assert.equal(fixture.query.interrupted, 1);
     } finally { await session.close(); }
   });
+
+  for (const [error, expected] of [
+    ['authentication_failed', 'authenticationFailed'], ['oauth_org_not_allowed', 'authenticationFailed'], ['cloud_credential_error', 'authenticationFailed'],
+    ['rate_limit', 'rateLimited'], ['overloaded', 'rateLimited'], ['account_on_hold', 'providerError'], ['verification_required', 'providerError'],
+    ['billing_error', 'providerError'], ['invalid_request', 'providerError'], ['model_not_found', 'providerError'], ['server_error', 'providerError'],
+    ['unknown', 'providerError'], ['max_output_tokens', 'providerError'], ['future_error', 'providerError'],
+  ] as const) {
+    it(`classifies a failed result with assistant error ${error}`, async () => {
+      const fixture = setup();
+      const session = await fixture.provider.start(null);
+      try {
+        const result = session.sendTurn(turn());
+        const input = await fixture.query.waitInput();
+        fixture.query.emitMessage({ type: 'assistant', parent_tool_use_id: null, session_id: fixture.query.options.sessionId ?? fixture.query.options.resume, error, message: { content: [] } });
+        fixture.query.result(input, { subtype: 'error_during_execution', is_error: true, terminal_reason: 'api_error', api_error_status: 429 });
+        assert.deepEqual(await result, { kind: 'failed', code: expected, retryable: true });
+      } finally { await session.close(); }
+    });
+  }
+
+  for (const reason of ['blocking_limit', 'rapid_refill_breaker'] as const) {
+    it(`does not infer subscription quota from ${reason} or a rate-limit event`, async () => {
+      const fixture = setup();
+      const session = await fixture.provider.start(null);
+      try {
+        const result = session.sendTurn(turn());
+        const input = await fixture.query.waitInput();
+        fixture.query.emitMessage({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } });
+        fixture.query.result(input, { subtype: 'error_during_execution', is_error: true, terminal_reason: reason, api_error_status: 429 });
+        assert.deepEqual(await result, { kind: 'failed', code: 'providerError', retryable: true });
+      } finally { await session.close(); }
+    });
+  }
+
+  it('lets correlated interruption outrank a later prompt-too-long result', async () => {
+    const fixture = setup();
+    const session = await fixture.provider.start(null);
+    try {
+      const result = session.sendTurn(turn());
+      const input = await fixture.query.waitInput();
+      assert.equal(await session.interrupt(), true);
+      fixture.query.result(input, { subtype: 'error_during_execution', is_error: true, terminal_reason: 'prompt_too_long' });
+      assert.deepEqual(await result, { kind: 'failed', code: 'interrupted', retryable: true });
+    } finally { await session.close(); }
+  });
 });
