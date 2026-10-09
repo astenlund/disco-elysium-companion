@@ -6,7 +6,7 @@ import { Deadline } from '../deadline.ts';
 import type { InstanceGuard } from '../guard.ts';
 import { eventFileSequence } from '../journal-records.ts';
 import { jsonBudgets, readBoundedFile } from '../json.ts';
-import type { ProcessSupervisor } from '../process.ts';
+import { SupervisorError, type ProcessSupervisor } from '../process.ts';
 import type { RuntimeScope } from '../scope.ts';
 import { bytesHash } from '../storage.ts';
 
@@ -100,4 +100,107 @@ export async function cleanupPublicationResidue(scope: RuntimeScope, guard: Pick
     removed.push(candidate.relative);
   }
   return { removed: Object.freeze(removed) };
+}
+export interface MarkerResidueIO {
+  entries(directory: string): AsyncIterable<string>;
+  read(file: string, maximumBytes: number): Promise<Uint8Array>;
+  unlink(file: string): Promise<void>;
+}
+
+const markerResidueIO: MarkerResidueIO = {
+  async *entries(directory) { for await (const entry of await fs.opendir(directory)) { yield entry.name; } },
+  read: readBoundedFile,
+  unlink: file => fs.unlink(file),
+};
+const markerSibling = /^runtime\.json\.[0-9a-f]{32}\.(tmp|bak)$/;
+interface MarkerSnapshot { readonly admitted: PathAdmission; readonly sha256: string | null }
+
+function sameMarkerObject(left: PathAdmission, right: PathAdmission): boolean {
+  return left.path === right.path && left.exists === right.exists && sameObject(left, right);
+}
+
+// This pre-marker pass has a narrower authority than the full phase-D cleanup:
+// retain the exact target and reject any changed selected object, including loss.
+export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pick<InstanceGuard, 'held'>,
+  inspector: Pick<PathInspector, 'inspectMany'>, supervisor: Pick<ProcessSupervisor, 'verifyQuiescent'>,
+  deadline = Deadline.after(120000), io: MarkerResidueIO = markerResidueIO): Promise<{ readonly removed: readonly string[] }> {
+  const owned = (): void => {
+    deadline.check();
+    if (!guard.held) { throw new DataRootUnavailableError('Runtime marker cleanup requires the instance guard.'); }
+  };
+  const inspect = async (targets: readonly string[]): Promise<readonly PathAdmission[]> => {
+    owned();
+    const result = await inspector.inspectMany(scope.dataRoot, targets, true, deadline.remaining());
+    owned();
+    return result;
+  };
+  const digest = async (file: string): Promise<string> => {
+    owned();
+    const bytes = await io.read(file, jsonBudgets.config.maxBytes);
+    owned();
+    if (bytes.byteLength > jsonBudgets.config.maxBytes) { throw new DataRootUnavailableError('Runtime marker residue exceeds its byte bound.'); }
+    return bytesHash(bytes);
+  };
+  const snapshot = async (admitted: PathAdmission, required: boolean): Promise<MarkerSnapshot> => {
+    if ((!admitted.exists && required) || (admitted.exists && (admitted.kind !== 'file' || admitted.links !== 1))) {
+      throw new DataRootUnavailableError('Runtime marker residue or target is not an ordinary admitted file.');
+    }
+    return { admitted, sha256: admitted.exists ? await digest(admitted.path) : null };
+  };
+  try {
+    owned();
+    await supervisor.verifyQuiescent('publication');
+    const bindingPath = path.join(scope.dataRoot, 'scope.json');
+    const targetPath = path.join(scope.dataRoot, 'runtime.json');
+    const [root, binding, target] = await inspect([scope.dataRoot, bindingPath, targetPath]);
+    if (root?.kind !== 'directory' || binding?.kind !== 'file' || binding.links !== 1 || target === undefined || await digest(bindingPath) !== scope.bindingSha256) {
+      throw new DataRootUnavailableError('Runtime marker cleanup lost its immutable scope binding.');
+    }
+    const targetSnapshot = await snapshot(target, false);
+    const names: string[] = [];
+    let entries = 0;
+    for await (const name of io.entries(scope.dataRoot)) {
+      owned();
+      if (++entries > 65536) { throw new DataRootUnavailableError('Runtime marker cleanup inventory exceeds its discovery bound.'); }
+      if (markerSibling.test(name)) { names.push(name); }
+    }
+    const candidates: { readonly name: string; readonly snapshot: MarkerSnapshot }[] = [];
+    for (let offset = 0; offset < names.length; offset += 64) {
+      const batch = names.slice(offset, offset + 64);
+      const admitted = await inspect(batch.map(name => path.join(scope.dataRoot, name)));
+      for (const [index, name] of batch.entries()) {
+        if (admitted[index] === undefined) { throw new DataRootUnavailableError('Runtime marker residue inventory is incomplete.'); }
+        candidates.push({ name, snapshot: await snapshot(admitted[index]!, true) });
+      }
+    }
+    const removed: string[] = [];
+    for (const candidate of candidates) {
+      owned();
+      await supervisor.verifyQuiescent('publication');
+      const [currentRoot, currentBinding, currentTarget, currentSibling] = await inspect([scope.dataRoot, bindingPath, targetPath, candidate.snapshot.admitted.path]);
+      if (currentRoot === undefined || currentBinding === undefined || currentTarget === undefined || currentSibling === undefined
+        || !sameMarkerObject(root, currentRoot) || !sameMarkerObject(binding, currentBinding) || await digest(bindingPath) !== scope.bindingSha256
+        || !sameMarkerObject(targetSnapshot.admitted, currentTarget) || !sameMarkerObject(candidate.snapshot.admitted, currentSibling)) {
+        throw new DataRootUnavailableError('Runtime marker cleanup authority changed before removal.');
+      }
+      if ((currentTarget.exists && await digest(currentTarget.path) !== targetSnapshot.sha256)
+        || await digest(currentSibling.path) !== candidate.snapshot.sha256) {
+        throw new DataRootUnavailableError('Runtime marker residue or target bytes changed before removal.');
+      }
+      const checked = [currentRoot, currentBinding, currentTarget, currentSibling];
+      const afterRead = await inspect(checked.map(item => item.path));
+      if (afterRead.length !== checked.length || checked.some((item, index) => !sameMarkerObject(item, afterRead[index]!))) {
+        throw new DataRootUnavailableError('Runtime marker object changed during its byte verification.');
+      }
+      owned();
+      await io.unlink(currentSibling.path);
+      owned();
+      removed.push(candidate.name);
+    }
+    owned();
+    return { removed: Object.freeze(removed) };
+  } catch (error) {
+    if (error instanceof DataRootUnavailableError || error instanceof SupervisorError && error.reason === 'termination-unverified') { throw error; }
+    throw new DataRootUnavailableError('Runtime marker residue cleanup is unavailable.', { cause: error });
+  }
 }
