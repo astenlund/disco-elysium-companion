@@ -71,6 +71,10 @@ try {
     for ($index = 1; $index -le 16; $index++) { [IO.File]::WriteAllText((Join-Path $outbox ('event-' + $index.ToString('D16') + '.json')), '{}', $encoding) }
     Assert-Resource ((Read-Inventory).pendingOutbox -eq 16) 'Existing outbox records were omitted from the transition.'
     for ($index = 1; $index -le 16; $index++) { [IO.File]::Delete((Join-Path $outbox ('event-' + $index.ToString('D16') + '.json'))) }
+    $boundaryNames = @('event-0000000000000000.json', 'event-0000000000000001.json', 'event-9007199254740991.json', 'event-9007199254740992.json')
+    foreach ($name in $boundaryNames) { [IO.File]::WriteAllText((Join-Path $outbox $name), '{}', $encoding) }
+    Assert-Resource ((Read-Inventory).pendingOutbox -eq 2) 'Out-of-domain files were counted as pending runtime records.'
+    foreach ($name in $boundaryNames) { [IO.File]::Delete((Join-Path $outbox $name)) }
 
     $residue = Join-Path $fixture ('runtime.json.' + ('f' * 32) + '.tmp')
     [IO.File]::WriteAllText($residue, '{}', $encoding)

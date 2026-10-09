@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { ControlDocumentError } from '../src/control-values.ts';
+import { eventRewriteMetadata } from '../src/journal-records.ts';
 import { parseStrictJson, stringifyJson } from '../src/json.ts';
 import { coreAttemptToken, effectivelyUnfinished, emptyRepairPlan, initialRecovery, parseHandoff, parseOperation, pendingOperationSafety } from '../src/operation-records.ts';
-import { parsePrerequisite, recognizeAction, type ManifestObservation } from '../src/recovery-manifest.ts';
+import { parsePrerequisite, parseRecoveryAction, recognizeAction, type ManifestObservation } from '../src/recovery-manifest.ts';
+import { journalEvent } from './support/journal-event.ts';
 
 const scope = 'a'.repeat(64);
 const rootId = `jr-${'b'.repeat(32)}`;
@@ -94,6 +96,21 @@ describe('durable recovery records', () => {
 });
 
 describe('write-ahead manifest crash recognition', () => {
+  it('does not turn out-of-domain sequence filenames into recovery authority', () => {
+    const hash = '7'.repeat(64);
+    const metadata = eventRewriteMetadata(journalEvent(1));
+    for (const sequence of ['0000000000000000', '9007199254740992']) {
+      const journalName = `journal/events/${sequence}.json`;
+      const quarantineName = `quarantine/${sequence}.json.${'6'.repeat(32)}.quarantined`;
+      assert.throws(() => parsePrerequisite(json({ kind: 'gap', actions: [{ kind: 'quarantine', source: { path: journalName, before: hash, after: null },
+        target: { path: quarantineName, before: null, after: hash } }], nextAction: 0, carry: null, skippedRanges: [] })), ControlDocumentError);
+      assert.throws(() => parseRecoveryAction(json({ kind: 'preserveRecovery', target: { path: 'journal/recovery-event.json', before: null, after: hash },
+        source: { root: 'companion', path: `state/outbox/event-${sequence}.json`, sha256: hash, payloadBindingSha256: hash }, metadata })), ControlDocumentError);
+    }
+    assert.equal(parseRecoveryAction(json({ kind: 'preserveRecovery', target: { path: 'journal/recovery-event.json', before: null, after: hash },
+      source: { root: 'companion', path: 'state/outbox/event-9007199254740991.json', sha256: hash, payloadBindingSha256: hash }, metadata })).kind, 'preserveRecovery');
+  });
+
   it('recognizes completed quarantine by both paths without replaying from diagnostic bytes', () => {
     const source = 'journal/events/0000000000000001.json';
     const target = `quarantine/0000000000000001.json.${'6'.repeat(32)}.quarantined`;

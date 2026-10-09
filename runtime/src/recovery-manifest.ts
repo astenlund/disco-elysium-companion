@@ -1,6 +1,7 @@
 import { controlChoice, controlFields, controlHash, controlInteger, controlList, controlNullable, controlObject, requireControl } from './control-values.ts';
 import { eventFileName, parseEventMetadata, parseJournalCursor, parseJournalHeader, type EventMetadata, type JournalCursor, type JournalHeader } from './journal-records.ts';
 import { parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
+import { outboxRecordSequence } from './outbox-name.ts';
 import { parseSkippedRange, type SkippedRange } from './recovery-provenance.ts';
 
 export interface FileTransition { readonly path: string; readonly before: string | null; readonly after: string | null }
@@ -20,8 +21,14 @@ export interface RecoveryPrerequisite {
 }
 
 function whole(pattern: RegExp, value: string): boolean { return pattern.exec(value)?.[0] === value; }
+function journalEventSequence(value: string): number | null {
+  const match = /^journal\/events\/([0-9]{16})\.json$/.exec(value);
+  if (match === null) { return null; }
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) && sequence >= 1 ? sequence : null;
+}
 export function isJournalMember(value: unknown): value is string {
-  return typeof value === 'string' && (value === 'journal/journal.json' || value === 'journal/cursor-agent-session.json' || value === 'journal/recovery-event.json' || whole(/^journal\/events\/[0-9]{16}\.json$/, value));
+  return typeof value === 'string' && (value === 'journal/journal.json' || value === 'journal/cursor-agent-session.json' || value === 'journal/recovery-event.json' || journalEventSequence(value) !== null);
 }
 function quarantinePath(value: unknown): value is string { return typeof value === 'string' && whole(/^quarantine\/[A-Za-z0-9.-]+\.[a-f0-9]{32}\.quarantined$/, value); }
 
@@ -35,7 +42,8 @@ function source(value: JsonValue | undefined): PayloadSource {
   const object = controlFields(value, ['root', 'path', 'sha256', 'payloadBindingSha256']);
   const root = controlChoice(object['root'], ['scope', 'companion']);
   const path = object['path'];
-  requireControl(typeof path === 'string' && (root === 'scope' ? path === 'journal/recovery-event.json' || whole(/^journal\/events\/[0-9]{16}\.json$/, path) : whole(/^state\/outbox\/event-[0-9]{16}\.json$/, path)));
+  requireControl(typeof path === 'string' && (root === 'scope' ? path === 'journal/recovery-event.json' || journalEventSequence(path) !== null
+    : path.startsWith('state/outbox/') && outboxRecordSequence(path.slice('state/outbox/'.length)) !== null));
   return Object.freeze({ root, path, sha256: controlHash(object['sha256']), payloadBindingSha256: controlHash(object['payloadBindingSha256']) });
 }
 

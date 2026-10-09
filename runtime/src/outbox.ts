@@ -8,6 +8,7 @@ import { controlChoice, controlFields, controlHash, controlInt64, controlInteger
 import type { Deadline } from './deadline.ts';
 import { observeFile } from './file-observation.ts';
 import { jsonBudgets, readBoundedFile, StrictJsonError, type ControlInt64, type JsonValue } from './json.ts';
+import { outboxRecordSequence } from './outbox-name.ts';
 
 export interface SourceDescription {
   readonly stateEventVersion: 1;
@@ -28,7 +29,6 @@ export type OutboxRead = { readonly status: 'valid'; readonly name: string; read
   | { readonly status: 'absent'; readonly name: string }
   | { readonly status: 'invalid'; readonly name: string; readonly sha256: string };
 
-const recordName = /^event-([0-9]{16})\.json$/;
 const directory = path.join('state', 'outbox');
 
 export function parseSourceDescription(value: JsonValue): SourceDescription {
@@ -61,14 +61,14 @@ export class OutboxReader {
     const names: string[] = [];
     for await (const entry of await fs.opendir(target.path)) {
       deadline?.check();
-      if (recordName.test(entry.name)) { names.push(entry.name); }
+      if (outboxRecordSequence(entry.name) !== null) { names.push(entry.name); }
     }
     return Object.freeze(names.sort());
   }
 
   async read(name: string, deadline?: Deadline): Promise<OutboxRead> {
-    const match = recordName.exec(name);
-    if (match === null) { throw new DataRootUnavailableError('Only an exact outbox record filename may be read.'); }
+    const sequence = outboxRecordSequence(name);
+    if (sequence === null) { throw new DataRootUnavailableError('Only an exact in-domain outbox record filename may be read.'); }
     const target = await this.inspector.inspect(this.root, path.join(this.root, directory, name), true, deadline?.remaining());
     if (!target.exists) { return { status: 'absent', name }; }
     if (target.kind !== 'file') { throw new DataRootUnavailableError('The outbox record is not an ordinary file.'); }
@@ -80,8 +80,6 @@ export class OutboxReader {
     }
     deadline?.check();
     const sha256 = createHash('sha256').update(bytes).digest('hex');
-    const sequence = Number(match[1]);
-    if (!Number.isSafeInteger(sequence) || sequence < 1) { return { status: 'invalid', name, sha256 }; }
     try {
       const inspected = await this.codec.inspectSource(bytes, sequence, deadline);
       requireControl(inspected.sha256 === sha256);

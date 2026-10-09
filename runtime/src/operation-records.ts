@@ -1,6 +1,7 @@
 import { controlChoice, controlFields, controlHash, controlInt64, controlInteger, controlList, controlNullable, controlObject, controlToken, controlUtc, requireControl } from './control-values.ts';
 import { logicalOutboxSequence, parseAcceptance, parseAttemptReference, type Acceptance, type AttemptReference } from './journal-records.ts';
 import type { ControlInt64, JsonValue } from './json.ts';
+import { outboxRecordSequence } from './outbox-name.ts';
 import { parsePrerequisite, type RecoveryPrerequisite } from './recovery-manifest.ts';
 import { parseSkippedRange, type SkippedRange } from './recovery-provenance.ts';
 import { parseRecoveryWitness, type RecoveryOwner, type RecoveryWitness } from './safety-records.ts';
@@ -90,8 +91,7 @@ function operationId(value: unknown, kind?: 'jr' | 'rl' | 'ho'): string {
   return token;
 }
 function recordName(value: unknown): string {
-  requireControl(typeof value === 'string' && value.length === 27 && /^event-[0-9]{16}\.json$/.test(value));
-  controlInteger(Number(value.slice(6, 22)), 1);
+  requireControl(typeof value === 'string' && outboxRecordSequence(value) !== null);
   return value;
 }
 function reference(value: JsonValue): JournalReference {

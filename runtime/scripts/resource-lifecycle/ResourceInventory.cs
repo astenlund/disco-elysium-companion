@@ -179,6 +179,11 @@ public static class ResourceInventory
                 }
 
                 var sequence = long.Parse(name.AsSpan(6, 16), NumberStyles.None, CultureInfo.InvariantCulture);
+                if (sequence < 1 || sequence > EventDocuments.MaximumSequence)
+                {
+                    continue;
+                }
+
                 var duplicate = false;
                 if (journalSources.Count > 0 && new FileInfo(record.Path).Length <= JsonDocuments.Budget("state-event").Bytes)
                 {
