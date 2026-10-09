@@ -14,7 +14,7 @@ import type { AgentSessionBinding } from '../session-records.ts';
 import type { BoundSession } from '../session-store.ts';
 import { bytesHash } from '../storage.ts';
 import { recoveryFingerprint } from '../window-recovery.ts';
-import type { AcknowledgementOptions, BackendInteraction, DeliveryHandle, DeliveryPreview, DeliverySnapshot, Freshness, ProviderIdentity, SendContext } from './api.ts';
+import { PendingStateCheckError, type AcknowledgementOptions, type BackendInteraction, type DeliveryHandle, type DeliveryPreview, type DeliverySnapshot, type Freshness, type ProviderIdentity, type SendContext } from './api.ts';
 import { Kernel } from './kernel.ts';
 import { acquireWithPolicy, newestState } from './acquisition-policy.ts';
 
@@ -139,11 +139,15 @@ export class DeliveryCoordinator {
     if (journal === null) { try { journal = await k.journal.read(gate); } catch { /* No state authority is substituted. */ } }
     // The settlement gate is now closed. Read-only safety admission for a frozen
     // disclosure never starts another settlement or extends that gate.
-    const safety = await k.safetyStore.read();
-    const operations = await k.operations.list();
-    if (safety.status !== 'valid' || safety.value.pendingCheck !== null || !await k.providerAuthority(safety.value, undefined, operations)) {
-      k.emit({ freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: 'contextUnavailable', checkedAt: utcNow() } });
-      throw new SafetyUnavailableError('State context is unavailable until durable safety reconciliation.');
+    const authority = await k.observeSafety();
+    const { safety, operations, stateSafety } = authority;
+    if (stateSafety.state === 'recovering' && safety?.status === 'valid' && safety.value.pendingCheck !== null) {
+      k.emit({ stateSafety, freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: 'settlementPending', checkedAt: utcNow() } });
+      throw new PendingStateCheckError();
+    }
+    if (safety?.status !== 'valid' || operations === null || !authority.providerAllowed) {
+      k.emit({ stateSafety, freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: 'contextUnavailable', checkedAt: utcNow() } });
+      throw new SafetyUnavailableError('State context is unavailable until durable safety reconciliation.', { cause: authority.failure });
     }
     const acked = journal?.cursor.status === 'valid' ? journal.cursor.value.lastAckedSequence : 0;
     const unacknowledged = journal === null ? [] : [...journal.events.values()].filter(event => event.metadata.sequence > acked);

@@ -22,13 +22,21 @@ import { SafetyUnavailableError, type StateSafety } from '../safety-records.ts';
 import type { RuntimeScope } from '../scope.ts';
 import { SessionStore, type SessionBindingProof } from '../session-store.ts';
 import { decideSettlement, eventSettlementBinding } from '../settlement.ts';
-import { ScopeStorage } from '../storage.ts';
+import { ScopeStorage, type StoredDocument } from '../storage.ts';
 import type { BackendOptions, BackendStatus, ProviderIdentity } from './api.ts';
 import { ResourceAuthority } from './resources.ts';
 import { hasCarryAuthority, hasProviderAuthority } from './provider-authority.ts';
 import { mergeHandoff } from './handoffs.ts';
 import { allocateUniqueToken } from './tokens.ts';
 import { newestState } from './acquisition-policy.ts';
+
+interface SafetyObservation {
+  readonly safety: StoredDocument<StateSafety> | null;
+  readonly operations: OperationInventory | null;
+  readonly stateSafety: BackendStatus['stateSafety'];
+  readonly providerAllowed: boolean;
+  readonly failure: unknown;
+}
 
 export interface KernelInput { readonly config: RuntimeConfig; readonly identities: ProcessIdentities; readonly scope: RuntimeScope; readonly guard: InstanceGuard;
   readonly inspector: PathInspector; readonly supervisor: ProcessSupervisor; readonly publisher: FilePublisher; readonly storage: ScopeStorage; readonly options: BackendOptions; readonly resources: ResourceAuthority }
@@ -185,25 +193,37 @@ export class Kernel {
     } };
   }
 
-  async observeStatus(snapshot?: JournalSnapshot, deadline?: Deadline): Promise<void> {
+  async observeSafety(deadline?: Deadline): Promise<SafetyObservation> {
+    let safety: StoredDocument<StateSafety> | null = null;
+    let operations: OperationInventory | null = null;
     let stateSafety: BackendStatus['stateSafety'] = { state: 'unavailable', correction: null };
+    let providerAllowed = false;
+    let failure: unknown = null;
     try {
-      const safety = await this.safety(deadline);
-      const operations = await this.operations.list(deadline);
-      const correction = safety.correction === null ? null : { correctionId: safety.correction.correctionId, reason: safety.correction.reason };
+      safety = await this.safetyStore.read(deadline);
+      if (safety.status !== 'valid') { return { safety, operations, stateSafety, providerAllowed, failure }; }
+      const value = safety.value;
+      const correction = value.correction === null ? null : { correctionId: value.correction.correctionId, reason: value.correction.reason };
       stateSafety = { state: 'unavailable', correction };
-      const witness = safety.recoveryWitness;
+      operations = await this.operations.list(deadline);
+      const witness = value.recoveryWitness;
       const owner = witness === null ? null : operations.records.find(entry => entry.record.operationId === witness.owner.operationId)?.record;
       const missingWitnessOwner = witness !== null && (witness.phase === 'active' || witness.phase === 'awaitingDisclosure')
         && (owner === undefined || owner === null || owner.compacted || owner.kind !== 'repair' || owner.recovery.episodes[witness.owner.episodeOrdinal]?.activationId !== witness.owner.activationId);
-      const missingCorrectionOwner = safety.correction?.recoveryOperationId !== null && safety.correction?.recoveryOperationId !== undefined
-        && !operations.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && entry.record.operationId === safety.correction!.recoveryOperationId);
+      const missingCorrectionOwner = value.correction?.recoveryOperationId !== null && value.correction?.recoveryOperationId !== undefined
+        && !operations.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && entry.record.operationId === value.correction!.recoveryOperationId);
       const unwitnessedRoot = witness === null && operations.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && entry.record.recovery.activeEpisode !== null);
       if (operations.invalid.length === 0 && !missingWitnessOwner && !missingCorrectionOwner && !unwitnessedRoot && hasCarryAuthority(await this.carryHash(deadline), operations)) {
-        const recovering = safety.pendingCheck !== null || correction !== null || safety.recoveryWitness !== null || operations.records.some(item => pendingOperationSafety(item.record));
+        const recovering = value.pendingCheck !== null || correction !== null || value.recoveryWitness !== null || operations.records.some(item => pendingOperationSafety(item.record));
         stateSafety = { state: recovering ? 'recovering' : 'ready', correction };
+        providerAllowed = hasProviderAuthority(value, operations);
       }
-    } catch { /* Unreadable authority is reported unavailable, never ready. */ }
+    } catch (error) { failure = error; stateSafety = { state: 'unavailable', correction: stateSafety.correction }; providerAllowed = false; }
+    return { safety, operations, stateSafety, providerAllowed, failure };
+  }
+
+  async observeStatus(snapshot?: JournalSnapshot, deadline?: Deadline): Promise<void> {
+    const { stateSafety } = await this.observeSafety(deadline);
     const journal = snapshot ?? await this.journal.read(deadline);
     const count = journal.header.status === 'valid' && journal.cursor.status === 'valid' ? Math.max(0, journal.header.value.highWaterSequence - journal.cursor.value.lastAckedSequence) : 0;
     this.emit({ stateSafety, journal: { ...this.status.journal, unacknowledgedEvents: count } });

@@ -4,7 +4,8 @@ import { describe, it } from 'node:test';
 import { hasCarryAuthority, hasProviderAuthority } from '../../src/backend/provider-authority.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
-import { Deadline } from '../../src/deadline.ts';
+import { Deadline, DeadlineExceededError } from '../../src/deadline.ts';
+import * as BackendApi from '../../src/backend/api.ts';
 import { CoordinatorBackend } from '../../src/backend/index.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { SafetyUnavailableError } from '../../src/safety-records.ts';
@@ -345,5 +346,110 @@ describe('codec-owned relevance lifecycle', () => {
       window.cancelBeforeSend(current);
       assert.equal(window.summary()?.revalidationAvailable, true);
     } finally { ContextPreparer.prototype.preview = original; }
+  });
+});
+
+describe('checked timeout status boundary', () => {
+  function fixture(correction: StateSafety['correction'] = null) {
+    const event = journalEvent(1, { adapter: 'stubgame', acknowledgedAt: now, acceptance: { journalId: 'journal', eventId: '1'.repeat(32), generation } });
+    const model = authorityModel({ ...clean, correction }, { ...journal(1, 1), events: new Map([[1, { metadata: event, sha256: 'a'.repeat(64) }]]) });
+    const observed: { kind: string; state?: string; correction?: unknown; reason?: string | null }[] = [];
+    model.kernel.emit({ stateSafety: { state: 'ready', correction: null } });
+    const emit = model.kernel.emit.bind(model.kernel);
+    model.kernel.emit = change => {
+      emit(change);
+      observed.push({ kind: 'status', state: model.kernel.status.stateSafety.state, correction: model.kernel.status.stateSafety.correction, reason: model.kernel.status.freshness.reason });
+    };
+    model.kernel.publish = async (_required, _repair, _deadline, _accept, afterChild) => {
+      const result = { success: true as const, value: { outcome: 'unchanged' as const, kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1,
+        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings: [] } };
+      model.kernel.operational.observe(result); afterChild?.(result, performance.now()); return result;
+    };
+    let gate: Deadline | null = null;
+    const armAndFail = (damage: () => void = () => {}) => {
+      model.kernel.drain = async deadline => {
+        gate = deadline ?? null;
+        await model.kernel.checked({ kind: 'settlement', binding: { logicalOutboxId: event.logicalOutboxId, recordSha256: event.recordSha256, journalId: event.journalId, eventId: event.eventId } },
+          async () => { damage(); throw new DeadlineExceededError('Synthetic checked-operation timeout after real arm publication.'); }, async () => {}, deadline);
+        assert.fail('The simulated checked timeout cannot return a journal.');
+      };
+    };
+    const delivery = new DeliveryCoordinator(model.kernel, async () => { assert.fail('No retention is needed by this model.'); });
+    return { ...model, observed, delivery, armAndFail, gate: () => gate };
+  }
+
+  for (const correction of [null, { correctionId: '9'.repeat(32), reason: 'coreRejected' as const, recoveryOperationId: null }]) {
+    it('emits current recovering status before the typed pending failure with ' + (correction === null ? 'null correction' : 'retained correction'), async () => {
+      const model = fixture(correction); model.armAndFail();
+      const before = new Map([...model.memory.files].filter(([name]) => name !== 'state-safety.json'));
+      let caught: unknown;
+      try { await model.delivery.acquire({ interactionId: 'timed-check', requestReceivedAt: now }); }
+      catch (error) { caught = error; model.observed.push({ kind: 'exception' }); }
+      assert.ok(caught instanceof Error);
+      const expected = correction === null ? null : { correctionId: correction.correctionId, reason: correction.reason };
+      assert.deepEqual(model.observed.slice(-2), [{ kind: 'status', state: 'recovering', correction: expected, reason: 'settlementPending' }, { kind: 'exception' }]);
+      assert.equal(caught.name, 'PendingStateCheckError');
+      assert.ok(caught instanceof BackendApi.PendingStateCheckError);
+      assert.equal(model.kernel.status.freshness.state, 'failed'); assert.equal(model.kernel.status.freshness.class, 'journal');
+      const safety = await model.kernel.safety();
+      assert.notEqual(safety.pendingCheck, null); assert.equal(safety.generation, generation); assert.deepEqual(safety.correction, correction);
+      assert.equal(model.memory.writes.filter(name => name === 'state-safety.json').length, 1);
+      for (const [name, bytes] of before) { assert.deepEqual(model.memory.files.get(name), bytes); }
+      assert.ok(model.gate() instanceof Deadline);
+      await assert.rejects(model.kernel.safetyStore.armCheck(), SafetyUnavailableError);
+      assert.equal(model.memory.writes.filter(name => name === 'state-safety.json').length, 1, 'The unresolved check cannot be re-armed or cleared.');
+    });
+  }
+
+  for (const damage of ['absent-safety', 'invalid-safety', 'unreadable-safety', 'invalid-operation', 'unreadable-operation', 'unbound-carry', 'unreadable-carry', 'contradictory-witness'] as const) {
+    it('keeps unavailable authority distinct from a validated pending check: ' + damage, async () => {
+      const correction = { correctionId: '9'.repeat(32), reason: 'coreRejected' as const, recoveryOperationId: null };
+      const model = fixture(correction);
+      const operationPath = 'operations/jr-' + '8'.repeat(32) + '.json';
+      model.armAndFail(() => {
+        if (damage === 'absent-safety') { model.memory.files.delete('state-safety.json'); }
+        else if (damage === 'invalid-safety') { model.memory.files.set('state-safety.json', Buffer.from('{')); }
+        else if (damage === 'unreadable-safety') { model.memory.unreadable.add('state-safety.json'); }
+        else if (damage === 'invalid-operation') { model.memory.files.set(operationPath, Buffer.from('{')); }
+        else if (damage === 'unreadable-operation') { model.memory.files.set(operationPath, Buffer.from('{')); model.memory.unreadable.add(operationPath); }
+        else if (damage === 'contradictory-witness') {
+          const operation = repair();
+          model.memory.seed('operations/' + operation.operationId + '.json', operation);
+          const armed = model.memory.value<StateSafety>('state-safety.json');
+          model.memory.seed('state-safety.json', { ...armed, recoveryWitness: { scopeSha256: scope, owner: { operationId: operation.operationId,
+            episodeOrdinal: 0, activationId: '7'.repeat(32) }, phase: 'active', successor: null, disclosure: null } });
+        } else {
+          model.memory.files.set('journal/recovery-event.json', Buffer.from('unbound exact evidence'));
+          if (damage === 'unreadable-carry') { model.memory.unreadable.add('journal/recovery-event.json'); }
+        }
+      });
+      let caught: unknown;
+      try { await model.delivery.acquire({ interactionId: damage, requestReceivedAt: now }); }
+      catch (error) { caught = error; model.observed.push({ kind: 'exception' }); }
+      assert.ok(caught instanceof Error);
+      assert.notEqual(caught.name, 'PendingStateCheckError');
+      const fixedUnavailable = damage.endsWith('safety');
+      assert.deepEqual(model.observed.slice(-2), [{ kind: 'status', state: 'unavailable', correction: fixedUnavailable ? null : { correctionId: correction.correctionId, reason: correction.reason },
+        reason: 'contextUnavailable' }, { kind: 'exception' }]);
+      assert.equal(model.memory.writes.length, 1, 'Only the original checked arm may have been published.');
+      const emitted = model.kernel.status.stateSafety;
+      await model.kernel.observeStatus();
+      assert.deepEqual(model.kernel.status.stateSafety, emitted, 'The ordinary status reader and terminal admission share the classification.');
+    });
+  }
+
+  it('continues to admit a planned correction disclosure when no check is pending', async () => {
+    const operation = repair();
+    const correction = { correctionId: operation.plan.correctionId!, reason: 'contextUncertain' as const, recoveryOperationId: operation.operationId };
+    const model = fixture(correction);
+    model.memory.seed('operations/' + operation.operationId + '.json', operation);
+    model.memory.seed('state-safety.json', { ...clean, correction, recoveryWitness: { scopeSha256: scope, owner: { operationId: operation.operationId,
+      episodeOrdinal: 0, activationId: operation.recovery.episodes[0]!.activationId }, phase: 'active', successor: null, disclosure: null } });
+    model.kernel.drain = () => model.kernel.journal.read();
+    const snapshot = await model.delivery.acquire({ interactionId: 'planned-correction', requestReceivedAt: now });
+    assert.equal(snapshot.disclosureOnly, true);
+    assert.equal(model.kernel.status.stateSafety.state, 'recovering');
+    assert.deepEqual(model.kernel.status.stateSafety.correction, { correctionId: correction.correctionId, reason: correction.reason });
+    assert.equal(model.memory.writes.length, 0);
   });
 });

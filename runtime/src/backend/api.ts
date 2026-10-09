@@ -12,6 +12,12 @@ import type { PathInspector } from '../admission.ts';
 import type { ProcessSupervisor } from '../process.ts';
 
 export type BackendCommand = { readonly kind: 'chat' | 'repair' } | { readonly kind: 'consumer'; readonly owner: 'runtime' | 'bridge'; readonly abandonUndelivered: boolean };
+
+export class PendingStateCheckError extends Error {
+  override readonly name = 'PendingStateCheckError';
+  constructor() { super('A durable state check remains pending until startup reconciliation.'); }
+}
+
 export interface Freshness {
   readonly state: 'unknown' | 'acquiring' | 'fresh' | 'failed';
   readonly class: string | null;
