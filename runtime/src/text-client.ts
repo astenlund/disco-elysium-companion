@@ -49,9 +49,13 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
     else if (event.type === 'turn.failed') {
       running = false;
       if (streamed) { line(''); }
-      line(event.code === 'contextExhausted'
-        ? `The attempted combined input exceeded provider capacity. ${event.retryable ? 'Another player submission may attempt a smaller context.' : 'No further attempt is currently admitted for this unchanged input.'} Changing the question, an available model choice, or /new may help; none is guaranteed.`
-        : `Turn failed: ${event.code}.`);
+      const pendingCheck = event.code === 'stateInvalidated' && !event.retryable && status?.stateSafety.state === 'recovering'
+        && status.freshness.state === 'failed' && status.freshness.class === 'journal' && status.freshness.reason === 'settlementPending';
+      line(pendingCheck
+        ? 'State validation was interrupted. Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit. The question was not resent.'
+        : event.code === 'contextExhausted'
+          ? `The attempted combined input exceeded provider capacity. ${event.retryable ? 'Another player submission may attempt a smaller context.' : 'No further attempt is currently admitted for this unchanged input.'} Changing the question, an available model choice, or /new may help; none is guaranteed.`
+          : `Turn failed: ${event.code}.`);
     } else if (event.type === 'dialog.requested') { dialog = event; question = 0; answers = {}; renderQuestion(); }
     else if (event.type === 'dialog.closed') { if (dialog?.dialogId === event.dialogId) { dialog = null; answers = {}; } }
     else if (event.type === 'context.compacted') { line('[Provider context compacted; current state is wanted again.]'); }

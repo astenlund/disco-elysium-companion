@@ -1,4 +1,4 @@
-import type { DeliveryHandle, RuntimeBackend } from './backend/api.ts';
+import { PendingStateCheckError, type DeliveryHandle, type RuntimeBackend } from './backend/api.ts';
 import { Dialogs } from './dialogs.ts';
 import { newIdentity } from './identity.ts';
 import { utcNow } from './json.ts';
@@ -42,6 +42,7 @@ export class SessionHost implements SessionHostV1 {
   private active: Turn | null = null;
   private ingressOrder = 0;
   private ready = false;
+  private pendingCheckBlocked = false;
   private closing = false;
   private switching = false;
   private sessionControl: Promise<unknown> | null = null;
@@ -127,6 +128,7 @@ export class SessionHost implements SessionHostV1 {
   submitChat(input: { readonly text: string; readonly questionOverride: boolean }): SubmitResult {
     if (input === null || typeof input !== 'object' || typeof input.text !== 'string' || !input.text.isWellFormed() || input.text.trim().length === 0 || typeof input.questionOverride !== 'boolean') { return { result: 'invalidInput' }; }
     if (this.active !== null) { return { result: 'turnInProgress' }; }
+    if (this.pendingCheckBlocked) { return { result: 'notReady' }; }
     if (this.lifecycle.status.state === 'failed') { return { result: 'providerUnavailable' }; }
     const status = this.options.backend.status;
     if (!this.ready || this.closing || this.switching || this.transition !== null || this.lifecycle.status.state !== 'ready'
@@ -291,8 +293,10 @@ export class SessionHost implements SessionHostV1 {
         }
         this.fail(turn, outcome.code, retryable);
       }
-    } catch {
-      this.fail(turn, turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable' ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : 'providerError', !this.closing);
+    } catch (error) {
+      const pendingCheck = error instanceof PendingStateCheckError;
+      if (pendingCheck) { this.pendingCheckBlocked = true; }
+      this.fail(turn, pendingCheck || turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable' ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : 'providerError', !this.closing && !pendingCheck);
     } finally {
       if (ticket !== null) {
         try { if (turn.sent && session !== null) { this.recovery.finished(ticket, session.providerInstanceId, 'otherFailure'); } else { this.recovery.cancelBeforeSend(ticket); } }
@@ -322,6 +326,7 @@ export class SessionHost implements SessionHostV1 {
 
   async startNewAgentSession(): ReturnType<SessionHostV1['startNewAgentSession']> {
     if (this.active !== null) { return 'turnInProgress'; }
+    if (this.pendingCheckBlocked) { return 'providerUnavailable'; }
     if (this.closing || this.switching || this.transition !== null) { return 'providerUnavailable'; }
     this.switching = true;
     const control = (async () => { await this.maintenance.idle(); this.ready = await this.lifecycle.replace('requested'); return this.ready ? 'started' as const : 'providerUnavailable' as const; })();
@@ -331,6 +336,7 @@ export class SessionHost implements SessionHostV1 {
   }
   async resumeAgentSession(sessionId: string): Promise<ResumeResult> {
     if (this.active !== null) { return 'turnInProgress'; }
+    if (this.pendingCheckBlocked) { return 'stateInvalidated'; }
     if (this.closing || this.switching || this.transition !== null || this.lifecycle.status.state === 'failed') { return 'providerUnavailable'; }
     this.switching = true;
     const control = (async () => { await this.maintenance.idle(); const result = await this.lifecycle.resume(sessionId); this.ready = this.lifecycle.status.state === 'ready'; return result; })();

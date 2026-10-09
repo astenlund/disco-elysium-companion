@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
+import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import { credentialSourceLabel, runTextClient } from '../../src/text-client.ts';
 import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
@@ -43,4 +44,37 @@ test('text client renders previews and routes numbered, free-text and override i
   assert.ok(text.includes('2. Second: two'));
   assert.equal(backend.acquisitionCount, 1);
   assert.equal(backend.events.at(-1), 'shutdown');
+});
+
+test('text client explains the blocked pending-check restart without resending', async () => {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  backend.acquire = async () => {
+    backend.acquisitionCount += 1;
+    backend.safetyValue = { ...backend.safetyValue, pendingCheck: '7'.repeat(32) };
+    Object.assign(backend.status, {
+      freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'settlementPending' },
+      stateSafety: { state: 'recovering', correction: null },
+    });
+    host.statusChanged();
+    throw new PendingStateCheckError();
+  };
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let rendered = '';
+  output.on('data', (chunk: Buffer) => { rendered += chunk.toString('utf8'); });
+  const running = runTextClient(host, { input, output, terminal: false });
+  input.write('Original private question.\n');
+  await until(() => rendered.includes('restart chat'));
+  assert.match(rendered, /State validation was interrupted/);
+  assert.match(rendered, /question was not resent/);
+  assert.equal(provider.current.requests.length, 0);
+  assert.equal(backend.ackCount, 0);
+  input.write('Resubmit without restart.\n');
+  await until(() => rendered.includes('Question not sent: notReady'));
+  assert.equal(backend.acquisitionCount, 1);
+  input.write('/quit\n');
+  await running;
 });

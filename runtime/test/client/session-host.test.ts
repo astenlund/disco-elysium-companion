@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { indexCurrentBinding } from '../../src/session-records.ts';
@@ -398,6 +399,58 @@ test('unresolved checked operation forbids provider start before any subprocess 
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
   assert.equal(await host.start(), false);
   assert.equal(provider.calls.length, 0);
+  await host.shutdown();
+});
+
+test('a pending checked turn blocks later client operations without changing its provider', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const session = provider.current;
+  const binding = backend.binding;
+  const indexed = backend.index;
+  backend.acquire = async () => {
+    backend.acquisitionCount += 1;
+    backend.safetyValue = { ...backend.safetyValue, pendingCheck: '7'.repeat(32) };
+    Object.assign(backend.status, {
+      freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'settlementPending' },
+      stateSafety: { state: 'recovering', correction: null },
+    });
+    host.statusChanged();
+    throw new PendingStateCheckError();
+  };
+  assert.equal(host.submitChat({ text: 'original question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const statusAt = events.findIndex(event => event.type === 'status.changed' && event.status.stateSafety.state === 'recovering');
+  const failedAt = events.findIndex(event => event.type === 'turn.failed');
+  assert.ok(statusAt >= 0 && failedAt > statusAt);
+  const failure = events[failedAt];
+  assert.ok(failure?.type === 'turn.failed');
+  assert.equal(failure.code, 'stateInvalidated');
+  assert.equal(failure.retryable, false);
+  assert.equal(events.filter(event => event.type === 'turn.failed').length, 1);
+  assert.equal(provider.current.requests.length, 0);
+  assert.equal(backend.ackCount, 0);
+  assert.deepEqual(host.submitChat({ text: 'another question', questionOverride: false }), { result: 'notReady' });
+  assert.deepEqual(host.submitChat({ text: '', questionOverride: false }), { result: 'invalidInput' });
+  assert.equal(backend.acquisitionCount, 1);
+  assert.equal(await host.startNewAgentSession(), 'providerUnavailable');
+  assert.equal(await host.resumeAgentSession(session.providerSessionId), 'stateInvalidated');
+  assert.equal(provider.calls.length, 1);
+  assert.equal(session.closed, false);
+  assert.deepEqual(backend.binding, binding);
+  assert.deepEqual(backend.index, indexed);
+  host.detach();
+  const attached = host.attach(event => events.push(event));
+  assert.equal(attached.result, 'attached');
+  if (attached.result !== 'attached') { assert.fail(); }
+  assert.equal(attached.snapshot.status.stateSafety.state, 'recovering');
+  assert.equal(await host.interrupt(), 'noTurnInProgress');
+  assert.equal(host.answerDialog({ dialogId: 'ended', cancelled: true }), 'unknownDialog');
+  session.exit('subprocessExited');
+  await until(() => host.status.provider.state === 'failed');
+  assert.equal(provider.calls.length, 1);
+  assert.equal(events.filter(event => event.type === 'turn.failed').length, 1);
+  assert.equal(events.some(event => event.type === 'notice' && event.code === 'sessionReconnected'), false);
+  assert.deepEqual(host.submitChat({ text: 'after exit', questionOverride: false }), { result: 'notReady' });
   await host.shutdown();
 });
 
