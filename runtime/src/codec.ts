@@ -3,8 +3,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { PathAdmission } from './admission.ts';
 import { Deadline } from './deadline.ts';
-import { FilePublisher, PublicationError } from './files.ts';
+import { admitStagingPaths, FilePublisher, PublicationError, type AdmitPublicationScope } from './files.ts';
 import { asInteger, hasExactKeys, isLowerHex, isObject, jsonBudgets, parseStrictJson, readBoundedFile, stringifyJson, type JsonValue } from './json.ts';
 import { SupervisorError } from './process.ts';
 
@@ -59,10 +60,12 @@ export class PayloadCodec {
   private readonly publisher: FilePublisher;
   private readonly sourceInspections = new WeakMap<SourceInspectionReceipt, SourceInspection>();
   private readonly reserve: (reservation: CodecReservation, deadline?: Deadline) => Promise<void>;
+  private readonly reserveWithAdmission?: (reservation: CodecReservation, admit: AdmitPublicationScope, deadline?: Deadline) => Promise<void>;
 
-  constructor(publisher: FilePublisher, reserve: (reservation: CodecReservation, deadline?: Deadline) => Promise<void>) {
+  constructor(publisher: FilePublisher, reserve: (reservation: CodecReservation, deadline?: Deadline) => Promise<void>, reserveWithAdmission?: (reservation: CodecReservation, admit: AdmitPublicationScope, deadline?: Deadline) => Promise<void>) {
     this.publisher = publisher;
     this.reserve = reserve;
+    this.reserveWithAdmission = reserveWithAdmission;
   }
 
   inspectSource(source: Uint8Array, expectedSequence: number, deadline: number | Deadline = Infinity): Promise<CodecResult> {
@@ -136,12 +139,28 @@ export class PayloadCodec {
       const input = `${target}.${randomBytes(16).toString('hex')}.tmp`;
       const controlFile = `${target}.${randomBytes(16).toString('hex')}.tmp`;
       const staged = [{ path: input, bytes: frozen, sha256: sourceHash, created: false }, { path: controlFile, bytes: control, sha256: controlHash, created: false }];
-      const initial = await options.inspector.inspectMany(options.root, [target, input, controlFile], true, remaining());
-      if (initial[0]!.kind === 'directory' || initial[0]!.missing.length > 1 || mutation && request.createOnly && initial[0]!.exists) {
-        throw new PublicationError('Codec destination is inadmissible or already exists.');
+      const reservation = { target, inputBytes: frozen.length, controlBytes: control.length, maximumOutputBytes: mutation ? jsonBudgets['state-event'].maxBytes : 0, publication: mutation };
+      const bounded = deadline instanceof Deadline ? deadline : undefined;
+      const validateDestination = (initial: readonly PathAdmission[]): void => {
+        if (initial[0]!.kind === 'directory' || initial[0]!.missing.length > 1 || mutation && request.createOnly && initial[0]!.exists) {
+          throw new PublicationError('Codec destination is inadmissible or already exists.');
+        }
+      };
+      let accounted = false;
+      try {
+        const initial = this.reserveWithAdmission === undefined
+          ? await options.inspector.inspectMany(options.root, [target, input, controlFile], true, remaining())
+          : await admitStagingPaths(options.inspector, options.root, [target, input, controlFile], async admit => {
+            await this.reserveWithAdmission!(reservation, admit, bounded);
+            accounted = true;
+          }, remaining, validateDestination);
+        validateDestination(initial);
+        if (this.reserveWithAdmission === undefined) { await this.reserve(reservation, bounded); accounted = true; }
+        remaining();
+      } catch (error) {
+        if (mutation && accounted) { options.invalidate(target); }
+        throw error;
       }
-      await this.reserve({ target, inputBytes: frozen.length, controlBytes: control.length, maximumOutputBytes: mutation ? jsonBudgets['state-event'].maxBytes : 0, publication: mutation }, deadline instanceof Deadline ? deadline : undefined);
-      remaining();
       let helperEnded = true;
       let cleanupComplete = true;
       let publicationAttempted = false;
@@ -191,7 +210,7 @@ export class PayloadCodec {
         }
         cleanupComplete &&= reply.cleanupComplete;
       } catch (error) {
-        if (publicationAttempted) { options.invalidate(target); }
+        if (mutation && accounted) { options.invalidate(target); }
         if (!helperEnded || error instanceof PublicationError && error.uncertain || publicationAttempted && !publicationReconciled && !(error instanceof CodecDocumentError)) { this.publisher.block(); }
         throw error;
       } finally {

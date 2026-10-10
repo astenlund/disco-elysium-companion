@@ -9,6 +9,7 @@ import type { CodecReservation } from '../codec.ts';
 import { CapacityObservation, capacityError, requireCapacity, RuntimeCapacityError, type CapacityInventory, type CapacityOwed, type CapacityReason, type CapacityTransition, type DocumentReservation, type ResourceCounts, type TransitionReservation } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
+import { PublicationPathAdmissionError, type AdmitPublicationScope } from '../files.ts';
 import { eventFileSequence } from '../journal-records.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile } from '../json.ts';
 import { effectivelyUnfinished, pendingOperationSafety, parseOperation, type FullOperation, type RepairOperation, type RetainedHandoff } from '../operation-records.ts';
@@ -370,7 +371,7 @@ export class ResourceAuthority {
     } catch (error) { this.refuse(error, epoch === this.authorityEpoch ? 'maintenance' : null, 'inventory', owedEpoch === this.capacity.epoch ? owed : {}); }
   }
 
-  async preflight(target: string, bytes: Readonly<Uint8Array>, profile: JsonProfile, deadline?: Deadline): Promise<void> {
+  async preflight(target: string, bytes: Readonly<Uint8Array>, profile: JsonProfile, deadline?: Deadline, admit?: AdmitPublicationScope): Promise<void> {
     const lease = this.lease();
     const kind = this.valid(lease) ? lease.source.kind : null;
     try {
@@ -384,7 +385,7 @@ export class ResourceAuthority {
       const relative = path.relative(this.scope.dataRoot, target).replaceAll(path.sep, '/');
       if (relative.startsWith('..') || path.isAbsolute(relative) || lease.targets !== null && !lease.targets.has(relative)) { unavailable('publicationScope'); }
       const binding = path.join(this.scope.dataRoot, 'scope.json');
-      const admittedBinding = await this.inspector.inspect(this.scope.dataRoot, binding, false, deadline?.remaining());
+      const admittedBinding = admit === undefined ? await this.inspector.inspect(this.scope.dataRoot, binding, false, deadline?.remaining()) : (await admit(binding))[0]!;
       if (admittedBinding.kind !== 'file' || bytesHash(await readBoundedFile(binding, jsonBudgets.config.maxBytes)) !== this.scope.bindingSha256) { unavailable('scopeAuthority'); }
       const event = relative.startsWith('journal/events/') && eventFileSequence(relative.slice('journal/events/'.length)) !== null;
       const operation = /^operations\/(?:jr|rl|ho)-[a-f0-9]{32}\.json$/.test(relative);
@@ -413,7 +414,10 @@ export class ResourceAuthority {
       }
       if (!this.valid(lease)) { this.refuse(new Error('Publication owner changed.'), null, 'otherAuthority'); }
       deadline?.check();
-    } catch (error) { this.refuse(error, this.valid(lease) ? kind : null, 'publicationScope'); }
+    } catch (error) {
+      if (error instanceof PublicationPathAdmissionError) { throw error; }
+      this.refuse(error, this.valid(lease) ? kind : null, 'publicationScope');
+    }
   }
 
   async workspace(inputBytes: number, outputBytes: number, deadline?: Deadline): Promise<void> {
@@ -427,7 +431,7 @@ export class ResourceAuthority {
     } catch (error) { this.refuse(error, this.valid(lease) ? kind : null, 'workspace'); }
   }
 
-  async codec(reservation: CodecReservation, deadline?: Deadline): Promise<void> {
+  async codec(reservation: CodecReservation, deadline?: Deadline, admit?: AdmitPublicationScope): Promise<void> {
     const lease = this.lease();
     const kind = this.valid(lease) ? lease.source.kind : null;
     try {
@@ -438,12 +442,17 @@ export class ResourceAuthority {
       const event = relative.startsWith('journal/events/') && eventFileSequence(relative.slice('journal/events/'.length)) !== null;
       if (lease.targets !== null || (!event && relative !== 'journal/recovery-event.json' && relative !== 'codec.json') || reservation.publication && relative === 'codec.json') { unavailable('codecScope'); }
       const binding = path.join(this.scope.dataRoot, 'scope.json');
-      const admitted = await this.inspector.inspectMany(this.scope.dataRoot, [binding, reservation.target], true, deadline?.remaining());
+      const admitted = admit === undefined ? await this.inspector.inspectMany(this.scope.dataRoot, [binding, reservation.target], true, deadline?.remaining()) : await admit(binding);
       if (admitted[0]!.kind !== 'file' || bytesHash(await readBoundedFile(binding, jsonBudgets.config.maxBytes)) !== this.scope.bindingSha256) { unavailable('scopeAuthority'); }
       if (event && reservation.publication && !admitted[1]!.exists) {
         lease!.newEvents.add(relative);
         if (lease!.newEvents.size > lease.reservation.additions.uncompactedEvents + lease.reservation.remainingControlReserve.uncompactedEvents) { unavailable('unreservedAddition'); }
       }
-    } catch (error) { this.refuse(error, this.valid(lease) ? kind : null, 'codecScope'); }
+      if (!this.valid(lease)) { this.refuse(new Error('Codec owner changed.'), null, 'otherAuthority'); }
+      deadline?.check();
+    } catch (error) {
+      if (error instanceof PublicationPathAdmissionError) { throw error; }
+      this.refuse(error, this.valid(lease) ? kind : null, 'codecScope');
+    }
   }
 }

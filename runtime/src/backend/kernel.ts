@@ -82,7 +82,7 @@ export class Kernel {
       watcher: input.config.watcher.enabled ? 'stopped' : 'disabled', previousShutdownClean: false };
     this.resources.capacity.subscribe(() => this.emit());
     this.safetyStore = new SafetyStore({ storage: input.storage, bindingGenerations: deadline => this.bindingGenerations(deadline), suppressProvider: reason => this.options.onInvalidated?.(reason) });
-    this.codec = new PayloadCodec(input.publisher, (reservation: CodecReservation, deadline?: Deadline) => this.resources.codec(reservation, deadline));
+    this.codec = new PayloadCodec(input.publisher, (reservation: CodecReservation, deadline?: Deadline) => this.resources.codec(reservation, deadline), (reservation, admit, deadline) => this.resources.codec(reservation, deadline, admit));
     this.journal = new Journal({ root: input.scope.dataRoot, game: input.scope.game, principal: input.scope.principal, identities: input.identities,
       inspector: input.inspector, publisher: input.publisher, codec: this.codec,
       admitMutation: async (kind, snapshot, deadline) => {

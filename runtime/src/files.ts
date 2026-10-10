@@ -16,12 +16,90 @@ export class PublicationError extends Error {
   constructor(message: string, uncertain = false) { super(message); this.uncertain = uncertain; }
 }
 export interface PublicationResult { readonly sha256: string; readonly cleanupComplete: boolean }
+export type AdmitPublicationScope = (scopePath: string) => Promise<readonly PathAdmission[]>;
+export class PublicationPathAdmissionError extends Error {
+  override readonly name = 'PublicationPathAdmissionError';
+  constructor(cause: unknown) { super('Initial publication path admission failed.', { cause }); }
+}
+
+// The callback may add its scope path, but only this invocation can acquire the batch.
+export async function admitStagingPaths(inspector: PathInspector, root: string, targets: readonly string[], action: (admit: AdmitPublicationScope) => Promise<void>, remaining: () => number, validate: (observed: readonly PathAdmission[]) => void = () => {}): Promise<readonly PathAdmission[]> {
+  const frozen = [...targets];
+  let active = true;
+  let issued = false;
+  let violated = false;
+  let pending: Promise<readonly PathAdmission[]> | undefined;
+  let observed: readonly PathAdmission[] | undefined;
+  let complete = false;
+  const validatePaths = (paths: readonly string[], results: readonly PathAdmission[]): void => {
+    if (results.length !== paths.length || results.some((entry, index) => path.win32.relative(path.win32.resolve(paths[index]!), path.win32.resolve(entry.path)) !== '')) {
+      throw new DataRootUnavailableError('Publication admission is incomplete or uncorrelated.');
+    }
+  };
+  const validateTargets = (results: readonly PathAdmission[]): void => {
+    for (const [index, entry] of results.entries()) {
+      if (entry.kind === 'directory' || entry.missing.length > 1 || index > 0 && entry.exists) { throw new DataRootUnavailableError('Publication staging path is inadmissible.'); }
+    }
+    validate(results);
+  };
+  try {
+    await action(scopePath => {
+      if (!active || issued) { violated = true; return Promise.reject(new DataRootUnavailableError('Publication admission is no longer available.')); }
+      issued = true;
+      const paths = [scopePath, ...frozen];
+      pending = Promise.resolve().then(async () => {
+        let results: readonly PathAdmission[];
+        const timeout = remaining();
+        const expires = performance.now() + timeout;
+        try { results = await inspector.inspectMany(root, paths, true, timeout); validatePaths(paths, results); }
+        catch (cause) {
+          if (cause instanceof SupervisorError) { throw cause; }
+          // A failed combined batch cannot identify the offending path. Only a
+          // completed failing target probe may bypass the scope refusal channel.
+          const probeTime = Math.min(remaining(), Math.floor(expires - performance.now()));
+          if (probeTime <= 0) { throw cause; }
+          try {
+            const targetsNow = await inspector.inspectMany(root, frozen, true, probeTime);
+            validatePaths(frozen, targetsNow);
+            validateTargets(targetsNow);
+          } catch (probeError) {
+            remaining();
+            if (probeError instanceof SupervisorError) { throw probeError; }
+            if (performance.now() >= expires) { throw cause; }
+            if (probeError instanceof DataRootUnavailableError || probeError instanceof PublicationError) { throw new PublicationPathAdmissionError(cause); }
+          }
+          throw cause;
+        }
+        try {
+          observed = structuredClone(results.slice(1));
+          validateTargets(observed);
+        } catch (cause) {
+          throw new PublicationPathAdmissionError(cause);
+        }
+        complete = true;
+        return results;
+      });
+      return pending;
+    });
+    if (violated || !complete || observed === undefined) { throw new DataRootUnavailableError('Publication admission was not completed.'); }
+    remaining();
+    return observed;
+  } catch (error) {
+    if (error instanceof PublicationPathAdmissionError) { throw error.cause; }
+    throw error;
+  } finally {
+    active = false;
+    await pending?.catch(() => {});
+  }
+}
+
 export interface PublicationOptions {
   readonly root: string;
   readonly guard: Pick<InstanceGuard, 'held'>;
   readonly inspector: PathInspector;
   readonly supervisor: ProcessSupervisor;
   readonly preflight: (target: string, bytes: Readonly<Uint8Array>, profile: JsonProfile, deadline?: Deadline) => Promise<void>;
+  readonly preflightWithAdmission?: (target: string, bytes: Readonly<Uint8Array>, profile: JsonProfile, admit: AdmitPublicationScope, deadline?: Deadline) => Promise<void>;
   readonly invalidate: (target: string) => void;
   readonly prospectiveFailure?: ProspectiveJsonFailure;
   readonly bind?: <T>(action: () => Promise<T>) => () => Promise<T>;
@@ -75,8 +153,16 @@ export class FilePublisher {
       this.requireOwnership();
       const target = path.resolve(this.options.root, relative);
       const input = `${target}.${randomBytes(16).toString('hex')}.tmp`;
-      await this.options.inspector.inspectMany(this.options.root, [target, input], true, deadline?.remaining());
-      await this.options.preflight(target, bytes, profile, deadline);
+      const preflightWithAdmission = this.options.preflightWithAdmission;
+      if (preflightWithAdmission === undefined) {
+        await this.options.inspector.inspectMany(this.options.root, [target, input], true, deadline?.remaining());
+        await this.options.preflight(target, bytes, profile, deadline);
+      } else {
+        await admitStagingPaths(this.options.inspector, this.options.root, [target, input], admit => preflightWithAdmission(target, bytes, profile, admit, deadline), () => {
+          this.requireOwnership();
+          return deadline?.remaining() ?? 30000;
+        });
+      }
       this.requireOwnership();
       deadline?.check();
       const hash = digest(bytes);

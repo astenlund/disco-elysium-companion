@@ -9,7 +9,7 @@ import { loadRuntimeConfig } from '../config.ts';
 import { requireControl } from '../control-values.ts';
 import { resolvePrincipal } from '../core-client.ts';
 import { Deadline } from '../deadline.ts';
-import { FilePublisher } from '../files.ts';
+import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
@@ -272,6 +272,10 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     const prospectiveFailure = (error: ProspectiveJsonBudgetError): Error => resources?.prospectiveFailure(error) ?? error;
     const publisher = new FilePublisher({ root: candidate.dataRoot, guard, inspector, supervisor, prospectiveFailure,
       bind: action => resources?.bind(action) ?? action, beforeWrite: (relative, deadline) => resources?.beforeWrite(relative, deadline) ?? Promise.resolve(),
+      get preflightWithAdmission(): PublicationOptions['preflightWithAdmission'] {
+        const authority = resources;
+        return authority === null ? undefined : (target, bytes, profile, admit, deadline) => authority.preflight(target, bytes, profile, deadline, admit);
+      },
       preflight: async (target, bytes, profile, deadline) => {
         if (resources !== null) { await resources.preflight(target, bytes, profile, deadline); return; }
         // The sole bootstrap publication is a new immutable scope binding.
