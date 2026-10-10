@@ -22,6 +22,7 @@ interface Turn extends Interaction {
   readonly text: string;
   readonly override: boolean;
   terminal: boolean;
+  completed: boolean;
   interrupted: boolean;
   invalidated: boolean;
   compacted: boolean;
@@ -52,7 +53,7 @@ export class SessionHost implements SessionHostV1 {
   private transition: Promise<void> | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private lastStatus = '';
-  private maintenanceFailure = false;
+  private maintenanceFailure: Error | null = null;
 
   constructor(options: SessionHostOptions) {
     this.options = options;
@@ -63,7 +64,7 @@ export class SessionHost implements SessionHostV1 {
     this.recovery = new WindowRecovery('', this.ordinaryFingerprint, this.overrideFingerprint);
     this.lifecycle = new ProviderLifecycle({ backend: options.backend, provider: options.provider, instructionsSha256: options.instructionsSha256,
       emit: event => this.emit(event), changed: () => this.statusChanged(), onTerminated: options.providerTerminated,
-      onBound: session => { this.maintenanceFailure = false; this.recovery.bind(session.providerSessionId, session.providerInstanceId); },
+      onBound: session => { this.maintenanceFailure = null; this.recovery.bind(session.providerSessionId, session.providerInstanceId); },
       onExit: (instance, reason) => { this.reconnect = { instance, reason }; if (this.active === null) { this.scheduleTransition(); } },
       ...(options.delay === undefined ? {} : { delay: options.delay }) });
     this.dialogs = new Dialogs(event => {
@@ -136,7 +137,7 @@ export class SessionHost implements SessionHostV1 {
       || status.journal.state === 'repairing' || status.journal.fault === 'runtimeCapacityExceeded' || this.ingressOrder === Number.MAX_SAFE_INTEGER) { return { result: 'notReady' }; }
     if (input.questionOverride && !this.lifecycle.capabilities.questionOverride) { return { result: 'capabilityUnavailable' }; }
     const turn: Turn = { interactionId: newIdentity(), requestReceivedAt: utcNow(), ingressOrder: ++this.ingressOrder,
-      text: input.text, override: input.questionOverride, terminal: false, interrupted: false, invalidated: false, compacted: false, sent: false, work: Promise.resolve() };
+      text: input.text, override: input.questionOverride, terminal: false, completed: false, interrupted: false, invalidated: false, compacted: false, sent: false, work: Promise.resolve() };
     this.active = turn;
     this.emit({ type: 'turn.started', ...this.interaction(turn) });
     // Admission is synchronous, and all later work belongs to that one interaction.
@@ -184,6 +185,9 @@ export class SessionHost implements SessionHostV1 {
   }
 
   passiveSignal(instance: string, signal: ProviderSignal): void { this.signal(instance, signal); }
+  private requireMaintenance(): void {
+    if (this.maintenanceFailure !== null) { throw this.maintenanceFailure; }
+  }
   private signal(instance: string, signal: ProviderSignal): void {
     if (!this.lifecycle.isCurrent(instance) || this.closing) { return; }
     const turn = this.active;
@@ -193,7 +197,10 @@ export class SessionHost implements SessionHostV1 {
       if (turn !== null) { turn.compacted = true; }
       this.emit({ type: 'context.compacted' });
       void this.maintenance.run(async () => { if (this.lifecycle.isCurrent(instance)) { await this.lifecycle.compacted(); } })
-        .catch(() => { this.maintenanceFailure = true; this.statusChanged(); });
+        .catch(error => {
+          this.maintenanceFailure = error instanceof Error ? error : new Error('A required binding publication failed.', { cause: error });
+          this.statusChanged();
+        });
       this.statusChanged();
       return;
     }
@@ -213,7 +220,7 @@ export class SessionHost implements SessionHostV1 {
       const snapshot = await this.options.backend.acquire(this.interaction(turn));
       this.requireTurn(turn);
       await this.maintenance.idle();
-      if (this.maintenanceFailure) { throw new Error('A required binding publication failed.'); }
+      this.requireMaintenance();
       session = this.lifecycle.session;
       const binding = this.lifecycle.binding;
       if (session === null || binding === null || !this.lifecycle.isCurrent(session.providerInstanceId) || binding.stateGeneration !== snapshot.generation) { throw new Error('The current session cannot use this generation.'); }
@@ -236,7 +243,7 @@ export class SessionHost implements SessionHostV1 {
         beforeSend: async () => {
           this.requireTurn(turn);
           await this.maintenance.idle();
-          if (this.maintenanceFailure) { throw new Error('A required binding publication failed.'); }
+          this.requireMaintenance();
           const latestBinding = this.lifecycle.binding;
           if (latestBinding === null) { throw new Error('Session binding is unavailable.'); }
           const current = await this.options.backend.copyForSend(selectedHandle, latestBinding, this.lifecycle.identity(selectedSession));
@@ -263,7 +270,14 @@ export class SessionHost implements SessionHostV1 {
       if (turn.terminal) { return; }
       if (outcome.kind === 'completed') {
         this.requireTurn(turn);
-        if (!turn.sent || this.maintenanceFailure) { throw new Error('This completion has no admitted send or binding.'); }
+        if (!turn.sent) { throw new Error('This completion has no admitted send.'); }
+      }
+      this.requireMaintenance();
+      if (outcome.kind === 'completed') {
+        turn.completed = true;
+        turn.terminal = true;
+        this.dialogs.endTurn(turn.interactionId);
+        this.emit({ type: 'turn.completed', ...this.interaction(turn), text: outcome.text });
         await this.maintenance.run(async () => {
           const currentBinding = this.lifecycle.binding;
           if (currentBinding === null) { throw new Error('Session binding is unavailable.'); }
@@ -272,10 +286,6 @@ export class SessionHost implements SessionHostV1 {
           if (acknowledged !== null) { this.lifecycle.updateBinding(acknowledged.binding); }
         });
         await this.maintenance.idle();
-        this.requireTurn(turn);
-        turn.terminal = true;
-        this.dialogs.endTurn(turn.interactionId);
-        this.emit({ type: 'turn.completed', ...this.interaction(turn), text: outcome.text });
       } else {
         let retryable = outcome.retryable;
         if (outcome.code === 'contextExhausted') {
@@ -355,7 +365,8 @@ export class SessionHost implements SessionHostV1 {
     this.closing = true;
     this.ready = false;
     const turn = this.active;
-    if (turn !== null) { turn.interrupted = true; this.fail(turn, 'interrupted', false); await this.lifecycle.session?.interrupt(); }
+    if (turn !== null && !turn.terminal) { turn.interrupted = true; this.fail(turn, 'interrupted', false); await this.lifecycle.session?.interrupt(); }
+    if (turn?.completed) { await turn.work; }
     const stopping = this.options.backend.beginShutdown();
     const closed = await Promise.allSettled([this.lifecycle.close(), stopping]);
     const failure = closed.find(result => result.status === 'rejected');

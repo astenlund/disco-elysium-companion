@@ -126,6 +126,43 @@ test('interrupt during acquisition emits one terminal and sends and acknowledges
   await host.shutdown();
 });
 
+test('a completed turn cannot be interrupted while acknowledgement is pending', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const ack = deferred<void>(); backend.ackWait = ack.promise;
+  try {
+    assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => backend.events.includes('ack-start'));
+    assert.equal(events.filter(event => event.type === 'turn.completed').length, 1);
+    assert.equal(host.turnInProgress, true);
+    assert.equal(await host.interrupt(), 'noTurnInProgress');
+    assert.equal(provider.current.interruptCount, 0);
+    ack.resolve();
+    await until(() => !host.turnInProgress);
+    assert.equal(backend.ackCount, 1);
+    assert.equal(backend.binding?.turnsCompleted, 1);
+    assert.equal(events.filter(event => event.type === 'turn.failed').length, 0);
+  } finally { ack.resolve(); await host.shutdown(); }
+});
+
+test('shutdown drains a completed turn before closing provider and backend authority', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const ack = deferred<void>(); backend.ackWait = ack.promise;
+  try {
+    assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => backend.events.includes('ack-start'));
+    const stopping = host.shutdown();
+    await flush();
+    assert.equal(provider.current.closed, false);
+    assert.equal(backend.events.includes('stopping'), false);
+    ack.resolve();
+    await stopping;
+    assert.equal(backend.ackCount, 1);
+    assert.ok(backend.events.indexOf('ack-end') < backend.events.indexOf('stopping'));
+    assert.equal(events.filter(event => event.type === 'turn.completed').length, 1);
+    assert.equal(events.filter(event => event.type === 'turn.failed').length, 0);
+  } finally { ack.resolve(); await host.shutdown(); }
+});
+
 test('rejection immediately suppresses the active instance and replaces its history after acquisition', async () => {
   const { host, backend, provider, events } = await fixture();
   const wait = deferred<void>(); backend.acquireWait = wait.promise;
@@ -314,6 +351,85 @@ test('compaction during provider setup reaches the actual send gate with needsSt
   assert.equal(needsStateAtSend, true);
   assert.equal(backend.binding?.needsState, true);
   await host.shutdown();
+});
+
+test('required send-time capacity refusal emits one non-retryable capacity terminal', async () => {
+  const { host, backend, provider, events } = await fixture();
+  let sent = 0;
+  provider.current.action = async () => { sent++; return { kind: 'completed', text: 'unexpected' }; };
+  backend.markSent = async () => {
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, runtimeMarker: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
+    host.statusChanged();
+    return true;
+  };
+  backend.copyForSend = async () => { throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'runtimeMarker'); };
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const failures = events.filter(event => event.type === 'turn.failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0]?.code, 'capacityBlocked');
+  assert.equal(failures[0]?.retryable, false);
+  assert.equal(sent, 0);
+  assert.equal(backend.ackCount, 0);
+  assert.equal(host.submitChat({ text: 'next question', questionOverride: false }).result, 'notReady');
+  await host.shutdown();
+});
+
+test('required compaction binding capacity refusal retains its typed failure', async () => {
+  const { host, backend, provider, events } = await fixture();
+  backend.sessions.bind = async () => {
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
+    throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'ordinary');
+  };
+  provider.current.beforeSend = async () => { host.passiveSignal(provider.current.providerInstanceId, { kind: 'compaction' }); };
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const failures = events.filter(event => event.type === 'turn.failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0]?.code, 'capacityBlocked');
+  assert.equal(failures[0]?.retryable, false);
+  assert.equal(backend.ackCount, 0);
+  assert.equal(host.submitChat({ text: 'next question', questionOverride: false }).result, 'notReady');
+  await host.shutdown();
+});
+
+test('post-send capacity refusal takes precedence over failed provider outcomes but not an issued terminal', async () => {
+  const cases = [
+    { name: 'provider', outcome: { kind: 'failed', code: 'providerError', retryable: true }, code: 'capacityBlocked', retryable: false, interrupt: false },
+    { name: 'window', outcome: { kind: 'failed', code: 'contextExhausted', retryable: true }, code: 'capacityBlocked', retryable: false, interrupt: false },
+    { name: 'completed', outcome: { kind: 'completed', text: 'answer' }, code: 'capacityBlocked', retryable: false, interrupt: false },
+    { name: 'interrupted', outcome: { kind: 'failed', code: 'providerError', retryable: true }, code: 'interrupted', retryable: true, interrupt: true },
+  ] as const;
+  for (const scenario of cases) {
+    const { host, backend, provider, events } = await fixture();
+    const release = deferred<void>();
+    let sentActions = 0;
+    backend.sessions.bind = async () => {
+      Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
+      throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'ordinary');
+    };
+    provider.current.action = async request => {
+      sentActions++;
+      request.onSignal({ kind: 'compaction' });
+      await release.promise;
+      return scenario.outcome;
+    };
+    try {
+      assert.equal(host.submitChat({ text: scenario.name, questionOverride: false }).result, 'admitted');
+      await until(() => host.status.capacity.ordinary.state === 'exhausted');
+      assert.equal(sentActions, 1);
+      if (scenario.interrupt) { assert.equal(await host.interrupt(), 'interrupted'); }
+      release.resolve();
+      await until(() => !host.turnInProgress);
+      const failures = events.filter(event => event.type === 'turn.failed');
+      assert.equal(failures.length, 1, scenario.name);
+      assert.equal(failures[0]?.code, scenario.code, scenario.name);
+      assert.equal(failures[0]?.retryable, scenario.retryable, scenario.name);
+      assert.equal(events.filter(event => event.type === 'turn.completed').length, 0, scenario.name);
+      assert.equal(backend.ackCount, 0, scenario.name);
+      assert.equal(host.submitChat({ text: 'next', questionOverride: false }).result, 'notReady', scenario.name);
+    } finally { release.resolve(); await host.shutdown(); }
+  }
 });
 
 test('a completed answer without durable acknowledgement preserves the opening counter', async () => {
