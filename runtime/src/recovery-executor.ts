@@ -20,6 +20,7 @@ export interface RecoveryExecutorOptions {
   readonly codec: PayloadCodec;
   // Verifies the durable witness, owning manifest and complete transition reservation.
   readonly admit: (action: RecoveryAction) => Promise<void>;
+  readonly authorizeMutation?: (action: RecoveryAction) => Promise<void>;
   readonly readPayloadSource: (source: PayloadSource) => Promise<Uint8Array>;
 }
 
@@ -64,10 +65,12 @@ export class RecoveryExecutor {
     if (action.kind === 'quarantine' || action.kind === 'removeCarry') {
       await this.fileAction(action);
     } else if (action.kind === 'publishHeader' || action.kind === 'publishCursor' || action.kind === 'raiseHighWater') {
+      await this.options.authorizeMutation?.(action);
       const bytes = Buffer.from(stringifyJson(action.value), 'utf8');
       requireControl(hash(bytes) === action.target.after);
       await this.options.publisher.publish(action.target.path, bytes, 'config', action.target.before === null);
     } else {
+      await this.options.authorizeMutation?.(action);
       requireControl('metadata' in action);
       const source = Buffer.from(await this.options.readPayloadSource(action.source));
       requireControl(hash(source) === action.source.sha256);
@@ -93,6 +96,7 @@ export class RecoveryExecutor {
   private fileAction(action: Extract<RecoveryAction, { kind: 'quarantine' | 'removeCarry' }>): Promise<void> {
     return this.options.publisher.exclusive(async options => {
       if (recognizeAction(action, await this.observe(action)) !== 'before') { throw new RecoveryDamageError('Recovery preimage changed before mutation.'); }
+      await this.options.authorizeMutation?.(action);
       const source = action.kind === 'quarantine' ? action.source : action.target;
       const args = ['-NoProfile', '-File', script, '-Root', this.options.scope.dataRoot, '-Action', action.kind === 'quarantine' ? 'Move' : 'Remove', '-Source', path.resolve(this.options.scope.dataRoot, source.path), '-Sha256', source.before!];
       if (action.kind === 'quarantine') { args.push('-Target', path.resolve(this.options.scope.dataRoot, action.target.path)); }

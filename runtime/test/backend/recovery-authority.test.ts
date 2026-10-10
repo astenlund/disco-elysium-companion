@@ -33,7 +33,7 @@ function pendingCarryModel(headerConflict: boolean) {
   { kind: 'raiseHighWater', target: { path: 'journal/journal.json', before: hash(header), after: hash({ ...header, highWaterSequence: 1 }) }, value: { ...header, highWaterSequence: 1 } },
   { kind: 'removeCarry', target: { path: 'journal/recovery-event.json', before: carryHash, after: null } });
   const record = repair({ ...source, recovery: { ...source.recovery, episodes: [{ ...source.recovery.episodes[0]!, prerequisite: {
-    kind: 'gap', nextAction: 1, carry: { path: 'journal/recovery-event.json', sha256: carryHash }, skippedRanges: [], actions } }] } });
+    kind: 'gap', nextAction: 1, carry: { path: 'journal/recovery-event.json', sha256: carryHash }, carryRelease: null, skippedRanges: [], actions } }] } });
   const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null,
     correction: { correctionId, reason: 'contextUncertain', recoveryOperationId: owner.operationId }, recoveryWitness: witness });
   model.memory.seed(`operations/${owner.operationId}.json`, record);
@@ -207,12 +207,6 @@ describe('successor plan resume ordering', () => {
             await (model.coordinator() as unknown as { transferDamage: (record: typeof stored, snapshot: Awaited<ReturnType<typeof model.kernel.journal.read>>) => Promise<void> }).transferDamage(stored, await model.kernel.journal.read());
           }
         };
-        if (!destinationPresent) {
-          await assert.rejects(run());
-          assert.deepEqual(await model.records(), [record]);
-          assert.deepEqual(model.memory.files.get('journal/recovery-event.json'), model.carry);
-          return;
-        }
         await run();
         const beforeRestart = await model.records();
         await model.coordinator().reconcileSafety();
@@ -224,9 +218,10 @@ describe('successor plan resume ordering', () => {
         assert.deepEqual(current.recovery.attempts[1], { publication: 'due', selectedRecord: null, journalEvent: null });
         assert.equal(current.recovery.episodes[1]!.replacementAttempt, 1);
         const plan = current.recovery.episodes[1]!.prerequisite!;
-        assert.deepEqual(plan.actions.slice(0, plan.nextAction).map(action => action.kind), ['preserveRecovery', 'appendRecovery', 'raiseHighWater']);
-        assert.deepEqual(plan.actions.slice(plan.nextAction).map(action => action.kind), ['publishCursor', 'removeCarry']);
-        assert.deepEqual(model.memory.files.get('journal/events/0000000000000001.json'), eventBytes);
+        assert.deepEqual(plan.actions.slice(0, plan.nextAction).map(action => action.kind), destinationPresent ? ['preserveRecovery', 'appendRecovery', 'raiseHighWater'] : ['preserveRecovery']);
+        assert.deepEqual(plan.actions.slice(plan.nextAction).map(action => action.kind), destinationPresent ? ['publishCursor', 'removeCarry'] : ['publishCursor']);
+        assert.deepEqual(plan.carryRelease, destinationPresent ? null : { attemptRef: { operationId: owner.operationId, attemptOrdinal: 1 } });
+        assert.deepEqual(model.memory.files.get('journal/events/0000000000000001.json'), destinationPresent ? eventBytes : undefined);
         assert.deepEqual(model.memory.files.get('journal/recovery-event.json'), model.carry);
         assert.ok(current.plan.handoffs.some(handoff => handoff.logicalOutboxId === selected.logicalOutboxId));
       });
@@ -471,7 +466,7 @@ describe('successor plan resume ordering', () => {
       const carry = Buffer.from('protected carry bytes');
       const carryHash = bytesHash(carry);
       const retained = repair({ ...source, plan: { ...source.plan, skippedRanges: [range], handoffs: [handoffFor(event)] }, recovery: { ...source.recovery,
-        episodes: [{ ...source.recovery.episodes[0]!, prerequisite: { kind: 'gap', nextAction: 1, carry: { path: 'journal/recovery-event.json', sha256: carryHash }, skippedRanges: [range],
+        episodes: [{ ...source.recovery.episodes[0]!, prerequisite: { kind: 'gap', nextAction: 1, carry: { path: 'journal/recovery-event.json', sha256: carryHash }, carryRelease: null, skippedRanges: [range],
           actions: [{ kind: 'preserveRecovery', target: { path: 'journal/recovery-event.json', before: null, after: carryHash },
             source: { root: 'scope', path: 'journal/events/0000000000000001.json', sha256: '5'.repeat(64), payloadBindingSha256: event.payloadBindingSha256! }, metadata: eventRewriteMetadata(event) }] } }] } });
       const record = branch === 'damage' ? retained

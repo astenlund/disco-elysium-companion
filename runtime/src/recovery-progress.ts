@@ -1,6 +1,7 @@
 import { controlHash, controlInteger, controlUtc, requireControl } from './control-values.ts';
 import { hasCurrentAcceptance, type EventDescription } from './journal-records.ts';
 import { coreAttemptToken, type AcceptedRecovery, type RecoveryEpisode, type RecoveryProgress, type RepairOperation, type RetainedHandoff, type SelectedRecord } from './operation-records.ts';
+import { carryReleaseRemovalIndex, carryReleaseResolved } from './recovery-manifest.ts';
 import { type RecoveryOwner } from './safety-records.ts';
 
 export function activeRecoveryOwner(record: RepairOperation): RecoveryOwner | null {
@@ -33,14 +34,22 @@ export function replayCandidate(record: RepairOperation, activationId: string, s
     episodes: [...record.recovery.episodes, episode], activeEpisode: record.recovery.episodes.length } };
 }
 
-export function replacementCandidate(record: RepairOperation, reason: 'missingPayload' | 'placementUnavailable' | 'acceptanceUnavailable'): RepairOperation {
+export function replacementCandidate(record: RepairOperation, reason: 'missingPayload' | 'placementUnavailable' | 'acceptanceUnavailable', deferCarryRelease = false): RepairOperation {
   requireControl(['missingPayload', 'placementUnavailable', 'acceptanceUnavailable'].includes(reason));
   const index = record.recovery.activeEpisode;
   requireControl(index !== null);
   const episode = record.recovery.episodes[index]!;
   requireControl(episode.replacementAttempt === null && currentAttemptOrdinal(record) === episode.attemptAtStart && record.recovery.attempts[episode.attemptAtStart]!.selectedRecord !== null);
   const replacement = record.recovery.attempts.length;
-  const candidate = updateEpisode(record, episode => ({ ...episode, phase: 'publishing', replacementAttempt: replacement, acceptedRecovery: null }));
+  const candidate = updateEpisode(record, episode => {
+    let prerequisite = episode.prerequisite;
+    if (deferCarryRelease || prerequisite !== null && !carryReleaseResolved(prerequisite)) {
+      requireControl(prerequisite?.carry != null);
+      prerequisite = { ...prerequisite, actions: prerequisite.actions.filter((action, index) => index < prerequisite!.nextAction || action.kind !== 'removeCarry'),
+        carryRelease: { attemptRef: { operationId: record.operationId, attemptOrdinal: replacement } } };
+    }
+    return { ...episode, prerequisite, phase: 'publishing', replacementAttempt: replacement, acceptedRecovery: null };
+  });
   return { ...candidate, recovery: { ...candidate.recovery, attempts: [...candidate.recovery.attempts, { publication: 'due', selectedRecord: null, journalEvent: null }] } };
 }
 
@@ -76,10 +85,17 @@ export function checkpointRecovery(record: RepairOperation, event: EventDescript
     && attempt.journalEvent?.journalId === event.journalId && attempt.journalEvent.eventId === event.eventId && attempt.journalEvent.sequence === event.sequence
     && event.type === 'state.resync' && !event.compacted && event.sequence >= minimumSequence && hasCurrentAcceptance(event, generation)
     && event.coreRepairOperationId === coreAttemptToken(record.operationId, ordinal) && event.attemptRef?.operationId === record.operationId && event.attemptRef.attemptOrdinal === ordinal);
-  const prerequisite = record.recovery.episodes[index]!.prerequisite;
-  requireControl(prerequisite === null || prerequisite.nextAction === prerequisite.actions.length);
+  let prerequisite = record.recovery.episodes[index]!.prerequisite;
+  if (prerequisite !== null && !carryReleaseResolved(prerequisite)) {
+    requireControl(prerequisite.carry !== null && prerequisite.carryRelease?.attemptRef.operationId === record.operationId
+      && prerequisite.carryRelease.attemptRef.attemptOrdinal === ordinal
+      && prerequisite.actions.slice(prerequisite.nextAction).every(action => action.kind === 'removeCarry' && action.target.before === prerequisite!.carry!.sha256));
+    if (carryReleaseRemovalIndex(prerequisite) < 0) {
+      prerequisite = { ...prerequisite, actions: [...prerequisite.actions, { kind: 'removeCarry', target: { path: prerequisite.carry.path, before: prerequisite.carry.sha256, after: null } }] };
+    }
+  } else { requireControl(prerequisite === null || prerequisite.nextAction === prerequisite.actions.length); }
   const acceptedRecovery: AcceptedRecovery = { journalId: event.journalId, eventId: event.eventId, sequence: event.sequence, generation, acceptedAt };
-  return updateEpisode(record, episode => ({ ...episode, phase: 'verifyingHistory', acceptedRecovery }));
+  return updateEpisode(record, episode => ({ ...episode, prerequisite, phase: 'verifyingHistory', acceptedRecovery }));
 }
 
 export function completeRecovery(record: RepairOperation, verifiedJournalId: string, generation: string, endedAt: string): RepairOperation {
@@ -88,6 +104,7 @@ export function completeRecovery(record: RepairOperation, verifiedJournalId: str
   requireControl(index !== null);
   const episode = record.recovery.episodes[index]!;
   requireControl(episode.phase === 'verifyingHistory' && episode.acceptedRecovery?.journalId === verifiedJournalId && episode.acceptedRecovery.generation === generation);
+  requireControl(episode.prerequisite === null || episode.prerequisite.nextAction === episode.prerequisite.actions.length && carryReleaseResolved(episode.prerequisite));
   const updated = updateEpisode(record, value => ({ ...value, phase: 'completed', endedAt }));
   return { ...updated, completedAt: record.completedAt ?? endedAt, outcome: record.outcome ?? 'completed', recovery: { ...updated.recovery, activeEpisode: null } };
 }
