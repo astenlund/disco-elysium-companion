@@ -141,7 +141,8 @@ export class FilePublisher {
     return this.publish(relative, Buffer.from(stringifyProspectiveJson(value, 'config', relative, this.options.prospectiveFailure), 'utf8'), 'config', createOnly, deadline);
   }
 
-  async publish(relative: string, data: Uint8Array, profile: JsonProfile, createOnly = false, deadline?: Deadline): Promise<PublicationResult> {
+  async publish(relative: string, data: Uint8Array, profile: JsonProfile, createOnly = false, deadline?: Deadline,
+    preimage?: (scope: PathAdmission | null, target: PathAdmission) => Promise<void>): Promise<PublicationResult> {
     await this.options.beforeWrite?.(relative, deadline);
     if (data.byteLength > jsonBudgets[profile].maxBytes) {
       const error = new ProspectiveJsonBudgetError([{ dimension: 'bytes', actual: data.byteLength, limit: jsonBudgets[profile].maxBytes }], relative);
@@ -154,17 +155,36 @@ export class FilePublisher {
       const target = path.resolve(this.options.root, relative);
       const input = `${target}.${randomBytes(16).toString('hex')}.tmp`;
       const preflightWithAdmission = this.options.preflightWithAdmission;
-      if (preflightWithAdmission === undefined) {
-        await this.options.inspector.inspectMany(this.options.root, [target, input], true, deadline?.remaining());
-        await this.options.preflight(target, bytes, profile, deadline);
-      } else {
-        await admitStagingPaths(this.options.inspector, this.options.root, [target, input], admit => preflightWithAdmission(target, bytes, profile, admit, deadline), () => {
-          this.requireOwnership();
-          return deadline?.remaining() ?? 30000;
-        });
+      let scopeAdmission: PathAdmission | null = null;
+      let targetAdmission: PathAdmission;
+      let preflightComplete = false;
+      try {
+        if (preflightWithAdmission === undefined) {
+          targetAdmission = (await this.options.inspector.inspectMany(this.options.root, [target, input], true, deadline?.remaining()))[0]!;
+          await this.options.preflight(target, bytes, profile, deadline);
+          preflightComplete = true;
+        } else {
+          const admitted = await admitStagingPaths(this.options.inspector, this.options.root, [target, input], async admit => {
+            await preflightWithAdmission(target, bytes, profile, async scopePath => {
+              const observed = await admit(scopePath);
+              scopeAdmission = structuredClone(observed[0]!);
+              return observed;
+            }, deadline);
+            preflightComplete = true;
+          }, () => {
+            this.requireOwnership();
+            return deadline?.remaining() ?? 30000;
+          });
+          targetAdmission = admitted[0]!;
+          if (scopeAdmission === null) { throw new DataRootUnavailableError('Publication scope admission was not returned.'); }
+        }
+        await preimage?.(scopeAdmission, targetAdmission);
+        this.requireOwnership();
+        deadline?.check();
+      } catch (error) {
+        if (preflightComplete) { this.options.invalidate(target); }
+        throw error;
       }
-      this.requireOwnership();
-      deadline?.check();
       const hash = digest(bytes);
       let inputCreated = false;
       let helperEnded = true;

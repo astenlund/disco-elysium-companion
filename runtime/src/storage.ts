@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { DataRootUnavailableError, PathInspector } from './admission.ts';
+import { DataRootUnavailableError, PathInspector, type PathAdmission } from './admission.ts';
 import { ControlDocumentError } from './control-values.ts';
 import { Deadline } from './deadline.ts';
 import { readFileHashes } from './file-hashes.ts';
@@ -125,13 +125,25 @@ export class ScopeStorage {
     return this.queued(async () => {
       this.owned();
       deadline.check();
-      const target = await this.admit(relative, true, deadline);
-      if (target.exists) {
-        if (target.kind !== 'file' || expectedSha256 === null || (await observeFile(target.path, deadline)).sha256 !== expectedSha256) { throw new StorageConflictError('Stored authority changed before publication.'); }
-      } else if (expectedSha256 !== null) { throw new StorageConflictError('Stored authority disappeared before publication.'); }
-      this.owned();
-      deadline.check();
-      const result = await this.options.publisher.publish(relative, bytes, profile, expectedSha256 === null, deadline);
+      const result = await this.options.publisher.publish(relative, bytes, profile, expectedSha256 === null, deadline,
+        async (scopeAdmission: PathAdmission | null, admittedTarget: PathAdmission) => {
+          this.owned();
+          deadline.check();
+          let target = admittedTarget;
+          if (scopeAdmission === null) { target = await this.admit(relative, true, deadline); }
+          else {
+            const binding = path.join(this.scope.dataRoot, 'scope.json');
+            if (path.win32.relative(path.win32.resolve(binding), path.win32.resolve(scopeAdmission.path)) !== '' || scopeAdmission.kind !== 'file'
+              || bytesHash(await readBoundedFile(binding, jsonBudgets.config.maxBytes)) !== this.scope.bindingSha256) {
+              throw new DataRootUnavailableError('Immutable scope authority changed.');
+            }
+          }
+          if (target.exists) {
+            if (target.kind !== 'file' || expectedSha256 === null || (await observeFile(target.path, deadline)).sha256 !== expectedSha256) { throw new StorageConflictError('Stored authority changed before publication.'); }
+          } else if (expectedSha256 !== null) { throw new StorageConflictError('Stored authority disappeared before publication.'); }
+          this.owned();
+          deadline.check();
+        });
       return result.sha256;
     });
   }

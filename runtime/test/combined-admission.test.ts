@@ -14,7 +14,8 @@ import type { OperationStore } from '../src/operations.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
 import { ResourceAuthority } from '../src/resource-lifecycle/resources.ts';
 import type { RuntimeScope } from '../src/scope.ts';
-import { bytesHash } from '../src/storage.ts';
+import { bytesHash, ScopeStorage, StorageConflictError } from '../src/storage.ts';
+import { repair } from './backend/authority-fixtures.ts';
 import { companionFixture } from './support/companion.ts';
 import { journalEvent } from './support/journal-event.ts';
 
@@ -91,14 +92,101 @@ test('combined admission checks ownership and deadline again before any staging'
     let held = true;
     let now = 0;
     let nativeCalls = 0;
+    let invalidations = 0;
     const publisher = new FilePublisher({ root, guard: { get held() { return held; } }, inspector: fixture.inspector,
       supervisor: { run: async () => { nativeCalls++; throw new Error('Unexpected publication'); } } as unknown as ProcessSupervisor,
       preflight: async () => { throw new Error('Unexpected legacy callback'); },
-      preflightWithAdmission: async (_target, _bytes, _profile, admit) => { await admit(scopePath); if (failure === 'ownership') { held = false; } else { now = 1000; } }, invalidate: () => {} });
+      preflightWithAdmission: async (_target, _bytes, _profile, admit) => { await admit(scopePath); if (failure === 'ownership') { held = false; } else { now = 1000; } },
+      invalidate: () => { invalidations++; } });
     await assert.rejects(publisher.publishJson('runtime.json', {}, false, Deadline.after(1000, () => now)));
     assert.equal(nativeCalls, 0);
     assert.equal(fixture.calls(), 1);
+    assert.equal(invalidations, 1);
   }
+});
+
+test('publication awaits its preimage check before staging in combined and fallback admission', async () => {
+  for (const combined of [true, false]) {
+    const fixture = model();
+    const refused = new StorageConflictError('Fixture preimage refused.');
+    let invalidations = 0;
+    let entered!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>(resolve => { entered = resolve; });
+    const delayed = new Promise<void>(resolve => { release = resolve; });
+    let launched = false;
+    const publisher = new FilePublisher({ root, guard: { held: true }, inspector: fixture.inspector,
+      supervisor: { run: async () => { launched = true; throw new Error('Unexpected publication.'); } } as unknown as ProcessSupervisor,
+      preflight: async () => {},
+      ...(combined ? { preflightWithAdmission: async (_target: string, _bytes: Readonly<Uint8Array>, _profile: string, admit: AdmitPublicationScope) => {
+        const observed = await admit(scopePath);
+        (observed[0] as { path: string }).path = path.resolve(root, 'substituted-scope.json');
+      } } : {}),
+      invalidate: () => { invalidations++; } });
+    const attempt = publisher.publish('runtime.json', Buffer.from('{}'), 'config', true, undefined, async (scope, target) => {
+      assert.equal(scope?.path ?? null, combined ? scopePath : null);
+      assert.equal(target.path, targets[0]);
+      entered();
+      await delayed;
+      throw refused;
+    });
+    await reached;
+    assert.equal(fixture.calls(), 1);
+    assert.equal(launched, false);
+    release();
+    await assert.rejects(attempt, error => error === refused);
+    assert.equal(launched, false);
+    assert.equal(invalidations, 1);
+  }
+});
+
+test('stale preimage retires its resource lease without staging or borrowing a renewed lease', { timeout: 120000 }, async () => {
+  const fixture = await companionFixture();
+  const dataRoot = path.join(fixture.root, 'runtime-data');
+  const binding = Buffer.from('{"privateScope":true}');
+  await fs.mkdir(path.join(dataRoot, 'operations'), { recursive: true });
+  await fs.writeFile(path.join(dataRoot, 'scope.json'), binding);
+  const scope = { dataRoot, companionRoot: fixture.root, bindingSha256: bytesHash(binding), game: 'stubgame', principal: 'principal' } as RuntimeScope;
+  const inspector = { inspectMany: async (_root: string, paths: readonly string[]) => Promise.all(paths.map(async target => {
+    try {
+      const stat = await fs.lstat(target);
+      const value: PathAdmission = { path: target, exists: true, kind: stat.isDirectory() ? 'directory' : 'file', links: 1,
+        volume: '1'.repeat(16), identity: '1'.repeat(32), missing: [] };
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+      return absent(target);
+    }
+  })) } as unknown as PathInspector;
+  const resources = capacityModel(scope, inspector);
+  let nativeCalls = 0;
+  const publisher = new FilePublisher({ root: dataRoot, guard: { held: true }, inspector,
+    supervisor: { run: async () => { nativeCalls++; throw new Error('Unexpected native publication.'); } } as unknown as ProcessSupervisor,
+    beforeWrite: (relative, deadline) => resources.beforeWrite(relative, deadline), bind: action => resources.bind(action),
+    preflight: (target, bytes, profile, deadline) => resources.preflight(target, bytes, profile, deadline),
+    preflightWithAdmission: (target, bytes, profile, admit, deadline) => resources.preflight(target, bytes, profile, deadline, admit),
+    invalidate: () => resources.invalidate() });
+  const storage = new ScopeStorage({ scope, guard: { held: true }, inspector, publisher,
+    beforeWrite: (relative, deadline) => resources.beforeWrite(relative, deadline), bind: action => resources.bind(action) });
+  const first = { ...repair(), scopeSha256: scope.bindingSha256 };
+  const second = { ...first, operationId: `jr-${'9'.repeat(32)}` };
+  try {
+    await resources.withTransition('release', async () => {
+      await resources.reserve('release');
+      const staleAction = resources.bind(async () => resources.assertReservation());
+      await assert.rejects(storage.write(`operations/${first.operationId}.json`, first, 'state-event', 'd'.repeat(64)), StorageConflictError);
+      assert.throws(() => resources.assertReservation(), RuntimeCapacityError);
+      await resources.reserve('release');
+      await assert.rejects(staleAction(), RuntimeCapacityError);
+      let nextPreimageReached = false;
+      const stop = new Error('Stopped before staging.');
+      await assert.rejects(publisher.publish(`operations/${second.operationId}.json`, Buffer.from(JSON.stringify(second)), 'state-event', true,
+        undefined, async () => { nextPreimageReached = true; throw stop; }), error => error === stop);
+      assert.equal(nextPreimageReached, true);
+    });
+    assert.equal(nativeCalls, 0);
+    assert.deepEqual(await fs.readdir(path.join(dataRoot, 'operations')), []);
+  } finally { await fixture.close(); }
 });
 
 test('codec rejects destination and staging failures before resource addition accounting', async () => {
@@ -189,13 +277,23 @@ test('production resource callbacks share native staging admission and retain sc
   const publisher = new FilePublisher({ root: dataRoot, guard, inspector, supervisor,
     preflight: (target, bytes, profile, deadline) => resources.preflight(target, bytes, profile, deadline),
     preflightWithAdmission: (target, bytes, profile, admit, deadline) => resources.preflight(target, bytes, profile, deadline, admit), invalidate: () => {} });
+  const storage = new ScopeStorage({ scope, guard, inspector, publisher });
   const codec = new PayloadCodec(publisher, (reservation, deadline) => resources.codec(reservation, deadline), (reservation, admit, deadline) => resources.codec(reservation, deadline, admit));
   try {
     await resources.withTransition('release', async () => {
       await resources.reserve('release');
-      await publisher.publishJson('runtime.json', { value: 1 }, true);
+      await storage.write('runtime.json', { value: 1 }, 'config', null);
       assert.deepEqual(calls.map(paths => paths.length), [3, 2]);
       assert.equal(calls[0]![0], binding);
+      assert.equal(await fs.readFile(path.join(dataRoot, 'runtime.json'), 'utf8'), '{"value":1}');
+      calls.length = 0;
+      await resources.reserve('release');
+      await storage.write('runtime.json', { value: 1 }, 'config', bytesHash(Buffer.from('{"value":1}')));
+      assert.deepEqual(calls.map(paths => paths.length), [3, 2]);
+      calls.length = 0;
+      await resources.reserve('release');
+      await assert.rejects(storage.write('runtime.json', { value: 2 }, 'config', '0'.repeat(64)), StorageConflictError);
+      assert.deepEqual(calls.map(paths => paths.length), [3]);
       assert.equal(await fs.readFile(path.join(dataRoot, 'runtime.json'), 'utf8'), '{"value":1}');
       calls.length = 0;
       const source = await fs.readFile(path.join(fixture.root, 'state/outbox/event-0000000000000001.json'));
