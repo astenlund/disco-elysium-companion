@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { CapacityObservation } from '../../src/capacity.ts';
 import { emptyRepairPlan, initialRecovery, type ReleaseOperation, type RepairOperation } from '../../src/operation-records.ts';
-import { reconcileRetention, selectOperationRetention, type RetentionInputs } from '../../src/resource-lifecycle/retention.ts';
+import { reconcileRetention, refreshCapacityOwed, selectOperationRetention, type MaintenanceDependencies, type RetentionInputs } from '../../src/resource-lifecycle/retention.ts';
 import { journalEvent } from '../support/journal-event.ts';
 
 const origin = '2026-01-01T00:00:00.0000000Z';
@@ -30,6 +31,42 @@ function release(): ReleaseOperation {
 }
 
 describe('runtime retention authority', () => {
+  it('counts only current-generation binding and indexed session protection in owed status', async () => {
+    const obsolete = '9'.repeat(32);
+    for (const scenario of [
+      { binding: obsolete, indexed: obsolete, handoff: obsolete, expected: 0 },
+      { binding: generation, indexed: obsolete, handoff: generation, expected: 1 },
+      { binding: obsolete, indexed: generation, handoff: generation, expected: 1 },
+      { binding: null, indexed: null, handoff: obsolete, expected: 0 },
+    ]) {
+      const input = base();
+      const event = input.events[0]!;
+      const record = repair();
+      const handoff = { logicalOutboxId: event.logicalOutboxId, recordSha256: event.recordSha256, payloadBindingSha256: event.payloadBindingSha256,
+        journalId: event.acceptance!.journalId, eventId: event.acceptance!.eventId, acceptance: { ...event.acceptance!, generation: scenario.handoff },
+        presentation: 'replayable' as const, coreRepairOperationId: null, attemptRef: null };
+      const capacity = new CapacityObservation();
+      const deps = {
+        scope: { dataRoot: 'unused' }, resources: { capacity },
+        safetyStore: { read: async () => ({ status: 'valid', value: input.safety }) },
+        operations: { list: async () => ({ invalid: [], records: [{ record: { ...record, plan: { ...record.plan, handoffs: [handoff] } }, sha256: hash }] }) },
+        journal: { read: async () => ({ fault: null, damaged: [], events: new Map(), header: { status: 'valid', value: { historyVerified: true } }, cursor: { status: 'valid', value: { lastAckedSequence: 0 } } }) },
+        outbox: { list: async () => [] }, inspector: { inspect: async () => ({ exists: false }) },
+        storage: { read: async (name: string) => name === 'agent-session.json'
+          ? scenario.binding === null ? { status: 'absent' } : { status: 'valid', value: { stateGeneration: scenario.binding } }
+          : scenario.indexed === null ? { status: 'absent' } : { status: 'valid', value: { sessions: [{ stateGeneration: scenario.indexed }] } } },
+      } as unknown as MaintenanceDependencies;
+      await refreshCapacityOwed(deps);
+      assert.equal(capacity.current.owed.protectedHandoffs, scenario.expected, JSON.stringify(scenario));
+      assert.equal(capacity.current.ordinary.state, 'unchecked');
+      for (const status of ['absent', 'invalid']) {
+        const unavailable = { ...deps, safetyStore: { read: async () => ({ status }) } } as unknown as MaintenanceDependencies;
+        await refreshCapacityOwed(unavailable);
+        assert.equal(capacity.current.owed.protectedHandoffs, null);
+      }
+    }
+  });
+
   it('keeps the newest selectable state while retiring acknowledged earlier payloads', () => {
     const input = base();
     const authority = reconcileRetention(input);

@@ -215,16 +215,20 @@ export interface MaintenanceDependencies {
   readonly outbox: OutboxReader;
 }
 
+async function currentSessionGenerations(storage: ScopeStorage, generation: string, deadline?: Deadline): Promise<ReadonlySet<string>> {
+  const binding = await storage.read('agent-session.json', 'config', parseSessionBinding, deadline);
+  const index = await storage.read('agent-session-index.json', 'config', parseSessionIndex, deadline);
+  requireControl(binding.status !== 'invalid' && index.status !== 'invalid');
+  return new Set([...(binding.status === 'valid' && binding.value.stateGeneration === generation ? [generation] : []),
+    ...(index.status === 'valid' ? index.value.sessions.filter(session => session.stateGeneration === generation).map(session => session.stateGeneration) : [])]);
+}
+
 async function maintain(deps: MaintenanceDependencies, deadline?: Deadline, options: { readonly reevaluate?: boolean } = {}): Promise<{ compactedEvents: number; compactedOperations: number; removedQuarantine: number }> {
   const safety = await deps.safetyStore.read(deadline);
   const operations = await deps.operations.list(deadline);
   requireControl(safety.status === 'valid' && operations.invalid.length === 0);
   await deps.resources.reserveMaintenance(deadline);
-  const binding = await deps.storage.read('agent-session.json', 'config', parseSessionBinding, deadline);
-  const index = await deps.storage.read('agent-session-index.json', 'config', parseSessionIndex, deadline);
-  requireControl(binding.status !== 'invalid' && index.status !== 'invalid');
-  const generations = new Set([...(binding.status === 'valid' && binding.value.stateGeneration === safety.value.generation ? [binding.value.stateGeneration] : []),
-    ...(index.status === 'valid' ? index.value.sessions.filter(session => session.stateGeneration === safety.value.generation).map(session => session.stateGeneration) : [])]);
+  const generations = await currentSessionGenerations(deps.storage, safety.value.generation, deadline);
   deps.resources.capacity.invalidateOwed(['pendingOutboxRecords']);
   const outboxEpoch = deps.resources.capacity.epoch;
   const names = await deps.outbox.list(deadline);
@@ -362,11 +366,7 @@ export async function refreshCapacityOwed(deps: MaintenanceDependencies, deadlin
   if (operations === null || operations.invalid.length !== 0 || snapshot === null || snapshot.fault !== null || snapshot.damaged.length !== 0
     || snapshot.header.status !== 'valid' || snapshot.cursor.status !== 'valid' || outbox === null) { return; }
   try {
-    const binding = await deps.storage.read('agent-session.json', 'config', parseSessionBinding, deadline);
-    const index = await deps.storage.read('agent-session-index.json', 'config', parseSessionIndex, deadline);
-    requireControl(binding.status !== 'invalid' && index.status !== 'invalid');
-    const generations = new Set([...(binding.status === 'valid' ? [binding.value.stateGeneration] : []),
-      ...(index.status === 'valid' ? index.value.sessions.map(session => session.stateGeneration) : [])]);
+    const generations = await currentSessionGenerations(deps.storage, safety.value.generation, deadline);
     const carry = await deps.inspector.inspect(deps.scope.dataRoot, path.join(deps.scope.dataRoot, 'journal/recovery-event.json'), true, deadline?.remaining());
     let carryHash: string | null = null;
     if (carry.exists) {
