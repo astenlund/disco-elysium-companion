@@ -335,6 +335,7 @@ export class Kernel {
 
   private async handoffs(inventory: OperationInventory, deadline?: Deadline): Promise<readonly RetainedHandoff[]> {
     if (inventory.invalid.length > 0) { throw new SafetyUnavailableError('Operation handoff authority is damaged.'); }
+    if (inventory.handoffCount === 0) { return []; }
     const generation = (await this.safety(deadline)).generation;
     const values = new Map<string, RetainedHandoff>();
     for (const entry of inventory.records) {
