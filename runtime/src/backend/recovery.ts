@@ -14,7 +14,7 @@ import { jsonBudgets, readBoundedFile, stringifyJson, stringifyProspectiveJson, 
 import { effectivelyUnfinished, coreAttemptToken, type RepairOperation, type RetainedHandoff, type RecoveryEpisode } from '../operation-records.ts';
 import { requireRepair, type OperationInventory, type StoredOperation } from '../operations.ts';
 import { RecoveryExecutor, RecoveryDamageError } from '../recovery-executor.ts';
-import type { RecoveryAction, RecoveryPrerequisite } from '../recovery-manifest.ts';
+import { recognizeAction, validatePrerequisite, type ManifestObservation, type PayloadSource, type RecoveryAction, type RecoveryPrerequisite } from '../recovery-manifest.ts';
 import { activeRecoveryOwner, bindRecoveryEvent, checkpointRecovery, completeRecovery, currentAttemptOrdinal, replacementCandidate, replayCandidate, selectRecoveryRecord, transferEpisode } from '../recovery-progress.ts';
 import type { SkippedRange } from '../recovery-provenance.ts';
 import { sameRecoveryOwner, SafetyUnavailableError, type RecoveryOwner, type StateSafety } from '../safety-records.ts';
@@ -27,6 +27,10 @@ import { hasCarryAuthority } from './provider-authority.ts';
 const headerPath = 'journal/journal.json';
 const cursorPath = 'journal/cursor-agent-session.json';
 const hashValue = (value: unknown): string => bytesHash(Buffer.from(stringifyJson(value)));
+interface PrerequisiteTransfer {
+  readonly prerequisite: RecoveryPrerequisite;
+  readonly replacement: { readonly logicalOutboxId: string; readonly recordSha256: string } | null;
+}
 
 function quarantineCarry(sha256: string): RecoveryAction {
   return { kind: 'quarantine', source: { path: 'journal/recovery-event.json', before: sha256, after: null },
@@ -210,7 +214,7 @@ export class RecoveryCoordinator {
     return (await observeFile(target.path, deadline)).sha256;
   }
 
-  private async prerequisite(request: RepairRequest, deadline?: Deadline): Promise<RecoveryPrerequisite | null> {
+  private async prerequisite(request: RepairRequest, deadline?: Deadline, preserve = true): Promise<RecoveryPrerequisite | null> {
     const { journal, cause } = request;
     const structural = cause === 'header' || journal.header.status !== 'valid' ? 'header' : cause === 'cursor' || journal.cursor.status !== 'valid' ? 'cursor'
       : cause === 'gap' || journal.damaged.length > 0 ? 'gap' : ['coreRejected', 'settlementUnverified', 'versionChange', 'capacity'].includes(cause) ? 'rewind' : null;
@@ -258,7 +262,7 @@ export class RecoveryCoordinator {
       }
     }
     const preliminary: RecoveryPrerequisite = { kind: structural, actions, nextAction: 0, carry: null, skippedRanges: ranges };
-    return this.preserveRecovery(preliminary, journal, deadline);
+    return preserve ? this.preserveRecovery(preliminary, journal, deadline) : preliminary;
   }
 
   private async preserveRecovery(plan: RecoveryPrerequisite, snapshot: JournalSnapshot, deadline?: Deadline): Promise<RecoveryPrerequisite> {
@@ -344,6 +348,7 @@ export class RecoveryCoordinator {
       const planned = await k.operations.read(owner.operationId, deadline);
       if (planned.status === 'invalid') { throw new SafetyUnavailableError('Reserved recovery authority is content-invalid.'); }
       if (planned.status === 'valid') {
+        await this.restoreReservedEpisode(owner, deadline);
         // A durable reserved plan must become the active witnessed owner before
         // any dependent correction-pointer transfer can use it as authority.
         await this.activateReservedWitness(owner, deadline);
@@ -438,6 +443,29 @@ export class RecoveryCoordinator {
     } }, deadline);
   }
 
+  private async restoreReservedEpisode(owner: RecoveryOwner, deadline?: Deadline): Promise<void> {
+    const k = this.kernel;
+    const stored = await this.stored(owner.operationId, deadline);
+    const witness = (await k.safety(deadline)).recoveryWitness;
+    requireControl(witness !== null);
+    if (reservedWitnessMatches(witness, stored.record)) { return; }
+    const record = stored.record;
+    requireControl(witness.scopeSha256 === record.scopeSha256 && owner.episodeOrdinal === record.recovery.episodes.length
+      && !record.recovery.episodes.some(episode => episode.activationId === owner.activationId));
+    if (record.recovery.activeEpisode === null) {
+      const previous = record.recovery.episodes.at(-1)!;
+      requireControl(previous.phase === 'completed' || previous.phase === 'recordRejected');
+      requireControl(witness.phase === 'preparing' && sameRecoveryOwner(witness.owner, owner)
+        || witness.phase === 'transferring' && witness.successor !== null && sameRecoveryOwner(witness.successor, owner)
+        && sameRecoveryOwner(witness.owner, { operationId: record.operationId, episodeOrdinal: record.recovery.episodes.length - 1, activationId: previous.activationId }));
+      await k.operations.update(stored, value => replayCandidate(requireRepair(value), owner.activationId, utcNow()), deadline);
+      return;
+    }
+    requireControl(witness.phase === 'transferring' && witness.successor !== null && sameRecoveryOwner(witness.successor, owner)
+      && sameRecoveryOwner(witness.owner, activeRecoveryOwner(record)!));
+    await this.publishDamageEpisode(stored, await k.journal.read(deadline), owner, deadline);
+  }
+
   private async bindCorrection(operationId: string, deadline?: Deadline): Promise<void> {
     const k = this.kernel;
     const safety = await k.safety(deadline);
@@ -515,14 +543,17 @@ export class RecoveryCoordinator {
         const prerequisite = current.record.recovery.episodes[owner.episodeOrdinal]!.prerequisite;
         requireControl(prerequisite !== null && stringifyJson(prerequisite.actions[prerequisite.nextAction], 'state-event') === stringifyJson(action, 'state-event'));
       },
-      readPayloadSource: async source => {
-        const root = source.root === 'scope' ? k.scope.dataRoot : k.scope.companionRoot;
-        const admission = await k.inspector.inspect(root, path.join(root, source.path));
-        requireControl(admission.kind === 'file');
-        const bytes = await readBoundedFile(admission.path, jsonBudgets['state-event'].maxBytes);
-        requireControl(bytesHash(bytes) === source.sha256);
-        return bytes;
-      } });
+      readPayloadSource: source => this.readRecoverySource(source) });
+  }
+
+  private async readRecoverySource(source: PayloadSource, deadline?: Deadline): Promise<Buffer> {
+    const k = this.kernel;
+    const root = source.root === 'scope' ? k.scope.dataRoot : k.scope.companionRoot;
+    const admission = await k.inspector.inspect(root, path.join(root, source.path), false, deadline?.remaining());
+    requireControl(admission.kind === 'file');
+    const bytes = await readBoundedFile(admission.path, jsonBudgets['state-event'].maxBytes);
+    requireControl(bytesHash(bytes) === source.sha256);
+    return bytes;
   }
 
   private async runPrerequisite(operationId: string): Promise<void> {
@@ -569,24 +600,226 @@ export class RecoveryCoordinator {
   private async transferDamage(stored: StoredOperation & { record: RepairOperation }, snapshot: JournalSnapshot): Promise<void> {
     const k = this.kernel;
     this.damageEpisodeCreated = true;
-    const inventory = await k.operations.list();
-    await k.resources.reserve('repair', { uncompactedEvents: 1, retainedHandoffs: this.handoffGrowth([...snapshot.events.values()].map(event => event.metadata), inventory) });
     const activationId = await k.activationIdentity();
-    const kind = snapshot.fault ?? 'gap';
-    const prerequisite = await this.prerequisite({ cause: kind, journal: snapshot });
-    requireControl(prerequisite !== null);
     const successor = { operationId: stored.record.operationId, episodeOrdinal: stored.record.recovery.episodes.length, activationId };
-    await k.safetyStore.prepareTransfer(successor);
-    await k.operations.update(stored, value => {
-      const repair = requireRepair(value);
-      const handoffs = [...repair.plan.handoffs];
-      for (const event of snapshot.events.values()) { if (!handoffs.some(item => item.logicalOutboxId === event.metadata.logicalOutboxId)) { handoffs.push(handoffFor(event.metadata)); } }
-      const skippedRanges = [...repair.plan.skippedRanges, ...prerequisite.skippedRanges.filter(range => !repair.plan.skippedRanges.some(old => old.journalId === range.journalId && old.firstSequence === range.firstSequence && old.lastSequence === range.lastSequence))];
-      const lastGoodSequence = kind === 'header' ? 0 : kind === 'cursor' && snapshot.header.status === 'valid' ? snapshot.header.value.highWaterSequence : (snapshot.firstBadSequence ?? repair.plan.lastGoodSequence + 1) - 1;
-      return transferEpisode({ ...repair, plan: { ...repair.plan, handoffs, skippedRanges, lastGoodSequence } }, { activationId, trigger: kind,
-        attemptAtStart: currentAttemptOrdinal(repair), replacementAttempt: null, prerequisite, acceptedRecovery: null, startedAt: utcNow() }, utcNow());
-    });
+    await this.publishDamageEpisode(stored, snapshot, successor);
     await k.safetyStore.activateWitness(successor, this.ownerProof(successor));
+  }
+
+  private async publishDamageEpisode(stored: StoredOperation & { record: RepairOperation }, snapshot: JournalSnapshot, successor: RecoveryOwner, deadline?: Deadline): Promise<void> {
+    const k = this.kernel;
+    const readable = this.readableEvents(snapshot);
+    const inventory = await k.operations.list(deadline);
+    await k.resources.reserve('repair', { uncompactedEvents: 1, retainedHandoffs: this.handoffGrowth(readable.map(event => event.metadata), inventory) }, deadline);
+    const kind = snapshot.fault ?? 'gap';
+    const previous = stored.record.recovery.episodes[stored.record.recovery.activeEpisode!]!.prerequisite;
+    const pending = previous !== null && previous.nextAction < previous.actions.length;
+    const transfer = pending ? await this.rebasePrerequisite(previous, snapshot, deadline) : null;
+    const prerequisite = transfer?.prerequisite ?? await this.prerequisite({ cause: kind, journal: snapshot }, deadline);
+    requireControl(prerequisite !== null);
+    const candidate = (() => {
+      const repair = stored.record;
+      const handoffs = [...repair.plan.handoffs];
+      for (const event of readable) {
+        const index = handoffs.findIndex(item => item.logicalOutboxId === event.metadata.logicalOutboxId);
+        if (index < 0) { handoffs.push(handoffFor(event.metadata)); }
+        else { handoffs[index] = mergeHandoff(handoffs[index]!, handoffFor(event.metadata)); }
+      }
+      const skippedRanges = [...repair.plan.skippedRanges, ...prerequisite.skippedRanges.filter(range => !repair.plan.skippedRanges.some(old => old.journalId === range.journalId && old.firstSequence === range.firstSequence && old.lastSequence === range.lastSequence))];
+      const lastGoodSequence = prerequisite.kind === 'header' ? 0 : prerequisite.kind === 'cursor' && snapshot.header.status === 'valid' ? snapshot.header.value.highWaterSequence
+        : pending ? repair.plan.lastGoodSequence : (snapshot.firstBadSequence ?? repair.plan.lastGoodSequence + 1) - 1;
+      const moved = transferEpisode({ ...repair, plan: { ...repair.plan, handoffs, skippedRanges, lastGoodSequence } }, { activationId: successor.activationId, trigger: kind,
+        attemptAtStart: currentAttemptOrdinal(repair), replacementAttempt: null, prerequisite, acceptedRecovery: null, startedAt: utcNow() }, utcNow());
+      if (transfer?.replacement == null) { return moved; }
+      const selected = repair.recovery.attempts.at(-1)!.selectedRecord;
+      requireControl(selected !== null && selected.logicalOutboxId === transfer.replacement.logicalOutboxId && selected.recordSha256 === transfer.replacement.recordSha256);
+      return replacementCandidate(moved, 'placementUnavailable');
+    })();
+    await k.resources.preflight(path.join(k.scope.dataRoot, 'operations', candidate.operationId + '.json'),
+      Buffer.from(stringifyProspectiveJson(candidate, 'state-event', 'operations/' + candidate.operationId + '.json', error => k.resources.prospectiveFailure(error))), 'state-event', deadline);
+    await k.safetyStore.prepareTransfer(successor, deadline);
+    await k.operations.update(stored, () => candidate, deadline);
+  }
+
+  private async reconstructMissingMetadata(previous: RecoveryPrerequisite, snapshot: JournalSnapshot, kind: 'header' | 'cursor', deadline?: Deadline): Promise<PrerequisiteTransfer> {
+    const k = this.kernel;
+    const structural = await this.prerequisite({ cause: kind, journal: snapshot }, deadline, false);
+    requireControl(structural !== null);
+    requireControl(structural.kind === 'header' || structural.kind === 'cursor');
+    kind = structural.kind;
+    const pending = previous.actions.slice(previous.nextAction);
+    const completed: RecoveryAction[] = [];
+    const quarantines = new Map<string, Extract<RecoveryAction, { kind: 'quarantine' }>>();
+    for (const action of pending) {
+      if (action.kind !== 'quarantine') { continue; }
+      const observations = new Map<string, ManifestObservation>();
+      for (const change of [action.source, action.target]) { observations.set(change.path, { status: 'readable', sha256: await this.fileHash(change.path, deadline) }); }
+      const condition = recognizeAction(action, observations);
+      requireControl(condition === 'before' || condition === 'after');
+      if (condition === 'after') { completed.push(action); }
+      else { requireControl(!quarantines.has(action.source.path)); quarantines.set(action.source.path, action); }
+    }
+    const structuralActions = structural.actions.map(action => {
+      if (action.kind !== 'quarantine') { return action; }
+      const retained = quarantines.get(action.source.path);
+      if (retained === undefined) { return action; }
+      requireControl(retained.source.before === action.source.before);
+      quarantines.delete(action.source.path);
+      return retained;
+    });
+    if (previous.carry === null) {
+      requireControl(!pending.some(action => action.kind === 'appendRecovery' || action.kind === 'preserveRecovery' || action.kind === 'removeCarry'));
+      return { prerequisite: validatePrerequisite({ ...structural, actions: [...completed, ...quarantines.values(), ...structuralActions], nextAction: completed.length,
+        skippedRanges: mergeRanges(previous.skippedRanges, structural.skippedRanges) }), replacement: null };
+    }
+    const preservation = previous.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === previous.carry!.sha256);
+    requireControl(preservation?.kind === 'preserveRecovery');
+    const binding = preservation.source.payloadBindingSha256;
+    const carrySource: PayloadSource = { root: 'scope', path: previous.carry.path, sha256: previous.carry.sha256, payloadBindingSha256: binding };
+    requireControl(!quarantines.has(carrySource.path));
+    for (const action of pending) {
+      if (action.kind === 'appendRecovery') { requireControl(action.source.root === 'scope' && action.source.path === carrySource.path && action.source.sha256 === carrySource.sha256 && action.source.payloadBindingSha256 === binding); }
+      if (action.kind === 'preserveRecovery') { requireControl(action.target.after === carrySource.sha256); }
+      if (action.kind === 'removeCarry') { requireControl(action.target.before === carrySource.sha256); }
+    }
+    const carryHash = await this.fileHash(carrySource.path, deadline);
+    requireControl(carryHash === null || carryHash === carrySource.sha256);
+    let bytes: Buffer;
+    const prepare: RecoveryAction[] = [];
+    if (carryHash !== null) {
+      bytes = await this.readRecoverySource(carrySource, deadline);
+      completed.push(preservation);
+    } else {
+      // Only the original exact source can recreate an absent slot here. A
+      // missing or contradictory source retains the obligation without writes.
+      bytes = await this.readRecoverySource(preservation.source, deadline);
+      const preview = await k.codec.previewEvent(carrySource.path, bytes, preservation.metadata, preservation.source.root === 'companion' ? 'outbox' : 'event', binding,
+        preservation.source.root === 'companion' ? Number(preservation.metadata.logicalOutboxId.slice(33)) : 0, deadline);
+      requireControl(preview.cleanupComplete && preview.sha256 === carrySource.sha256);
+      prepare.push(preservation);
+    }
+    const headerAction = structuralActions.find(action => action.kind === 'publishHeader');
+    const header = kind === 'header' && headerAction?.kind === 'publishHeader' ? headerAction.value : snapshot.header.status === 'valid' ? snapshot.header.value : null;
+    requireControl(header !== null);
+    const sequence = header.highWaterSequence + 1;
+    const destination = `journal/events/${eventFileName(sequence)}`;
+    const oldCopies = this.readableEvents(snapshot).filter(event => event.metadata.logicalOutboxId === preservation.metadata.logicalOutboxId);
+    requireControl(oldCopies.length <= 1 && (kind === 'header' || !this.readableEvents(snapshot).some(event => event.metadata.sequence >= sequence && event.metadata.logicalOutboxId !== preservation.metadata.logicalOutboxId)));
+    if (kind === 'cursor') {
+      const priorAppend = [...previous.actions].reverse().find(action => action.kind === 'appendRecovery' && action.metadata.journalId === header.journalId && action.source.sha256 === carrySource.sha256);
+      const originalPosition = oldCopies[0]?.metadata.sequence ?? (priorAppend?.kind === 'appendRecovery' ? priorAppend.metadata.sequence : null);
+      const placementAvailable = this.readableEvents(snapshot).every(event => event.metadata.logicalOutboxId === preservation.metadata.logicalOutboxId
+        || originalPosition !== null && event.metadata.sequence < originalPosition);
+      if (!placementAvailable) {
+        const old = oldCopies[0];
+        requireControl(old !== undefined && old.metadata.journalId === header.journalId && old.metadata.sequence <= header.highWaterSequence
+          && old.metadata.recordSha256 === preservation.metadata.recordSha256 && old.metadata.payloadBindingSha256 === binding && carryHash !== null);
+        const oldPath = `journal/events/${eventFileName(old.metadata.sequence)}`;
+        requireControl(await this.fileHash(oldPath, deadline) === old.sha256
+          && ![...quarantines.values(), ...structuralActions].some(action => action.kind === 'quarantine' && action.source.path === oldPath));
+        const currentHeaderHash = snapshot.header.status === 'valid' ? snapshot.header.sha256 : null;
+        requireControl(currentHeaderHash !== null);
+        completed.push({ kind: 'appendRecovery', target: { path: oldPath, before: null, after: old.sha256 }, source: carrySource, metadata: eventRewriteMetadata(old.metadata) },
+          { kind: 'raiseHighWater', target: { path: headerPath, before: currentHeaderHash, after: currentHeaderHash }, value: header });
+        return { replacement: { logicalOutboxId: old.metadata.logicalOutboxId, recordSha256: old.metadata.recordSha256 }, prerequisite: validatePrerequisite({ kind,
+          carry: previous.carry, nextAction: completed.length, skippedRanges: mergeRanges(previous.skippedRanges, structural.skippedRanges),
+          actions: [...completed, ...quarantines.values(), ...structuralActions, { kind: 'removeCarry', target: { path: carrySource.path, before: carrySource.sha256, after: null } }] }) };
+      }
+    }
+    for (const old of oldCopies) {
+      requireControl(old.metadata.recordSha256 === preservation.metadata.recordSha256 && old.metadata.payloadBindingSha256 === binding);
+      const sourcePath = `journal/events/${eventFileName(old.metadata.sequence)}`;
+      if (![...quarantines.values(), ...structuralActions].some(action => action.kind === 'quarantine' && action.source.path === sourcePath)) {
+        const removal: RecoveryAction[] = [];
+        await this.quarantineAction(sourcePath, removal, deadline);
+        requireControl(removal.length === 1 && removal[0]!.kind === 'quarantine' && removal[0]!.source.before === old.sha256);
+        structuralActions.unshift(removal[0]!);
+      }
+    }
+    const currentTarget = await this.fileHash(destination, deadline);
+    requireControl(currentTarget === null || [...quarantines.values(), ...structuralActions].some(action => action.kind === 'quarantine' && action.source.path === destination && action.source.before === currentTarget));
+    const metadata = { ...preservation.metadata, journalId: header.journalId, eventId: await k.eventIdentity(snapshot, deadline), sequence, acknowledgedAt: null };
+    const preview = await k.codec.previewEvent(destination, bytes, metadata, carryHash === null && preservation.source.root === 'companion' ? 'outbox' : 'event', binding,
+      carryHash === null && preservation.source.root === 'companion' ? Number(metadata.logicalOutboxId.slice(33)) : 0, deadline);
+    requireControl(preview.cleanupComplete);
+    const raised = { ...header, highWaterSequence: sequence };
+    const beforeHeader = kind === 'header' ? hashValue(header) : snapshot.header.status === 'valid' ? snapshot.header.sha256 : null;
+    requireControl(beforeHeader !== null);
+    return { replacement: null, prerequisite: validatePrerequisite({ kind, carry: previous.carry, nextAction: completed.length, skippedRanges: mergeRanges(previous.skippedRanges, structural.skippedRanges),
+      actions: [...completed, ...prepare, ...quarantines.values(), ...structuralActions,
+        { kind: 'appendRecovery', target: { path: destination, before: null, after: preview.sha256 }, source: carrySource, metadata },
+        { kind: 'raiseHighWater', target: { path: headerPath, before: beforeHeader, after: hashValue(raised) }, value: raised },
+        { kind: 'removeCarry', target: { path: carrySource.path, before: carrySource.sha256, after: null } }] }) };
+  }
+
+  private async rebasePrerequisite(previous: RecoveryPrerequisite, snapshot: JournalSnapshot, deadline?: Deadline): Promise<PrerequisiteTransfer> {
+    const actions = [...previous.actions.slice(previous.nextAction)];
+    let firstPending = previous.nextAction;
+    while (actions.length > 0) {
+      const first = actions[0]!;
+      const changes = first.kind === 'quarantine' ? [first.source, first.target] : [first.target];
+      const observations = new Map<string, ManifestObservation>();
+      for (const change of changes) { observations.set(change.path, { status: 'readable', sha256: await this.fileHash(change.path, deadline) }); }
+      const condition = recognizeAction(first, observations);
+      if (condition === 'after') { actions.shift(); firstPending++; continue; }
+      if (condition === 'before') { break; }
+      requireControl(first.kind === 'publishHeader' || first.kind === 'publishCursor' || first.kind === 'raiseHighWater');
+      const observed = observations.get(first.target.path)!;
+      requireControl(observed.status === 'readable');
+      if (observed.sha256 === null) { return this.reconstructMissingMetadata(previous, snapshot, first.kind === 'publishCursor' ? 'cursor' : 'header', deadline); }
+      actions[0] = { ...first, target: { ...first.target, before: observed.sha256 } };
+      break;
+    }
+    const carriedHash = await this.fileHash('journal/recovery-event.json', deadline);
+    let nextAction = 0;
+    if (carriedHash !== null) {
+      const completed: RecoveryAction[] = [];
+      requireControl(previous.carry?.sha256 === carriedHash);
+      const preservation = previous.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === carriedHash);
+      requireControl(preservation !== undefined);
+      completed.push(preservation);
+      if (!actions.some(action => action.kind === 'appendRecovery' && action.source.path === 'journal/recovery-event.json')) {
+        const restored = previous.actions.findIndex(action => action.kind === 'appendRecovery' && action.source.path === 'journal/recovery-event.json' && action.source.sha256 === carriedHash);
+        requireControl(restored >= 0);
+        const append = previous.actions[restored]!;
+        requireControl(append.kind === 'appendRecovery' && await this.fileHash(append.target.path, deadline) === append.target.after);
+        completed.push(append);
+        const headers = new Map<string, Extract<RecoveryAction, { kind: 'publishHeader' | 'raiseHighWater' }>>();
+        for (const action of previous.actions.slice(restored + 1, firstPending)) {
+          if (action.kind === 'raiseHighWater' || action.kind === 'publishHeader') { headers.set(action.target.path, action); }
+        }
+        for (const action of headers.values()) {
+          // A retained write carries the header obligation through its own
+          // admitted preimage. Otherwise keep its verified completed proof.
+          if (!actions.some(pending => (pending.kind === 'raiseHighWater' || pending.kind === 'publishHeader') && pending.target.path === action.target.path)) {
+            requireControl(await this.fileHash(action.target.path, deadline) === action.target.after);
+            completed.push(action);
+          }
+        }
+      }
+      // Completed preservation stays explicit authority while the executable
+      // suffix retains restoration and removal, including a lost progress write.
+      actions.unshift(...completed);
+      nextAction = completed.length;
+    }
+    const projected = new Map<string, string | null>();
+    for (const action of actions.slice(nextAction)) {
+      if (action.kind === 'preserveRecovery' || action.kind === 'appendRecovery') {
+        const source = action.source;
+        const outbox = source.root === 'companion' ? await this.kernel.outbox.read(path.basename(source.path), deadline) : null;
+        const expected = source.root === 'scope' && projected.has(source.path) ? projected.get(source.path)
+          : source.root === 'scope' ? await this.fileHash(source.path, deadline) : outbox?.status === 'valid' ? outbox.sha256 : null;
+        requireControl(expected === source.sha256);
+      }
+      for (const change of action.kind === 'quarantine' ? [action.source, action.target] : [action.target]) {
+        const expected = projected.has(change.path) ? projected.get(change.path) : await this.fileHash(change.path, deadline);
+        requireControl(expected === change.before);
+        projected.set(change.path, change.after);
+      }
+    }
+    requireControl(carriedHash === null || actions.slice(nextAction).some(action => action.kind === 'removeCarry' && action.target.before === carriedHash));
+    return { replacement: null, prerequisite: validatePrerequisite({ ...previous, actions, nextAction, carry: actions.some(action => action.kind === 'preserveRecovery' || action.kind === 'removeCarry'
+      || action.kind === 'appendRecovery' && action.source.path === 'journal/recovery-event.json') ? previous.carry : null }) };
   }
 
   resume(operationId: string): Promise<void> {
