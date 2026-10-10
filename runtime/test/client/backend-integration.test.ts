@@ -81,6 +81,7 @@ test('real private coordinator carries accepted state through SessionHost and re
     progress(`private turn terminal ${outcome.type}`);
     assert.equal(outcome.type, 'turn.completed', JSON.stringify({ outcome, status: host.status }));
     assert.ok(delivered);
+    await host.shutdown(); host = null;
     const binding = await backend.sessions.readBinding();
     assert.equal(binding.status, 'valid');
     if (binding.status !== 'valid') { assert.fail(); }
@@ -89,7 +90,7 @@ test('real private coordinator carries accepted state through SessionHost and re
     assert.ok(cursor.lastAckedSequence! > 0);
     assert.equal(events.filter(event => event.type === 'turn.completed').length, 1);
     const sessionId = binding.value.providerSessionId;
-    await host.shutdown(); host = null; backend = null;
+    backend = null;
     progress('acknowledged runtime closed; reopening for resume');
 
     backend = await openBackend({ companionRoot: fixture.root, onDiagnostic: diagnose });
