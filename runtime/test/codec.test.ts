@@ -56,6 +56,10 @@ describe('file-backed lossless codec', () => {
         schemaVersion: inspected.metadata['schemaVersion'], adapterVersion: inspected.metadata['adapterVersion'], settlement: 'pending', acceptance: null,
         acknowledgedAt: null, compacted: false,
       };
+      await assert.rejects(codec.createEvent('invalid.json', Buffer.from('{}'), metadata, 1), CodecDocumentError);
+      await assert.rejects(codec.createEvent('wrong-sequence.json', source, metadata, 2), CodecDocumentError);
+      await assert.rejects(codec.createEvent('wrong-hash.json', source, { ...metadata, recordSha256: '0'.repeat(64) }, 1), CodecDocumentError);
+      assert.deepEqual(await fs.readdir(dataRoot), []);
       const created = await codec.createEvent('event.json', source, metadata, 1);
       assert.equal(created.metadata['settlement'], 'pending');
       assert.equal(created.metadata['acceptance'], null);
@@ -107,8 +111,8 @@ describe('file-backed lossless codec', () => {
       assert.equal(compacted.metadata['stateGeneratedAt'], null);
       assert.deepEqual(await fs.readdir(dataRoot), ['event.json']);
       assert.equal(publisher.blocked, false);
-      assert.equal(reservations, 8);
-      assert.deepEqual(invalidated, []);
+      assert.equal(reservations, 11);
+      assert.deepEqual(invalidated, ['invalid.json', 'wrong-sequence.json', 'wrong-hash.json'].map(name => path.join(dataRoot, name)));
 
       const run = supervisor.run.bind(supervisor);
       let loseReply = true;
@@ -128,7 +132,7 @@ describe('file-backed lossless codec', () => {
       assert.equal(publisher.blocked, true);
       await assert.rejects(publisher.publishJson('next.json', {}), PublicationError);
       assert.deepEqual(await fs.readdir(dataRoot), ['event.json']);
-      assert.equal(reservations, 9);
+      assert.equal(reservations, 12);
     } finally {
       await publisher.idle();
       await guard.release();

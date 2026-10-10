@@ -27,6 +27,9 @@ export interface CodecResult {
 }
 export type CodecPreview = Omit<CodecResult, 'bytes'>;
 
+export interface SourceInspectionReceipt { readonly sourceInspection: true }
+interface SourceInspection { readonly sha256: string; readonly metadata: string; readonly expectedSequence: number }
+
 interface CodecRequest {
   readonly mode: 'source' | 'event' | 'create' | 'rewrite' | 'reconstruct';
   readonly metadata: unknown;
@@ -54,6 +57,7 @@ function parseReply(bytes: Buffer): CodecReply {
 // control metadata, while the publisher owns serialization, staging and shutdown.
 export class PayloadCodec {
   private readonly publisher: FilePublisher;
+  private readonly sourceInspections = new WeakMap<SourceInspectionReceipt, SourceInspection>();
   private readonly reserve: (reservation: CodecReservation, deadline?: Deadline) => Promise<void>;
 
   constructor(publisher: FilePublisher, reserve: (reservation: CodecReservation, deadline?: Deadline) => Promise<void>) {
@@ -63,6 +67,30 @@ export class PayloadCodec {
 
   inspectSource(source: Uint8Array, expectedSequence: number, deadline: number | Deadline = Infinity): Promise<CodecResult> {
     return this.execute('codec.json', source, { mode: 'source', metadata: null, compact: false, expectedSequence, createOnly: false, binding: null }, deadline);
+  }
+
+  async inspectSourceWithReceipt(source: Uint8Array, expectedSequence: number, deadline: number | Deadline = Infinity): Promise<CodecResult & { readonly receipt: SourceInspectionReceipt }> {
+    const inspected = await this.inspectSource(source, expectedSequence, deadline);
+    if (!inspected.cleanupComplete) {
+      this.publisher.block();
+      throw new PublicationError('Source inspection cleanup is incomplete.', true);
+    }
+    this.publisher.assertAvailable();
+    const receipt: SourceInspectionReceipt = Object.freeze({ sourceInspection: true });
+    this.sourceInspections.set(receipt, { sha256: inspected.sha256, metadata: stringifyJson(inspected.metadata), expectedSequence });
+    return { ...inspected, receipt };
+  }
+
+  // This single-use receipt proves validation of bytes, never current disk or safety authority.
+  consumeSourceInspection(receipt: SourceInspectionReceipt, frozen: Uint8Array, expectedSequence: number, deadline?: Deadline): Pick<CodecResult, 'sha256' | 'metadata'> {
+    const inspected = this.sourceInspections.get(receipt);
+    this.sourceInspections.delete(receipt);
+    this.publisher.assertAvailable();
+    deadline?.check();
+    if (inspected === undefined || inspected.expectedSequence !== expectedSequence || inspected.sha256 !== hash(frozen)) {
+      throw new CodecDocumentError('Source inspection receipt does not match this codec and frozen source.');
+    }
+    return { sha256: inspected.sha256, metadata: parseStrictJson(Buffer.from(inspected.metadata, 'utf8')) as JsonObject };
   }
 
   inspectEvent(source: Uint8Array, deadline: number | Deadline = Infinity): Promise<CodecResult> {

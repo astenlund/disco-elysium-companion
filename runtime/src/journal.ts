@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { PathInspector, type PathAdmission } from './admission.ts';
 import { Deadline } from './deadline.ts';
-import { PayloadCodec } from './codec.ts';
+import { PayloadCodec, type SourceInspectionReceipt } from './codec.ts';
 import { EventReader, type EventRead } from './event-reader.ts';
 import { FilePublisher } from './files.ts';
 import { isOpaqueToken, newIdentity, type ProcessIdentities } from './identity.ts';
@@ -43,7 +43,7 @@ export interface JournalOptions {
 export interface JournalTransaction {
   snapshot(): JournalSnapshot;
   recoverHighWater(): Promise<JournalSnapshot>;
-  append(source: Uint8Array, coreSequence: number, mint?: () => string): Promise<JournalEvent>;
+  append(source: Uint8Array, coreSequence: number, mint?: () => string, receipt?: SourceInspectionReceipt): Promise<JournalEvent>;
   rewrite(expected: JournalEvent, update: (current: EventDescription) => EventMetadata): Promise<JournalEvent>;
   acknowledge(sent: readonly EventDescription[], generation: string): Promise<readonly EventDescription[]>;
   markSent(sent: readonly EventDescription[], generation: string): Promise<void>;
@@ -113,9 +113,9 @@ export class Journal {
           return structuredClone(snapshot);
         },
         recoverHighWater: () => run(async () => { snapshot = await this.recoverFrom(snapshot, deadline); return structuredClone(snapshot); }),
-        append: (source: Uint8Array, sequence: number, mint = newIdentity) => {
+        append: (source: Uint8Array, sequence: number, mint = newIdentity, receipt?: SourceInspectionReceipt) => {
           const frozen = Buffer.from(source);
-          return run(async () => { const result = await this.appendFrom(snapshot, frozen, sequence, mint, deadline); snapshot = result.snapshot; return structuredClone(result.event); });
+          return run(async () => { const result = await this.appendFrom(snapshot, frozen, sequence, mint, deadline, receipt); snapshot = result.snapshot; return structuredClone(result.event); });
         },
         rewrite: (expected: JournalEvent, update: (current: EventDescription) => EventMetadata) => run(async () => {
           const event = await this.rewriteFrom(snapshot, expected, update, deadline);
@@ -265,16 +265,21 @@ export class Journal {
     return this.transact(journal => journal.append(frozen, expectedCoreSequence, mint), deadline);
   }
 
-  private async appendFrom(snapshot: JournalSnapshot, frozen: Buffer, expectedCoreSequence: number, mint: () => string, deadline?: Deadline): Promise<{ snapshot: JournalSnapshot; event: JournalEvent }> {
+  private async appendFrom(snapshot: JournalSnapshot, frozen: Buffer, expectedCoreSequence: number, mint: () => string, deadline?: Deadline, receipt?: SourceInspectionReceipt): Promise<{ snapshot: JournalSnapshot; event: JournalEvent }> {
     const { header } = this.requireHealthy(snapshot);
     if (snapshot.unrecordedEvent !== null || header.highWaterSequence === Number.MAX_SAFE_INTEGER) { throw new JournalUnavailableError('Journal position is not available for append.'); }
-    const source = await this.options.codec.inspectSource(frozen, expectedCoreSequence, deadline);
+    const source = receipt === undefined
+      ? await this.options.codec.inspectSource(frozen, expectedCoreSequence, deadline)
+      : this.options.codec.consumeSourceInspection(receipt, frozen, expectedCoreSequence, deadline);
     const control = source.metadata;
     if (control['game'] !== this.options.game || control['principal'] !== this.options.principal || !isOpaqueToken(control['logicalOutboxId']) || logicalOutboxSequence(control['logicalOutboxId']) !== expectedCoreSequence) {
       throw new JournalDocumentError('Source record is foreign or misidentified.');
     }
     const duplicate = [...snapshot.events.values()].find(event => event.metadata.logicalOutboxId === control['logicalOutboxId']);
     if (duplicate !== undefined) {
+      // A new event gets fresh workspace and capacity admission in createEvent.
+      // A duplicate has no create, so preserve the full inspection admission here.
+      if (receipt !== undefined) { await this.options.codec.inspectSource(frozen, expectedCoreSequence, deadline); }
       if (duplicate.metadata.recordSha256 !== source.sha256) { throw new JournalDocumentError('Source record conflicts with its existing journal identity.'); }
       return { snapshot, event: duplicate };
     }

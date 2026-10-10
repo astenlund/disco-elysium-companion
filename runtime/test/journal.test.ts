@@ -4,7 +4,10 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { PathInspector } from '../src/admission.ts';
-import { PayloadCodec } from '../src/codec.ts';
+import { PayloadCodec, CodecDocumentError } from '../src/codec.ts';
+import { Deadline } from '../src/deadline.ts';
+import { OutboxReader } from '../src/outbox.ts';
+import { authorityModel } from './backend/authority-fixtures.ts';
 import { FilePublisher } from '../src/files.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
 import { Journal, JournalUnavailableError, SentMarkPublicationError, type JournalTransaction } from '../src/journal.ts';
@@ -52,8 +55,20 @@ describe('journal durable write ordering', () => {
       await publisher.publishJson('journal/cursor-agent-session.json', { cursorVersion: 1, journalId: 'd'.repeat(32), consumerId: 'agent-session', lastAckedSequence: 0, lastSentSequence: 0, lastAcceptedRevision: null, updatedAt: now }, true);
       const sourcePath = path.join(fixture.root, 'state', 'outbox', 'event-0000000000000001.json');
       const source = await fs.readFile(sourcePath);
+      const outbox = new OutboxReader(fixture.root, inspector, codec);
+      const model = authorityModel();
+      model.memory.scope.principal = 'S-1-5-21-1000-1001-1002-1003';
+      model.kernel.journal.transact = journal.transact.bind(journal);
+      model.kernel.outbox.list = outbox.list.bind(outbox);
+      model.kernel.outbox.read = outbox.read.bind(outbox);
+      let sourceInspections = 0;
+      const inspectSource = codec.inspectSource.bind(codec);
+      codec.inspectSource = async (...args) => { sourceInspections++; return inspectSource(...args); };
       refuseHeader = true;
-      await assert.rejects(journal.append(source, 1), /high-water publication refused/);
+      // The owned-repair argument permits this deliberately unverified initial header.
+      // Header publication fails before settlement; authority controls remain modeled.
+      await assert.rejects(model.kernel.drain(Deadline.after(120000), 'receipt-fixture'), /high-water publication refused/);
+      assert.equal(sourceInspections, 1);
       const interrupted = await journal.read();
       assert.equal(interrupted.fault, null);
       assert.equal(interrupted.header.status, 'valid');
@@ -68,6 +83,20 @@ describe('journal durable write ordering', () => {
       const recovered = await journal.recoverHighWater();
       assert.equal(recovered.unrecordedEvent, null);
       const pending = recovered.events.get(1)!;
+      const inspectedDuplicate = await codec.inspectSourceWithReceipt(source, 1);
+      inspectedDuplicate.metadata['game'] = 'changed-public-copy';
+      const beforeDuplicate = sourceInspections;
+      await journal.transact(async work => {
+        const duplicate = await work.append(source, 1, undefined, inspectedDuplicate.receipt);
+        assert.equal(duplicate.sha256, pending.sha256);
+      });
+      assert.equal(sourceInspections, beforeDuplicate + 1);
+      await assert.rejects(journal.transact(work => work.append(source, 1, undefined, inspectedDuplicate.receipt)), CodecDocumentError);
+      const changedDuplicate = await codec.inspectSourceWithReceipt(source, 1);
+      await assert.rejects(journal.transact(work => work.append(Buffer.concat([source, Buffer.from(' ')]), 1, undefined, changedDuplicate.receipt)), CodecDocumentError);
+      const beforeDefault = sourceInspections;
+      await journal.append(source, 1);
+      assert.equal(sourceInspections, beforeDefault + 1);
       assert.equal(pending.metadata.settlement, 'pending');
       assert.equal(pending.metadata.acceptance, null);
       const generation = 'e'.repeat(32);

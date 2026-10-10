@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { DataRootUnavailableError, PathInspector } from './admission.ts';
-import { CodecDocumentError, PayloadCodec } from './codec.ts';
+import { CodecDocumentError, PayloadCodec, type SourceInspectionReceipt } from './codec.ts';
 import { controlChoice, controlFields, controlHash, controlInt64, controlInteger, controlNullable, controlToken, controlUtc, requireControl } from './control-values.ts';
 import type { Deadline } from './deadline.ts';
 import { observeFile } from './file-observation.ts';
@@ -25,7 +25,7 @@ export interface SourceDescription {
   readonly targetIdentitySha256: string;
   readonly stateGeneratedAt: string;
 }
-export type OutboxRead = { readonly status: 'valid'; readonly name: string; readonly sha256: string; readonly bytes: Buffer; readonly metadata: SourceDescription }
+export type OutboxRead = { readonly status: 'valid'; readonly name: string; readonly sha256: string; readonly bytes: Buffer; readonly metadata: SourceDescription; readonly receipt: SourceInspectionReceipt }
   | { readonly status: 'absent'; readonly name: string }
   | { readonly status: 'invalid'; readonly name: string; readonly sha256: string };
 
@@ -81,12 +81,12 @@ export class OutboxReader {
     deadline?.check();
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     try {
-      const inspected = await this.codec.inspectSource(bytes, sequence, deadline);
+      const inspected = await this.codec.inspectSourceWithReceipt(bytes, sequence, deadline);
       requireControl(inspected.sha256 === sha256);
       const metadata = parseSourceDescription(inspected.metadata);
       requireControl(metadata.sequence === sequence);
       deadline?.check();
-      return { status: 'valid', name, sha256, bytes, metadata };
+      return { status: 'valid', name, sha256, bytes, metadata, receipt: inspected.receipt };
     } catch (error) {
       if (error instanceof CodecDocumentError) { return { status: 'invalid', name, sha256 }; }
       throw error;

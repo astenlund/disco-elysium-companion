@@ -388,7 +388,7 @@ export class Kernel {
               neededRepair = { cause: 'lostJournal', journal: before };
               break;
             }
-            let appended = await transaction.append(record.bytes, record.metadata.sequence);
+            let appended = await transaction.append(record.bytes, record.metadata.sequence, undefined, record.receipt);
             if (handoff !== undefined) {
               requireControl(handoff.payloadBindingSha256 !== null && handoff.payloadBindingSha256 === appended.metadata.payloadBindingSha256);
               appended = await transaction.rewrite(appended, current => ({ ...eventRewriteMetadata(current), acceptance: handoff.acceptance, attemptRef: handoff.attemptRef }));
