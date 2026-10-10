@@ -45,9 +45,17 @@ export function formatCapacity(capacity: CapacityStatus): string {
   return `${refused.join(' ')} Owed: ${owed}. ${guidance}`;
 }
 
+function formatOperational(operational: HostStatus['operational']): string {
+  const warnings = operational.warnings.map(warning => `${warning.code} (detail: ${warning.detail ?? 'null'})`).join(', ') || 'none';
+  const roots = [...new Set(operational.warnings.flatMap(warning => warning.code === 'pipeline-reaper-discovery-limit-exceeded'
+    && (warning.detail === 'tmp' || warning.detail === 'state') ? [warning.detail] : []))];
+  const remediation = roots.map(root => `Stop all companion processes, reduce the ${root} root below its discovery ceilings, and rerun.`).join(' ');
+  return `operational: ${operational.state}; warnings: ${warnings}${remediation === '' ? '' : `. ${remediation}`}`;
+}
+
 export function formatStatus(status: HostStatus): string {
   const fault = status.journal.fault === null ? '' : ` (${status.journal.fault})`;
-  return `consumer: ${status.consumer}; state: ${status.freshness.state}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}`;
+  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}`;
 }
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean }

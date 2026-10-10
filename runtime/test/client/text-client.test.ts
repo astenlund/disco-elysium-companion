@@ -8,6 +8,14 @@ import { initialCapacity } from '../../src/capacity.ts';
 import { credentialSourceLabel, formatCapacity, runTextClient } from '../../src/text-client.ts';
 import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
 
+function clientStreams() {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let rendered = '';
+  output.on('data', (chunk: Buffer) => { rendered += chunk.toString('utf8'); });
+  return { input, output, read: () => rendered };
+}
+
 test('credential source renders SDK metadata without inferring authentication kind', () => {
   assert.equal(credentialSourceLabel(null), 'unavailable');
   assert.equal(credentialSourceLabel('none'), 'no API key reported; non-API-key method unspecified');
@@ -29,20 +37,17 @@ test('text client renders previews and routes numbered, free-text and override i
     assert.deepEqual(answer, { answers: { 'Select?': 'Second', 'Explain?': 'free text' } });
     return { kind: 'completed', text: 'done' };
   };
-  const input = new PassThrough();
-  const output = new PassThrough();
-  let text = '';
-  output.on('data', (chunk: Buffer) => { text += chunk.toString('utf8'); });
+  const { input, output, read } = clientStreams();
   const running = runTextClient(host, { input, output, terminal: false });
   input.write('/think literal @path /command\n');
-  await until(() => text.includes('preview evidence'));
+  await until(() => read().includes('preview evidence'));
   input.write('2\n');
-  await until(() => text.includes('Explain?'));
+  await until(() => read().includes('Explain?'));
   input.write('free text\n');
-  await until(() => text.includes('done'));
+  await until(() => read().includes('done'));
   input.write('/quit\n');
   await running;
-  assert.ok(text.includes('2. Second: two'));
+  assert.ok(read().includes('2. Second: two'));
   assert.equal(backend.acquisitionCount, 1);
   assert.equal(backend.events.at(-1), 'shutdown');
 });
@@ -62,20 +67,50 @@ test('text client explains the blocked pending-check restart without resending',
     host.statusChanged();
     throw new PendingStateCheckError();
   };
-  const input = new PassThrough();
-  const output = new PassThrough();
-  let rendered = '';
-  output.on('data', (chunk: Buffer) => { rendered += chunk.toString('utf8'); });
+  const { input, output, read } = clientStreams();
   const running = runTextClient(host, { input, output, terminal: false });
   input.write('Original private question.\n');
-  await until(() => rendered.includes('restart chat'));
-  assert.match(rendered, /State validation was interrupted/);
-  assert.match(rendered, /question was not resent/);
+  await until(() => read().includes('restart chat'));
+  assert.match(read(), /State validation was interrupted/);
+  assert.match(read(), /question was not resent/);
   assert.equal(provider.current.requests.length, 0);
   assert.equal(backend.ackCount, 0);
   input.write('Resubmit without restart.\n');
-  await until(() => rendered.includes('Question not sent: notReady'));
+  await until(() => read().includes('Question not sent: notReady'));
   assert.equal(backend.acquisitionCount, 1);
+  input.write('/quit\n');
+  await running;
+});
+
+test('text client shows operational warnings and named-root remediation on every status surface', async () => {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {},
+    verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+  await until(() => read().includes('operational: current; warnings: none'));
+  const attachment = read();
+  Object.assign(backend.status, { operational: { state: 'unknown', warnings: [
+    { code: 'pipeline-reaper-discovery-limit-exceeded', detail: 'tmp' },
+    { code: 'pipeline-reaper-discovery-limit-exceeded', detail: 'state' },
+  ] } });
+  host.statusChanged();
+  await until(() => read().includes('reduce the state root below its discovery ceilings'));
+  const changed = read().slice(attachment.length);
+  assert.match(changed, /operational: unknown/);
+  assert.ok(changed.includes('pipeline-reaper-discovery-limit-exceeded (detail: tmp)'));
+  assert.ok(changed.includes('pipeline-reaper-discovery-limit-exceeded (detail: state)'));
+  assert.match(changed, /Stop all companion processes, reduce the tmp root below its discovery ceilings, and rerun/);
+  assert.match(changed, /Stop all companion processes, reduce the state root below its discovery ceilings, and rerun/);
+  const warningCount = read().split('pipeline-reaper-discovery-limit-exceeded').length - 1;
+  input.write('/status\n');
+  await until(() => read().split('pipeline-reaper-discovery-limit-exceeded').length - 1 > warningCount);
+  Object.assign(backend.status, { operational: { state: 'current', warnings: [] } });
+  host.statusChanged();
+  await until(() => read().split('operational: current; warnings: none').length >= 3);
+  assert.match(read().trimEnd().split('\n').at(-1)!, /operational: current; warnings: none/);
   input.write('/quit\n');
   await running;
 });
