@@ -27,7 +27,7 @@ function fixture() {
     identities: { runtimeInstanceId: 'b'.repeat(32), runtimeSessionId: 'c'.repeat(32), adapterBindingEpoch: 'd'.repeat(32) },
     options: { companionRoot: scope.companionRoot, onStatus: (status: BackendStatus) => observations.push(status.capacity) } } as unknown as KernelInput);
   const backend = new CoordinatorBackend(kernel, { value: { runtimeInstanceId: kernel.identities.runtimeInstanceId, startedAt: '2026-10-09T00:00:00.0000000Z', cleanShutdown: false, watcher: null }, sha256: 'e'.repeat(64) });
-  kernel.observeSafety = async () => ({ safety: null, operations: null, stateSafety: { state: 'unavailable', correction: null }, providerAllowed: false, failure: null });
+  kernel.observeSafety = async () => ({ safety: null, operations: null, stateSafety: { state: 'unavailable', correction: null, carryRelease: 'unavailable' }, providerAllowed: false, failure: null });
   return { kernel, backend, resources, observations };
 }
 function assess(resources: ResourceAuthority, kind: 'ordinary' | 'release' | 'repair' | 'maintenance') {

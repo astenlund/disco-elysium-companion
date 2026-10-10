@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { hasCarryAuthority, hasProviderAuthority } from '../../src/backend/provider-authority.ts';
+import { deferredCarryAuthority, hasCarryAuthority, hasProviderAuthority } from '../../src/backend/provider-authority.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
 import { Deadline, DeadlineExceededError } from '../../src/deadline.ts';
@@ -9,17 +9,17 @@ import * as BackendApi from '../../src/backend/api.ts';
 import { CoordinatorBackend } from '../../src/backend/index.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { SafetyUnavailableError } from '../../src/safety-records.ts';
-import { admittedCapacityFixture, authorityModel, journal, repair } from './authority-fixtures.ts';
+import { admittedCapacityFixture, authorityModel, carryTransfer, deferredRepair, journal, release, repair, owner } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
 import { eventRewriteMetadata } from '../../src/journal-records.ts';
-import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
+import { handoffFor, RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { DeliveryCoordinator } from '../../src/backend/delivery.ts';
 import { ContextPreparer, type ContextCandidate } from '../../src/prepared-context.ts';
 import { WindowRecovery, WindowRecoveryError, recoveryFingerprint } from '../../src/window-recovery.ts';
 import { parseSessionBinding } from '../../src/session-records.ts';
 import { parseStrictJson, stringifyJson } from '../../src/json.ts';
-import type { HandoverOperation, RepairOperation } from '../../src/operation-records.ts';
+import { coreAttemptToken, type HandoverOperation, type RepairOperation } from '../../src/operation-records.ts';
 import type { OperationInventory } from '../../src/operations.ts';
 import type { StateSafety } from '../../src/safety-records.ts';
 
@@ -76,11 +76,14 @@ describe('independent provider admission authority', () => {
 
   it('refuses publish and settlement before a native child when a consumer obligation survives', async () => {
     const pendingHandover: HandoverOperation = { ...handover, completedAt: null, outcome: null, plan: { owner: 'runtime', result: null, completedPhases: [] } };
-    const cases: readonly [OperationInventory, boolean][] = [[inventory(handover), true], [inventory(pendingHandover), true],
+    const deferred = deferredRepair();
+    const cases: readonly [OperationInventory, boolean, RepairOperation?, boolean?][] = [[inventory(handover), true], [inventory(pendingHandover), true],
       [inventory({ ...pendingHandover, safety: { ...handover.safety, phase: 'transferred', correctionId: '5'.repeat(32) } }), true],
       [{ ...empty, invalid: [{ name: handover.operationId + '.json', sha256: null }] }, true],
+      [inventory(deferredRepair()), true], [inventory(deferredRepair('pendingCleanup')), true],
+      [inventory(deferred), true, deferred, false], [inventory(deferred), false, deferred, true],
       [inventory({ ...handover, safety: { ...handover.safety, phase: 'discharged' } }), false]];
-    for (const [pending, denied] of cases) {
+    for (const [pending, denied, owningRepair, sourceProtected] of cases) {
       for (const operation of ['publish', 'settlement'] as const) {
         let calls = 0;
         let completions = 0;
@@ -93,15 +96,19 @@ describe('independent provider admission authority', () => {
           supervisor: { run: async () => { calls++; throw reachedNative; }, verifyQuiescent: async () => {} },
         } as unknown as KernelInput;
         const kernel = new Kernel(input);
-        const safety = { ...clean, pendingCheck: '6'.repeat(32) };
+        const safety: StateSafety = { ...clean, pendingCheck: '6'.repeat(32), recoveryWitness: owningRepair === undefined ? null
+          : { scopeSha256: scope, owner: { operationId: owningRepair.operationId, episodeOrdinal: owningRepair.recovery.activeEpisode!, activationId: owningRepair.recovery.episodes[owningRepair.recovery.activeEpisode!]!.activationId },
+            phase: 'active', successor: null, disclosure: null } };
         kernel.operations.list = async () => pending;
-        kernel.safetyStore.armCheck = async () => ({ value: safety, sha256: 'b'.repeat(64), checkToken: safety.pendingCheck });
+        kernel.carryHash = async () => '7'.repeat(64);
+        if (sourceProtected !== undefined) { kernel.authorizeDeferredCore = async () => sourceProtected; }
+        kernel.safetyStore.armCheck = async () => ({ value: safety, sha256: 'b'.repeat(64), checkToken: safety.pendingCheck! });
         kernel.safetyStore.read = async () => ({ status: 'valid', value: safety, sha256: 'b'.repeat(64) });
         kernel.safetyStore.finishCheck = async () => { completions++; return true; };
         const deadline = Deadline.after(30000);
         const binding = { logicalOutboxId: `${'7'.repeat(32)}-1`, recordSha256: 'c'.repeat(64), journalId: 'journal', eventId: 'event' };
-        const action = operation === 'publish' ? kernel.publish(false, null, deadline)
-          : kernel.checked({ kind: 'settlement', binding }, () => kernel.core.settle(binding, deadline), async () => {}, deadline);
+        const action = operation === 'publish' ? kernel.publish(false, owningRepair ?? null, deadline)
+          : kernel.checked({ kind: 'settlement', binding }, () => kernel.core.settle(binding, deadline), async () => {}, deadline, owningRepair?.operationId ?? null);
         await assert.rejects(action, error => denied ? error instanceof ControlDocumentError : error === reachedNative);
         assert.equal(calls, denied ? 0 : 1, operation);
         assert.equal(completions, 0, operation);
@@ -139,12 +146,99 @@ describe('deciding authority controls', () => {
 });
 
 describe('recovery slot authority', () => {
+  it('distinguishes waiting and authorized cleanup and blocks provider use until confirmed removal', () => {
+    for (const state of ['waitingReplacement', 'pendingCleanup', 'resolved'] as const) {
+      const record = deferredRepair(state);
+      const records = inventory(record);
+      assert.equal(deferredCarryAuthority(records).state, state);
+      assert.equal(hasCarryAuthority(null, records), true);
+      assert.equal(hasCarryAuthority('7'.repeat(64), records), state !== 'resolved');
+      assert.equal(hasCarryAuthority('8'.repeat(64), records), false);
+      assert.equal(hasProviderAuthority(clean, records), state === 'resolved');
+    }
+  });
+
+  it('collapses an abandoned predecessor only through exact retained successor and release proof', () => {
+    for (const state of ['waitingReplacement', 'resolved'] as const) {
+      const transfer = carryTransfer(state);
+      const { successor } = transfer;
+      const records = { ...empty, records: transfer.records };
+      assert.equal(deferredCarryAuthority(records).state, state);
+      assert.equal(deferredCarryAuthority(records).owner?.operationId ?? null, state === 'resolved' ? null : successor.operationId);
+      assert.equal(hasProviderAuthority(clean, records), state === 'resolved');
+      assert.equal(deferredCarryAuthority({ ...records, records: records.records.slice(0, 2) }).state, 'unavailable');
+      const duplicate = { ...records, records: [...records.records, { record: { ...successor, operationId: 'jr-' + '9'.repeat(32) }, sha256: 'b'.repeat(64) }] };
+      assert.equal(deferredCarryAuthority(duplicate).state, 'unavailable');
+    }
+  });
+
+  it('does not bind a later proved local carry to unrelated immutable root ancestry', () => {
+    const local = deferredRepair();
+    const record = repair({ ...local, plan: { ...local.plan, inheritedRecovery: { operationId: 'jr-' + '9'.repeat(32), episodeOrdinal: 0, activationId: '8'.repeat(32) } } });
+    assert.equal(deferredCarryAuthority(inventory(record)).state, 'waitingReplacement');
+    const unproved = { ...record, recovery: { ...record.recovery, attempts: record.recovery.attempts.map((attempt, ordinal) => ordinal === 0 ? { ...attempt, journalEvent: null } : attempt) } };
+    assert.equal(deferredCarryAuthority(inventory(unproved)).state, 'unavailable');
+  });
+
+  it('keeps completed inherited cleanup proof while a later distinct local carry owns the slot', () => {
+    const source = deferredRepair();
+    const predecessor = repair({ ...source, completedAt: now, outcome: 'abandonedByRelease', recovery: { ...source.recovery, activeEpisode: null,
+      episodes: [{ ...source.recovery.episodes[0]!, phase: 'abandonedByRelease', releaseOperationId: release().operationId, endedAt: now }] } });
+    const successorId = 'jr-' + '8'.repeat(32);
+    const completed = deferredRepair('resolved');
+    const inherited = { ...completed.recovery.episodes[0]!, prerequisite: { ...completed.recovery.episodes[0]!.prerequisite!,
+      carryRelease: { attemptRef: { operationId: successorId, attemptOrdinal: 1 } } } };
+    const local = journalEvent(3, { type: 'state.resync', coreRepairOperationId: coreAttemptToken(successorId, 2), attemptRef: { operationId: successorId, attemptOrdinal: 2 },
+      acceptance: { journalId: 'journal', eventId: '3'.padStart(32, '0'), generation } });
+    const successor = repair({ ...completed, operationId: successorId, plan: { ...completed.plan, inheritedRecovery: owner, handoffs: [...completed.plan.handoffs, handoffFor(local)] },
+      recovery: { attempts: [...completed.recovery.attempts,
+        { publication: 'observed', selectedRecord: { logicalOutboxId: local.logicalOutboxId, recordSha256: local.recordSha256 }, journalEvent: { journalId: local.journalId, eventId: local.eventId, sequence: local.sequence } },
+        { publication: 'due', selectedRecord: null, journalEvent: null }], activeEpisode: 1,
+      episodes: [inherited, { ...source.recovery.episodes[0]!, activationId: '9'.repeat(32), trigger: 'rewind', attemptAtStart: 2, replacementAttempt: 3,
+        prerequisite: { kind: 'rewind', carry: { path: 'journal/recovery-event.json', sha256: '6'.repeat(64) }, carryRelease: { attemptRef: { operationId: successorId, attemptOrdinal: 3 } }, nextAction: 1, skippedRanges: [],
+          actions: [{ kind: 'preserveRecovery', target: { path: 'journal/recovery-event.json', before: null, after: '6'.repeat(64) },
+            source: { root: 'scope', path: 'journal/events/0000000000000003.json', sha256: '5'.repeat(64), payloadBindingSha256: local.payloadBindingSha256 }, metadata: eventRewriteMetadata(local) }] } }] } });
+    const records = { ...empty, records: [predecessor, successor, release()].map(record => ({ record, sha256: 'b'.repeat(64) })) };
+    assert.equal(deferredCarryAuthority(records).state, 'waitingReplacement');
+    assert.equal(deferredCarryAuthority(records).carrySha256, '6'.repeat(64));
+    assert.equal(hasCarryAuthority('6'.repeat(64), records), true);
+    assert.equal(hasCarryAuthority('7'.repeat(64), records), false);
+    assert.equal(deferredCarryAuthority({ ...records, records: records.records.slice(1) }).state, 'unavailable');
+  });
+
+  it('rejects dangling attempt authority and outside drains without settling protected sources', async () => {
+    const record = deferredRepair();
+    const dangling = { ...record, recovery: { ...record.recovery, attempts: [] } };
+    assert.equal(deferredCarryAuthority(inventory(dangling)).state, 'unavailable');
+    const model = authorityModel(clean);
+    model.memory.seed('operations/' + record.operationId + '.json', record);
+    const snapshot = journal();
+    model.kernel.journal.read = async () => snapshot;
+    model.kernel.outbox.list = async () => { throw new Error('Outside drain must not enumerate or settle sources.'); };
+    assert.equal(await model.kernel.drain(Deadline.after(10000)), snapshot);
+    assert.equal(model.kernel.status.journal.fault, 'repairFailed');
+  });
+
+  it('reports waiting and pending cleanup under a matching witness without admitting provider input', async () => {
+    for (const state of ['waitingReplacement', 'pendingCleanup'] as const) {
+      const record = deferredRepair(state);
+      const model = authorityModel({ ...clean, recoveryWitness: { scopeSha256: scope, owner, phase: 'active', successor: null, disclosure: null } });
+      model.memory.seed('operations/' + record.operationId + '.json', record);
+      const observed = await model.kernel.observeSafety();
+      assert.equal(observed.stateSafety.state, 'recovering');
+      assert.equal(observed.stateSafety.carryRelease, state);
+      assert.equal(observed.providerAllowed, false);
+      model.memory.unreadable.add('operations/' + record.operationId + '.json');
+      assert.equal((await model.kernel.observeSafety()).stateSafety.carryRelease, 'unavailable');
+    }
+  });
+
   it('requires one exact owning manifest and rejects completed removal or changed bytes', () => {
     const hash = '7'.repeat(64);
     const source = repair();
     const event = journalEvent(1);
     const metadata = eventRewriteMetadata(event);
-    const prerequisite = { kind: 'rewind' as const, nextAction: 1, carry: { path: 'journal/recovery-event.json' as const, sha256: hash }, skippedRanges: [],
+    const prerequisite = { kind: 'rewind' as const, nextAction: 1, carry: { path: 'journal/recovery-event.json' as const, sha256: hash }, carryRelease: null, skippedRanges: [],
       actions: [{ kind: 'preserveRecovery' as const, source: { root: 'scope' as const, path: 'journal/events/0000000000000001.json', sha256: '8'.repeat(64), payloadBindingSha256: event.payloadBindingSha256 },
         target: { path: 'journal/recovery-event.json', before: null, after: hash }, metadata }] };
     const historical = repair({ ...source, completedAt: now, outcome: 'recordRejected', recovery: { ...source.recovery, activeEpisode: null,
@@ -354,7 +448,7 @@ describe('checked timeout status boundary', () => {
     const event = journalEvent(1, { adapter: 'stubgame', acknowledgedAt: now, acceptance: { journalId: 'journal', eventId: '1'.repeat(32), generation } });
     const model = authorityModel({ ...clean, correction }, { ...journal(1, 1), events: new Map([[1, { metadata: event, sha256: 'a'.repeat(64) }]]) });
     const observed: { kind: string; state?: string; correction?: unknown; reason?: string | null }[] = [];
-    model.kernel.emit({ stateSafety: { state: 'ready', correction: null } });
+    model.kernel.emit({ stateSafety: { state: 'ready', correction: null, carryRelease: 'none' } });
     const emit = model.kernel.emit.bind(model.kernel);
     model.kernel.emit = change => {
       emit(change);

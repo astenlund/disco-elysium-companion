@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { CapacityObservation } from '../../src/capacity.ts';
+import { deferredCarryAuthority, hasProviderAuthority } from '../../src/backend/provider-authority.ts';
 import { emptyRepairPlan, initialRecovery, type ReleaseOperation, type RepairOperation } from '../../src/operation-records.ts';
+import { OperationStore } from '../../src/operations.ts';
+import type { ScopeStorage } from '../../src/storage.ts';
 import { reconcileRetention, refreshCapacityOwed, selectOperationRetention, type MaintenanceDependencies, type RetentionInputs } from '../../src/resource-lifecycle/retention.ts';
 import { journalEvent } from '../support/journal-event.ts';
+import { carryTransfer, deferredRepair, MemoryAuthority, repair as parseRepair, release as fixtureRelease } from '../backend/authority-fixtures.ts';
 
 const origin = '2026-01-01T00:00:00.0000000Z';
 const rootId = `jr-${'b'.repeat(32)}`;
@@ -31,6 +35,45 @@ function release(): ReleaseOperation {
 }
 
 describe('runtime retention authority', () => {
+  it('keeps the complete resolved transfer proof through real compaction of unrelated terminal records', async () => {
+    const transfer = carryTransfer();
+    const unrelated = fixtureRelease({ operationId: 'rl-' + '9'.repeat(32), safety: { obligationId: '8'.repeat(32), phase: 'discharged', correctionId: null } });
+    const memory = new MemoryAuthority();
+    for (const record of [transfer.predecessor, transfer.successor, transfer.releaseRecord, unrelated]) { memory.seed('operations/' + record.operationId + '.json', record); }
+    const store = new OperationStore(memory as unknown as ScopeStorage);
+    const before = await store.list();
+    const safety = base().safety;
+    const graph = reconcileRetention({ ...base(), events: [], operations: before.records });
+    const selected = selectOperationRetention(before.records, graph.protectedOperations, '2028-01-01T00:00:00.0000000Z');
+    assert.equal(deferredCarryAuthority(before).state, 'resolved');
+    assert.equal(hasProviderAuthority(safety, before), true);
+    assert.deepEqual(selected.map(entry => entry.record.operationId), [unrelated.operationId]);
+    for (const entry of selected) { await store.compact(entry, async record => !graph.protectedOperations.has(record.operationId)); }
+    const after = await store.list();
+    assert.equal(after.records.find(entry => entry.record.operationId === unrelated.operationId)!.record.compacted, true);
+    assert.equal(deferredCarryAuthority(after).state, 'resolved');
+    assert.equal(hasProviderAuthority(safety, after), true);
+    for (const id of [transfer.successor.operationId, transfer.releaseRecord.operationId]) {
+      const entry = after.records.find(item => item.record.operationId === id)!;
+      await store.compact(entry, async () => true);
+      const damaged = await store.list();
+      assert.notEqual(deferredCarryAuthority(damaged).state, 'resolved');
+      assert.equal(hasProviderAuthority(safety, damaged), false);
+      memory.seed('operations/' + id + '.json', entry.record);
+    }
+  });
+
+  it('retains an abandoned deferred carry and its original handoff without live journal or session references', () => {
+    const original = deferredRepair();
+    const abandoned = parseRepair({ ...original, completedAt: original.startedAt, outcome: 'abandonedByRelease', recovery: { ...original.recovery, activeEpisode: null,
+      episodes: [{ ...original.recovery.episodes[0]!, phase: 'abandonedByRelease', releaseOperationId: fixtureRelease().operationId, endedAt: original.startedAt }] } });
+    const operations = [{ record: abandoned, sha256: hash }];
+    const authority = reconcileRetention({ ...base(), events: [], operations, carryPresent: true });
+    assert.equal(authority.protectedOperations.has(abandoned.operationId), true);
+    assert.equal(authority.protectedHandoffs.size, 1);
+    assert.equal(selectOperationRetention(operations, new Set(), '2028-01-01T00:00:00.0000000Z').length, 0);
+  });
+
   it('counts only current-generation binding and indexed session protection in owed status', async () => {
     const obsolete = '9'.repeat(32);
     for (const scenario of [

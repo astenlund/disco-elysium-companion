@@ -3,16 +3,18 @@ import path from 'node:path';
 
 import { DataRootUnavailableError, type PathAdmission } from '../../src/admission.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
+import { handoffFor } from '../../src/backend/recovery.ts';
 import { CapacityObservation, RuntimeCapacityError } from '../../src/capacity.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
 import type { Deadline } from '../../src/deadline.ts';
-import { parseJournalCursor, parseJournalHeader } from '../../src/journal-records.ts';
+import { eventRewriteMetadata, parseJournalCursor, parseJournalHeader } from '../../src/journal-records.ts';
 import { parseStrictJson, stringifyJson, StrictJsonError, type JsonProfile, type JsonValue } from '../../src/json.ts';
 import { parseOperation, type OperationRecord, type RepairOperation, type ReleaseOperation } from '../../src/operation-records.ts';
 import type { JournalSnapshot, JournalTransaction } from '../../src/journal.ts';
 import { parseStateSafety, SafetyUnavailableError, type CorrectionReason, type RecoveryWitness, type StateSafety } from '../../src/safety-records.ts';
 import { parseSessionBinding, parseSessionIndex, type AgentSessionIndex } from '../../src/session-records.ts';
 import { bytesHash, StorageConflictError, type ScopeStorage, type StoredDocument } from '../../src/storage.ts';
+import { journalEvent } from '../support/journal-event.ts';
 
 // These pre-existing authority controls assume resource admission and isolate
 // durable safety predicates. The capacity integration controls use the real
@@ -45,6 +47,29 @@ export function repair(changes: Partial<RepairOperation> = {}): RepairOperation 
   return parseOperation(parseStrictJson(Buffer.from(stringifyJson(value, 'state-event')), 'state-event'), scope) as RepairOperation;
 }
 
+export function deferredRepair(state: 'waitingReplacement' | 'pendingCleanup' | 'resolved' = 'waitingReplacement'): RepairOperation {
+  const original = journalEvent(1, { type: 'state.resync', coreRepairOperationId: owner.operationId, attemptRef: { operationId: owner.operationId, attemptOrdinal: 0 },
+    acceptance: { journalId: 'journal', eventId: '1'.padStart(32, '0'), generation } });
+  const carryHash = '7'.repeat(64);
+  const source = repair();
+  const accepted = state === 'waitingReplacement' ? null : { journalId: 'journal', eventId: '2'.padStart(32, '0'), sequence: 2, generation, acceptedAt: at };
+  return repair({ completedAt: state === 'resolved' ? at : null, outcome: state === 'resolved' ? 'completed' : null,
+    plan: { ...source.plan, correctionId: null, handoffs: [handoffFor(original)] },
+    recovery: { attempts: [{ publication: 'observed', selectedRecord: { logicalOutboxId: original.logicalOutboxId, recordSha256: original.recordSha256 },
+      journalEvent: { journalId: original.journalId, eventId: original.eventId, sequence: 1 } },
+    { publication: accepted === null ? 'due' : 'observed', selectedRecord: accepted === null ? null : { logicalOutboxId: 'd'.repeat(32) + '-2', recordSha256: 'e'.repeat(64) },
+      journalEvent: accepted === null ? null : { journalId: accepted.journalId, eventId: accepted.eventId, sequence: accepted.sequence } }],
+    activeEpisode: state === 'resolved' ? null : 0,
+    episodes: [{ ...source.recovery.episodes[0]!, replacementAttempt: 1, phase: state === 'waitingReplacement' ? 'publishing' : state === 'pendingCleanup' ? 'verifyingHistory' : 'completed',
+      acceptedRecovery: accepted, endedAt: state === 'resolved' ? at : null,
+      prerequisite: { kind: 'rewind', carry: { path: 'journal/recovery-event.json', sha256: carryHash }, carryRelease: { attemptRef: { operationId: source.operationId, attemptOrdinal: 1 } },
+        nextAction: state === 'resolved' ? 2 : 1, skippedRanges: [], actions: [
+          { kind: 'preserveRecovery', source: { root: 'scope', path: 'journal/events/0000000000000001.json', sha256: '8'.repeat(64), payloadBindingSha256: original.payloadBindingSha256 },
+            target: { path: 'journal/recovery-event.json', before: null, after: carryHash }, metadata: eventRewriteMetadata(original) },
+          ...(accepted === null ? [] : [{ kind: 'removeCarry' as const, target: { path: 'journal/recovery-event.json', before: carryHash, after: null } }]),
+        ] } }] } });
+}
+
 export function release(changes: Partial<ReleaseOperation> = {}): ReleaseOperation {
   const value: ReleaseOperation = { operationVersion: 1, operationId: `rl-${'3'.repeat(32)}`, scopeSha256: scope, kind: 'release', cause: 'release', compacted: false,
     startedAt: at, completedAt: at, outcome: 'completed', safety: { obligationId: '4'.repeat(32), phase: 'transferred', correctionId },
@@ -52,6 +77,18 @@ export function release(changes: Partial<ReleaseOperation> = {}): ReleaseOperati
       result: { owner: 'bridge', previousOwner: 'runtime', changed: true, baselineRemoved: true, abandonedCount: 0 },
       completedPhases: ['coreSwitched', 'cursorAdvanced', 'repairsAbandoned', 'dischargesPublished', 'complete'] }, ...changes };
   return parseOperation(parseStrictJson(Buffer.from(stringifyJson(value, 'state-event')), 'state-event'), scope) as ReleaseOperation;
+}
+
+export function carryTransfer(state: 'waitingReplacement' | 'resolved' = 'resolved') {
+  const source = deferredRepair();
+  const releaseRecord = release();
+  const predecessor = repair({ ...source, completedAt: at, outcome: 'abandonedByRelease', recovery: { ...source.recovery, activeEpisode: null,
+    episodes: [{ ...source.recovery.episodes[0]!, phase: 'abandonedByRelease', releaseOperationId: releaseRecord.operationId, endedAt: at }] } });
+  const replacement = deferredRepair(state);
+  const operationId = 'jr-' + '8'.repeat(32);
+  const successor = repair({ ...replacement, operationId, plan: { ...replacement.plan, inheritedRecovery: owner }, recovery: { ...replacement.recovery,
+    episodes: [{ ...replacement.recovery.episodes[0]!, prerequisite: { ...replacement.recovery.episodes[0]!.prerequisite!, carryRelease: { attemptRef: { operationId, attemptOrdinal: 1 } } } }] } });
+  return { predecessor, successor, releaseRecord, records: [predecessor, successor, releaseRecord].map(record => ({ record, sha256: 'b'.repeat(64) })) };
 }
 
 export function journal(highWater = 0, acked = 0): JournalSnapshot {

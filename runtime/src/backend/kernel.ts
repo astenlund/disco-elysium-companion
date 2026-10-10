@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { PathInspector } from '../admission.ts';
 import { capacityJournalFault, firstCapacityRefusal, type CapacityOwed } from '../capacity.ts';
 import { PayloadCodec, type CodecReservation } from '../codec.ts';
@@ -26,7 +28,7 @@ import { decideSettlement, eventSettlementBinding } from '../settlement.ts';
 import { ScopeStorage, type StoredDocument } from '../storage.ts';
 import type { BackendOptions, BackendStatus, ProviderIdentity } from './api.ts';
 import { ResourceAuthority } from './resources.ts';
-import { hasCarryAuthority, hasProviderAuthority } from './provider-authority.ts';
+import { deferredCarryAuthority, hasCarryAuthority, hasProviderAuthority, hasSafetyRecordAuthority } from './provider-authority.ts';
 import { mergeHandoff } from './handoffs.ts';
 import { allocateUniqueToken } from './tokens.ts';
 import { newestState } from './acquisition-policy.ts';
@@ -66,6 +68,8 @@ export class Kernel {
   sentMark = 0;
   closing = false;
   planRecovery!: (request: RepairRequest, deadline?: Deadline) => Promise<StoredOperation>;
+  authorizeDeferredCore: ((record: RepairOperation, deadline?: Deadline) => Promise<boolean>) | null = null;
+  private readonly repairWork = new AsyncLocalStorage<string | null>();
   private admission: { request: CoreRequest; token: string | null; operationId: string | null } | null = null;
   private readonly reportedDamage = new Set<string>();
   private adapterMismatch = false;
@@ -78,7 +82,7 @@ export class Kernel {
     this.sessions = new SessionStore(input.storage, { mutation: (action, deadline) => this.resources.sessionMutation(action, deadline),
       bind: action => this.resources.bind(action), prospectiveFailure: error => this.resources.prospectiveFailure(error) });
     this.status = { capacity: this.resources.capacity.current, consumer: 'unknown', freshness: { state: 'unknown', class: null, reason: null, lastGoodGeneratedAt: null, checkedAt: null },
-      operational: this.operational.current, stateSafety: { state: 'unavailable', correction: null }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 },
+      operational: this.operational.current, stateSafety: { state: 'unavailable', correction: null, carryRelease: 'unavailable' }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 },
       watcher: input.config.watcher.enabled ? 'stopped' : 'disabled', previousShutdownClean: false };
     this.resources.capacity.subscribe(() => this.emit());
     this.safetyStore = new SafetyStore({ storage: input.storage, bindingGenerations: deadline => this.bindingGenerations(deadline), suppressProvider: reason => this.options.onInvalidated?.(reason) });
@@ -89,6 +93,7 @@ export class Kernel {
         this.owned();
         const state = await this.safety(deadline);
         if (kind === 'acknowledge' || kind === 'sent') { requireControl(state.pendingCheck === null && await this.providerAuthority(state, deadline)); }
+        if (kind === 'append') { await this.requireDeferredWork(await this.operations.list(deadline), this.repairWork.getStore() ?? null, deadline); }
         requireControl(snapshot.header.status === 'valid');
       },
       eventIdAvailable: async (eventId, _, deadline) => !(await this.retainedEventIdentities(deadline)).has(eventId),
@@ -108,6 +113,13 @@ export class Kernel {
           const inventory = await this.operations.list(bounded);
           requireControl(inventory.invalid.length === 0 && !inventory.records.some(entry => !entry.record.compacted && entry.record.kind !== 'repair'
             && (entry.record.completedAt === null || pendingOperationSafety(entry.record))));
+          const deferred = await this.requireDeferredWork(inventory, admission.operationId, bounded);
+          if (deferred !== null && request.kind === 'publish') {
+            const plan = deferred.recovery.episodes[deferred.recovery.activeEpisode!]!.prerequisite!;
+            const attempt = plan.carryRelease!.attemptRef;
+            requireControl(request.repairOperationId === coreAttemptToken(attempt.operationId, attempt.attemptOrdinal));
+          }
+          if (deferred !== null) { requireControl(this.authorizeDeferredCore !== null && await this.authorizeDeferredCore(deferred, bounded)); }
         }
         if (admission.token !== null) { requireControl((await this.safety(bounded)).pendingCheck === admission.token); }
         else {
@@ -201,6 +213,24 @@ export class Kernel {
     return sha256;
   }
 
+  private async requireDeferredWork(inventory: OperationInventory, operationId: string | null, deadline?: Deadline): Promise<RepairOperation | null> {
+    const authority = deferredCarryAuthority(inventory);
+    requireControl(authority.state !== 'unavailable');
+    if (authority.owner === null) { return null; }
+    requireControl(authority.owner.operationId === operationId);
+    const record = requireRepair(inventory.records.find(entry => entry.record.operationId === operationId)!.record);
+    requireControl(record.recovery.activeEpisode === authority.owner.episodeOrdinal);
+    const episode = record.recovery.episodes[authority.owner.episodeOrdinal]!;
+    const plan = episode.prerequisite!;
+    const witness = (await this.safety(deadline)).recoveryWitness;
+    requireControl(witness?.phase === 'active' && witness.scopeSha256 === this.scope.bindingSha256 && witness.owner.operationId === record.operationId
+      && witness.owner.episodeOrdinal === authority.owner.episodeOrdinal && witness.owner.activationId === episode.activationId);
+    requireControl(plan.actions.slice(plan.nextAction).every(action => action.kind === 'removeCarry'));
+    const carry = await this.carryHash(deadline);
+    requireControl(carry === null || carry === authority.carrySha256);
+    return record;
+  }
+
   async providerAuthority(state: StateSafety, deadline?: Deadline, admitted?: OperationInventory): Promise<boolean> {
     const inventory = admitted ?? await this.operations.list(deadline);
     return hasProviderAuthority(state, inventory) && hasCarryAuthority(await this.carryHash(deadline), inventory);
@@ -219,33 +249,29 @@ export class Kernel {
     const capacityEpoch = this.resources.capacity.epoch;
     let safety: StoredDocument<StateSafety> | null = null;
     let operations: OperationInventory | null = null;
-    let stateSafety: BackendStatus['stateSafety'] = { state: 'unavailable', correction: null };
+    let stateSafety: BackendStatus['stateSafety'] = { state: 'unavailable', correction: null, carryRelease: 'unavailable' };
     let providerAllowed = false;
+    let carryDuty = false;
     let failure: unknown = null;
     try {
       safety = await this.safetyStore.read(deadline);
       if (safety.status !== 'valid') { return { safety, operations, stateSafety, providerAllowed, failure }; }
       const value = safety.value;
       const correction = value.correction === null ? null : { correctionId: value.correction.correctionId, reason: value.correction.reason };
-      stateSafety = { state: 'unavailable', correction };
+      stateSafety = { state: 'unavailable', correction, carryRelease: 'unavailable' };
       operations = await this.operations.list(deadline);
+      const deferred = deferredCarryAuthority(operations);
+      carryDuty = deferred.owner !== null;
       this.resources.capacity.observeOwed({ unfinishedOperations: operations.invalid.length === 0 ? operations.records.filter(entry => effectivelyUnfinished(entry.record)).length : null }, capacityEpoch);
-      const witness = value.recoveryWitness;
-      const owner = witness === null ? null : operations.records.find(entry => entry.record.operationId === witness.owner.operationId)?.record;
-      const missingWitnessOwner = witness !== null && (witness.phase === 'active' || witness.phase === 'awaitingDisclosure')
-        && (owner === undefined || owner === null || owner.compacted || owner.kind !== 'repair' || owner.recovery.episodes[witness.owner.episodeOrdinal]?.activationId !== witness.owner.activationId);
-      const missingCorrectionOwner = value.correction?.recoveryOperationId !== null && value.correction?.recoveryOperationId !== undefined
-        && !operations.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && entry.record.operationId === value.correction!.recoveryOperationId);
-      const unwitnessedRoot = witness === null && operations.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && entry.record.recovery.activeEpisode !== null);
-      if (operations.invalid.length === 0 && !missingWitnessOwner && !missingCorrectionOwner && !unwitnessedRoot && hasCarryAuthority(await this.carryHash(deadline), operations)) {
-        const recovering = value.pendingCheck !== null || correction !== null || value.recoveryWitness !== null || operations.records.some(item => pendingOperationSafety(item.record));
-        stateSafety = { state: recovering ? 'recovering' : 'ready', correction };
+      if (hasSafetyRecordAuthority(value, operations) && hasCarryAuthority(await this.carryHash(deadline), operations)) {
+        const recovering = value.pendingCheck !== null || correction !== null || value.recoveryWitness !== null || deferred.owner !== null || operations.records.some(item => pendingOperationSafety(item.record));
+        stateSafety = { state: recovering ? 'recovering' : 'ready', correction, carryRelease: deferred.state };
         providerAllowed = hasProviderAuthority(value, operations);
       }
-    } catch (error) { failure = error; stateSafety = { state: 'unavailable', correction: stateSafety.correction }; providerAllowed = false; }
+    } catch (error) { failure = error; stateSafety = { state: 'unavailable', correction: stateSafety.correction, carryRelease: 'unavailable' }; providerAllowed = false; }
     if (safety?.status === 'valid') {
       const value = safety.value;
-      const validatedDuty = value.pendingCheck !== null || value.correction !== null || operations?.records.some(entry => pendingOperationSafety(entry.record)) === true;
+      const validatedDuty = value.pendingCheck !== null || value.correction !== null || carryDuty || operations?.records.some(entry => pendingOperationSafety(entry.record)) === true;
       this.resources.capacity.observeOwed({ safetyObligation: stateSafety.state === 'unavailable' ? null : validatedDuty ? true : stateSafety.state === 'ready' ? false : null,
         historyDisclosure: stateSafety.state === 'unavailable' ? null : value.recoveryWitness !== null ? true : null }, capacityEpoch);
     }
@@ -270,6 +296,7 @@ export class Kernel {
     if (this.resources.assertReservation() === 'ordinary') {
       const failure = firstCapacityRefusal(this.resources.capacity.current); if (failure !== null) { throw failure; }
     }
+    if (request.kind !== 'consumer') { await this.requireDeferredWork(await this.operations.list(deadline), operationId, deadline); }
     this.resources.capacity.invalidateOwed();
     let token: string | null = null;
     let generation: string | null = null;
@@ -330,7 +357,7 @@ export class Kernel {
         await this.planRecovery({ cause: 'coreRejected', journal: snapshot }, workDeadline);
       }
       await accept?.(result);
-    }, deadline, null, () => workDeadline);
+    }, deadline, repair?.operationId ?? null, () => workDeadline);
   }
 
   private async handoffs(inventory: OperationInventory, deadline?: Deadline): Promise<readonly RetainedHandoff[]> {
@@ -350,18 +377,33 @@ export class Kernel {
   }
 
   async drain(deadline: Deadline, owningRepair: string | null = null): Promise<JournalSnapshot> {
+    return this.repairWork.run(owningRepair, () => this.drainOwned(deadline, owningRepair));
+  }
+
+  private async drainOwned(deadline: Deadline, owningRepair: string | null): Promise<JournalSnapshot> {
     this.owned();
     const operations = await this.operations.list(deadline);
     requireControl(operations.invalid.length === 0);
+    const deferred = deferredCarryAuthority(operations);
+    requireControl(deferred.state !== 'unavailable');
     const unfinished = operations.records.filter(item => !item.record.compacted && item.record.kind === 'repair' && effectivelyUnfinished(item.record));
     requireControl(unfinished.length <= 1);
+    const repair = owningRepair === null && unfinished.length > 0 ? requireRepair(unfinished[0]!.record) : null;
+    const episode = repair === null || repair.recovery.activeEpisode === null ? null : repair.recovery.episodes[repair.recovery.activeEpisode];
+    const repairFault = repair === null ? null : episode?.phase === 'recordRejected' ? 'recordRejected' : 'repairFailed';
+    const retainRepairFault = (): void => {
+      if (repairFault !== null && (this.journalObservation.fault === null || this.journalObservation.fault === 'repairFailed' || this.journalObservation.fault === 'recordRejected')) {
+        this.emit({ journal: { ...this.journalObservation, state: 'fault', fault: repairFault } });
+      }
+    };
+    if (deferred.owner !== null && deferred.owner.operationId !== owningRepair) { retainRepairFault(); return this.journal.read(deadline); }
     const mayAppend = unfinished.length === 0 || unfinished[0]!.record.operationId === owningRepair;
     const blockedPrerequisite = !mayAppend && unfinished.some(entry => {
       const repair = requireRepair(entry.record);
       const episode = repair.recovery.activeEpisode === null ? null : repair.recovery.episodes[repair.recovery.activeEpisode];
       return episode?.prerequisite !== null && episode?.prerequisite !== undefined && episode.prerequisite.nextAction < episode.prerequisite.actions.length;
     });
-    if (blockedPrerequisite) { return this.journal.read(deadline); }
+    if (blockedPrerequisite) { retainRepairFault(); return this.journal.read(deadline); }
     const handoffs = await this.handoffs(operations, deadline);
     const sources = new Set<string>();
     let pendingFault: string | null = this.adapterMismatch ? 'adapterMismatch' : null;
@@ -449,12 +491,13 @@ export class Kernel {
             await this.planRecovery({ cause: 'coreRejected', journal: transaction.snapshot(), rejectedEvent: current.metadata }, deadline);
             proceed = false;
           } else if (decision.kind === 'retry') { proceed = false; }
-        }, deadline);
+        }, deadline, owningRepair);
         if (!proceed) { break; }
       }
       return transaction.snapshot();
     }, deadline);
     if (neededRepair !== null) { await this.planRecovery(neededRepair, deadline); }
+    pendingFault ??= repairFault;
     this.emit({ journal: { state: pendingFault === null ? 'healthy' : 'fault', fault: pendingFault, unacknowledgedEvents: result.header.status === 'valid' && result.cursor.status === 'valid' ? result.header.value.highWaterSequence - result.cursor.value.lastAckedSequence : 0 } });
     return result;
   }

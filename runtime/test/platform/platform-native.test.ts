@@ -6,18 +6,21 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 import { DataRootUnavailableError, PathInspector } from '../../src/admission.ts';
+import type { RuntimeConfig } from '../../src/config.ts';
+import { Deadline } from '../../src/deadline.ts';
 import { takeInstanceGuard } from '../../src/guard.ts';
 import { parseStrictJson, stringifyJson } from '../../src/json.ts';
 import { ProcessSupervisor, readProcessIdentity, SupervisorError } from '../../src/process.ts';
 import { readScope, scopeComponents, type RuntimeScope } from '../../src/scope.ts';
 import { cleanupPublicationResidue } from '../../src/platform/publication-residue.ts';
-import { readRuntimeStatus } from '../../src/platform/status.ts';
+import { readAdmittedRuntimeStatus, readRuntimeStatus } from '../../src/platform/status.ts';
 import { reconcileWatcherOrphan } from '../../src/platform/watcher-supervisor.ts';
 import { companionFixture } from '../support/companion.ts';
+import { deferredRepair, repair } from '../backend/authority-fixtures.ts';
 
 const now = '2026-10-08T01:00:00.0000000Z';
 const game = 'platform-fixture';
-const config = { configVersion: 1, adapter: game, game, provider: { model: null, effort: null, questionOverride: null }, watcher: { enabled: false } };
+const config: RuntimeConfig = { configVersion: 1, adapter: game, game, provider: { model: null, effort: null, questionOverride: null }, watcher: { enabled: false } };
 const scripts = fileURLToPath(new URL('../../scripts/', import.meta.url));
 
 async function seedScope(root: string, inspector: PathInspector, principal = 'fixture-principal'): Promise<RuntimeScope> {
@@ -115,16 +118,27 @@ describe('native runtime platform', () => {
         await fs.writeFile(path.join(scope.dataRoot, 'state-safety.json'), stringifyJson({ stateSafetyVersion: 1, generation: '2'.repeat(32), pendingCheck: null, correction: null, recoveryWitness: null }));
         await fs.writeFile(path.join(scope.dataRoot, 'journal', 'journal.json'), stringifyJson({ journalVersion: 1, journalId: 'journal', createdAt: now, highWaterSequence: 0, historyVerified: false }));
         await fs.writeFile(path.join(scope.dataRoot, 'journal', 'cursor-agent-session.json'), stringifyJson({ cursorVersion: 1, journalId: 'journal', consumerId: 'agent-session', lastAckedSequence: 0, lastSentSequence: 0, lastAcceptedRevision: null, updatedAt: now }));
+        const deferredRecord = deferredRepair();
+        await fs.writeFile(path.join(scope.dataRoot, 'operations', deferredRecord.operationId + '.json'), stringifyJson({ ...deferredRecord, scopeSha256: scope.bindingSha256 }, 'state-event'));
+        const ordinaryRepair = repair();
+        for (let index = 1; index <= 19; index++) {
+          const operationId = `jr-${'f'.repeat(30)}${index.toString(16).padStart(2, '0')}`;
+          await fs.writeFile(path.join(scope.dataRoot, 'operations', `${operationId}.json`),
+            stringifyJson({ ...ordinaryRepair, operationId, scopeSha256: scope.bindingSha256 }, 'state-event'));
+        }
         const before = await snapshot(fixture.root);
-        const status = await readRuntimeStatus(fixture.root);
+        const status = await readAdmittedRuntimeStatus(scope, inspector, config, Deadline.after(120000));
         assert.equal(status.consistency, 'stable');
         assert.equal(status.initialized, true);
+        assert.equal(status.operations.records.length, 20);
         assert.equal(status.runtime.status, 'valid');
         if (status.runtime.status === 'valid') { assert.equal(status.runtime.value.cleanShutdown, false); }
-        assert.equal(status.journal.state, 'healthy');
+        assert.equal(status.journal.state, 'repairing');
         assert.equal(status.journal.historyVerified, false);
         assert.equal(status.journal.unacknowledgedEvents, 0);
-        assert.equal(status.stateSafety.state, 'ready');
+        assert.equal(status.stateSafety.state, 'unavailable');
+        assert.equal(status.stateSafety.carryRelease, 'unavailable');
+        assert.equal(status.operations.records[0]!.carryRelease, 'waitingReplacement');
         for (const key of ['consumer', 'freshness', 'operational', 'watcher', 'provider', 'windowRecovery', 'capacity'] as const) { assert.equal(status[key], 'unavailable'); }
         assert.deepEqual(await snapshot(fixture.root), before);
         const broken = 'jr-' + '3'.repeat(32) + '.json';

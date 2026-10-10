@@ -12,10 +12,46 @@ import { ControlDocumentError } from '../../src/control-values.ts';
 import { abandonRecovery } from '../../src/recovery-progress.ts';
 import type { RecoveryWitness, StateSafety } from '../../src/safety-records.ts';
 import type { SafetyProof } from '../../src/safety.ts';
-import { admittedCapacityFixture, at, authorityModel, correctionId, generation, journal, owner, release, repair, scope, witness } from './authority-fixtures.ts';
+import { admittedCapacityFixture, at, authorityModel, correctionId, deferredRepair, generation, journal, owner, release, repair, scope, witness } from './authority-fixtures.ts';
 
 describe('release obligation evidence', () => {
   const names = [eventFileName(2), eventFileName(1)];
+
+  it('refuses confirmed release for an abandoned but unresolved deferred carry', async () => {
+    const original = deferredRepair();
+    const abandoned = repair({ ...original, completedAt: at, outcome: 'abandonedByRelease', recovery: { ...original.recovery, activeEpisode: null,
+      episodes: [{ ...original.recovery.episodes[0]!, phase: 'abandonedByRelease', releaseOperationId: release().operationId, endedAt: at }] } });
+    const model = authorityModel();
+    model.memory.seed('operations/' + abandoned.operationId + '.json', abandoned);
+    const before = [...model.memory.files];
+    await assert.rejects(new ConsumerCoordinator(model.kernel).switch('bridge', false), error => error instanceof ReleaseRefusedError && error.details.includes('waitingReplacement'));
+    assert.deepEqual([...model.memory.files], before);
+  });
+
+  it('preserves the carry, binding and handoff across explicit abandon and re-hand-over', async () => {
+    const original = deferredRepair();
+    const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: witness });
+    model.memory.seed('operations/' + original.operationId + '.json', original);
+    const bytes = Buffer.from('Exact protected fixture bytes.');
+    model.memory.files.set('journal/recovery-event.json', bytes);
+    model.kernel.carryHash = async () => '7'.repeat(64);
+    let calls = 0;
+    model.kernel.core.consumer = async request => {
+      calls++;
+      return { success: true, value: { owner: request.owner, previousOwner: request.owner === 'bridge' ? 'runtime' : 'bridge', changed: true,
+        baselineRemoved: request.owner === 'bridge', abandonedCount: 0 } };
+    };
+    const consumer = new ConsumerCoordinator(model.kernel);
+    assert.equal((await consumer.switch('bridge', true)).success, true);
+    assert.equal((await consumer.switch('runtime', false)).success, true);
+    assert.equal(calls, 2);
+    assert.deepEqual(model.memory.files.get('journal/recovery-event.json'), bytes);
+    const retained = (await model.records()).find(record => record.operationId === original.operationId) as RepairOperation;
+    assert.equal(retained.recovery.activeEpisode, null);
+    assert.equal(retained.recovery.episodes[0]!.phase, 'abandonedByRelease');
+    assert.deepEqual(retained.recovery.episodes[0]!.prerequisite, original.recovery.episodes[0]!.prerequisite);
+    assert.deepEqual(retained.plan.handoffs, original.plan.handoffs);
+  });
 
   it('retains canonical filenames when payloads or the journal header cannot be admitted', () => {
     const damaged = { ...journal(2, 1), damaged: [{ status: 'invalid' as const, path: names[0]!, sha256: null }] };
@@ -124,7 +160,7 @@ describe('deciding authority controls', () => {
     const range = { journalId: 'journal', firstSequence: 1, lastSequence: 1, reason: 'cursorRecovery' as const, discharge: null };
     const source = repair();
     const active = repair({ cause: 'cursor', plan: { ...source.plan, cursorTo: 1, skippedRanges: [range] }, recovery: { ...source.recovery,
-      episodes: [{ ...source.recovery.episodes[0]!, prerequisite: { kind: 'cursor', actions: [], nextAction: 0, carry: null, skippedRanges: [range] } }] } });
+      episodes: [{ ...source.recovery.episodes[0]!, prerequisite: { kind: 'cursor', actions: [], nextAction: 0, carry: null, carryRelease: null, skippedRanges: [range] } }] } });
     const initial: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null,
       correction: { correctionId, reason: 'contextUncertain', recoveryOperationId: owner.operationId }, recoveryWitness: witness };
     const model = authorityModel(initial, { ...journal(1, 1), historicalGaps: [{ from: 1, to: 1 }] });

@@ -82,7 +82,7 @@ export class FakeBackend {
   binding: AgentSessionBinding | null = null;
   index: AgentSessionIndex | null = null;
   readonly status: BackendStatus = { consumer: 'owner', freshness: { state: 'fresh', class: null, reason: null, lastGoodGeneratedAt: timestamp, checkedAt: timestamp },
-    operational: { state: 'current', warnings: [] }, stateSafety: { state: 'ready', correction: null }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 }, capacity: initialCapacity(), watcher: 'disabled', previousShutdownClean: true };
+    operational: { state: 'current', warnings: [] }, stateSafety: { state: 'ready', correction: null, carryRelease: 'none' }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 }, capacity: initialCapacity(), watcher: 'disabled', previousShutdownClean: true };
   safetyValue: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null };
   unavailable = false;
   acquireWait: Promise<void> | null = null;

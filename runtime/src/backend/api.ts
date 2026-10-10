@@ -11,6 +11,7 @@ import type { BoundSession, SessionBindingProof, SessionStore } from '../session
 import type { Deadline } from '../deadline.ts';
 import type { PathInspector } from '../admission.ts';
 import type { ProcessSupervisor } from '../process.ts';
+import type { CarryReleaseStatus } from './provider-authority.ts';
 
 export type BackendCommand = { readonly kind: 'chat' | 'repair' } | { readonly kind: 'consumer'; readonly owner: 'runtime' | 'bridge'; readonly abandonUndelivered: boolean };
 
@@ -31,7 +32,7 @@ export interface BackendStatus {
   readonly consumer: 'owner' | 'notOwner' | 'unknown';
   readonly freshness: Freshness;
   readonly operational: OperationalStatus;
-  readonly stateSafety: { readonly state: 'ready' | 'recovering' | 'unavailable'; readonly correction: { readonly correctionId: string; readonly reason: CorrectionReason } | null };
+  readonly stateSafety: { readonly state: 'ready' | 'recovering' | 'unavailable'; readonly correction: { readonly correctionId: string; readonly reason: CorrectionReason } | null; readonly carryRelease: CarryReleaseStatus };
   readonly journal: { readonly state: 'healthy' | 'repairing' | 'fault'; readonly fault: string | null; readonly unacknowledgedEvents: number };
   readonly watcher: 'disabled' | 'running' | 'restarting' | 'stopped';
   readonly previousShutdownClean: boolean;

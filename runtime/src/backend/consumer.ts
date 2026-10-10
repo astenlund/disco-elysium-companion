@@ -11,7 +11,7 @@ import { sameRecoveryOwner, type RecoveryWitness } from '../safety-records.ts';
 import { Kernel } from './kernel.ts';
 import { releaseJournalEvidence, releaseNamesOwner, releaseNamesWitness } from './release-authority.ts';
 import type { BackendCommand, BackendStartup } from './api.ts';
-import { hasCarryAuthority } from './provider-authority.ts';
+import { deferredCarryAuthority, hasCarryAuthority } from './provider-authority.ts';
 
 export class ReleaseRefusedError extends Error {
   override readonly name = 'ReleaseRefusedError';
@@ -119,10 +119,13 @@ export class ConsumerCoordinator {
     if (header === null || cursor === null || snapshot?.fault !== null || snapshot?.damaged.length !== 0) { details.push('journalUnverified'); }
     if (header !== null && !header.historyVerified) { details.push('historyUnverified'); }
     if (abandonedSequences.length > 0) { details.push(`${abandonedSequences.length} unacknowledged events`); }
+    const deferred = inventory === null ? null : deferredCarryAuthority(inventory);
+    if (deferred?.state === 'unavailable') { details.push('carryReleaseUnavailable'); }
+    if (deferred?.owner != null) { details.push(deferred.state); }
     const unfinishedRepairs = (inventory?.records ?? []).flatMap(entry => {
-      if (entry.record.compacted || entry.record.kind !== 'repair' || !effectivelyUnfinished(entry.record)) { return []; }
+      if (entry.record.compacted || entry.record.kind !== 'repair' || !effectivelyUnfinished(entry.record) && deferred?.owner?.operationId !== entry.record.operationId) { return []; }
       details.push(entry.record.operationId);
-      const ordinal = entry.record.recovery.activeEpisode;
+      const ordinal = entry.record.recovery.activeEpisode ?? (deferred?.owner?.operationId === entry.record.operationId ? deferred.owner.episodeOrdinal : null);
       for (const event of entry.record.plan.affected) { if (!abandonedSequences.includes(event.sequence)) { abandonedSequences.push(event.sequence); } }
       return [{ operationId: entry.record.operationId, episodeOrdinal: ordinal, activationId: ordinal === null ? null : entry.record.recovery.episodes[ordinal]!.activationId }];
     });

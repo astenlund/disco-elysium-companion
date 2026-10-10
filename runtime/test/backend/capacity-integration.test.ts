@@ -293,7 +293,7 @@ describe('capacity rewind result evidence', () => {
       target: { path: 'quarantine/' + eventFileName(sequence) + '.' + 'f'.repeat(32) + '.quarantined', before: null, after: String(sequence).repeat(64) } }));
     return repair({ cause: 'capacity', plan: { ...base.plan, lastGoodSequence: 4, affected: events.map(event => ({ sequence: event.sequence, eventId: event.eventId, fileSha256: String(event.sequence).repeat(64) })),
       handoffs: events.map(event => handoffFor(event, event.sequence === 6 ? 'unverified' : 'replayable')) },
-      recovery: { ...base.recovery, episodes: [{ ...base.recovery.episodes[0]!, prerequisite: { kind: 'rewind', nextAction: 0, carry: null, skippedRanges: [], actions: [...actions,
+      recovery: { ...base.recovery, episodes: [{ ...base.recovery.episodes[0]!, prerequisite: { kind: 'rewind', nextAction: 0, carry: null, carryRelease: null, skippedRanges: [], actions: [...actions,
         { kind: 'publishCursor', target: { path: 'journal/cursor-agent-session.json', before: old.cursor.sha256, after: bytesHash(Buffer.from(stringifyJson(cursor))) }, value: cursor },
         { kind: 'raiseHighWater', target: { path: 'journal/journal.json', before: old.header.sha256, after: bytesHash(Buffer.from(stringifyJson(header))) }, value: header }] } }] } });
   }

@@ -156,7 +156,7 @@ export class CoordinatorBackend implements RuntimeBackend {
       }
       try { await this.retention(); } catch (error) { failed = true; this.recordFailure(error); }
       if (failed) { k.emit({ freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: k.status.journal.fault ?? k.status.freshness.reason ?? 'journalUnavailable' } }); }
-      try { await k.observeStatus(); } catch { k.emit({ stateSafety: { state: 'unavailable', correction: null } }); }
+      try { await k.observeStatus(); } catch { k.emit({ stateSafety: { state: 'unavailable', correction: null, carryRelease: 'unavailable' } }); }
       if (command.kind === 'chat') { await this.watcher.start(); }
       let complete = !failed;
       if (command.kind === 'repair') {
