@@ -27,11 +27,11 @@ Run the entry point as `node runtime/src/cli.ts <command>` from the companion ch
 
 The consumer and repair commands mutate state. They are not part of the real-root verification performed for this dark delivery. Installing the runtime or reading status does not transfer consumption.
 
-The text client accepts one question at a time. `/think <question>` selects the configured per-question override; `/new` requests a new provider session; `/status` displays live status; `/quit` shuts down. Dialogs are answered within that same client. The runtime never automatically resubmits a failed player message.
+The text client accepts one question at a time. `/think <question>` selects the configured per-question override; `/new` requests a new provider session; `/status` displays live status; `/quit` shuts down. Dialogs are answered within that same client. Attach, live changes and `/status` show operational warnings; a reaper discovery-limit warning names its `tmp` or `state` root and the stop, reduce and rerun remedy. The runtime never automatically resubmits a failed player message.
 
 ## State and recovery
 
-The core owns `state/`, its consumer marker and durable outbox. Runtime-owned data lives under `runtime-data/`, partitioned by game and Windows principal. A process-lifetime guard excludes another writer for the same scope. Positive core acceptance is required before state is sent, and successful delivery acknowledgement advances the runtime cursor.
+The core owns `state/`, its consumer marker and durable outbox. Runtime-owned data lives under `runtime-data/`, partitioned by game and Windows principal. A process-lifetime guard excludes another writer for the same scope. Positive core acceptance is required before state is sent. A successful provider turn emits `turn.completed` before durable delivery acknowledgement advances the runtime cursor. The turn remains occupied while acknowledgement finishes; interruption after completion reports `noTurnInProgress`, and shutdown waits for that finalization. If acknowledgement fails, unacknowledged delivery remains available for replay.
 
 Missing or uncertain authority fails closed. A pending settlement can produce a disclosure-only context for that interaction; later settlement helps a later interaction. Context invalidation survives restart and prevents reuse of provider history from an older generation. A successful repair alone does not clear the correction obligation.
 
@@ -42,3 +42,5 @@ The provider's default-profile transcript/configuration persistence is separate 
 `npm --prefix runtime run typecheck` checks the TypeScript sources and tests. `npm --prefix runtime test` runs the Node test groups sequentially using private fixtures; native integration checks can take substantial time. The `runtime/test/Test-*.ps1` scripts exercise the native codecs, publication and process boundaries. The resource inventory fixture is under `runtime/test/resource-lifecycle/`.
 
 The live provider probes under `runtime/test/live/` make real requests using the configured provider and default profile. They are separate from the ordinary test command. Their outcomes do not establish game cutover, complete file-tool isolation, or the complete provider auxiliary-write footprint.
+
+The [runtime timing record](../.nightshift/reports/runtime-timing-verification.md) distinguishes private integration and steady-state measurements from startup costs and unresolved acceptance work.

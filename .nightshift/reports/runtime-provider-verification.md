@@ -48,4 +48,4 @@ A separate raw-SDK probe on 2026-10-08 UTC (2026-10-09 local time) used SDK 0.3.
 
 The successful result is `.nightshift/runs/reviews/b5092a7d-3149-420c-8b08-da4c23bf3e04/probes/f6d5bd88-23e8-40e1-97ae-f1f9a588e276/result.json`, exit 0, unchanged canonical inputs and no lingering descendants. The preceding probe `b17f3431/cd341d0e-a996-4aae-b647-61f3f742e205` failed in SDK native-binary resolution before constructing a provider transport; it supplied no model-restoration evidence. The corrected probe supplied the missing native package, verified its hash and added a direct predecessor-exit check. Neither probe audits the whole provider profile or supplies a game-cutover claim.
 
-Runtime-owned timing and remaining interaction/restart verification are recorded separately in [runtime timing evidence](runtime-timing-verification.md).
+Runtime-owned timing, completed private delivery and restart checks, and remaining steady-state acceptance are recorded separately in [runtime timing evidence](runtime-timing-verification.md).
