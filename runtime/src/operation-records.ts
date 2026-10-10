@@ -2,7 +2,7 @@ import { controlChoice, controlFields, controlHash, controlInt64, controlInteger
 import { logicalOutboxSequence, parseAcceptance, parseAttemptReference, type Acceptance, type AttemptReference } from './journal-records.ts';
 import type { ControlInt64, JsonValue } from './json.ts';
 import { outboxRecordSequence } from './outbox-name.ts';
-import { parsePrerequisite, type RecoveryPrerequisite } from './recovery-manifest.ts';
+import { carryReleaseResolved, parsePrerequisite, type RecoveryPrerequisite } from './recovery-manifest.ts';
 import { parseSkippedRange, type SkippedRange } from './recovery-provenance.ts';
 import { parseRecoveryWitness, type RecoveryOwner, type RecoveryWitness } from './safety-records.ts';
 
@@ -253,6 +253,23 @@ export function parseOperation(value: JsonValue, scopeSha256: string): Operation
     const recovery = parseRecovery(object['recovery'], startedAt);
     requireControl(completedAt !== null || recovery.activeEpisode !== null);
     for (const handoff of plan.handoffs) { if (handoff.attemptRef?.operationId === id) { requireControl(handoff.attemptRef.attemptOrdinal < recovery.attempts.length); } }
+    for (const [index, episode] of recovery.episodes.entries()) {
+      const prerequisite = episode.prerequisite;
+      if (prerequisite?.carryRelease == null) { continue; }
+      const bound = prerequisite.carryRelease.attemptRef;
+      requireControl(bound.operationId === id ? bound.attemptOrdinal < recovery.attempts.length : plan.inheritedRecovery?.operationId === bound.operationId);
+      const preserved = prerequisite.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === prerequisite.carry?.sha256);
+      requireControl(preserved?.kind === 'preserveRecovery');
+      requireControl(plan.handoffs.some(handoff => handoff.logicalOutboxId === preserved.metadata.logicalOutboxId
+        && handoff.recordSha256 === preserved.metadata.recordSha256 && handoff.payloadBindingSha256 === preserved.source.payloadBindingSha256
+        && handoff.journalId === (preserved.metadata.acceptance?.journalId ?? preserved.metadata.journalId)
+        && handoff.eventId === (preserved.metadata.acceptance?.eventId ?? preserved.metadata.eventId)
+        && handoff.coreRepairOperationId === preserved.metadata.coreRepairOperationId
+        && (preserved.metadata.attemptRef === null || handoff.attemptRef?.operationId === preserved.metadata.attemptRef.operationId
+          && handoff.attemptRef.attemptOrdinal === preserved.metadata.attemptRef.attemptOrdinal)));
+      requireControl(episode.phase !== 'completed' || carryReleaseResolved(prerequisite));
+      requireControl(episode.phase !== 'recordRejected' || carryReleaseResolved(prerequisite) || index === recovery.activeEpisode && episode.endedAt === null);
+    }
     return Object.freeze({ ...base, kind, cause: cause as RepairCause, compacted: false, plan, recovery });
   }
   controlFields(object, [...baseFields, 'plan', 'safety']);
@@ -293,8 +310,15 @@ export function parseOperation(value: JsonValue, scopeSha256: string): Operation
   return Object.freeze({ ...base, kind, cause: 'release', compacted: false, safety, plan: { mode, abandonedSequences, journalId, skippedRanges: controlList(plan['skippedRanges'], parseSkippedRange), unfinishedRepairs, witness, witnessUnavailable: plan['witnessUnavailable'], result, completedPhases } });
 }
 
+export function operationHasUnresolvedCarryRelease(operation: OperationRecord): boolean {
+  return !operation.compacted && operation.kind === 'repair' && operation.recovery.episodes.some(episode => episode.phase !== 'transferred'
+    && episode.prerequisite !== null && !carryReleaseResolved(episode.prerequisite));
+}
+
 export function effectivelyUnfinished(operation: OperationRecord, dependentRecoveryUnavailable = false): boolean {
-  return dependentRecoveryUnavailable || operation.completedAt === null || !operation.compacted && operation.kind === 'repair' && operation.recovery.activeEpisode !== null;
+  return dependentRecoveryUnavailable || operation.completedAt === null || !operation.compacted && operation.kind === 'repair'
+    && (operation.recovery.activeEpisode !== null || operation.recovery.episodes.some(episode => episode.phase !== 'transferred' && episode.phase !== 'abandonedByRelease'
+      && episode.prerequisite !== null && !carryReleaseResolved(episode.prerequisite)));
 }
 
 export function pendingOperationSafety(operation: OperationRecord): boolean {

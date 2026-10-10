@@ -1,5 +1,5 @@
 import { controlChoice, controlFields, controlHash, controlInteger, controlList, controlNullable, controlObject, requireControl } from './control-values.ts';
-import { eventFileName, parseEventMetadata, parseJournalCursor, parseJournalHeader, type EventMetadata, type JournalCursor, type JournalHeader } from './journal-records.ts';
+import { eventFileName, parseAttemptReference, parseEventMetadata, parseJournalCursor, parseJournalHeader, type AttemptReference, type EventMetadata, type JournalCursor, type JournalHeader } from './journal-records.ts';
 import { parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 import { outboxRecordSequence } from './outbox-name.ts';
 import { parseSkippedRange, type SkippedRange } from './recovery-provenance.ts';
@@ -17,6 +17,7 @@ export interface RecoveryPrerequisite {
   readonly actions: readonly RecoveryAction[];
   readonly nextAction: number;
   readonly carry: { readonly path: 'journal/recovery-event.json'; readonly sha256: string } | null;
+  readonly carryRelease: { readonly attemptRef: AttemptReference } | null;
   readonly skippedRanges: readonly SkippedRange[];
 }
 
@@ -84,7 +85,7 @@ export function parseRecoveryAction(value: JsonValue): RecoveryAction {
 }
 
 export function parsePrerequisite(value: JsonValue): RecoveryPrerequisite {
-  const object = controlFields(value, ['kind', 'actions', 'nextAction', 'carry', 'skippedRanges']);
+  const object = controlFields(value, ['kind', 'actions', 'nextAction', 'carry', 'carryRelease', 'skippedRanges']);
   const kind = controlChoice(object['kind'], ['header', 'cursor', 'gap', 'rewind']);
   const actions = controlList(object['actions'], parseRecoveryAction);
   const nextAction = controlInteger(object['nextAction'], 0, actions.length);
@@ -94,18 +95,47 @@ export function parsePrerequisite(value: JsonValue): RecoveryPrerequisite {
     return Object.freeze({ path: 'journal/recovery-event.json' as const, sha256: controlHash(slot['sha256']) });
   });
   const skippedRanges = controlList(object['skippedRanges'], parseSkippedRange);
+  const carryRelease = controlNullable(object['carryRelease'], value => {
+    const release = controlFields(value, ['attemptRef']);
+    const attemptRef = parseAttemptReference(release['attemptRef']);
+    requireControl(attemptRef !== null);
+    return Object.freeze({ attemptRef });
+  });
+  requireControl(carryRelease === null || carry !== null && actions.some(action => action.kind === 'preserveRecovery'
+    && action.target.after === carry.sha256 && action.metadata.type === 'state.resync'));
   const latest = new Map<string, string | null>();
+  let deferredCarryRemoved = false;
   for (const entry of actions) {
     const changes = entry.kind === 'quarantine' ? [entry.source, entry.target] : [entry.target];
+    requireControl(!deferredCarryRemoved || !changes.some(change => change.path === 'journal/recovery-event.json')
+      && !((entry.kind === 'preserveRecovery' || entry.kind === 'appendRecovery') && entry.source.root === 'scope' && entry.source.path === 'journal/recovery-event.json'));
     for (const change of changes) {
       requireControl(!latest.has(change.path) || latest.get(change.path) === change.before);
       latest.set(change.path, change.after);
     }
     if (entry.kind === 'preserveRecovery') { requireControl(carry !== null && entry.target.after === carry.sha256); }
-    if (entry.kind === 'removeCarry') { requireControl(carry !== null && entry.target.before === carry.sha256); }
+    if (entry.kind === 'removeCarry') {
+      requireControl(carry !== null && entry.target.before === carry.sha256);
+      deferredCarryRemoved = carryRelease !== null;
+    }
     if (entry.kind === 'appendRecovery' && entry.source.root === 'scope' && entry.source.path === 'journal/recovery-event.json') { requireControl(carry !== null && entry.source.sha256 === carry.sha256); }
   }
-  return Object.freeze({ kind, actions, nextAction, carry, skippedRanges });
+  return Object.freeze({ kind, actions, nextAction, carry, carryRelease, skippedRanges });
+}
+
+export function carryReleaseResolved(plan: RecoveryPrerequisite): boolean {
+  const state = carryReleaseState(plan);
+  return state === 'none' || state === 'resolved';
+}
+
+export function carryReleaseRemovalIndex(plan: RecoveryPrerequisite): number {
+  return plan.carry === null ? -1 : plan.actions.findIndex(action => action.kind === 'removeCarry' && action.target.before === plan.carry!.sha256);
+}
+
+export function carryReleaseState(plan: RecoveryPrerequisite | null): 'none' | 'waitingReplacement' | 'pendingCleanup' | 'resolved' {
+  if (plan?.carryRelease == null) { return 'none'; }
+  const removal = carryReleaseRemovalIndex(plan);
+  return removal < 0 ? 'waitingReplacement' : removal < plan.nextAction ? 'resolved' : 'pendingCleanup';
 }
 
 export type ManifestObservation = { readonly status: 'readable'; readonly sha256: string | null } | { readonly status: 'unavailable' };

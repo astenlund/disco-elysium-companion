@@ -2,6 +2,7 @@ import type { Deadline } from './deadline.ts';
 import { controlHash, requireControl } from './control-values.ts';
 import { parseStrictJson, stringifyJson, stringifyProspectiveJson, type ProspectiveJsonFailure } from './json.ts';
 import { effectivelyUnfinished, parseOperation, pendingOperationSafety, type CompactOperation, type FullOperation, type OperationRecord, type RepairOperation } from './operation-records.ts';
+import { carryReleaseResolved } from './recovery-manifest.ts';
 import { isRepairOperationId } from './safety-records.ts';
 import { ScopeStorage, type StoredDocument } from './storage.ts';
 import { SerialQueue } from './serial.ts';
@@ -62,6 +63,17 @@ export function validateOperationTransition(previous: FullOperation, next: FullO
     requireControl(updated.activationId === episode.activationId && updated.trigger === episode.trigger && updated.startedAt === episode.startedAt && updated.attemptAtStart === episode.attemptAtStart);
     if (episode.replacementAttempt !== null) { requireControl(updated.replacementAttempt === episode.replacementAttempt); }
     if (episode.endedAt !== null) { requireControl(equal(episode, updated)); }
+    const prerequisite = episode.prerequisite;
+    if (episode.endedAt === null && prerequisite?.carryRelease != null && !carryReleaseResolved(prerequisite)) {
+      const destination = updated.phase === 'transferred' ? next.recovery.episodes[updated.successorEpisode!]! : updated;
+      const carried = destination.prerequisite;
+      requireControl(carried?.carryRelease != null && equal(carried.carry, prerequisite.carry));
+      if (!equal(carried.carryRelease, prerequisite.carryRelease)) {
+        const target = carried.carryRelease.attemptRef;
+        requireControl(target.operationId === next.operationId && target.attemptOrdinal >= previous.recovery.attempts.length
+          && destination.replacementAttempt === target.attemptOrdinal);
+      }
+    }
   }
   for (const range of previous.plan.skippedRanges) {
     requireControl(next.plan.skippedRanges.some(item => item.journalId === range.journalId && item.firstSequence === range.firstSequence && item.lastSequence === range.lastSequence && item.reason === range.reason && (range.discharge === null || equal(range.discharge, item.discharge))));
