@@ -333,8 +333,7 @@ export class Kernel {
     }, deadline, null, () => workDeadline);
   }
 
-  async handoffs(deadline?: Deadline): Promise<readonly RetainedHandoff[]> {
-    const inventory = await this.operations.list(deadline);
+  private async handoffs(inventory: OperationInventory, deadline?: Deadline): Promise<readonly RetainedHandoff[]> {
     if (inventory.invalid.length > 0) { throw new SafetyUnavailableError('Operation handoff authority is damaged.'); }
     const generation = (await this.safety(deadline)).generation;
     const values = new Map<string, RetainedHandoff>();
@@ -362,7 +361,7 @@ export class Kernel {
       return episode?.prerequisite !== null && episode?.prerequisite !== undefined && episode.prerequisite.nextAction < episode.prerequisite.actions.length;
     });
     if (blockedPrerequisite) { return this.journal.read(deadline); }
-    const handoffs = await this.handoffs(deadline);
+    const handoffs = await this.handoffs(operations, deadline);
     const sources = new Set<string>();
     let pendingFault: string | null = this.adapterMismatch ? 'adapterMismatch' : null;
     let neededRepair: RepairRequest | null = null;

@@ -3,8 +3,7 @@ import test from 'node:test';
 
 import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import { Deadline } from '../../src/deadline.ts';
-import type { JournalTransaction } from '../../src/journal.ts';
-import { authorityModel } from './authority-fixtures.ts';
+import { authorityModel, stubJournalTransaction } from './authority-fixtures.ts';
 
 const rejected = { status: 'invalid' as const, name: 'event-0000000000000001.json', sha256: 'e'.repeat(64) };
 
@@ -25,10 +24,7 @@ test('drain routes an invalid legal-name record into a durable repair plan', asy
   const model = authorityModel();
   new RecoveryCoordinator(model.kernel);
   const snapshot = await model.kernel.journal.read();
-  const unexpected = async (): Promise<never> => { throw new Error('Invalid-first-record drain wrote an unexpected journal transition.'); };
-  const transaction: JournalTransaction = { snapshot: () => structuredClone(snapshot), recoverHighWater: async () => structuredClone(snapshot),
-    append: unexpected, rewrite: unexpected, acknowledge: unexpected, markSent: unexpected };
-  model.kernel.journal.transact = (async action => action(transaction)) as typeof model.kernel.journal.transact;
+  stubJournalTransaction(model.kernel, snapshot);
   model.kernel.outbox.list = async () => [rejected.name];
   model.kernel.outbox.read = async () => rejected;
 

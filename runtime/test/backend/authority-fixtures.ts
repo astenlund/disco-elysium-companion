@@ -9,7 +9,7 @@ import type { Deadline } from '../../src/deadline.ts';
 import { parseJournalCursor, parseJournalHeader } from '../../src/journal-records.ts';
 import { parseStrictJson, stringifyJson, StrictJsonError, type JsonProfile, type JsonValue } from '../../src/json.ts';
 import { parseOperation, type OperationRecord, type RepairOperation, type ReleaseOperation } from '../../src/operation-records.ts';
-import type { JournalSnapshot } from '../../src/journal.ts';
+import type { JournalSnapshot, JournalTransaction } from '../../src/journal.ts';
 import { parseStateSafety, SafetyUnavailableError, type CorrectionReason, type RecoveryWitness, type StateSafety } from '../../src/safety-records.ts';
 import { parseSessionBinding, parseSessionIndex, type AgentSessionIndex } from '../../src/session-records.ts';
 import { bytesHash, StorageConflictError, type ScopeStorage, type StoredDocument } from '../../src/storage.ts';
@@ -58,6 +58,13 @@ export function journal(highWater = 0, acked = 0): JournalSnapshot {
   return { header: { status: 'valid', sha256: 'd'.repeat(64), value: { journalVersion: 1, journalId: 'journal', createdAt: at, highWaterSequence: highWater, historyVerified: true } },
     cursor: { status: 'valid', sha256: 'e'.repeat(64), value: { cursorVersion: 1, journalId: 'journal', consumerId: 'agent-session', lastAckedSequence: acked,
       lastSentSequence: acked, lastAcceptedRevision: null, updatedAt: at } }, events: new Map(), damaged: [], historicalGaps: [], fault: null, firstBadSequence: null, unrecordedEvent: null };
+}
+
+export function stubJournalTransaction(kernel: Kernel, snapshot: JournalSnapshot): void {
+  const unexpected = async (): Promise<never> => { throw new Error('A read-only journal fixture reached a write.'); };
+  const transaction: JournalTransaction = { snapshot: () => structuredClone(snapshot), recoverHighWater: async () => structuredClone(snapshot),
+    append: unexpected, rewrite: unexpected, acknowledge: unexpected, markSent: unexpected };
+  kernel.journal.transact = (async action => action(transaction)) as typeof kernel.journal.transact;
 }
 
 // These fixtures model admitted storage and validated core observations. They use
