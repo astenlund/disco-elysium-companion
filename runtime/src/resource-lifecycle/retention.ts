@@ -9,7 +9,7 @@ import { EventReader } from '../event-reader.ts';
 import type { Journal } from '../journal.ts';
 import { eventRewriteMetadata, type EventDescription } from '../journal-records.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson } from '../json.ts';
-import { effectivelyUnfinished, operationHasUnresolvedCarryRelease, pendingOperationSafety } from '../operation-records.ts';
+import { effectivelyUnfinished, operationHasUnresolvedCarryRelease, pendingOperationSafety, type RepairOperation } from '../operation-records.ts';
 import type { OperationStore, StoredOperation } from '../operations.ts';
 import type { OutboxReader } from '../outbox.ts';
 import { inferMissingAcknowledgement, rangeResolutionTime, type ProvenanceInventory, type SkippedRange } from '../recovery-provenance.ts';
@@ -64,12 +64,13 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
   const unresolvedIdentities = new Set<string>();
   const unresolvedEvents = new Set<string>();
   const rejectedIdentities = new Set<string>();
-  const rangeMap = new Map<string, { range: SkippedRange; owners: Set<string> }>();
-  const addRange = (range: SkippedRange, owner: string): void => {
+  const rangeMap = new Map<string, { range: SkippedRange; owners: Set<string>; claims: { range: SkippedRange; owner: string; source: 'plan' | 'prerequisite' }[] }>();
+  const addRange = (range: SkippedRange, owner: string, source: 'plan' | 'prerequisite'): void => {
     const key = `${range.journalId}:${range.firstSequence}:${range.lastSequence}:${range.reason}`;
     const prior = rangeMap.get(key);
-    if (prior === undefined) { rangeMap.set(key, { range, owners: new Set([owner]) }); return; }
+    if (prior === undefined) { rangeMap.set(key, { range, owners: new Set([owner]), claims: [{ range, owner, source }] }); return; }
     prior.owners.add(owner);
+    prior.claims.push({ range, owner, source });
     if (prior.range.discharge === null && range.discharge !== null) { prior.range = range; }
     else if (prior.range.discharge !== null && range.discharge !== null) {
       requireControl(prior.range.discharge.kind === range.discharge.kind && prior.range.discharge.operationId === range.discharge.operationId
@@ -92,7 +93,7 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
     if (record.kind !== 'repair') {
       if (record.safety.phase === 'transferred' && record.safety.correctionId === safety.correction?.correctionId) { protectedOperations.add(record.operationId); }
       if (record.kind === 'release') {
-        for (const range of record.plan.skippedRanges) { addRange(range, record.operationId); }
+        for (const range of record.plan.skippedRanges) { addRange(range, record.operationId, 'plan'); }
         if (effectivelyUnfinished(record)) {
           for (const root of record.plan.unfinishedRepairs) { protectedOperations.add(root.operationId); }
           if (record.plan.witness !== null) {
@@ -111,8 +112,8 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
           || record.recovery.attempts.some(attempt => attempt.journalEvent !== null && sameEvent(attempt.journalEvent, event))) { unresolvedEvents.add(`${event.journalId}:${event.eventId}`); }
       }
     }
-    for (const range of record.plan.skippedRanges) { addRange(range, record.operationId); }
-    for (const episode of record.recovery.episodes) { for (const range of episode.prerequisite?.skippedRanges ?? []) { addRange(range, record.operationId); } }
+    for (const range of record.plan.skippedRanges) { addRange(range, record.operationId, 'plan'); }
+    for (const episode of record.recovery.episodes) { for (const range of episode.prerequisite?.skippedRanges ?? []) { addRange(range, record.operationId, 'prerequisite'); } }
     const obligations = record.recovery.episodes.filter((episode, index) => index === record.recovery.activeEpisode
       || episode.phase !== 'transferred' && episode.prerequisite !== null && !carryReleaseResolved(episode.prerequisite));
     for (const episode of obligations) {
@@ -143,8 +144,28 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
   for (const event of events) {
     if (event.attemptRef !== null) { protectedOperations.add(event.attemptRef.operationId); }
   }
-  const ranges = [...rangeMap.values()].map(entry => entry.range);
-  for (const { range, owners } of rangeMap.values()) {
+  const interruptedProof = (owner: RepairOperation, proof: SkippedRange['discharge'], range: SkippedRange, disclosed: EventDescription,
+    claims: readonly { range: SkippedRange; owner: string; source: 'plan' | 'prerequisite' }[]): boolean => {
+    const witness = safety.recoveryWitness;
+    if (proof?.kind !== 'recoveryAcknowledged' || proof.episodeOrdinal === null || witness?.phase !== 'awaitingDisclosure'
+      || witness.owner.operationId !== owner.operationId || witness.owner.episodeOrdinal !== proof.episodeOrdinal
+      || witness.scopeSha256 !== owner.scopeSha256 || witness.disclosure === null || witness.disclosure.generation !== safety.generation
+      || disclosed.acknowledgedAt === null || disclosed.acknowledgedAt !== proof.at || input.carryPresent) { return false; }
+    const sameProof = (candidate: SkippedRange['discharge']): boolean => candidate?.kind === proof.kind && candidate.operationId === proof.operationId
+      && candidate.episodeOrdinal === proof.episodeOrdinal && candidate.at === proof.at;
+    if (!claims.some(claim => claim.source === 'plan' && claim.owner !== owner.operationId && sameProof(claim.range.discharge))
+      || claims.some(claim => claim.range.discharge !== null && !sameProof(claim.range.discharge))) { return false; }
+    const episode = owner.recovery.episodes[proof.episodeOrdinal];
+    if (episode?.activationId !== witness.owner.activationId
+      || !matchesRecoveryDisclosure(owner, proof.episodeOrdinal, disclosed, witness.disclosure, safety.generation)
+      || !owner.plan.skippedRanges.some(candidate => candidate.journalId === range.journalId && candidate.reason === range.reason
+        && candidate.firstSequence <= range.firstSequence && candidate.lastSequence >= range.lastSequence && candidate.discharge === null)) { return false; }
+    const inventory = { records: operations, invalid: [], handoffCount: operations.reduce((sum, entry) => sum + (!entry.record.compacted && entry.record.kind === 'repair' ? entry.record.plan.handoffs.length : 0), 0),
+      fullTerminalCount: operations.filter(entry => !entry.record.compacted && entry.record.completedAt !== null).length };
+    return hasProviderAuthority(safety, inventory);
+  };
+  const partialRanges = new Set<string>();
+  for (const [key, { range, owners, claims }] of rangeMap) {
     const affected = events.filter(event => event.journalId === range.journalId && event.sequence >= range.firstSequence && event.sequence <= range.lastSequence);
     const proof = range.discharge;
     if (proof === null) { for (const owner of owners) { protectedOperations.add(owner); } continue; }
@@ -162,11 +183,19 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
       requireControl(episode?.phase === 'completed' && checkpoint !== null && checkpoint !== undefined);
       const disclosed = eventById.get(`${checkpoint.journalId}:${checkpoint.eventId}`);
       requireControl(disclosed !== undefined && disclosed.sequence === checkpoint.sequence && disclosed.acknowledgedAt !== null && disclosed.acceptance !== null && disclosed.settlement !== 'pending');
-      requireControl(owner.plan.skippedRanges.some(candidate => candidate.journalId === range.journalId && candidate.firstSequence <= range.firstSequence && candidate.lastSequence >= range.lastSequence
-        && candidate.discharge?.kind === 'recoveryAcknowledged' && candidate.discharge.operationId === owner.operationId && candidate.discharge.episodeOrdinal === proof.episodeOrdinal));
+      const ownerProof = owner.plan.skippedRanges.some(candidate => candidate.journalId === range.journalId && candidate.firstSequence <= range.firstSequence && candidate.lastSequence >= range.lastSequence
+        && candidate.discharge?.kind === 'recoveryAcknowledged' && candidate.discharge.operationId === owner.operationId && candidate.discharge.episodeOrdinal === proof.episodeOrdinal);
+      if (!ownerProof) {
+        requireControl(interruptedProof(owner, proof, range, disclosed, claims));
+        partialRanges.add(key);
+        for (const carrier of owners) { protectedOperations.add(carrier); }
+        protectedOperations.add(owner.operationId);
+        continue;
+      }
     }
     if (affected.length > 0) { for (const owner of owners) { protectedOperations.add(owner); } protectedOperations.add(proof.operationId); }
   }
+  const ranges = [...rangeMap].map(([key, entry]) => partialRanges.has(key) ? { ...entry.range, discharge: null } : entry.range);
 
   // A root needed for a transfer or handoff keeps the complete predecessor proof.
   let changed = true;
