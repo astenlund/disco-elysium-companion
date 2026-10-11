@@ -7,7 +7,7 @@ import type { Kernel } from '../../src/backend/kernel.ts';
 import { replayCandidate, transferEpisode } from '../../src/recovery-progress.ts';
 import { sameRecoveryOwner, SafetyUnavailableError, type RecoveryWitness, type StateSafety } from '../../src/safety-records.ts';
 import type { SafetyProof } from '../../src/safety.ts';
-import { admittedCapacityFixture, at, authorityModel, correctionId, generation, journal, owner, repair, witness } from './authority-fixtures.ts';
+import { admittedCapacityFixture, at, authorityModel, correctionId, generation, installEventInspectionFixture, journal, owner, repair, witness } from './authority-fixtures.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { eventRewriteMetadata, parseEventMetadata } from '../../src/journal-records.ts';
@@ -32,12 +32,38 @@ function pendingCarryModel(headerConflict: boolean) {
     source: { root: 'scope', path: 'journal/recovery-event.json', sha256: carryHash, payloadBindingSha256: event.payloadBindingSha256! }, metadata: eventRewriteMetadata(event) },
   { kind: 'raiseHighWater', target: { path: 'journal/journal.json', before: hash(header), after: hash({ ...header, highWaterSequence: 1 }) }, value: { ...header, highWaterSequence: 1 } },
   { kind: 'removeCarry', target: { path: 'journal/recovery-event.json', before: carryHash, after: null } });
-  const record = repair({ ...source, recovery: { ...source.recovery, episodes: [{ ...source.recovery.episodes[0]!, prerequisite: {
+  const record = repair({ ...source, plan: { ...source.plan, handoffs: [handoffFor(event)] }, recovery: { ...source.recovery, episodes: [{ ...source.recovery.episodes[0]!, prerequisite: {
     kind: 'gap', nextAction: 1, carry: { path: 'journal/recovery-event.json', sha256: carryHash }, carryRelease: null, skippedRanges: [], actions } }] } });
   const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null,
     correction: { correctionId, reason: 'contextUncertain', recoveryOperationId: owner.operationId }, recoveryWitness: witness });
   model.memory.seed(`operations/${owner.operationId}.json`, record);
   model.memory.files.set('journal/recovery-event.json', carry);
+  installEventInspectionFixture(model.kernel, async (relative, sequence) => {
+    const admission = await model.memory.inspect(model.memory.scope.dataRoot, relative, true);
+    if (!admission.exists) { return { status: 'absent', sha256: null, metadata: null }; }
+    const bytes = model.memory.files.get(relative);
+    assert.ok(bytes !== undefined);
+    const sha256 = bytesHash(bytes);
+    const currentRecord = await model.kernel.operations.read(owner.operationId);
+    assert.equal(currentRecord.status, 'valid');
+    if (currentRecord.status !== 'valid') { throw new Error('Expected a valid recovery operation.'); }
+    const current = currentRecord.value;
+    assert.ok(!current.compacted && current.kind === 'repair');
+    if (current.compacted || current.kind !== 'repair') { throw new Error('Expected a full recovery operation.'); }
+    const actions = current.recovery.episodes.flatMap(episode => episode.prerequisite?.actions ?? []);
+    for (const action of actions) {
+      if (action.kind !== 'preserveRecovery' && action.kind !== 'appendRecovery') { continue; }
+      if (action.kind === 'preserveRecovery' && relative === 'journal/recovery-event.json' && sequence === 0
+        || action.kind === 'preserveRecovery' && action.source.root === 'scope' && action.source.path === relative && action.metadata.sequence === sequence
+        || action.kind === 'appendRecovery' && action.target.path === relative && action.metadata.sequence === sequence) {
+        return { status: 'valid', sha256, metadata: { ...action.metadata, payloadBindingSha256: action.source.payloadBindingSha256,
+          targetIdentitySha256: action.metadata.compacted ? null : event.targetIdentitySha256,
+          stateGeneratedAt: action.metadata.compacted ? null : event.stateGeneratedAt } };
+      }
+    }
+
+    return { status: 'invalid', sha256, metadata: null };
+  });
   if (headerConflict) { model.memory.seed('journal/journal.json', { ...header, historyVerified: false }); }
   const readJournal = model.kernel.journal.read.bind(model.kernel.journal);
   model.kernel.journal.read = async () => {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { deflateSync } from 'node:zlib';
 
 import { DataRootUnavailableError, type PathAdmission } from '../../src/admission.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
@@ -7,7 +8,7 @@ import { handoffFor } from '../../src/backend/recovery.ts';
 import { CapacityObservation, RuntimeCapacityError } from '../../src/capacity.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
 import type { Deadline } from '../../src/deadline.ts';
-import { eventRewriteMetadata, parseJournalCursor, parseJournalHeader } from '../../src/journal-records.ts';
+import { eventRewriteMetadata, parseJournalCursor, parseJournalHeader, type EventDescription } from '../../src/journal-records.ts';
 import { parseStrictJson, stringifyJson, StrictJsonError, type JsonProfile, type JsonValue } from '../../src/json.ts';
 import { parseOperation, type OperationRecord, type RepairOperation, type ReleaseOperation } from '../../src/operation-records.ts';
 import type { JournalSnapshot, JournalTransaction } from '../../src/journal.ts';
@@ -190,6 +191,29 @@ export class MemoryAuthority {
   }
 
   value<T>(relative: string): T { return parseStrictJson(this.files.get(this.key(relative))!) as T; }
+}
+
+type FixtureEventObservation = { readonly status: 'absent'; readonly sha256: null; readonly metadata: null }
+  | { readonly status: 'invalid'; readonly sha256: string; readonly metadata: null }
+  | { readonly status: 'valid'; readonly sha256: string; readonly metadata: EventDescription };
+
+export function installEventInspectionFixture(kernel: Kernel,
+  observe: (relative: string, sequence: number) => Promise<FixtureEventObservation>): void {
+  kernel.inspector.metadata = async (script, args, _cwd, _timeout, inputBytes) => {
+    assert.equal(path.basename(script), 'Get-EventMetadata.ps1');
+    const batch = args.includes('-Batch');
+    const input = batch && inputBytes !== undefined ? Buffer.from(inputBytes).toString('utf8') : args[args.indexOf('-RequestsJson') + 1];
+    assert.ok(input !== undefined);
+    const requests = JSON.parse(input) as { path: string; sequence: number }[];
+    const documents = await Promise.all(requests.map(async request => {
+      const relative = path.relative(kernel.scope.dataRoot, request.path).replaceAll(path.sep, '/');
+      return { path: request.path, ...await observe(relative, request.sequence) };
+    }));
+    const response = batch ? { requestSha256: bytesHash(Buffer.from(inputBytes!)), documents } : { documents };
+    const stdout = Buffer.from(JSON.stringify(response));
+
+    return { exitCode: 0, stdout: batch ? deflateSync(stdout) : stdout, stderr: Buffer.alloc(0) };
+  };
 }
 
 export function authorityModel(initialSafety: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null }, initialJournal = journal()) {

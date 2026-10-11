@@ -7,7 +7,7 @@ import { RuntimeCapacityError } from '../capacity.ts';
 import type { CapacityRewindResult } from './api.ts';
 import type { CapacitySource } from '../resource-lifecycle/resources.ts';
 import { Deadline } from '../deadline.ts';
-import { EventReader } from '../event-reader.ts';
+import { EventReader, type EventRead, type EventReadRequest } from '../event-reader.ts';
 import { observeFile } from '../file-observation.ts';
 import { newIdentity, newOperationId } from '../identity.ts';
 import { eventFileName, eventRewriteMetadata, hasCurrentAcceptance, logicalOutboxSequence, type EventDescription, type JournalCursor, type JournalHeader } from '../journal-records.ts';
@@ -15,6 +15,7 @@ import type { JournalEvent, JournalSnapshot } from '../journal.ts';
 import { jsonBudgets, readBoundedFile, stringifyJson, stringifyProspectiveJson, utcNow } from '../json.ts';
 import { effectivelyUnfinished, coreAttemptToken, type RepairOperation, type RetainedHandoff, type RecoveryEpisode } from '../operation-records.ts';
 import { outboxRecordSequence } from '../outbox-name.ts';
+import type { OutboxRead } from '../outbox.ts';
 import { requireRepair, type OperationInventory, type StoredOperation } from '../operations.ts';
 import { RecoveryExecutor, RecoveryDamageError } from '../recovery-executor.ts';
 import { carryReleaseRemovalIndex, carryReleaseResolved, recognizeAction, validatePrerequisite, type ManifestObservation, type PayloadSource, type RecoveryAction, type RecoveryPrerequisite } from '../recovery-manifest.ts';
@@ -63,7 +64,17 @@ function hasUnreplacedSelection(record: RepairOperation): boolean {
 
 interface PrerequisiteTransfer {
   readonly prerequisite: RecoveryPrerequisite;
-  readonly replacement: { readonly logicalOutboxId: string; readonly recordSha256: string; readonly deferred?: boolean; readonly handoff?: RetainedHandoff } | null;
+  readonly replacement: { readonly logicalOutboxId: string; readonly recordSha256: string; readonly deferred?: boolean; readonly handoff?: RetainedHandoff;
+    readonly reason?: 'missingPayload' | 'placementUnavailable' } | null;
+}
+
+interface OrdinaryCarryDecision {
+  readonly kind: 'intact' | 'restore' | 'lost';
+  readonly source?: PayloadSource;
+  readonly slotInvalidSha256?: string;
+  readonly recordedSlotCleanup?: boolean;
+  readonly originalSource?: EventRead;
+  readonly appendIndex: number;
 }
 
 function quarantineCarry(sha256: string): RecoveryAction {
@@ -465,6 +476,19 @@ export class RecoveryCoordinator {
     if (sha256 === null) { return; }
     if (deferredCarryAuthority(inventory).state === 'unavailable') { throw new SafetyUnavailableError('Present carry has unavailable ownership.'); }
     if (hasCarryAuthority(sha256, inventory)) { return; }
+    const unfinished = inventory.records.filter(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record));
+    if (inventory.invalid.length === 0 && unfinished.length === 1) {
+      const record = requireRepair(unfinished[0]!.record);
+      const active = record.recovery.activeEpisode;
+      const plan = active === null ? null : record.recovery.episodes[active]!.prerequisite;
+      const appendIndex = plan?.carry === null || plan?.carryRelease !== null ? -1 : plan.actions.findIndex(action => action.kind === 'appendRecovery'
+        && action.source.root === 'scope' && action.source.path === plan.carry!.path && action.source.sha256 === plan.carry!.sha256);
+      if (record.scopeSha256 === k.scope.bindingSha256 && plan?.carry?.path === 'journal/recovery-event.json' && plan.carry.sha256 !== sha256
+        && appendIndex >= plan.nextAction) {
+        const slot = await this.stableEvent(plan.carry.path, 0, deadline);
+        if (slot.status === 'invalid' && slot.sha256 === sha256) { return; }
+      }
+    }
     if (inventory.records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record))) {
       await k.safetyStore.invalidate('contextUncertain', deadline);
     }
@@ -619,7 +643,16 @@ export class RecoveryCoordinator {
     }
     requireControl(witness.phase === 'transferring' && witness.successor !== null && sameRecoveryOwner(witness.successor, owner)
       && sameRecoveryOwner(witness.owner, activeRecoveryOwner(record)!));
-    await this.publishDamageEpisode(stored, await k.journal.read(deadline), owner, deadline);
+    const snapshot = await k.journal.read(deadline);
+    const pending = record.recovery.episodes[record.recovery.activeEpisode!]!.prerequisite;
+    if (pending !== null && snapshot.fault === null && snapshot.damaged.length === 0) {
+      const decision = await this.ordinaryCarryDecision(record, pending, deadline);
+      if (decision !== null && decision.kind !== 'intact') {
+        await this.publishOrdinaryCarryEpisode(stored, owner, decision, true, false, deadline);
+        return;
+      }
+    }
+    await this.publishDamageEpisode(stored, snapshot, owner, deadline);
   }
 
   private async bindCorrection(operationId: string, deadline?: Deadline): Promise<void> {
@@ -760,7 +793,7 @@ export class RecoveryCoordinator {
         || episode.prerequisite.carryRelease.attemptRef.operationId === record.operationId && episode.prerequisite.carryRelease.attemptRef.attemptOrdinal === ordinal);
   }
 
-  private async readRecoveryJournalSources(record: RepairOperation, plan: RecoveryPrerequisite, deadline?: Deadline): Promise<readonly JournalEvent[]> {
+  private recoveryJournalRequests(record: RepairOperation, plan: RecoveryPrerequisite): readonly EventReadRequest[] {
     const sequences = new Set<number>();
     for (const attempt of record.recovery.attempts) { if (attempt.journalEvent !== null) { sequences.add(attempt.journalEvent.sequence); } }
     for (const affected of record.plan.affected) { sequences.add(affected.sequence); }
@@ -773,7 +806,11 @@ export class RecoveryCoordinator {
       }
     }
     for (const action of plan.actions) { if (action.kind === 'preserveRecovery') { sequences.add(action.metadata.sequence); } }
-    const requests = [...sequences].sort((left, right) => left - right).map(sequence => ({ path: `journal/events/${eventFileName(sequence)}`, sequence }));
+    return [...sequences].sort((left, right) => left - right).map(sequence => ({ path: `journal/events/${eventFileName(sequence)}`, sequence }));
+  }
+
+  private async readRecoveryJournalSources(record: RepairOperation, plan: RecoveryPrerequisite, deadline?: Deadline): Promise<readonly JournalEvent[]> {
+    const requests = this.recoveryJournalRequests(record, plan);
     if (requests.length === 0) { return []; }
     // Core admission also runs inside a journal transaction. Inspect exact
     // retained positions independently rather than reentering its writer queue.
@@ -804,6 +841,7 @@ export class RecoveryCoordinator {
     }
     const journalSources = new Map<string, string>();
     for (const event of await this.readRecoveryJournalSources(record, plan, deadline)) {
+      if (event.metadata.compacted) { continue; }
       if (event.metadata.logicalOutboxId !== handoff.logicalOutboxId || event.metadata.recordSha256 !== handoff.recordSha256) { continue; }
       requireControl(event.metadata.payloadBindingSha256 === handoff.payloadBindingSha256 && event.metadata.adapter === preservation.metadata.adapter
         && event.metadata.principal === preservation.metadata.principal);
@@ -837,6 +875,208 @@ export class RecoveryCoordinator {
       }
     }
     return selected;
+  }
+
+  private async stableEvent(path: string, sequence: number, deadline?: Deadline): Promise<EventRead> {
+    const reader = new EventReader(this.kernel.scope.dataRoot, this.kernel.inspector);
+    const request = [{ path, sequence }];
+    const first = (await reader.read(request, deadline?.remaining() ?? 30000))[0]!;
+    if (first.status === 'valid') { return first; }
+    const second = (await reader.read(request, deadline?.remaining() ?? 30000))[0]!;
+    requireControl(second.status === first.status && second.sha256 === first.sha256 && (second.status !== 'invalid' || second.sha256 !== null));
+    return second;
+  }
+
+  private async stableOutbox(name: string, deadline?: Deadline): Promise<OutboxRead> {
+    const first = await this.kernel.outbox.read(name, deadline);
+    if (first.status === 'valid') { return first; }
+    const second = await this.kernel.outbox.read(name, deadline);
+    requireControl(second.status === first.status && (first.status === 'absent' || second.status === 'invalid' && second.sha256 === first.sha256));
+    return second;
+  }
+
+  private async ordinaryCarryDecision(record: RepairOperation, plan: RecoveryPrerequisite, deadline?: Deadline): Promise<OrdinaryCarryDecision | null> {
+    if (plan.carry === null || plan.carryRelease !== null) { return null; }
+    const appendIndex = plan.actions.findIndex(action => action.kind === 'appendRecovery' && action.source.root === 'scope'
+      && action.source.path === plan.carry!.path && action.source.sha256 === plan.carry!.sha256);
+    if (appendIndex < 0 || plan.nextAction > appendIndex) { return null; }
+    const preservation = plan.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === plan.carry!.sha256);
+    requireControl(preservation?.kind === 'preserveRecovery');
+    const append = plan.actions[appendIndex]!;
+    requireControl(append.kind === 'appendRecovery');
+    const pendingCleanup = plan.actions[plan.nextAction];
+    const followingPreservation = plan.actions[plan.nextAction + 1];
+    const ownsPendingCleanup = pendingCleanup?.kind === 'quarantine' && pendingCleanup.source.path === plan.carry.path
+      && followingPreservation?.kind === 'preserveRecovery' && followingPreservation.target.path === plan.carry.path
+      && followingPreservation.target.before === null && followingPreservation.target.after === plan.carry.sha256;
+    const carried = await this.kernel.carryHash(deadline);
+    if (carried === plan.carry.sha256) {
+      requireControl(!ownsPendingCleanup);
+      return { kind: 'intact', appendIndex };
+    }
+    const destination = await this.stableEvent(append.target.path, append.metadata.sequence, deadline);
+    const pendingQuarantines = plan.actions.slice(plan.nextAction, appendIndex).filter((action): action is RecoveryAction & { kind: 'quarantine' } => action.kind === 'quarantine'
+      && action.source.path === append.target.path);
+    const previouslyQuarantined = plan.actions.slice(0, plan.nextAction).some(action => action.kind === 'quarantine' && action.source.path === append.target.path);
+    const recordedDestination = pendingQuarantines.length === 1 && pendingQuarantines[0]!.source.before === destination.sha256 && !previouslyQuarantined;
+    if (destination.status === 'valid') {
+      if (destination.sha256 === append.target.after) {
+        requireControl(destination.metadata.logicalOutboxId === append.metadata.logicalOutboxId
+          && destination.metadata.recordSha256 === append.metadata.recordSha256 && destination.metadata.payloadBindingSha256 === append.source.payloadBindingSha256);
+        if (!ownsPendingCleanup) { return { kind: 'intact', appendIndex }; }
+      } else {
+        requireControl(recordedDestination || preservation.source.root === 'scope' && append.target.path === preservation.source.path && destination.sha256 === preservation.source.sha256
+          && destination.metadata.logicalOutboxId === preservation.metadata.logicalOutboxId
+          && destination.metadata.recordSha256 === preservation.metadata.recordSha256
+          && destination.metadata.payloadBindingSha256 === preservation.source.payloadBindingSha256
+          && !previouslyQuarantined);
+      }
+    }
+    if (destination.status === 'invalid') {
+      const invalidOriginal = preservation.source.root === 'scope' && append.target.path === preservation.source.path
+        && pendingQuarantines.length === 1 && pendingQuarantines[0]!.source.before === preservation.source.sha256;
+      requireControl(destination.sha256 !== null && (recordedDestination || invalidOriginal) && !previouslyQuarantined);
+    }
+    const slot = await this.stableEvent(plan.carry.path, 0, deadline);
+    requireControl(slot.status !== 'valid' || slot.sha256 === plan.carry.sha256);
+    if (slot.status === 'valid') {
+      requireControl(!ownsPendingCleanup);
+      return { kind: 'intact', appendIndex };
+    }
+    requireControl(slot.status === 'absent' && carried === null || slot.status === 'invalid' && slot.sha256 === carried);
+    if (ownsPendingCleanup) {
+      const targetHash = await this.fileHash(pendingCleanup.target.path, deadline);
+      requireControl(targetHash === await this.fileHash(pendingCleanup.target.path, deadline)
+        && (slot.status === 'invalid' && slot.sha256 === pendingCleanup.source.before && targetHash === null
+          || slot.status === 'absent' && targetHash === pendingCleanup.source.before));
+    }
+    const handoff = record.plan.handoffs.filter(value => value.logicalOutboxId === preservation.metadata.logicalOutboxId
+      && value.recordSha256 === preservation.metadata.recordSha256 && value.payloadBindingSha256 === preservation.source.payloadBindingSha256);
+    requireControl(handoff.length === 1);
+    const sequence = logicalOutboxSequence(handoff[0]!.logicalOutboxId);
+    requireControl(sequence !== null);
+    const outboxName = `event-${eventFileName(sequence)}`;
+    const outbox = await this.stableOutbox(outboxName, deadline);
+    if (outbox.status === 'valid') {
+      requireControl(outbox.sha256 === handoff[0]!.recordSha256 && outbox.metadata.logicalOutboxId === handoff[0]!.logicalOutboxId
+        && outbox.metadata.game === preservation.metadata.adapter && outbox.metadata.principal === preservation.metadata.principal);
+    }
+    const original = preservation.source.root === 'scope'
+      ? await this.stableEvent(preservation.source.path, preservation.metadata.sequence, deadline) : undefined;
+    if (destination.status === 'invalid' && preservation.source.root === 'scope' && append.target.path === preservation.source.path) {
+      requireControl(original?.status === 'invalid' && original.sha256 === destination.sha256);
+    }
+    if (original?.status === 'valid') {
+      requireControl(original.sha256 === preservation.source.sha256 && original.metadata.logicalOutboxId === handoff[0]!.logicalOutboxId
+        && original.metadata.recordSha256 === handoff[0]!.recordSha256 && original.metadata.payloadBindingSha256 === handoff[0]!.payloadBindingSha256);
+    }
+    const source = await this.deferredRestorationSource(record, plan, deadline);
+    if (ownsPendingCleanup) {
+      requireControl(followingPreservation.kind === 'preserveRecovery');
+      if (source !== null && source.root === followingPreservation.source.root && source.path === followingPreservation.source.path
+        && source.sha256 === followingPreservation.source.sha256
+        && source.payloadBindingSha256 === followingPreservation.source.payloadBindingSha256) { return { kind: 'intact', appendIndex }; }
+    }
+    if (source !== null) {
+      const pending = plan.actions[plan.nextAction];
+      if (slot.status === 'absent' && pending?.kind === 'preserveRecovery' && pending.target.before === null && pending.target.after === plan.carry.sha256
+        && source.root === pending.source.root && source.path === pending.source.path && source.sha256 === pending.source.sha256
+        && source.payloadBindingSha256 === pending.source.payloadBindingSha256) { return { kind: 'intact', appendIndex }; }
+      const afterQuarantine = plan.actions[plan.nextAction + 1];
+      if (slot.status === 'absent' && destination.status === 'invalid' && pending?.kind === 'quarantine'
+        && pending.source.path === append.target.path && pending.source.before === destination.sha256
+        && afterQuarantine?.kind === 'preserveRecovery' && afterQuarantine.target.before === null && afterQuarantine.target.after === plan.carry.sha256
+        && source.root === afterQuarantine.source.root && source.path === afterQuarantine.source.path && source.sha256 === afterQuarantine.source.sha256
+        && source.payloadBindingSha256 === afterQuarantine.source.payloadBindingSha256) { return { kind: 'intact', appendIndex }; }
+      return { kind: 'restore', source, appendIndex, slotInvalidSha256: slot.status === 'invalid' ? slot.sha256! : undefined,
+        recordedSlotCleanup: ownsPendingCleanup, originalSource: original };
+    }
+    requireControl(outbox.status !== 'valid' && original?.status !== 'valid');
+    const repeatedOutbox = await this.kernel.outbox.read(outboxName, deadline);
+    requireControl(repeatedOutbox.status === outbox.status && (outbox.status === 'absent'
+      || repeatedOutbox.status === 'invalid' && repeatedOutbox.sha256 === outbox.sha256));
+    const requests = this.recoveryJournalRequests(record, plan);
+    if (requests.length > 0) {
+      const reader = new EventReader(this.kernel.scope.dataRoot, this.kernel.inspector);
+      const first = await reader.readInventory(requests, deadline ?? Deadline.after(30000));
+      const second = await reader.readInventory(requests, deadline ?? Deadline.after(30000));
+      for (const [index, entry] of first.entries()) {
+        const repeated = second[index]!;
+        requireControl(entry.status === repeated.status && entry.sha256 === repeated.sha256);
+        requireControl(entry.status !== 'invalid' || entry.sha256 !== null);
+        if (entry.status === 'valid' && entry.metadata.logicalOutboxId === handoff[0]!.logicalOutboxId) {
+          requireControl(entry.metadata.recordSha256 === handoff[0]!.recordSha256 && entry.metadata.payloadBindingSha256 === handoff[0]!.payloadBindingSha256);
+          requireControl(entry.metadata.compacted);
+        }
+      }
+    }
+    return { kind: 'lost', appendIndex, slotInvalidSha256: slot.status === 'invalid' ? slot.sha256! : undefined,
+      recordedSlotCleanup: ownsPendingCleanup, originalSource: original };
+  }
+
+  private async ordinaryStructuralSuffix(plan: RecoveryPrerequisite, appendIndex: number, originalSource?: EventRead, deadline?: Deadline): Promise<RecoveryAction[]> {
+    const preservation = plan.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === plan.carry?.sha256);
+    requireControl(preservation?.kind === 'preserveRecovery');
+    const suffix: RecoveryAction[] = [];
+    for (const action of plan.actions.slice(plan.nextAction, appendIndex)) {
+      if (action.kind === 'preserveRecovery') { continue; }
+      if (action.kind !== 'quarantine' || action.source.path !== preservation.source.path || originalSource === undefined) { suffix.push(action); continue; }
+      const sourceHash = await this.fileHash(action.source.path, deadline);
+      const targetHash = await this.fileHash(action.target.path, deadline);
+      const observations = new Map<string, ManifestObservation>([[action.source.path, { status: 'readable', sha256: sourceHash }],
+        [action.target.path, { status: 'readable', sha256: targetHash }]]);
+      const condition = recognizeAction(action, observations);
+      if (condition === 'after') { suffix.push(action); continue; }
+      if (condition === 'before') { requireControl(originalSource.status === 'valid'); suffix.push(action); continue; }
+      requireControl(targetHash === null && (sourceHash === null && originalSource.status === 'absent'
+        || sourceHash !== null && originalSource.status === 'invalid' && originalSource.sha256 === sourceHash));
+      if (sourceHash !== null) { suffix.push({ ...action, source: { ...action.source, before: sourceHash }, target: { ...action.target, after: sourceHash } }); }
+    }
+    return suffix;
+  }
+
+  private async ordinaryCarryPlan(plan: RecoveryPrerequisite, decision: OrdinaryCarryDecision, deadline?: Deadline): Promise<RecoveryPrerequisite> {
+    requireControl(decision.kind !== 'intact' && plan.carry !== null && plan.carryRelease === null && plan.nextAction <= decision.appendIndex);
+    const structural = await this.ordinaryStructuralSuffix(plan, decision.appendIndex, decision.originalSource, deadline);
+    const recordedCleanup = decision.recordedSlotCleanup ? structural[0] : undefined;
+    requireControl(!decision.recordedSlotCleanup || recordedCleanup?.kind === 'quarantine' && recordedCleanup === plan.actions[plan.nextAction]
+      && recordedCleanup.source.path === plan.carry.path);
+    const cleanup: RecoveryAction[] = [];
+    if (recordedCleanup !== undefined) { cleanup.push(recordedCleanup); }
+    else if (decision.slotInvalidSha256 !== undefined) { cleanup.push(quarantineCarry(decision.slotInvalidSha256)); }
+    const remainingStructural = recordedCleanup === undefined ? structural : structural.slice(1);
+    if (decision.kind === 'lost') {
+      return validatePrerequisite({ kind: plan.kind, actions: [...cleanup, ...remainingStructural], nextAction: 0, carry: null, carryRelease: null, skippedRanges: plan.skippedRanges });
+    }
+    requireControl(decision.source !== undefined);
+    const preservation = await this.prepareCarryPreservation(plan, decision.source, deadline);
+    const payloadSuffix = plan.actions.slice(decision.appendIndex);
+    requireControl(payloadSuffix[0]?.kind === 'appendRecovery' && payloadSuffix.at(-1)?.kind === 'removeCarry');
+    return validatePrerequisite({ kind: plan.kind, actions: [...cleanup, preservation.action, ...remainingStructural, ...payloadSuffix], nextAction: 0,
+      carry: plan.carry, carryRelease: null, skippedRanges: plan.skippedRanges });
+  }
+
+  private async publishOrdinaryCarryEpisode(stored: StoredOperation & { record: RepairOperation }, owner: RecoveryOwner,
+    decision: OrdinaryCarryDecision, reserved = false, activate = true, deadline?: Deadline): Promise<void> {
+    requireControl(decision.kind !== 'intact');
+    const k = this.kernel;
+    const record = stored.record;
+    const active = record.recovery.activeEpisode;
+    requireControl(active !== null && owner.operationId === record.operationId && owner.episodeOrdinal === record.recovery.episodes.length);
+    const previous = record.recovery.episodes[active]!.prerequisite;
+    requireControl(previous !== null && previous.carryRelease === null);
+    const prerequisite = await this.ordinaryCarryPlan(previous, decision, deadline);
+    const at = utcNow();
+    const moved = transferEpisode(record, { activationId: owner.activationId, trigger: 'recoveryMissing', attemptAtStart: currentAttemptOrdinal(record),
+      replacementAttempt: null, prerequisite, acceptedRecovery: null, startedAt: at }, at);
+    const candidate = decision.kind === 'lost' ? replacementCandidate(moved, 'missingPayload') : moved;
+    await k.resources.reserve('repair', decision.kind === 'lost' ? { uncompactedEvents: 1 } : {}, deadline);
+    await k.resources.preflight(path.join(k.scope.dataRoot, 'operations', candidate.operationId + '.json'),
+      Buffer.from(stringifyProspectiveJson(candidate, 'state-event', 'operations/' + candidate.operationId + '.json', error => k.resources.prospectiveFailure(error))), 'state-event', deadline);
+    if (!reserved) { await k.safetyStore.prepareTransfer(owner, deadline); }
+    await k.operations.update(stored, () => candidate, deadline);
+    if (activate) { await k.safetyStore.activateWitness(owner, this.ownerProof(owner), deadline); }
+    this.damageEpisodeCreated = true;
   }
 
   private async authorizeDeferredCore(record: RepairOperation, deadline?: Deadline): Promise<boolean> {
@@ -951,6 +1191,13 @@ export class RecoveryCoordinator {
         continue;
       }
       const action = plan.actions[plan.nextAction]!;
+      const decision = await this.ordinaryCarryDecision(stored.record, plan);
+      if (decision !== null && decision.kind !== 'intact') {
+        if (this.damageEpisodeCreated) { throw new RecoveryDamageError('A second recovery payload-loss episode requires a later command start.'); }
+        const owner = { operationId, episodeOrdinal: stored.record.recovery.episodes.length, activationId: await k.activationIdentity() };
+        await this.publishOrdinaryCarryEpisode(stored, owner, decision);
+        continue;
+      }
       if (action.kind === 'preserveRecovery' && plan.carryRelease !== null && await k.carryHash() === null) {
         const source = await this.deferredRestorationSource(stored.record, plan);
         if (source === null || source.root !== action.source.root || source.path !== action.source.path || source.sha256 !== action.source.sha256) {
@@ -1006,8 +1253,13 @@ export class RecoveryCoordinator {
     const previous = stored.record.recovery.episodes[stored.record.recovery.activeEpisode!]!.prerequisite;
     const pending = previous !== null && (previous.nextAction < previous.actions.length || !carryReleaseResolved(previous));
     const structuralDamage = pending && (snapshot.fault !== null || snapshot.damaged.length > 0) && !await this.manifestRepairsFault(previous, snapshot, deadline);
+    const ordinary = pending ? await this.ordinaryCarryDecision(stored.record, previous!, deadline) : null;
+    if (ordinary !== null && ordinary.kind !== 'intact' && !structuralDamage) {
+      await this.publishOrdinaryCarryEpisode(stored, successor, ordinary, false, false, deadline);
+      return;
+    }
     const transfer = pending ? structuralDamage
-      ? await this.reconstructPrerequisite(previous, { cause: kind, journal: snapshot }, stored.record, deadline)
+      ? await this.reconstructPrerequisite(previous, { cause: kind, journal: snapshot }, stored.record, deadline, ordinary)
       : await this.rebasePrerequisite(previous, snapshot, stored.record, deadline) : null;
     const prerequisite = transfer?.prerequisite ?? await this.prerequisite({ cause: kind, journal: snapshot }, deadline);
     requireControl(prerequisite !== null);
@@ -1033,7 +1285,7 @@ export class RecoveryCoordinator {
       if (transfer?.replacement == null) { return moved; }
       const selected = repair.recovery.attempts.at(-1)!.selectedRecord;
       requireControl(selected !== null && selected.logicalOutboxId === transfer.replacement.logicalOutboxId && selected.recordSha256 === transfer.replacement.recordSha256);
-      return replacementCandidate(moved, 'placementUnavailable', transfer.replacement.deferred ?? false);
+      return replacementCandidate(moved, transfer.replacement.reason ?? 'placementUnavailable', transfer.replacement.deferred ?? false);
     })();
     await k.resources.preflight(path.join(k.scope.dataRoot, 'operations', candidate.operationId + '.json'),
       Buffer.from(stringifyProspectiveJson(candidate, 'state-event', 'operations/' + candidate.operationId + '.json', error => k.resources.prospectiveFailure(error))), 'state-event', deadline);
@@ -1041,7 +1293,8 @@ export class RecoveryCoordinator {
     await k.operations.update(stored, () => candidate, deadline);
   }
 
-  private async reconstructPrerequisite(previous: RecoveryPrerequisite, request: RepairRequest, record: RepairOperation, deadline?: Deadline): Promise<PrerequisiteTransfer> {
+  private async reconstructPrerequisite(previous: RecoveryPrerequisite, request: RepairRequest, record: RepairOperation, deadline?: Deadline,
+    ordinary?: OrdinaryCarryDecision | null): Promise<PrerequisiteTransfer> {
     const k = this.kernel;
     const snapshot = request.journal;
     const structural = await this.prerequisite(request, deadline, false);
@@ -1050,11 +1303,23 @@ export class RecoveryCoordinator {
     const pending = previous.actions.slice(previous.nextAction);
     const completed: RecoveryAction[] = [];
     const quarantines = new Map<string, Extract<RecoveryAction, { kind: 'quarantine' }>>();
+    const missingPreservation = ordinary !== null && ordinary !== undefined && ordinary.kind !== 'intact'
+      ? previous.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === previous.carry?.sha256) : undefined;
     for (const action of pending) {
       if (action.kind !== 'quarantine') { continue; }
-      const observations = new Map<string, ManifestObservation>();
-      for (const change of [action.source, action.target]) { observations.set(change.path, { status: 'readable', sha256: await this.fileHash(change.path, deadline) }); }
+      const sourceHash = await this.fileHash(action.source.path, deadline);
+      const targetHash = await this.fileHash(action.target.path, deadline);
+      const observations = new Map<string, ManifestObservation>([[action.source.path, { status: 'readable', sha256: sourceHash }],
+        [action.target.path, { status: 'readable', sha256: targetHash }]]);
       const condition = recognizeAction(action, observations);
+      if (condition === 'damage' && missingPreservation?.kind === 'preserveRecovery' && action.source.path === missingPreservation.source.path) {
+        requireControl(targetHash === null && (sourceHash === null && ordinary?.originalSource?.status === 'absent'
+          || sourceHash !== null && ordinary?.originalSource?.status === 'invalid' && ordinary.originalSource.sha256 === sourceHash));
+        if (sourceHash !== null) {
+          quarantines.set(action.source.path, { ...action, source: { ...action.source, before: sourceHash }, target: { ...action.target, after: sourceHash } });
+        }
+        continue;
+      }
       requireControl(condition === 'before' || condition === 'after');
       if (condition === 'after') { completed.push(action); }
       else { requireControl(!quarantines.has(action.source.path)); quarantines.set(action.source.path, action); }
@@ -1072,18 +1337,29 @@ export class RecoveryCoordinator {
       return { prerequisite: validatePrerequisite({ ...structural, actions: [...completed, ...quarantines.values(), ...structuralActions], nextAction: completed.length,
         skippedRanges: mergeRanges(previous.skippedRanges, structural.skippedRanges) }), replacement: null };
     }
+    if (ordinary?.kind === 'lost') {
+      const selected = record.recovery.attempts[currentAttemptOrdinal(record)]!.selectedRecord;
+      requireControl(selected !== null && selected.recordSha256 !== null && ordinary.appendIndex >= previous.nextAction);
+      const slotCleanup = ordinary.slotInvalidSha256 === undefined || ordinary.recordedSlotCleanup ? [] : [quarantineCarry(ordinary.slotInvalidSha256)];
+      return { prerequisite: validatePrerequisite({ ...structural, actions: [...completed, ...slotCleanup, ...quarantines.values(), ...structuralActions],
+        nextAction: completed.length, skippedRanges: mergeRanges(previous.skippedRanges, structural.skippedRanges) }),
+      replacement: { logicalOutboxId: selected.logicalOutboxId, recordSha256: selected.recordSha256, reason: 'missingPayload' } };
+    }
     const preservation = previous.actions.find(action => action.kind === 'preserveRecovery' && action.target.after === previous.carry!.sha256);
     requireControl(preservation?.kind === 'preserveRecovery');
     const binding = preservation.source.payloadBindingSha256;
     const carrySource: PayloadSource = { root: 'scope', path: previous.carry.path, sha256: previous.carry.sha256, payloadBindingSha256: binding };
-    requireControl(!quarantines.has(carrySource.path));
+    const recordedCleanup = quarantines.get(carrySource.path);
+    requireControl(recordedCleanup === undefined || ordinary !== null && ordinary !== undefined && recordedCleanup === previous.actions[previous.nextAction]);
+    if (recordedCleanup !== undefined) { quarantines.delete(carrySource.path); }
     for (const action of pending) {
       if (action.kind === 'appendRecovery') { requireControl(action.source.root === 'scope' && action.source.path === carrySource.path && action.source.sha256 === carrySource.sha256 && action.source.payloadBindingSha256 === binding); }
       if (action.kind === 'preserveRecovery') { requireControl(action.target.after === carrySource.sha256); }
       if (action.kind === 'removeCarry') { requireControl(action.target.before === carrySource.sha256); }
     }
     const carryHash = await this.fileHash(carrySource.path, deadline);
-    requireControl(carryHash === null || carryHash === carrySource.sha256);
+    requireControl(carryHash === null || carryHash === carrySource.sha256 || carryHash === recordedCleanup?.source.before
+      || ordinary?.kind === 'restore' && carryHash === ordinary.slotInvalidSha256);
     if (previous.carryRelease !== null && !carryReleaseResolved(previous)) {
       const historical = record.recovery.episodes.flatMap(episode => episode.prerequisite?.actions.slice(0, episode.prerequisite.nextAction) ?? [])
         .find(action => action.kind === 'preserveRecovery' && action.target.after === carrySource.sha256);
@@ -1099,14 +1375,24 @@ export class RecoveryCoordinator {
         actions: [...completed, ...restore, ...quarantines.values(), ...structuralActions, ...pending.filter(action => action.kind === 'removeCarry')] }) };
     }
     let bytes: Buffer;
+    let selectedSource: PayloadSource = carrySource;
     const prepare: RecoveryAction[] = [];
     if (carryHash !== null) {
-      bytes = await this.readRecoverySource(carrySource, deadline);
-      completed.push(preservation);
+      if (carryHash === carrySource.sha256) {
+        bytes = await this.readRecoverySource(carrySource, deadline);
+        completed.push(preservation);
+      } else {
+        requireControl(ordinary?.kind === 'restore' && ordinary.source !== undefined || recordedCleanup !== undefined);
+        selectedSource = ordinary?.kind === 'restore' ? ordinary.source! : preservation.source;
+        const prepared = await this.prepareCarryPreservation(previous, selectedSource, deadline);
+        bytes = prepared.bytes;
+        prepare.push(recordedCleanup ?? quarantineCarry(carryHash), prepared.action);
+      }
     } else {
-      // Only the original exact source can recreate an absent slot here. A
-      // missing or contradictory source retains the obligation without writes.
-      const prepared = await this.prepareCarryPreservation(previous, preservation.source, deadline);
+      // An admitted exact source can recreate the absent slot. A missing or
+      // contradictory source retains the obligation without writes.
+      selectedSource = ordinary?.kind === 'restore' ? ordinary.source! : preservation.source;
+      const prepared = await this.prepareCarryPreservation(previous, selectedSource, deadline);
       bytes = prepared.bytes;
       prepare.push(prepared.action);
     }
@@ -1158,8 +1444,11 @@ export class RecoveryCoordinator {
     const currentTarget = await this.fileHash(destination, deadline);
     requireControl(currentTarget === null || [...quarantines.values(), ...structuralActions].some(action => action.kind === 'quarantine' && action.source.path === destination && action.source.before === currentTarget));
     const metadata = { ...preservation.metadata, journalId: header.journalId, eventId: await k.eventIdentity(snapshot, deadline), sequence, acknowledgedAt: null };
-    const preview = await k.codec.previewEvent(destination, bytes, metadata, carryHash === null && preservation.source.root === 'companion' ? 'outbox' : 'event', binding,
-      carryHash === null && preservation.source.root === 'companion' ? Number(metadata.logicalOutboxId.slice(33)) : 0, deadline);
+    const selectedOutboxSequence = selectedSource.root === 'companion' ? outboxRecordSequence(path.basename(selectedSource.path)) : null;
+    requireControl(selectedSource.root !== 'companion' || selectedOutboxSequence !== null
+      && selectedOutboxSequence === logicalOutboxSequence(metadata.logicalOutboxId));
+    const preview = await k.codec.previewEvent(destination, bytes, metadata, selectedSource.root === 'companion' ? 'outbox' : 'event', binding,
+      selectedOutboxSequence ?? 0, deadline);
     requireControl(preview.cleanupComplete);
     const raised = { ...header, highWaterSequence: sequence };
     const beforeHeader = kind === 'header' ? hashValue(header) : snapshot.header.status === 'valid' ? snapshot.header.sha256 : null;

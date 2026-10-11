@@ -11,7 +11,7 @@ import { bytesHash } from '../../src/storage.ts';
 import { stringifyJson } from '../../src/json.ts';
 import type { OutboxRead } from '../../src/outbox.ts';
 import { journalEvent } from '../support/journal-event.ts';
-import { at, authorityModel, deferredRepair, generation, journal, owner, release, repair, stubJournalTransaction, witness } from './authority-fixtures.ts';
+import { at, authorityModel, deferredRepair, generation, installEventInspectionFixture, journal, owner, release, repair, stubJournalTransaction, witness } from './authority-fixtures.ts';
 
 function originalOutbox(record: RepairOperation, name: string, sha256 = record.plan.handoffs[0]!.recordSha256): Extract<OutboxRead, { status: 'valid' }> {
   const original = record.plan.handoffs[0]!;
@@ -36,6 +36,24 @@ function deferredModel(state: 'waitingReplacement' | 'pendingCleanup' = 'pending
   const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: witness }, snapshot);
   model.memory.seed(`operations/${record.operationId}.json`, record);
   model.kernel.carryHash = async () => slot;
+  installEventInspectionFixture(model.kernel, async (relative, sequence) => {
+    if (relative === 'journal/recovery-event.json' && sequence === 0) {
+      return slot === null ? { status: 'absent', sha256: null, metadata: null } : { status: 'valid', sha256: slot, metadata: event };
+    }
+    if (relative.startsWith('journal/events/')) {
+      const retained = snapshot.events.get(sequence);
+      if (retained !== undefined) { return { status: 'valid', sha256: retained.sha256, metadata: retained.metadata }; }
+      if (sourceAvailable && sequence === 1) {
+        const original = record.recovery.episodes[0]!.prerequisite!.actions[0]!;
+        assert.equal(original.kind, 'preserveRecovery');
+        if (original.kind !== 'preserveRecovery') { throw new Error('Expected original preservation.'); }
+        return { status: 'valid', sha256: original.source.sha256, metadata: { ...original.metadata,
+          payloadBindingSha256: original.source.payloadBindingSha256, targetIdentitySha256: '1'.repeat(64), stateGeneratedAt: at } };
+      }
+    }
+
+    return { status: 'absent', sha256: null, metadata: null };
+  });
   model.kernel.outbox.read = async name => ({ status: 'absent', name });
   model.kernel.codec.previewEvent = async () => ({ sha256: '7'.repeat(64), metadata: {}, cleanupComplete: true });
   const readJournal = model.kernel.journal.read.bind(model.kernel.journal);
