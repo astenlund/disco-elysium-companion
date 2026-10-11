@@ -16,9 +16,10 @@ import { bytesHash } from '../storage.ts';
 import { recoveryFingerprint } from '../window-recovery.ts';
 import { PendingStateCheckError, type AcknowledgementOptions, type BackendInteraction, type DeliveryHandle, type DeliveryPreview, type DeliverySnapshot, type Freshness, type ProviderIdentity, type SendContext } from './api.ts';
 import { Kernel } from './kernel.ts';
+import { reconcileAcknowledgedRecovery } from './recovery-disclosure.ts';
 import { acquireWithPolicy, newestState } from './acquisition-policy.ts';
 
-interface SnapshotState { readonly public: DeliverySnapshot; readonly events: readonly JournalEvent[]; readonly state: JournalEvent | null; readonly journalId: string | null; readonly cursor: number; readonly sent: number; readonly safetySha256: string; readonly correction: { readonly correctionId: string; readonly reason: string } | null }
+interface SnapshotState { readonly public: DeliverySnapshot; readonly events: readonly JournalEvent[]; readonly state: JournalEvent | null; readonly journalId: string | null; readonly cursor: number; readonly sent: number; readonly safetySha256: string; readonly correction: { readonly correctionId: string; readonly reason: string } | null; readonly awaitingDisclosure: boolean }
 interface PreviewState { readonly snapshot: SnapshotState; readonly binding: AgentSessionBinding; readonly request: Record<string, unknown>; readonly relevanceFingerprint: string }
 interface OpaqueFallback { readonly text: string; readonly candidate: ContextCandidate }
 interface HandleState extends PreviewState { optionalMarkCapacity?: CapacityStatus; markAttempted?: boolean; relevanceFingerprint: string; prepared: PreparedContext; candidate: ContextCandidate; fallback: OpaqueFallback | null; forceRedelivery: boolean; disclosure: boolean; sent: boolean; discarded: boolean }
@@ -37,11 +38,11 @@ export class DeliveryCoordinator {
   private currentSnapshot: SnapshotState | null = null;
   private pendingDamage: JournalSnapshot | null = null;
   private activeHandle: HandleState | null = null;
-  private readonly recoverCapacity: () => Promise<void>;
+  private readonly maintainStorage: () => Promise<void>;
 
-  constructor(kernel: Kernel, recoverCapacity: () => Promise<void>) {
+  constructor(kernel: Kernel, maintainStorage: () => Promise<void>) {
     this.kernel = kernel;
-    this.recoverCapacity = recoverCapacity;
+    this.maintainStorage = maintainStorage;
     this.preparer = new ContextPreparer({ scope: kernel.scope, publisher: kernel.publisher,
       reserve: reservation => kernel.resources.workspace(reservation.inputBytes, reservation.maximumOutputBytes),
       admit: async (request, deadline) => {
@@ -108,7 +109,7 @@ export class DeliveryCoordinator {
     try { await k.resources.reserve('ordinary', { uncompactedEvents: 1 }); }
     catch (error) {
       if (!(error instanceof RuntimeCapacityError)) { throw error; }
-      await this.recoverCapacity();
+      await this.maintainStorage();
       await k.resources.reserve('ordinary', { uncompactedEvents: 1 });
     }
     this.requireCapacity();
@@ -175,7 +176,8 @@ export class DeliveryCoordinator {
     const internal: SnapshotState = { public: publicValue, events: disclosureOnly ? [] : unacknowledged, state: disclosureOnly ? null : state,
       journalId: journal?.header.status === 'valid' ? journal.header.value.journalId : null, cursor: journal?.cursor.status === 'valid' ? journal.cursor.value.lastAckedSequence : 0,
       sent: journal?.cursor.status === 'valid' ? Math.max(journal.cursor.value.lastSentSequence, k.sentMark) : k.sentMark, safetySha256: safety.sha256,
-      correction: safety.value.correction === null ? null : { correctionId: safety.value.correction.correctionId, reason: safety.value.correction.reason } };
+      correction: safety.value.correction === null ? null : { correctionId: safety.value.correction.correctionId, reason: safety.value.correction.reason },
+      awaitingDisclosure: safety.value.recoveryWitness?.phase === 'awaitingDisclosure' };
     this.snapshots.set(publicValue, internal); this.currentSnapshot = internal;
     k.emit({ freshness, consumer: receipt !== null && !receipt.success && receipt.reason.startsWith('consumer-') ? 'notOwner' : receipt?.success ? 'owner' : k.status.consumer });
     await k.observeStatus(journal ?? undefined);
@@ -339,6 +341,7 @@ export class DeliveryCoordinator {
     const completed = currentBinding.turnsCompleted === 0 && !openingPermitted ? 0 : currentBinding.turnsCompleted + 1;
     const updated = await k.sessions.bind({ ...currentBinding, turnsCompleted: completed,
       needsState: !options.compactionCapability || options.compactedDuringTurn || !candidate.stateIncluded && currentBinding.needsState || candidate.degraded === 'stateTooLarge' }, k.sessionProof(provider));
+    if (state.snapshot.awaitingDisclosure) { await reconcileAcknowledgedRecovery(k, () => this.maintainStorage()); }
     if (openingPermitted) { await this.discharge(state, updated, provider); }
     await k.observeStatus();
     return updated;
@@ -347,29 +350,6 @@ export class DeliveryCoordinator {
   private async discharge(state: HandleState, bound: BoundSession, provider: ProviderIdentity): Promise<void> {
     const k = this.kernel;
     const safety = await k.safety();
-    const witness = safety.recoveryWitness;
-    if (witness?.phase === 'awaitingDisclosure' && witness.disclosure?.generation === state.snapshot.public.generation) {
-      const snapshot = await k.journal.read();
-      const disclosure = witness.disclosure;
-      if (snapshot.cursor.status === 'valid' && snapshot.cursor.value.lastAckedSequence >= disclosure.sequence && snapshot.events.get(disclosure.sequence)?.metadata.eventId === disclosure.eventId) {
-        const acknowledgedAt = snapshot.events.get(disclosure.sequence)!.metadata.acknowledgedAt;
-        requireControl(acknowledgedAt !== null);
-        const inventory = await k.operations.list();
-        for (const entry of inventory.records) {
-          if (entry.record.compacted || entry.record.kind !== 'repair' || !entry.record.plan.skippedRanges.some(range => range.discharge === null)) { continue; }
-          await k.operations.update(entry, value => {
-            requireControl(value.kind === 'repair');
-            return { ...value, plan: { ...value.plan, skippedRanges: value.plan.skippedRanges.map(range => range.discharge === null
-              ? { ...range, discharge: { kind: 'recoveryAcknowledged' as const, operationId: witness.owner.operationId, episodeOrdinal: witness.owner.episodeOrdinal, at: acknowledgedAt } } : range) } };
-          });
-        }
-        await k.safetyStore.dischargeWitness(witness.owner, 'acknowledged', { verify: async current => {
-          const journal = await k.journal.read();
-          return current.generation === disclosure.generation && journal.cursor.status === 'valid' && journal.cursor.value.lastAckedSequence >= disclosure.sequence
-            && journal.events.get(disclosure.sequence)?.metadata.eventId === disclosure.eventId;
-        } });
-      }
-    }
     if (safety.correction !== null && state.snapshot.correction?.correctionId === safety.correction.correctionId) {
       await k.safetyStore.dischargeCorrection(state.snapshot.public.generation, safety.correction.correctionId, { verify: async current => {
         const ready = await k.sessions.ready(k.sessionProof(provider));

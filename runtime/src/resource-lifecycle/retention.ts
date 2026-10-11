@@ -22,6 +22,7 @@ import { parseSessionBinding, parseSessionIndex } from '../session-records.ts';
 import type { ScopeStorage } from '../storage.ts';
 import type { ResourceAuthority } from './resources.ts';
 import { deferredCarryAuthority, hasCarryAuthority, hasProviderAuthority } from '../backend/provider-authority.ts';
+import { matchesRecoveryDisclosure } from '../backend/recovery-disclosure.ts';
 
 const ticksPerDay = 864000000000n;
 const resourceScript = fileURLToPath(new URL('../../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
@@ -267,6 +268,10 @@ async function maintain(deps: MaintenanceDependencies, deadline?: Deadline, opti
     historyDisclosure: coherent ? !snapshot.header.value.historyVerified || safety.value.recoveryWitness !== null
       || authority.provenance.status === 'verified' && authority.provenance.ranges.some(range => range.discharge === null) : null,
     safetyObligation: safetyDuty ? true : coherent ? false : null });
+  const witness = safety.value.recoveryWitness;
+  const disclosure = witness?.phase === 'awaitingDisclosure' ? witness.disclosure : null;
+  const disclosureOwner = witness === null ? undefined : operations.records.find(entry => entry.record.operationId === witness.owner.operationId)?.record;
+  const noCompetingDuty = safety.value.pendingCheck === null && !operations.records.some(entry => effectivelyUnfinished(entry.record) || pendingOperationSafety(entry.record)) && !carry.exists;
   let compactedEvents = 0;
   await deps.journal.transact(async transaction => {
     const current = transaction.snapshot();
@@ -276,9 +281,13 @@ async function maintain(deps: MaintenanceDependencies, deadline?: Deadline, opti
     // Synthetic ranges, discharged or otherwise, never acquire a false stamp.
     for (const event of current.events.values()) {
       const stamp = inferMissingAcknowledgement(event.metadata, current.cursor.value, authority.provenance);
+      const witnessedDisclosure = coherent && disclosure !== null && disclosure !== undefined && witness !== null && disclosureOwner !== undefined
+        && !disclosureOwner.compacted && disclosureOwner.kind === 'repair' && disclosureOwner.scopeSha256 === witness.scopeSha256
+        && event.metadata.sequence === disclosure.sequence && event.metadata.journalId === disclosure.journalId && event.metadata.eventId === disclosure.eventId
+        && disclosureOwner.recovery.episodes[witness.owner.episodeOrdinal]?.activationId === witness.owner.activationId
+        && matchesRecoveryDisclosure(disclosureOwner, witness.owner.episodeOrdinal, event.metadata, disclosure, safety.value.generation);
       if (stamp !== null && event.metadata.acknowledgedAt === null && event.metadata.acceptance !== null && event.metadata.settlement !== 'pending'
-        && safety.value.pendingCheck === null && safety.value.correction === null && safety.value.recoveryWitness === null
-        && !operations.records.some(entry => effectivelyUnfinished(entry.record) || pendingOperationSafety(entry.record)) && !carry.exists) {
+        && noCompetingDuty && (safety.value.correction === null && witness === null || witnessedDisclosure)) {
         await transaction.rewrite(event, value => ({ ...eventRewriteMetadata(value), acknowledgedAt: stamp }));
       }
     }

@@ -27,6 +27,7 @@ import type { BackendCommand, BackendOptions, BackendStartup, RuntimeBackend } f
 import { ConsumerCoordinator } from './consumer.ts';
 import { PendingStateCheckError } from './api.ts';
 import { DeliveryCoordinator } from './delivery.ts';
+import { reconcileAcknowledgedRecovery } from './recovery-disclosure.ts';
 import { Kernel } from './kernel.ts';
 import { initializeRuntimeMarker } from './marker-bootstrap.ts';
 import { RecoveryCoordinator } from './recovery.ts';
@@ -154,7 +155,7 @@ export class CoordinatorBackend implements RuntimeBackend {
           if (unfinished || safety.pendingCheck !== null || safety.recoveryWitness?.phase === 'preparing' || safety.recoveryWitness?.phase === 'transferring') { await this.recovery.startup(); }
         } catch (error) { failed = true; this.recordFailure(error); }
       }
-      try { await this.retention(); } catch (error) { failed = true; this.recordFailure(error); }
+      try { await this.retention(); await reconcileAcknowledgedRecovery(k); } catch (error) { failed = true; this.recordFailure(error); }
       if (failed) { k.emit({ freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: k.status.journal.fault ?? k.status.freshness.reason ?? 'journalUnavailable' } }); }
       try { await k.observeStatus(); } catch { k.emit({ stateSafety: { state: 'unavailable', correction: null, carryRelease: 'unavailable' } }); }
       if (command.kind === 'chat') { await this.watcher.start(); }
