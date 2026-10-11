@@ -45,7 +45,7 @@ function setup() {
       journalId: 'journal', eventId: successor.event.eventId, sequence: 3, generation } } }, snapshot);
   model.memory.seed(predecessorPath, predecessor.record);
   model.memory.seed(successorPath, successor.record);
-  const inputs = async (): Promise<RetentionInputs> => ({ safety: await model.kernel.safety(), operations: (await model.kernel.operations.list()).records,
+  const inputs = async (): Promise<RetentionInputs> => ({ activeJournalId: 'journal', safety: await model.kernel.safety(), operations: (await model.kernel.operations.list()).records,
     events: [...snapshot.events.values()].map(entry => entry.metadata), outbox: new Set<string>(), outboxNames: new Set<string>(),
     sessionGenerations: new Set<string>(), carryPresent: false });
   return { model, snapshot, skipped, inputs };

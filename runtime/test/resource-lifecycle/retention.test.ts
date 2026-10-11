@@ -5,6 +5,7 @@ import { CapacityObservation } from '../../src/capacity.ts';
 import { deferredCarryAuthority, hasProviderAuthority } from '../../src/backend/provider-authority.ts';
 import { emptyRepairPlan, initialRecovery, type ReleaseOperation, type RepairOperation } from '../../src/operation-records.ts';
 import { OperationStore } from '../../src/operations.ts';
+import { replayCandidate } from '../../src/recovery-progress.ts';
 import type { ScopeStorage } from '../../src/storage.ts';
 import { reconcileRetention, refreshCapacityOwed, selectOperationRetention, type MaintenanceDependencies, type RetentionInputs } from '../../src/resource-lifecycle/retention.ts';
 import { journalEvent } from '../support/journal-event.ts';
@@ -23,7 +24,7 @@ function repair(): RepairOperation {
       acceptedRecovery: { journalId: 'journal', eventId: '2'.padStart(32, '0'), sequence: 2, generation, acceptedAt: origin } }] } };
 }
 function base(): RetentionInputs {
-  return { safety: { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null }, operations: [],
+  return { activeJournalId: 'journal', safety: { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null }, operations: [],
     events: [journalEvent(1, { occurredAt: origin, acknowledgedAt: origin }), journalEvent(2, { occurredAt: origin, acknowledgedAt: origin })],
     outbox: new Set(), outboxNames: new Set(), sessionGenerations: new Set(), carryPresent: false };
 }
@@ -93,7 +94,7 @@ describe('runtime retention authority', () => {
         scope: { dataRoot: 'unused' }, resources: { capacity },
         safetyStore: { read: async () => ({ status: 'valid', value: input.safety }) },
         operations: { list: async () => ({ invalid: [], records: [{ record: { ...record, plan: { ...record.plan, handoffs: [handoff] } }, sha256: hash }] }) },
-        journal: { read: async () => ({ fault: null, damaged: [], events: new Map(), header: { status: 'valid', value: { historyVerified: true } }, cursor: { status: 'valid', value: { lastAckedSequence: 0 } } }) },
+        journal: { read: async () => ({ fault: null, damaged: [], events: new Map(), header: { status: 'valid', value: { journalId: 'journal', historyVerified: true } }, cursor: { status: 'valid', value: { lastAckedSequence: 0 } } }) },
         outbox: { list: async () => [] }, inspector: { inspect: async () => ({ exists: false }) },
         storage: { read: async (name: string) => name === 'agent-session.json'
           ? scenario.binding === null ? { status: 'absent' } : { status: 'valid', value: { stateGeneration: scenario.binding } }
@@ -132,6 +133,34 @@ describe('runtime retention authority', () => {
     assert.equal(reconcileRetention({ ...input, safety: { ...input.safety, generation: '9'.repeat(32) }, events: [skipped, renewed], operations }).evidence(skipped).path, 'skipDischarged');
     assert.throws(() => reconcileRetention({ ...input, events: [skipped, { ...input.events[1]!, acknowledgedAt: null }], operations }));
     assert.throws(() => reconcileRetention({ ...input, operations, events: [skipped, { ...input.events[1]!, eventId: '9'.repeat(32) }] }));
+  });
+
+  it('keeps a completed old-journal discharge after an admitted header replacement', () => {
+    const input = base();
+    const record = repair();
+    const proof = { kind: 'recoveryAcknowledged' as const, operationId: rootId, episodeOrdinal: 0, at: origin };
+    const range = { journalId: 'journal', firstSequence: 1, lastSequence: 1, reason: 'cursorRecovery' as const, discharge: proof };
+    const owner = { record: { ...record, plan: { ...record.plan, skippedRanges: [range] } }, sha256: hash };
+    const historical: RetentionInputs = { ...input, activeJournalId: 'new-journal', events: [], operations: [owner],
+      safety: { ...input.safety, generation: '9'.repeat(32) } };
+    const authority = reconcileRetention(historical);
+    assert.equal(authority.provenance.status, 'verified');
+    if (authority.provenance.status !== 'verified') { throw new Error('Expected verified historical provenance.'); }
+    assert.deepEqual(authority.provenance.ranges[0]?.discharge, proof);
+    assert.equal(authority.protectedOperations.has(rootId), false);
+    assert.deepEqual(selectOperationRetention(historical.operations, authority.protectedOperations, '2028-01-01T00:00:00.0000000Z').map(entry => entry.record.operationId), [rootId]);
+    const replayed = replayCandidate(owner.record, '7'.repeat(32), origin);
+    assert.equal(reconcileRetention({ ...historical, operations: [{ ...owner, record: replayed }] }).provenance.status, 'verified');
+    assert.throws(() => reconcileRetention({ ...historical, activeJournalId: 'journal' }));
+    assert.throws(() => reconcileRetention({ ...historical, activeJournalId: '' }));
+    assert.throws(() => reconcileRetention({ ...historical, sessionGenerations: new Set([generation]) }));
+    assert.throws(() => reconcileRetention({ ...historical, events: [input.events[0]!] }));
+    const carrier = { record: { ...owner.record, operationId: `jr-${'c'.repeat(32)}` }, sha256: hash };
+    const missingSelfProof = { ...owner, record: { ...owner.record, plan: { ...owner.record.plan, skippedRanges: [] } } };
+    assert.throws(() => reconcileRetention({ ...historical, operations: [missingSelfProof, carrier] }));
+    const retained = reconcileRetention({ ...historical, operations: [owner, carrier] });
+    assert.equal(retained.protectedOperations.has(rootId), true);
+    assert.deepEqual(selectOperationRetention([owner, carrier], retained.protectedOperations, '2028-01-01T00:00:00.0000000Z').map(entry => entry.record.operationId), [carrier.record.operationId]);
   });
 
   it('requires a completed exact abandon proof and preserves its supporting root', () => {

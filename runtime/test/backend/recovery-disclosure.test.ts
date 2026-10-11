@@ -7,7 +7,7 @@ import { bindRecoveryEvent, checkpointRecovery, completeRecovery, selectRecovery
 import type { JournalEvent, JournalSnapshot, JournalTransaction } from '../../src/journal.ts';
 import type { EventDescription, EventMetadata } from '../../src/journal-records.ts';
 import { maintainRuntimeStorage } from '../../src/resource-lifecycle/retention.ts';
-import { at, authorityModel, correctionId, generation, journal, owner, repair, witness } from './authority-fixtures.ts';
+import { at, authorityModel, correctionId, generation, journal, owner, repair, stubJournalTransaction, witness } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
 
 const operationPath = `operations/${owner.operationId}.json`;
@@ -182,4 +182,33 @@ test('a later ordinary cursor advance uses its conservative durable timestamp', 
   assert.equal(proof.status, 'valid');
   if (proof.status !== 'valid' || proof.value.compacted || proof.value.kind !== 'repair') { throw new Error('Expected retained repair proof.'); }
   assert.equal(proof.value.plan.skippedRanges[0]?.discharge?.at, later);
+});
+
+test('an acknowledged recovery proof survives a later healthy journal replacement', async () => {
+  const model = completedDisclosure(2, true, false);
+  assert.equal(await reconcileAcknowledgedRecovery(model.kernel), true);
+  const replacementId = 'new-journal';
+  const fresh = journal(0, 0);
+  assert.equal(fresh.header.status, 'valid');
+  assert.equal(fresh.cursor.status, 'valid');
+  if (fresh.header.status !== 'valid' || fresh.cursor.status !== 'valid') { throw new Error('Expected a valid replacement journal.'); }
+  const headerValue = { ...fresh.header.value, journalId: replacementId, historyVerified: false };
+  const cursorValue = { ...fresh.cursor.value, journalId: replacementId };
+  const snapshot: JournalSnapshot = { ...fresh,
+    header: { ...fresh.header, value: headerValue }, cursor: { ...fresh.cursor, value: cursorValue } };
+  model.memory.seed('journal/journal.json', headerValue);
+  model.memory.seed('journal/cursor-agent-session.json', cursorValue);
+  const safety = await model.kernel.safety();
+  model.memory.seed('state-safety.json', { ...safety, generation: '9'.repeat(32) });
+  model.kernel.journal.read = async () => snapshot;
+  stubJournalTransaction(model.kernel, snapshot);
+  model.kernel.inspector.metadata = async () => ({ exitCode: 0, stdout: Buffer.from('{"removed":0,"remaining":0}'), stderr: Buffer.alloc(0) });
+  const writes = model.memory.writes.length;
+  await maintainRuntimeStorage(model.kernel);
+  await maintainRuntimeStorage(model.kernel);
+  assert.equal(model.memory.writes.length, writes);
+  const operation = await model.kernel.operations.read(owner.operationId);
+  assert.equal(operation.status, 'valid');
+  if (operation.status !== 'valid' || operation.value.compacted || operation.value.kind !== 'repair') { throw new Error('Expected retained historical certificate.'); }
+  assert.equal(operation.value.plan.skippedRanges[0]?.discharge?.kind, 'recoveryAcknowledged');
 });

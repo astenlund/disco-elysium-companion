@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { PathInspector } from '../admission.ts';
+import { isOpaqueToken } from '../identity.ts';
 import { RuntimeCapacityError, runtimeLimits } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
@@ -31,6 +32,7 @@ const sameEvent = (left: { readonly journalId: string; readonly eventId: string 
 const nowUtc = (): string => new Date().toISOString().replace(/([.][0-9]{3})Z$/, '$10000Z');
 
 export interface RetentionInputs {
+  readonly activeJournalId: string;
   readonly safety: StateSafety;
   readonly operations: readonly StoredOperation[];
   readonly events: readonly EventDescription[];
@@ -52,6 +54,7 @@ export interface RetentionAuthority {
 // discharge claims remain protections; they cannot be upgraded by cursor position.
 export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
   const { safety, operations, events } = input;
+  requireControl(isOpaqueToken(input.activeJournalId) && events.every(event => event.journalId === input.activeJournalId));
   const byId = new Map(operations.map(entry => [entry.record.operationId, entry.record]));
   const journalIdentities = new Set(events.map(identity));
   const eventById = new Map(events.map(event => [`${event.journalId}:${event.eventId}`, event]));
@@ -182,9 +185,15 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
       const checkpoint = episode?.acceptedRecovery;
       requireControl(episode?.phase === 'completed' && checkpoint !== null && checkpoint !== undefined);
       const disclosed = eventById.get(`${checkpoint.journalId}:${checkpoint.eventId}`);
-      requireControl(disclosed !== undefined && disclosed.sequence === checkpoint.sequence && disclosed.acknowledgedAt !== null && disclosed.acceptance !== null && disclosed.settlement !== 'pending');
       const ownerProof = owner.plan.skippedRanges.some(candidate => candidate.journalId === range.journalId && candidate.firstSequence <= range.firstSequence && candidate.lastSequence >= range.lastSequence
-        && candidate.discharge?.kind === 'recoveryAcknowledged' && candidate.discharge.operationId === owner.operationId && candidate.discharge.episodeOrdinal === proof.episodeOrdinal);
+        && candidate.discharge?.kind === 'recoveryAcknowledged' && candidate.discharge.operationId === owner.operationId
+        && candidate.discharge.episodeOrdinal === proof.episodeOrdinal && candidate.discharge.at === proof.at);
+      if (disclosed === undefined) {
+        requireControl(ownerProof && affected.length === 0 && checkpoint.journalId !== input.activeJournalId
+          && !input.sessionGenerations.has(checkpoint.generation));
+        continue;
+      }
+      requireControl(disclosed.sequence === checkpoint.sequence && disclosed.acknowledgedAt !== null && disclosed.acceptance !== null && disclosed.settlement !== 'pending');
       if (!ownerProof) {
         requireControl(interruptedProof(owner, proof, range, disclosed, claims));
         partialRanges.add(key);
@@ -196,6 +205,17 @@ export function reconcileRetention(input: RetentionInputs): RetentionAuthority {
     if (affected.length > 0) { for (const owner of owners) { protectedOperations.add(owner); } protectedOperations.add(proof.operationId); }
   }
   const ranges = [...rangeMap].map(([key, entry]) => partialRanges.has(key) ? { ...entry.range, discharge: null } : entry.range);
+
+  // A full carrier must be retired before the independent proof it still names.
+  for (const { record } of operations) {
+    if (record.compacted) { continue; }
+    const claims = record.kind === 'repair' ? [...record.plan.skippedRanges, ...record.recovery.episodes.flatMap(episode => episode.prerequisite?.skippedRanges ?? [])]
+      : record.kind === 'release' ? record.plan.skippedRanges : [];
+    for (const claim of claims) {
+      const dependency = claim.discharge?.operationId;
+      if (dependency !== undefined && dependency !== record.operationId) { protectedOperations.add(dependency); }
+    }
+  }
 
   // A root needed for a transfer or handoff keeps the complete predecessor proof.
   let changed = true;
@@ -288,7 +308,7 @@ async function maintain(deps: MaintenanceDependencies, deadline?: Deadline, opti
   requireControl(hasCarryAuthority(carryHash, operations));
   const snapshot = await deps.journal.read(deadline);
   requireControl(snapshot.fault === null && snapshot.damaged.length === 0 && snapshot.cursor.status === 'valid' && snapshot.header.status === 'valid');
-  const inputs: RetentionInputs = { safety: safety.value, operations: operations.records, events: [...snapshot.events.values()].map(event => event.metadata),
+  const inputs: RetentionInputs = { activeJournalId: snapshot.header.value.journalId, safety: safety.value, operations: operations.records, events: [...snapshot.events.values()].map(event => event.metadata),
     outbox, outboxNames: new Set(names), sessionGenerations: generations, carryPresent: carry.exists };
   const authority = reconcileRetention(inputs);
   const coherent = hasProviderAuthority(safety.value, operations) && hasCarryAuthority(carryHash, operations);
@@ -422,7 +442,7 @@ export async function refreshCapacityOwed(deps: MaintenanceDependencies, deadlin
       requireControl(event?.status === 'valid' && !event.metadata.compacted); carryHash = event.sha256;
     }
     requireControl(hasCarryAuthority(carryHash, operations) && hasProviderAuthority(safety.value, operations));
-    const graph = reconcileRetention({ safety: safety.value, operations: operations.records, events: [...snapshot.events.values()].map(event => event.metadata),
+    const graph = reconcileRetention({ activeJournalId: snapshot.header.value.journalId, safety: safety.value, operations: operations.records, events: [...snapshot.events.values()].map(event => event.metadata),
       outbox: outbox.identities, outboxNames: new Set(outbox.names), sessionGenerations: generations, carryPresent: carry.exists });
     deps.resources.capacity.observeOwed({ protectedHandoffs: graph.protectedHandoffs.size, safetyObligation: duty,
       historyDisclosure: !snapshot.header.value.historyVerified || safety.value.recoveryWitness !== null || graph.provenance.status === 'verified' && graph.provenance.ranges.some(range => range.discharge === null) }, epoch);
