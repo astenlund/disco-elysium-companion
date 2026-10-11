@@ -17,6 +17,9 @@ Assert-ThrowsType 'DocumentInvalidException' { [Companion.Runtime.VerifiedContex
 $accepted = $eventSample.Accepted
 $acceptedHash = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($accepted))
 $record = [Companion.Runtime.VerifiedContextRecord]::FromFrozen($accepted, $acceptedHash, ('1' * 32))
+$eventOnly = [Companion.Runtime.VerifiedContextRecord]::FromFrozen($accepted, $acceptedHash, ('1' * 32), $false)
+$stateProperty = [Companion.Runtime.VerifiedContextRecord].GetProperty('State', [Reflection.BindingFlags]'Instance, NonPublic')
+Assert-True -Condition ($null -ne $stateProperty.GetValue($record) -and $null -eq $stateProperty.GetValue($eventOnly)) -Message 'event-only records verify full payloads without retaining historical state text'
 Assert-ThrowsType 'DocumentInvalidException' { [Companion.Runtime.VerifiedContextRecord]::FromFrozen($accepted, $acceptedHash, ('2' * 32)) }
 $changed = $utf8.GetBytes($utf8.GetString($accepted).Replace('9007199254740993', '9007199254740994'))
 $changedHash = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($changed))
@@ -26,6 +29,11 @@ $events = [Collections.Generic.List[Companion.Runtime.ContextEventSelection]]::n
 $events.Add([Companion.Runtime.ContextEventSelection]::new($record, $false))
 $nullString = [System.Management.Automation.Language.NullString]::Value
 $result = [Companion.Runtime.ContextCodec]::Render($template, $events, $record, ('1' * 32), $nullString, $false, $false, ('a' * 64), ('b' * 64), 4194304)
+$eventOnlySelections = [Collections.Generic.List[Companion.Runtime.ContextEventSelection]]::new()
+$eventOnlySelections.Add([Companion.Runtime.ContextEventSelection]::new($eventOnly, $false))
+$eventOnlyResult = [Companion.Runtime.ContextCodec]::Render($template, $eventOnlySelections, $record, ('1' * 32), $nullString, $false, $false, ('a' * 64), ('b' * 64), 4194304)
+Assert-True -Condition ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($eventOnlyResult.Bytes, $result.Bytes)) -Message 'omitting historical state retains identical selected context bytes'
+Assert-ThrowsType 'DocumentInvalidException' { [Companion.Runtime.ContextCodec]::Render($template, $eventOnlySelections, $eventOnly, ('1' * 32), $nullString, $false, $false, ('a' * 64), ('b' * 64), 4194304) }
 $text = $utf8.GetString($result.Bytes)
 $opening = '<companion-turn-context>'
 $closing = '</companion-turn-context>'
@@ -73,6 +81,11 @@ $largeMetadata.acceptance = [ordered]@{ journalId = 'journal'; eventId = ('d' * 
 $largeAccepted = [Companion.Runtime.PayloadCodec]::RewriteEvent($largePending, $utf8.GetBytes((ConvertTo-Json -InputObject $largeMetadata -Depth 8 -Compress)), $false)
 $largeHash = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($largeAccepted))
 $largeRecord = [Companion.Runtime.VerifiedContextRecord]::FromFrozen($largeAccepted, $largeHash, ('1' * 32))
+$largeEventOnly = [Companion.Runtime.VerifiedContextRecord]::FromFrozen($largeAccepted, $largeHash, ('1' * 32), $false)
+Assert-True -Condition ($null -eq $stateProperty.GetValue($largeEventOnly)) -Message 'large historical state is omitted from the retained event projection'
+$historical = [Collections.Generic.List[Companion.Runtime.VerifiedContextRecord]]::new()
+foreach ($index in 1..8) { $historical.Add([Companion.Runtime.VerifiedContextRecord]::FromFrozen($largeAccepted, $largeHash, ('1' * 32), $false)) }
+Assert-True -Condition (@($historical | Where-Object { $null -ne $stateProperty.GetValue($_) }).Count -eq 0) -Message 'a bounded backlog retains no per-event historical state text'
 $largeEvents = [Collections.Generic.List[Companion.Runtime.ContextEventSelection]]::new()
 $largeEvents.Add([Companion.Runtime.ContextEventSelection]::new($largeRecord, $false))
 $limited = [Companion.Runtime.ContextSelection]::Select(1, $template, $largeEvents, $largeRecord, $true, ('1' * 32), ('a' * 64), ('b' * 64), $null)

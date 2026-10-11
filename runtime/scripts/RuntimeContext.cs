@@ -102,7 +102,8 @@ public static class RuntimeContext
             if (!cache.TryGetValue(reference.Sequence, out var record))
             {
                 var file = Path.Combine(root, "journal", "events", reference.Sequence.ToString("D16", System.Globalization.CultureInfo.InvariantCulture) + ".json");
-                record = VerifiedContextRecord.FromFrozen(ReadExact(root, file, reference.Sha256, "state-event"), reference.Sha256, generation);
+                record = VerifiedContextRecord.FromFrozen(ReadExact(root, file, reference.Sha256, "state-event"), reference.Sha256, generation,
+                    stateReference is not null && reference.Sequence == stateReference.Sequence);
                 EventDocuments.Require(record.Sequence == reference.Sequence && record.JournalId == journalId && record.Game == game && record.Principal == principal);
                 cache.Add(reference.Sequence, record);
             }

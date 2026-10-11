@@ -11,7 +11,7 @@ namespace Companion.Runtime;
 
 public sealed class VerifiedContextRecord
 {
-    private VerifiedContextRecord(JsonElement root, string generation)
+    private VerifiedContextRecord(JsonElement root, string generation, bool includeState)
     {
         var payload = root.GetProperty("payload");
         Generation = generation;
@@ -24,7 +24,7 @@ public sealed class VerifiedContextRecord
         BaselineReset = payload.GetProperty("baselineReset").GetBoolean();
         Warnings = payload.GetProperty("warnings").GetRawText();
         Diff = payload.GetProperty("diff").GetRawText();
-        State = payload.GetProperty("state").GetRawText();
+        State = includeState ? payload.GetProperty("state").GetRawText() : null;
     }
 
     public string Generation { get; }
@@ -37,9 +37,9 @@ public sealed class VerifiedContextRecord
     public bool BaselineReset { get; }
     internal string Warnings { get; }
     internal string Diff { get; }
-    internal string State { get; }
+    internal string? State { get; }
 
-    public static VerifiedContextRecord FromFrozen(byte[] bytes, string expectedSha256, string generation)
+    public static VerifiedContextRecord FromFrozen(byte[] bytes, string expectedSha256, string generation, bool includeState = true)
     {
         if (!EventDocuments.IsHex(expectedSha256, 64) || !EventDocuments.IsHex(generation, 32) || Convert.ToHexStringLower(SHA256.HashData(bytes)) != expectedSha256)
         {
@@ -55,7 +55,7 @@ public sealed class VerifiedContextRecord
             throw new DocumentInvalidException("Context record has no current full-payload acceptance.");
         }
 
-        return new(root, generation);
+        return new(root, generation, includeState);
     }
 }
 
@@ -101,6 +101,11 @@ public static class ContextCodec
         if (state is not null && state.Generation != generation)
         {
             throw new DocumentInvalidException("Context state belongs to another generation.");
+        }
+
+        if (state is not null && state.State is null)
+        {
+            throw new DocumentInvalidException("Context state was not retained for the selected record.");
         }
 
         using var output = new MemoryStream();
