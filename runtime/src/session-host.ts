@@ -54,6 +54,7 @@ export class SessionHost implements SessionHostV1 {
   private shutdownPromise: Promise<void> | null = null;
   private lastStatus = '';
   private maintenanceFailure: Error | null = null;
+  private compactionToken = Symbol();
 
   constructor(options: SessionHostOptions) {
     this.options = options;
@@ -193,6 +194,7 @@ export class SessionHost implements SessionHostV1 {
     const turn = this.active;
     if (signal.kind === 'source') { this.lifecycle.observeSource(instance, signal.credentialSource); return; }
     if (signal.kind === 'compaction') {
+      this.compactionToken = Symbol();
       this.recovery.compacted(instance);
       if (turn !== null) { turn.compacted = true; }
       this.emit({ type: 'context.compacted' });
@@ -236,14 +238,17 @@ export class SessionHost implements SessionHostV1 {
       const selectedSession = session;
       const selectedHandle = handle;
       let redelivery = false;
+      let admitEnqueue: (() => void) | null = null;
       const outcome = await selectedSession.sendTurn({ contextBlock: handle.contextBlock, playerText: turn.text,
         override: turn.override ? this.options.backend.config.provider.questionOverride : null,
         askUser: questions => this.lifecycle.capabilities.dialogs && !turn.terminal ? this.dialogs.ask(turn.interactionId, questions) : Promise.resolve({ cancelled: true }),
         onSignal: signal => this.signal(selectedSession.providerInstanceId, signal),
         beforeSend: async () => {
           this.requireTurn(turn);
+          const compactionToken = this.compactionToken;
           await this.maintenance.idle();
           this.requireMaintenance();
+          if (this.compactionToken !== compactionToken) { throw new Error('Provider context changed before send.'); }
           const latestBinding = this.lifecycle.binding;
           if (latestBinding === null) { throw new Error('Session binding is unavailable.'); }
           const current = await this.options.backend.copyForSend(selectedHandle, latestBinding, this.lifecycle.identity(selectedSession));
@@ -255,7 +260,18 @@ export class SessionHost implements SessionHostV1 {
             ticket = this.recovery.prepare([current.candidate], current.relevanceFingerprint, current.disclosureOnly);
             if (ticket === null) { this.fail(turn, 'contextExhausted', false); throw new Error('The disclosure candidate is exhausted.'); }
           }
+          admitEnqueue = () => {
+            this.requireTurn(turn);
+            this.requireMaintenance();
+            if (!this.lifecycle.isCurrent(selectedSession.providerInstanceId) || this.compactionToken !== compactionToken || this.lifecycle.binding !== latestBinding) {
+              throw new Error('Provider context changed before enqueue.');
+            }
+          };
           return current.text;
+        },
+        beforeEnqueue: () => {
+          if (admitEnqueue === null) { throw new Error('Provider context was not prepared for enqueue.'); }
+          admitEnqueue();
         },
         onSent: () => {
           turn.sent = true;

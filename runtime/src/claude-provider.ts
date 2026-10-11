@@ -246,6 +246,7 @@ class ClaudeSession implements ProviderSession {
         const contextBlock = await request.beforeSend(request.contextBlock);
         if (turn.interrupted || turn.settled || this.ended || this.closing || !this.options.isCurrent(this.providerInstanceId)) { return failure(turn.interrupted ? 'interrupted' : 'subprocessExited'); }
         if (typeof contextBlock !== 'string' || !contextBlock.isWellFormed() || Buffer.byteLength(contextBlock, 'utf8') > 4194304 || !request.playerText.isWellFormed()) { return failure('providerError', false); }
+        request.beforeEnqueue();
         this.prompts.push({ type: 'user', uuid: turn.uuid, session_id: this.providerSessionId, parent_tool_use_id: null, origin: { kind: 'human' }, message: { role: 'user', content: [{ type: 'text', text: contextBlock }, { type: 'text', text: request.playerText }] } });
         turn.sent = true;
         request.onSent();

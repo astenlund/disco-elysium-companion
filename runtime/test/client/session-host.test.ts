@@ -596,6 +596,53 @@ test('send-time relevance replaces the unsent baseline even when candidate bytes
   await host.shutdown();
 });
 
+for (const stage of ['copy', 'enqueue'] as const) {
+  test(`compaction during send-time ${stage} prevents a state-omitting enqueue`, async () => {
+    const { host, backend, provider, events } = await fixture();
+    assert.equal(host.submitChat({ text: 'opening', questionOverride: false }).result, 'admitted');
+    await until(() => !host.turnInProgress);
+    assert.equal(backend.binding?.needsState, false);
+
+    const preview = backend.preview.bind(backend);
+    backend.preview = async (...args) => {
+      const result = await preview(...args);
+      return { ...result, preview: { candidates: [{ ...result.preview.candidates[0]!, eventCount: 0, stateIncluded: false }] } };
+    };
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    if (stage === 'copy') {
+      const copy = backend.copyForSend.bind(backend);
+      backend.copyForSend = async (...args) => {
+        const result = await copy(...args);
+        entered.resolve();
+        await release.promise;
+
+        return result;
+      };
+    } else {
+      provider.current.afterPrepare = async () => {
+        provider.current.requests.at(-1)!.onSignal({ kind: 'compaction' });
+        await until(() => backend.binding?.needsState === true);
+      };
+    }
+    let delivered = 0;
+    provider.current.action = async () => { delivered += 1; return { kind: 'completed', text: 'unsafe answer' }; };
+    assert.equal(host.submitChat({ text: 'next', questionOverride: false }).result, 'admitted');
+    if (stage === 'copy') {
+      await entered.promise;
+      provider.current.requests.at(-1)!.onSignal({ kind: 'compaction' });
+      await until(() => backend.binding?.needsState === true);
+      release.resolve();
+    }
+    await until(() => !host.turnInProgress);
+    assert.equal(delivered, 0);
+    assert.equal(backend.ackCount, 1);
+    assert.equal(backend.binding?.needsState, true);
+    assert.equal(events.filter(event => event.type === 'turn.failed').at(-1)?.code, 'providerError');
+    await host.shutdown();
+  });
+}
+
 test('a required capacity refusal is reported after status and blocks later input without changing the provider session', async () => {
   const { host, backend, provider, events } = await fixture();
   const prior = provider.current;

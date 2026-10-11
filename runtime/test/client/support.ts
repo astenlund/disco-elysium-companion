@@ -35,6 +35,7 @@ export class FakeSession implements ProviderSession {
   readonly requests: ProviderTurn[] = [];
   action: (request: ProviderTurn, session: FakeSession) => Promise<ProviderOutcome> = async () => ({ kind: 'completed', text: 'answer' });
   beforeSend: (() => Promise<void>) | null = null;
+  afterPrepare: (() => Promise<void>) | null = null;
   interruptCount = 0;
   closed = false;
   private stopped = deferred<ProviderOutcome>();
@@ -46,6 +47,8 @@ export class FakeSession implements ProviderSession {
     this.requests.push(request);
     await this.beforeSend?.();
     const contextBlock = await request.beforeSend(request.contextBlock);
+    await this.afterPrepare?.();
+    request.beforeEnqueue();
     request.onSent();
     return Promise.race([this.action({ ...request, contextBlock }, this), this.stopped.promise]);
   }

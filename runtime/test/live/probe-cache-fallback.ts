@@ -186,6 +186,7 @@ async function main(): Promise<void> {
     try {
       outcome = await Promise.race([session.sendTurn({ contextBlock, playerText, override: null, askUser: async () => ({ cancelled: true }),
         beforeSend: async block => { observation.beforeSend = Number(observation.beforeSend) + 1; return block; },
+        beforeEnqueue: () => {},
         onSent: () => { observation.sent = Number(observation.sent) + 1; },
         onSignal: signal => { if (signal.kind === 'text') { fragments.push(signal.fragment); } },
       }), deadline]);

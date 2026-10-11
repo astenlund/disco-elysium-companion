@@ -192,7 +192,7 @@ async function main(): Promise<void> {
       });
       try {
         turn.result = await Promise.race([session!.sendTurn({ contextBlock: '<companion-turn-context>{"probe":true}</companion-turn-context>',
-          playerText, override: null, askUser, beforeSend: async block => { turn.beforeSend += 1; return block; }, onSent: () => { turn.sent += 1; },
+          playerText, override: null, askUser, beforeSend: async block => { turn.beforeSend += 1; return block; }, beforeEnqueue: () => {}, onSent: () => { turn.sent += 1; },
           onSignal: signal => {
             if (signal.kind !== 'text') { return; }
             turn.fragments.push(signal.fragment);

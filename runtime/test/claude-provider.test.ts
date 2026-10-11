@@ -139,7 +139,8 @@ function setup(queryFactory?: ClaudeProviderOptions['queryFactory'], environment
 }
 
 function turn(overrides: Partial<ProviderTurn> = {}): ProviderTurn {
-  return { contextBlock: '<prepared>', playerText: '/literal @literal\n', override: null, askUser: async () => ({ cancelled: true }), onSignal: () => {}, beforeSend: async context => context, onSent: () => {}, ...overrides };
+  return { contextBlock: '<prepared>', playerText: '/literal @literal\n', override: null, askUser: async () => ({ cancelled: true }), onSignal: () => {}, beforeSend: async context => context,
+    beforeEnqueue: () => {}, onSent: () => {}, ...overrides };
 }
 
 describe('Claude provider state machine', () => {
@@ -292,6 +293,17 @@ describe('Claude provider state machine', () => {
         { kind: 'failed', code: 'providerError', retryable: true });
       assert.equal(generic.query.inputs.length, 0);
     } finally { await session.close(); }
+
+    const late = setup();
+    const lateSession = await late.provider.start(null);
+    let sent = 0;
+    try {
+      assert.deepEqual(await lateSession.sendTurn(turn({ beforeEnqueue: () => { throw new Error('Send authority changed.'); }, onSent: () => { sent++; } })),
+        { kind: 'failed', code: 'providerError', retryable: true });
+      assert.equal(late.query.inputs.length, 0);
+      assert.equal(sent, 0);
+      assert.equal(late.query.closed, true);
+    } finally { await lateSession.close(); }
   });
 
   it('sends the rechecked context and player text once and requires matching result identity', async () => {

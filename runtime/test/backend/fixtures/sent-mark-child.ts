@@ -123,7 +123,7 @@ const outcome = await session.sendTurn({ contextBlock: handle.contextBlock, play
     assert.equal(context.candidate.fingerprint, candidate.fingerprint);
     actualHash = context.candidate.sha256;
     return context.text;
-  }, onSent: () => { sent = true; },
+  }, beforeEnqueue: () => {}, onSent: () => { sent = true; },
 });
 assert.equal(outcome.kind, 'completed');
 assert.equal(sent, true);

@@ -82,7 +82,7 @@ async function main(): Promise<void> {
       try {
         const result = await session!.sendTurn({ contextBlock: '<companion-turn-context>{"probe":true}</companion-turn-context>', playerText, override,
           askUser: async () => ({ cancelled: true }), beforeSend: async context => { turn.beforeSend = Number(turn.beforeSend) + 1; return context; },
-          onSent: () => { turn.sent = Number(turn.sent) + 1; },
+          beforeEnqueue: () => {}, onSent: () => { turn.sent = Number(turn.sent) + 1; },
           onSignal: signal => { if (signal.kind === 'source') { (turn.sourceLabels as unknown[]).push(signal.credentialSource); } } });
         turn.completed = result.kind === 'completed';
         turn.wordMatched = result.kind === 'completed' && result.text.trim() === expected;

@@ -25,6 +25,8 @@ export interface ProviderTurn {
   // Recheck after override setup. A changed dependency may replace the prepared
   // block with this interaction's frozen disclosure block before any input is sent.
   readonly beforeSend: (preparedContext: string) => Promise<string>;
+  // The provider must call this synchronously after preparation, immediately before enqueue.
+  readonly beforeEnqueue: () => void;
   readonly onSent: () => void;
 }
 
