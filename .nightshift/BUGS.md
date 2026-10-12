@@ -27,6 +27,154 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 (The reputation-mapping observability entry was resolved 2026-08-12 via the documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md) remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value clauses it names are spec-deferred, not open bugs.)
 
+## Coordinator MVP deferred bugs
+
+These user-tracked findings came from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
+
+### [State-file overwrite contract](bugs/statefiles-overwrite-wording.md)
+
+Reconcile the section 7.1 no-overwrite promise with the existing state writer after deciding the intended replacement behavior.
+
+**Requires:** none.
+
+### [Empty-receipt history walk](bugs/walk-empty-receipts.md)
+
+Return the specified dry result when a history walk has no save pair, with lone-save, empty-directory, and age-stop cases.
+
+**Requires:** none.
+
+### [Source-domain identifier recipe](bugs/domain-id-recipe-mismatch.md)
+
+Settle the spec and code hash recipes before changing identifiers, since a code change would reset existing baselines.
+
+**Requires:** none.
+
+### [Zero-byte shared state readers](bugs/zero-byte-shared-readers.md)
+
+Classify empty state and bookkeeping files as invalid content through bridge and watcher recovery paths.
+
+**Requires:** none.
+
+### [Exact shared document grammars](bugs/shared-grammar-anchors.md)
+
+Make shared validator and adapter checks reject uppercase or trailing-line-feed values outside their documented closed grammars.
+
+**Requires:** none.
+
+### [Adapter resolution reasons](bugs/adapter-resolution-reasons.md)
+
+Reconcile adapter package and configuration error reasons across the publisher, bridge, and one-shot commands.
+
+**Requires:** none.
+
+### [Concurrent scratch cleanup](bugs/parallel-scratch-cleanup.md)
+
+Reproduce the intermittent concurrent test scratch removal failure before changing shared cleanup logic.
+
+**Requires:** none.
+
+### [Operational disclosure status label](bugs/runtime-operational-disclosure-label.md)
+
+Align the freshness label with operational warnings that withhold state while preserving conservative guidance refusal.
+
+**Requires:** none.
+
+### [Pre-provider interrupt status](bugs/runtime-preprovider-interrupt-status.md)
+
+Define client terminal timing and turnInProgress behavior while a cancelled turn still has acquisition in flight.
+
+**Requires:** none.
+
+### [Fixture cleanup contract](bugs/fixture-cleanup-contract.md)
+
+Investigate a retained private fixture directory while distinguishing helper exit, process quiescence, and physical removal.
+
+**Requires:** none.
+
+### [Disclosure-first window baseline](bugs/runtime-disclosure-first-window-baseline.md)
+
+Define the missing content baseline after a failed first disclosure while preserving bounded retries and no automatic resend.
+
+**Requires:** none.
+
+### [Startup safety recovery status](bugs/runtime-startup-safety-recovery-status.md)
+
+Distinguish retryable unavailable startup safety from faults requiring repair or restart.
+
+**Requires:** none.
+
+### [Rejected-state repair guidance](bugs/runtime-rejection-repair-restart-guidance.md)
+
+Give restart or repair guidance based on actually unfinished rejection repair authority.
+
+**Requires:** none.
+
+### [Pre-repair operation-loss status](bugs/runtime-operation-loss-status-label.md)
+
+Use a truthful status for an unreadable operation record before any repair step has failed.
+
+**Requires:** none.
+
+### [Sent mark after unsent refusal](bugs/runtime-unsent-window-sent-mark.md)
+
+Assert sent-mark and later redelivery-notice behavior when a window refusal occurs before or after marking.
+
+**Requires:** none.
+
+### [Capacity fault during active repair](bugs/runtime-capacity-repair-status-precedence.md)
+
+Show an executing repair cue alongside capacity refusal rather than silently replacing it with a repair fault.
+
+**Requires:** none.
+
+### [Deep helper working directories](bugs/runtime-helper-cwd-length.md)
+
+Investigate measured Windows helper launch failures in deep private working directories without weakening containment or quiescence.
+
+**Requires:** none.
+
+### [Inventory failure categories](bugs/runtime-inventory-diagnostic-opacity.md)
+
+Distinguish residue, unexpected owned entries, and helper transport failures without exposing paths or authorizing deletion.
+
+**Requires:** none.
+
+### [Invalid runtime marker recovery](bugs/runtime-invalid-marker-recovery-guidance.md)
+
+Define a safe operator procedure for content-invalid runtime metadata without assuming marker deletion is safe.
+
+**Requires:** none.
+
+### [Prototype-named dialog answer](bugs/runtime-prototype-dialog-answer.md)
+
+Create own answer properties for allowed question text such as __proto__ and cover selection, retry, and cancellation.
+
+**Requires:** none.
+
+### [Retained-handoff merge after abandon](bugs/runtime-retained-handoff-merge.md)
+
+Test and correct recovery refusal after unsettled reappend and explicit abandon without weakening original settlement binding.
+
+**Requires:** none.
+
+### [Prepared-context invalidation assertion](bugs/runtime-prepared-context-invalidation-assertion.md)
+
+Investigate extra fixture-root invalidations before changing the assertion or production behavior.
+
+**Requires:** none.
+
+### [Recovery publish observation status](bugs/runtime-repair-publish-operational-status.md)
+
+Mark operational status unknown when recovery publication fails before a validated result while retaining provider withholding.
+
+**Requires:** none.
+
+### [Release refusal details](bugs/runtime-release-refusal-details.md)
+
+Show known refusal facts in the CLI and test that refusal creates no intent or consumer switch.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed.

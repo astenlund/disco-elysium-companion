@@ -114,6 +114,34 @@ All non-MVP Session focus slices remain deferred while their exploratory upstrea
 
 Pre-dependency-analysis brainstorms live here. An entry is a draft feature whose breakout file carries `status: exploring` in its frontmatter; the design is being firmed up and a `**Requires:**` line isn't expected yet. `/nightshift:ready` lists these drafts titles-only in a clearly-marked not-ready section, never in the readiness set, and `/nightshift:exploring` renders the full draft list. When a draft firms up enough to declare its upstream gates, move it out of `## Exploring` into the appropriate themed `##` section, add the `**Requires:**` line, and drop the `status: exploring` frontmatter on the breakout file.
 
+### [Source-domain change reset policy](features/domain-change-reset-point.md)
+
+Decide whether a save selector or path change should reset runtime history, balancing stale old-domain delivery against lost changes after a harmless respelling.
+
+### [Blocking-limit window policy](features/runtime-blocking-limit-window-policy.md)
+
+Investigate the provider blocking_limit trigger and decide its classification without inferring a size threshold or capping player text.
+
+### [Coordinator retention checkpoints](features/runtime-retention-checkpoint-cadence.md)
+
+Choose a bounded post-transition retention cadence after measuring the cost of immediate cleanup against delayed compaction.
+
+### [Long-lived runtime history](features/runtime-long-lived-history-preservation.md)
+
+Design safe continuation beyond the fixed handoff reserve while preserving compact evidence and recovery authority.
+
+### [Cleanup warning guidance policy](features/runtime-cleanup-warning-guidance-policy.md)
+
+Investigate whether confirmed deletion-only cleanup failures can be distinguished from incomplete checks before changing conservative withholding.
+
+### [Coordinator startup latency](features/runtime-startup-latency.md)
+
+Measure clean and recovery startup separately and design safe reductions in repeated admission work.
+
+### [Coordinator whole-turn latency](features/runtime-interaction-latency.md)
+
+Measure whole-turn phases separately from the settlement gate and choose a player-facing latency target.
+
 ### [TUI companion app](features/tui-companion-app.md)
 
 Wrap the companion runtime in a terminal interface with streaming chat, freshness and error status, native dialogs, a deferred-results inbox, and per-adapter presentation. Candidate slices separate the terminal shell from advanced dialogs, inbox presentation, theming, and model-effort controls.

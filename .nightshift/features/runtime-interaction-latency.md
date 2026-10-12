@@ -1,0 +1,19 @@
+---
+status: exploring
+---
+
+# Coordinator whole-turn latency
+
+This is a deferred design question from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. The user chose to track it after the dark coordinator MVP.
+
+The evidence below is the original finding. Time-dependent wording refers to its review snapshot and must be checked against current files before design work.
+
+## Recorded evidence and uncertainty
+
+Named private steady-state check runtime-steady-state-timing attempt 5d902b95-9847-4e9c-bb9a-1164a2aa5733 passed on its recorded pre-publication source snapshot with 264 unchanged inputs and a fake provider. Its one-new-record interaction used 456172.949 milliseconds of runtime-owned wall time while the provider callback itself was effectively zero time. The fixed post-publish settlement gate passed separately in 110541.23 milliseconds with 9458.77 milliseconds margin. Preview, preparation, sent mark, send-time copy and acknowledgement all occurred after or outside that gate and contributed to whole-turn delay. The zero-new-record interaction used 340085.99 milliseconds. This is a private Windows fixture with one retained event, not model latency, clean player startup or a live game session; the actual player experience remains unmeasured. The user separately raised the recovery-heavy 27-minute startup as poor UX and favored a follow-up; this item is for whole-turn latency, not that startup path.
+
+## Direction to investigate
+
+Track a separate whole-turn latency investigation after MVP acceptance. Measure clean and recovery interactions with actual phase boundaries and representative retained history, distinguish mandatory safety work from repeated native helper starts, agree a player-facing latency target, then design and validate a safe reduction without weakening the fixed settlement gate or current ownership and publication checks.
+
+This draft does not authorize implementation, publication, a real consumer switch, or changes under SaveGames.
