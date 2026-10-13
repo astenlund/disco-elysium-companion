@@ -2,7 +2,7 @@
 
 The single-session coordinator hosts one provider session, supervises the state core, journals accepted state events, and exposes `SessionHostV1` to an in-process text client. The governing contract is the [Coordinator MVP design](../.nightshift/features/companion-execution-runtime.md#coordinator-mvp-design).
 
-The real companion root was handed over to the runtime on 2026-10-13. Startup and restart were exercised in a live chat session; further live gameplay behavior is not implied by those checks. Mutating integration tests use private fixtures.
+The real companion root was handed over to the runtime on 2026-10-13, followed by a live chat and graceful restart smoke test. The governing live cutover claims for a new in-game save, crash redelivery and bridge release remain unprobed. Mutating integration tests use private fixtures.
 
 ## Requirements and configuration
 
