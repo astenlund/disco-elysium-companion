@@ -98,7 +98,7 @@ Host the persistent agent session, supervise the existing state core, own the si
 
 ### [Coordinator startup latency](features/runtime-startup-latency.md)
 
-Reduce `chat` startup latency with a startup-scoped supervised metadata worker for fresh path admission and file hashing. Progress feedback is already shipped; the approved private targets are 60 seconds for clean startup, 90 seconds for acknowledged restart, and 180 seconds for recovery-heavy startup, with a later user-coordinated live measurement. Whole-turn latency remains separate.
+Reduce `chat` startup latency with a startup-scoped supervised metadata worker for fresh path admission and file hashing. The worker is implemented and committed locally, but remains unpublished and active: the private acknowledged restart met its 90-second target, while recovery-heavy startup missed 180 seconds and a watcher-enabled no-save clean authority control missed 60 seconds. Representative fresh-state clean startup and later user-coordinated live timing remain unmeasured. Progress feedback is already shipped; whole-turn latency remains separate.
 
 **Requires:** none.
 
