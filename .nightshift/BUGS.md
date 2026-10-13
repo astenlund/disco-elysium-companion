@@ -175,6 +175,14 @@ Show known refusal facts in the CLI and test that refusal creates no intent or c
 
 **Requires:** none.
 
+## Live runtime findings
+
+### [Ungrounded skill-point spending advice](bugs/runtime-ungrounded-skill-point-advice.md)
+
+Investigate why a fresh status brief urged spending all available skill points without an allocation analysis or a player request for a spending decision.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed.
