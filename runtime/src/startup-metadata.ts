@@ -1,0 +1,269 @@
+import { createHash, randomBytes } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { DataRootUnavailableError, type PathInspector } from './admission.ts';
+import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, readBoundedFile, stringifyJson, type JsonValue } from './json.ts';
+import { SupervisorError, type CommandResult, type OwnedProcess, type ProcessSupervisor } from './process.ts';
+import type { RuntimeScope } from './scope.ts';
+
+const script = fileURLToPath(new URL('../scripts/StartupMetadataWorker.ps1', import.meta.url));
+const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
+const admissionScript = fileURLToPath(new URL('../scripts/Get-PathAdmission.ps1', import.meta.url));
+const hashesScript = fileURLToPath(new URL('../scripts/Get-FileHashes.ps1', import.meta.url));
+const sourceNames = ['StartupMetadataWorker.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs'] as const;
+const maximumInputFrame = 2_097_152;
+const maximumOutputFrame = 65_536;
+const maximumHashInput = 1_048_576;
+const maximumSourceBytes = 1_048_576;
+const frameBudget = { maxBytes: maximumInputFrame, maxTokens: 65_536, maxTextBytes: maximumInputFrame } as const;
+
+function unavailable(): DataRootUnavailableError { return new DataRootUnavailableError('Startup metadata observation is unavailable.'); }
+
+type WorkerStream = Pick<OwnedProcess, 'stdout' | 'stderr' | 'terminated' | 'kill'>;
+
+/** @internal The framed child stream, without file or startup authority. */
+export class FramedReplies {
+  private readonly child: WorkerStream;
+  private buffer = Buffer.alloc(0);
+  private queued: Buffer | null = null;
+  private pending: { resolve: (value: Buffer) => void; reject: (error: Error) => void; timer: NodeJS.Timeout } | null = null;
+  private error: Error | null = null;
+  private closing = false;
+  private allowQueuedHandshake = true;
+
+  constructor(child: WorkerStream) {
+    this.child = child;
+    child.stdout.on('data', (chunk: Buffer) => this.receive(chunk));
+    child.stdout.on('error', () => this.fail(unavailable()));
+    child.stdout.on('end', () => { if (!this.closing || this.buffer.length > 0) { this.fail(unavailable()); } });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (chunk.length > 0) { this.fail(unavailable()); }
+    });
+    child.stderr.on('error', () => this.fail(unavailable()));
+    void child.terminated.then(() => { if (!this.closing) { this.fail(unavailable()); } }, () => this.fail(unavailable()));
+  }
+
+  private receive(chunk: Buffer): void {
+    if (this.error !== null) { return; }
+    if (this.closing || this.buffer.length + chunk.length > maximumOutputFrame + 4) { this.fail(unavailable()); return; }
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (this.buffer.length < 4) { return; }
+    const length = this.buffer.readUInt32BE(0);
+    if (length < 1 || length > maximumOutputFrame) { this.fail(unavailable()); return; }
+    if (this.buffer.length < length + 4) { return; }
+    const frame = this.buffer.subarray(4, length + 4);
+    this.buffer = this.buffer.subarray(length + 4);
+    if (this.buffer.length > 0 || this.queued !== null) { this.fail(unavailable()); return; }
+    const pending = this.pending;
+    if (pending === null) {
+      if (!this.allowQueuedHandshake) { this.fail(unavailable()); return; }
+      this.queued = frame;
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pending = null;
+    pending.resolve(frame);
+  }
+
+  next(timeoutMs: number): Promise<Buffer> {
+    if (this.error !== null || this.closing || this.pending !== null) { return Promise.reject(this.error ?? unavailable()); }
+    this.allowQueuedHandshake = false;
+    if (this.queued !== null) { const frame = this.queued; this.queued = null; return Promise.resolve(frame); }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => this.fail(unavailable()), timeoutMs);
+      this.pending = { resolve, reject, timer };
+    });
+  }
+
+  fail(error: Error): void {
+    if (this.error !== null) { return; }
+    this.error = error;
+    this.queued = null;
+    const pending = this.pending;
+    if (pending !== null) { clearTimeout(pending.timer); this.pending = null; pending.reject(error); }
+    this.child.kill();
+  }
+
+  close(): void {
+    this.closing = true;
+    if (this.buffer.length > 0 || this.queued !== null || this.pending !== null) { this.fail(unavailable()); }
+  }
+
+  get fault(): Error | null { return this.error; }
+}
+
+async function admittedBytes(inspector: PathInspector, root: string, targets: readonly string[]): Promise<Buffer[]> {
+  const before = await inspector.inspectMany(root, targets, false);
+  if (before.some(item => item.kind !== 'file' || item.links !== 1)) { throw unavailable(); }
+  const bytes = await Promise.all(targets.map(target => readBoundedFile(target, maximumSourceBytes)));
+  const after = await inspector.inspectMany(root, targets, false);
+  for (let index = 0; index < targets.length; index++) {
+    if (after[index]?.kind !== 'file' || after[index]?.links !== 1 || before[index]?.identity !== after[index]?.identity
+      || before[index]?.volume !== after[index]?.volume || !bytes[index]!.equals(await readBoundedFile(targets[index]!, maximumSourceBytes))) {
+      throw unavailable();
+    }
+  }
+
+  return bytes;
+}
+
+async function sourceEvidence(inspector: PathInspector, scope: RuntimeScope): Promise<{ scopeSha256: string; sourceSha256: string }> {
+  const scopeBytes = (await admittedBytes(inspector, scope.companionRoot, [path.join(scope.dataRoot, 'scope.json')]))[0]!;
+  const sources = await admittedBytes(inspector, installationRoot, sourceNames.map(name => path.join(path.dirname(script), name)));
+  const scopeSha256 = createHash('sha256').update(scopeBytes).digest('hex');
+  if (scopeSha256 !== scope.bindingSha256) { throw unavailable(); }
+  const bundle = createHash('sha256');
+  for (const source of sources) { const length = Buffer.alloc(4); length.writeUInt32BE(source.length); bundle.update(length).update(source); }
+  return { scopeSha256, sourceSha256: bundle.digest('hex') };
+}
+
+/** @internal Encodes the larger base64 control frame without enlarging decoded input. */
+export function encodeStartupMetadataFrame(value: unknown): Buffer {
+  const body = Buffer.from(stringifyJson(value, frameBudget), 'utf8');
+  if (body.length < 1 || body.length > maximumInputFrame) { throw unavailable(); }
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length);
+  return Buffer.concat([header, body]);
+}
+
+function validateHello(value: JsonValue, nonce: string, expected: { scopeSha256: string; sourceSha256: string }): void {
+  if (!hasExactKeys(value, ['version', 'nonce', 'scopeSha256', 'sourceSha256']) || asInteger(value['version']) !== 1
+    || value['nonce'] !== nonce || value['scopeSha256'] !== expected.scopeSha256 || value['sourceSha256'] !== expected.sourceSha256) {
+    throw unavailable();
+  }
+}
+
+/** @internal Complete reply validation before an observation reaches its reader. */
+export function parseStartupMetadataReply(frameBytes: Uint8Array, id: string, operation: 'admit' | 'hash'): CommandResult {
+  const response = parseStrictJson(frameBytes);
+  if (hasExactKeys(response, ['version', 'id', 'op', 'status', 'code'])) {
+    const code = operation === 'admit' ? 'admissionUnavailable' : 'hashUnavailable';
+    if (asInteger(response['version']) !== 1 || response['id'] !== id || response['op'] !== operation
+      || response['status'] !== 'error' || response['code'] !== code) { throw unavailable(); }
+    return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+  }
+  if (hasExactKeys(response, ['version', 'id', 'op', 'status', 'result'])) {
+    if (asInteger(response['version']) !== 1 || response['id'] !== id || response['op'] !== operation || response['status'] !== 'ok') { throw unavailable(); }
+    return { exitCode: 0, stdout: Buffer.from(stringifyJson(response['result']), 'utf8'), stderr: Buffer.alloc(0) };
+  }
+  throw unavailable();
+}
+
+export class StartupMetadataSession {
+  private readonly supervisor: ProcessSupervisor;
+  private readonly child: OwnedProcess;
+  private readonly replies: FramedReplies;
+  private closed = false;
+  private closePromise: Promise<void> | null = null;
+  private inFlight = false;
+  private stoppedVerified = false;
+
+  private constructor(supervisor: ProcessSupervisor, child: OwnedProcess, replies: FramedReplies) {
+    this.supervisor = supervisor;
+    this.child = child;
+    this.replies = replies;
+  }
+
+  static async open(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope, handshakeTimeoutMs = 30000): Promise<StartupMetadataSession | null> {
+    if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 30000) { throw unavailable(); }
+    const tempRoot = path.join(scope.companionRoot, '.tmp');
+    const temp = await inspector.inspect(scope.companionRoot, tempRoot, true);
+    if (!temp.exists) { return null; }
+    if (temp.kind !== 'directory') { throw unavailable(); }
+    const expected = await sourceEvidence(inspector, scope);
+    const nonce = randomBytes(16).toString('hex');
+    let child: OwnedProcess;
+    try {
+      child = supervisor.spawn('startupMetadata', { command: 'pwsh', args: ['-NoProfile', '-File', script, '-CompanionRoot', scope.companionRoot,
+        '-DataRoot', scope.dataRoot, '-SourceRoot', installationRoot, '-Nonce', nonce], cwd: scope.companionRoot, env: { ...process.env, TEMP: tempRoot, TMP: tempRoot } });
+    } catch {
+      await supervisor.verifyQuiescent('startupMetadata');
+      return null;
+    }
+    const replies = new FramedReplies(child);
+    let ownedChildReady = false;
+    const startedAt = performance.now();
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const failure = unavailable();
+        replies.fail(failure);
+        reject(failure);
+      }, handshakeTimeoutMs);
+    });
+    try {
+      await Promise.race([child.ready, expired]);
+      ownedChildReady = true;
+      const remaining = Math.floor(handshakeTimeoutMs - (performance.now() - startedAt));
+      if (remaining < 1) { throw unavailable(); }
+      const hello = parseStrictJson(await Promise.race([replies.next(remaining), expired]));
+      validateHello(hello, nonce, expected);
+      if (child.brokerClosed || replies.fault !== null) { throw unavailable(); }
+      return new StartupMetadataSession(supervisor, child, replies);
+    } catch (error) {
+      replies.fail(unavailable());
+      await supervisor.stop('startupMetadata');
+      if (!ownedChildReady && error instanceof SupervisorError && error.reason === 'abnormal-exit') { return null; }
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
+  supports(scriptPath: string): boolean { return scriptPath === admissionScript || scriptPath === hashesScript; }
+  get canFallBack(): boolean { return this.stoppedVerified; }
+
+  async invoke(scriptPath: string, args: readonly string[], cwd: string, timeoutMs: number, input?: Uint8Array): Promise<CommandResult> {
+    if (this.closed || this.inFlight || !this.supports(scriptPath) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { throw unavailable(); }
+    let operation: 'admit' | 'hash';
+    let fields: Record<string, unknown>;
+    if (scriptPath === admissionScript) {
+      if ((args.length !== 4 && args.length !== 5) || args[0] !== '-Root' || args[2] !== '-TargetsJson'
+        || args[1] !== cwd || args.length === 5 && args[4] !== '-AllowMissing' || input !== undefined) { throw unavailable(); }
+      const targets = parseStrictJson(Buffer.from(args[3]!, 'utf8'));
+      if (!Array.isArray(targets) || targets.length < 1 || targets.length > 64 || !targets.every(target => typeof target === 'string')) { throw unavailable(); }
+      operation = 'admit';
+      fields = { targets, allowMissing: args.length === 5 };
+    } else {
+      if ((args.length !== 2 && args.length !== 4) || args[0] !== '-Root' || args[1] !== cwd || args.length === 4 && args[2] !== '-ScopeSha256'
+        || input === undefined || input.byteLength < 1 || input.byteLength > maximumHashInput) { throw unavailable(); }
+      const bound = args.length === 4 ? args[3]! : null;
+      if (bound !== null && !isLowerHex(bound, 64)) { throw unavailable(); }
+      operation = 'hash';
+      const bytes = Buffer.from(input);
+      fields = { inputBase64: bytes.toString('base64'), inputSha256: createHash('sha256').update(bytes).digest('hex'), scopeSha256: bound };
+    }
+    const id = randomBytes(16).toString('hex');
+    const request = encodeStartupMetadataFrame({ version: 1, id, op: operation, root: cwd, remainingMs: timeoutMs, ...fields });
+    this.inFlight = true;
+    try {
+      const next = this.replies.next(timeoutMs);
+      void next.catch(() => undefined);
+      this.child.stdin.write(request);
+      return parseStartupMetadataReply(await next, id, operation);
+    } catch (error) {
+      await this.abort();
+      throw error instanceof DataRootUnavailableError ? error : unavailable();
+    } finally { this.inFlight = false; }
+  }
+
+  private async abort(): Promise<void> {
+    this.closed = true;
+    this.replies.fail(unavailable());
+    await this.supervisor.stop('startupMetadata');
+    this.stoppedVerified = true;
+  }
+
+  close(): Promise<void> {
+    if (this.stoppedVerified) { return Promise.resolve(); }
+    this.closePromise ??= (async () => {
+      this.closed = true;
+      this.replies.close();
+      this.child.stdin.end();
+      await this.supervisor.stop('startupMetadata', 2000);
+      const exit = await this.child.terminated;
+      if (this.replies.fault !== null || exit.code !== 0 || exit.failure !== null) { throw unavailable(); }
+      this.stoppedVerified = true;
+    })();
+    return this.closePromise;
+  }
+}

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson } from './json.ts';
 
-export const processRoles = ['core', 'publication', 'provider', 'watcher', 'metadata'] as const;
+export const processRoles = ['core', 'publication', 'provider', 'watcher', 'metadata', 'startupMetadata'] as const;
 export type ProcessRole = typeof processRoles[number];
 export type SupervisorReason = 'deadline' | 'capture-overflow' | 'abnormal-exit' | 'result-invalid' | 'termination-unverified';
 export class SupervisorError extends Error {
