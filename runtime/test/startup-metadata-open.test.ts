@@ -13,20 +13,24 @@ import { StartupMetadataSession } from '../src/startup-metadata.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 
-async function privateScope(): Promise<{ scope: RuntimeScope; inspector: PathInspector; close(): Promise<void> }> {
+async function privateScope(): Promise<{ scope: RuntimeScope; inspector: PathInspector;
+  evidence(value: unknown, exitCode?: number, stderr?: string): void; close(): Promise<void> }> {
   const dataRoot = path.join(repository, '.tmp', `startup-worker-${randomUUID()}`);
   await fs.mkdir(dataRoot);
   const scopePath = path.join(dataRoot, 'scope.json');
   const bytes = Buffer.from('{}');
   await fs.writeFile(scopePath, bytes);
+  const bindingSha256 = createHash('sha256').update(bytes).digest('hex');
+  let reply = { exitCode: 0, stdout: Buffer.from(JSON.stringify({ status: 'present', scopeSha256: bindingSha256, sourceSha256: 'f'.repeat(64) })), stderr: Buffer.alloc(0) };
   const inspector = {
-    inspect: async () => ({ exists: true, kind: 'directory' }),
-    inspectMany: async (_root: string, targets: readonly string[]) => targets.map(target => ({ path: target, exists: true,
-      kind: 'file', links: 1, volume: 'private', identity: target, missing: [] })),
+    metadata: async (script: string) => { assert.equal(path.basename(script), 'Get-StartupMetadataSource.ps1'); return reply; },
   } as unknown as PathInspector;
   return {
-    scope: { companionRoot: repository, dataRoot, bindingSha256: createHash('sha256').update(bytes).digest('hex') } as RuntimeScope,
+    scope: { companionRoot: repository, dataRoot, bindingSha256 } as RuntimeScope,
     inspector,
+    evidence(value, exitCode = 0, stderr = '') {
+      reply = { exitCode, stdout: Buffer.from(JSON.stringify(value)), stderr: Buffer.from(stderr) };
+    },
     async close() {
       if (path.dirname(dataRoot) !== path.join(repository, '.tmp')) { throw new Error('Private worker scope escaped the repository.'); }
       await fs.unlink(scopePath);
@@ -43,6 +47,27 @@ function ownedChild(ready: Promise<unknown>) {
   return { stdout, stderr, ready, terminated: new Promise(() => {}), brokerClosed: false, stdin: new PassThrough(),
     kill: () => { killed = true; return true; }, killed: () => killed };
 }
+
+test('requires complete source evidence before launching a worker', async () => {
+  const fixture = await privateScope();
+  let launches = 0;
+  const supervisor = { spawn: () => { launches += 1; throw new Error('Worker should not launch.'); } } as unknown as ProcessSupervisor;
+  try {
+    fixture.evidence({ status: 'absent' });
+    assert.equal(await StartupMetadataSession.open(fixture.inspector, supervisor, fixture.scope), null);
+    for (const value of [
+      { status: 'present', scopeSha256: '0'.repeat(64), sourceSha256: 'f'.repeat(64) },
+      { status: 'present', scopeSha256: fixture.scope.bindingSha256, sourceSha256: 'f'.repeat(63) },
+      { status: 'present', scopeSha256: fixture.scope.bindingSha256, sourceSha256: 'f'.repeat(64), extra: true },
+    ]) {
+      fixture.evidence(value);
+      await assert.rejects(StartupMetadataSession.open(fixture.inspector, supervisor, fixture.scope), DataRootUnavailableError);
+    }
+    fixture.evidence({ status: 'present' }, 1, 'source-evidence-unavailable');
+    await assert.rejects(StartupMetadataSession.open(fixture.inspector, supervisor, fixture.scope), DataRootUnavailableError);
+    assert.equal(launches, 0);
+  } finally { await fixture.close(); }
+});
 
 test('verified broker launch absence falls back before a worker identity exists', async () => {
   const fixture = await privateScope();

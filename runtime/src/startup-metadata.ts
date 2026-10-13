@@ -3,19 +3,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, type PathInspector } from './admission.ts';
-import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, readBoundedFile, stringifyJson, type JsonValue } from './json.ts';
+import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 import { SupervisorError, type CommandResult, type OwnedProcess, type ProcessSupervisor } from './process.ts';
 import type { RuntimeScope } from './scope.ts';
 
 const script = fileURLToPath(new URL('../scripts/StartupMetadataWorker.ps1', import.meta.url));
+const sourceScript = fileURLToPath(new URL('../scripts/Get-StartupMetadataSource.ps1', import.meta.url));
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
 const admissionScript = fileURLToPath(new URL('../scripts/Get-PathAdmission.ps1', import.meta.url));
 const hashesScript = fileURLToPath(new URL('../scripts/Get-FileHashes.ps1', import.meta.url));
-const sourceNames = ['StartupMetadataWorker.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs'] as const;
 const maximumInputFrame = 2_097_152;
 const maximumOutputFrame = 65_536;
 const maximumHashInput = 1_048_576;
-const maximumSourceBytes = 1_048_576;
 const frameBudget = { maxBytes: maximumInputFrame, maxTokens: 65_536, maxTextBytes: maximumInputFrame } as const;
 
 function unavailable(): DataRootUnavailableError { return new DataRootUnavailableError('Startup metadata observation is unavailable.'); }
@@ -93,29 +92,19 @@ export class FramedReplies {
   get fault(): Error | null { return this.error; }
 }
 
-async function admittedBytes(inspector: PathInspector, root: string, targets: readonly string[]): Promise<Buffer[]> {
-  const before = await inspector.inspectMany(root, targets, false);
-  if (before.some(item => item.kind !== 'file' || item.links !== 1)) { throw unavailable(); }
-  const bytes = await Promise.all(targets.map(target => readBoundedFile(target, maximumSourceBytes)));
-  const after = await inspector.inspectMany(root, targets, false);
-  for (let index = 0; index < targets.length; index++) {
-    if (after[index]?.kind !== 'file' || after[index]?.links !== 1 || before[index]?.identity !== after[index]?.identity
-      || before[index]?.volume !== after[index]?.volume || !bytes[index]!.equals(await readBoundedFile(targets[index]!, maximumSourceBytes))) {
-      throw unavailable();
-    }
+async function sourceEvidence(inspector: PathInspector, scope: RuntimeScope): Promise<{ scopeSha256: string; sourceSha256: string } | null> {
+  const reply = await inspector.metadata(sourceScript, ['-CompanionRoot', scope.companionRoot, '-DataRoot', scope.dataRoot,
+    '-SourceRoot', installationRoot], scope.companionRoot);
+  if (reply.exitCode !== 0 || reply.stderr.length !== 0) { throw unavailable(); }
+  let value: JsonValue;
+  try { value = parseStrictJson(reply.stdout); }
+  catch { throw unavailable(); }
+  if (hasExactKeys(value, ['status']) && value['status'] === 'absent') { return null; }
+  if (!hasExactKeys(value, ['status', 'scopeSha256', 'sourceSha256']) || value['status'] !== 'present'
+    || !isLowerHex(value['scopeSha256'], 64) || !isLowerHex(value['sourceSha256'], 64) || value['scopeSha256'] !== scope.bindingSha256) {
+    throw unavailable();
   }
-
-  return bytes;
-}
-
-async function sourceEvidence(inspector: PathInspector, scope: RuntimeScope): Promise<{ scopeSha256: string; sourceSha256: string }> {
-  const scopeBytes = (await admittedBytes(inspector, scope.companionRoot, [path.join(scope.dataRoot, 'scope.json')]))[0]!;
-  const sources = await admittedBytes(inspector, installationRoot, sourceNames.map(name => path.join(path.dirname(script), name)));
-  const scopeSha256 = createHash('sha256').update(scopeBytes).digest('hex');
-  if (scopeSha256 !== scope.bindingSha256) { throw unavailable(); }
-  const bundle = createHash('sha256');
-  for (const source of sources) { const length = Buffer.alloc(4); length.writeUInt32BE(source.length); bundle.update(length).update(source); }
-  return { scopeSha256, sourceSha256: bundle.digest('hex') };
+  return { scopeSha256: value['scopeSha256'], sourceSha256: value['sourceSha256'] };
 }
 
 /** @internal Encodes the larger base64 control frame without enlarging decoded input. */
@@ -168,10 +157,8 @@ export class StartupMetadataSession {
   static async open(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope, handshakeTimeoutMs = 30000): Promise<StartupMetadataSession | null> {
     if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 30000) { throw unavailable(); }
     const tempRoot = path.join(scope.companionRoot, '.tmp');
-    const temp = await inspector.inspect(scope.companionRoot, tempRoot, true);
-    if (!temp.exists) { return null; }
-    if (temp.kind !== 'directory') { throw unavailable(); }
     const expected = await sourceEvidence(inspector, scope);
+    if (expected === null) { return null; }
     const nonce = randomBytes(16).toString('hex');
     let child: OwnedProcess;
     try {
