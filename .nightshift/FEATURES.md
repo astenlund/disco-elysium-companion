@@ -96,6 +96,12 @@ Host the persistent agent session, supervise the existing state core, own the si
 
 **Requires:** none.
 
+### [Coordinator startup latency](features/runtime-startup-latency.md)
+
+Reduce `chat` startup latency with a startup-scoped supervised metadata worker for fresh path admission and file hashing. Progress feedback is already shipped; the approved private targets are 60 seconds for clean startup, 90 seconds for acknowledged restart, and 180 seconds for recovery-heavy startup, with a later user-coordinated live measurement. Whole-turn latency remains separate.
+
+**Requires:** none.
+
 ## Guidance
 
 ### [Session focus](features/session-focus.md)
@@ -133,10 +139,6 @@ Design safe continuation beyond the fixed handoff reserve while preserving compa
 ### [Cleanup warning guidance policy](features/runtime-cleanup-warning-guidance-policy.md)
 
 Investigate whether confirmed deletion-only cleanup failures can be distinguished from incomplete checks before changing conservative withholding.
-
-### [Coordinator startup latency](features/runtime-startup-latency.md)
-
-Progress reporting is implemented; measure clean and recovery startup separately and design safe reductions in repeated admission work.
 
 ### [Coordinator whole-turn latency](features/runtime-interaction-latency.md)
 
