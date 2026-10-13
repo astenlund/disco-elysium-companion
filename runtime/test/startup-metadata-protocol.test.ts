@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import { DataRootUnavailableError } from '../src/admission.ts';
-import { encodeStartupMetadataFrame, FramedReplies, parseStartupMetadataReply } from '../src/startup-metadata.ts';
+import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
+import type { ProcessSupervisor } from '../src/process.ts';
+import { encodeStartupMetadataFrame, FramedReplies, parseStartupMetadataReply, type StartupMetadataSession } from '../src/startup-metadata.ts';
 
 function workerStream() {
   const stdout = new PassThrough();
@@ -86,4 +87,34 @@ test('hash transport admits a full decoded control input without losing the fram
   assert.ok(encoded.length <= 2097156);
   assert.equal(encoded.readUInt32BE(0), encoded.length - 4);
   assert.throws(() => encodeStartupMetadataFrame({ inputBase64: Buffer.alloc(2097152).toString('base64') }));
+});
+
+test('startup close drains queued worker calls before one-shot inspection resumes', async () => {
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let callCount = 0;
+  const session = {
+    supports: () => true,
+    canFallBack: false,
+    invoke: async () => {
+      callCount += 1;
+      if (callCount === 1) { await firstGate; }
+      order.push('worker');
+      return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+    },
+    close: async () => { order.push('close'); },
+  } as unknown as StartupMetadataSession;
+  const supervisor = {
+    run: async () => { order.push('one-shot'); return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; },
+  } as unknown as ProcessSupervisor;
+  const inspector = new PathInspector(supervisor);
+  inspector.attachStartupSession(session);
+  const first = inspector.metadata('worker', [], 'root');
+  const second = inspector.metadata('worker', [], 'root');
+  const closing = inspector.closeStartupSession();
+  const after = inspector.metadata('worker', [], 'root');
+  releaseFirst();
+  await Promise.all([first, second, closing, after]);
+  assert.deepEqual(order, ['worker', 'worker', 'close', 'one-shot']);
 });

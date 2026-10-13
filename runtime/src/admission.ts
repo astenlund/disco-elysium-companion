@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
 import { ProcessSupervisor, type CommandResult } from './process.ts';
 import { SerialQueue } from './serial.ts';
+import type { StartupMetadataSession } from './startup-metadata.ts';
 
 export class DataRootUnavailableError extends Error {
   override readonly name = 'DataRootUnavailableError';
@@ -44,10 +45,26 @@ function parseAdmission(value: JsonValue, target: string, allowMissing: boolean)
 export class PathInspector {
   private readonly supervisor: ProcessSupervisor;
   private readonly queue = new SerialQueue();
+  private startupSession: StartupMetadataSession | null = null;
+  private startupClosing: Promise<void> | null = null;
 
   constructor(supervisor: ProcessSupervisor) { this.supervisor = supervisor; }
 
   idle(): Promise<void> { return this.queue.idle(); }
+
+  attachStartupSession(session: StartupMetadataSession): void {
+    if (this.startupSession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup metadata session is already attached.'); }
+    this.startupSession = session;
+  }
+
+  closeStartupSession(): Promise<void> {
+    if (this.startupClosing !== null) { return this.startupClosing; }
+    const session = this.startupSession;
+    this.startupSession = null;
+    if (session === null) { return Promise.resolve(); }
+    this.startupClosing = this.queue.idle().then(() => session.close());
+    return this.startupClosing;
+  }
 
   async inspect(root: string, target: string, allowMissing = false, timeoutMs = 30000): Promise<PathAdmission> {
     const results = await this.inspectMany(root, [target], allowMissing, timeoutMs);
@@ -60,11 +77,18 @@ export class PathInspector {
     const deadline = performance.now() + timeoutMs;
     const frozenArgs = [...args];
     const frozenInput = input === undefined ? undefined : Buffer.from(input);
-    return this.queue.run(async () => {
+    const startupSession = this.startupSession;
+    const closing = this.startupClosing;
+    const run = async (): Promise<CommandResult> => {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
+      if (startupSession !== null && startupSession.supports(scriptPath)) {
+        if (startupSession.canFallBack) { this.startupSession = null; }
+        else { return startupSession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
+      }
       return this.supervisor.run('metadata', { command: 'pwsh', args: ['-NoProfile', '-File', scriptPath, ...frozenArgs], cwd }, remaining, frozenInput);
-    });
+    };
+    return closing === null ? this.queue.run(run) : closing.then(() => this.queue.run(run));
   }
 
   inspectMany(root: string, targets: readonly string[], allowMissing = false, timeoutMs = 30000): Promise<readonly PathAdmission[]> {

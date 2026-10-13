@@ -9,7 +9,7 @@ import { assembleInstructions } from '../../../src/instructions.ts';
 import { newIdentity } from '../../../src/identity.ts';
 import { utcNow } from '../../../src/json.ts';
 import type { ProviderSession } from '../../../src/provider.ts';
-import { ProcessSupervisor, type OwnedProcess } from '../../../src/process.ts';
+import { ProcessSupervisor, processRoles, type OwnedProcess } from '../../../src/process.ts';
 import { bytesHash } from '../../../src/storage.ts';
 
 const repository = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -142,7 +142,7 @@ assert.deepEqual(await fs.readFile(indexPath), indexBefore);
 assert.equal(publicationCalls, 1);
 await session.close();
 await backend.inspector.idle();
-for (const role of ['core', 'publication', 'provider', 'watcher', 'metadata'] as const) { await backend.supervisor.verifyQuiescent(role); }
+for (const role of processRoles) { await backend.supervisor.verifyQuiescent(role); }
 assert.equal(JSON.parse(await fs.readFile(path.join(backend.scope.dataRoot, 'runtime.json'), 'utf8')).cleanShutdown, false);
 assert.equal(internal.kernel.guard.held, true);
 process.stdout.write(JSON.stringify({ proof: 'sent-mark-fallback', dataRoot: backend.scope.dataRoot, events: candidate.eventCount, failedPublicationExit,

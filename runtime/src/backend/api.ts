@@ -75,6 +75,7 @@ export interface CapacityRewindResult {
 export interface BackendStartup { readonly notOwner: boolean; readonly consumerResult: CoreResult<ConsumerReceipt> | null; readonly requiredWorkCompleted: boolean; readonly capacityRewind: CapacityRewindResult | null }
 export interface BackendOptions {
   readonly companionRoot: string;
+  readonly startupMetadata?: boolean;
   readonly onStatus?: (status: BackendStatus) => void;
   readonly onInvalidated?: (reason: CorrectionReason) => void;
   readonly onDiagnostic?: (phase: string, error: unknown) => void;
@@ -101,5 +102,6 @@ export interface RuntimeBackend {
   markSent(handle: DeliveryHandle): Promise<boolean>;
   acknowledge(handle: DeliveryHandle, binding: AgentSessionBinding, provider: ProviderIdentity, options: AcknowledgementOptions): Promise<BoundSession | null>;
   beginShutdown(): Promise<void>;
+  closeStartupMetadata(): Promise<void>;
   shutdown(providerAndToolsQuiescent: boolean): Promise<void>;
 }

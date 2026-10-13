@@ -16,13 +16,14 @@ import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts
 import { OperationStore } from '../operations.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
-import { ProcessSupervisor } from '../process.ts';
+import { ProcessSupervisor, processRoles } from '../process.ts';
 import { createReadOnlyInspection } from '../read-only-inspection.ts';
 import { maintainRuntimeStorage } from '../resource-lifecycle/retention.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
 import { discoverScope, initializeScope } from '../scope.ts';
 import { SerialQueue } from '../serial.ts';
 import { ScopeStorage } from '../storage.ts';
+import { StartupMetadataSession } from '../startup-metadata.ts';
 import type { BackendCommand, BackendOptions, BackendStartup, RuntimeBackend } from './api.ts';
 import { ConsumerCoordinator } from './consumer.ts';
 import { PendingStateCheckError } from './api.ts';
@@ -245,20 +246,23 @@ export class CoordinatorBackend implements RuntimeBackend {
     return this.shuttingDown;
   }
 
+  closeStartupMetadata(): Promise<void> { return this.kernel.inspector.closeStartupSession(); }
+
   async shutdown(providerAndToolsQuiescent: boolean): Promise<void> {
     await this.beginShutdown();
     requireControl(providerAndToolsQuiescent);
     await this.queue.idle();
     const k = this.kernel;
     await k.core.idle(); await k.journal.idle(); await k.storage.idle(); await k.publisher.idle(); await k.inspector.idle();
-    for (const role of ['core', 'publication', 'provider', 'watcher', 'metadata'] as const) { await k.supervisor.verifyQuiescent(role); }
+    await this.closeStartupMetadata();
+    for (const role of processRoles) { await k.supervisor.verifyQuiescent(role); }
     await k.resources.withTransition('runtimeMarker', async () => {
       await k.resources.reserveRuntimeMarker();
       const value = { ...this.runtime.value, cleanShutdown: true, watcher: null };
       const sha256 = await k.storage.write('runtime.json', value, 'config', this.runtime.sha256);
       this.runtime = { value, sha256 };
     }).catch(error => { throw this.recordFailure(error); });
-    await k.supervisor.verifyQuiescent('metadata'); await k.supervisor.verifyQuiescent('publication');
+    await k.supervisor.verifyQuiescent('metadata'); await k.supervisor.verifyQuiescent('startupMetadata'); await k.supervisor.verifyQuiescent('publication');
     k.journal.invalidate();
     await k.guard.release();
   }
@@ -273,6 +277,8 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
   let kernel: Kernel | null = null;
   let supervisor: ProcessSupervisor | null = null;
   let resources: ResourceAuthority | null = null;
+  let startupInspector: PathInspector | null = null;
+  let startupSession: StartupMetadataSession | null = null;
   try {
     let principal: string;
     try { principal = await resolvePrincipal(bootstrap.inspector, options.companionRoot); }
@@ -282,6 +288,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
     supervisor = await ProcessSupervisor.create(candidate.dataRoot);
     const inspector = new PathInspector(supervisor);
+    startupInspector = inspector;
     const prospectiveFailure = (error: ProspectiveJsonBudgetError): Error => resources?.prospectiveFailure(error) ?? error;
     const publisher = new FilePublisher({ root: candidate.dataRoot, guard, inspector, supervisor, prospectiveFailure,
       bind: action => resources?.bind(action) ?? action, beforeWrite: (relative, deadline) => resources?.beforeWrite(relative, deadline) ?? Promise.resolve(),
@@ -303,17 +310,23 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     const operations = new OperationStore(storage, prospectiveFailure, action => resources?.bind(action) ?? action);
     resources = new ResourceAuthority(scope, inspector, operations);
     const { identities, runtime, sha256, previous } = await initializeRuntimeMarker({ scope, guard, inspector, supervisor, storage, resources });
+    if (options.startupMetadata === true) {
+      startupSession = await StartupMetadataSession.open(inspector, supervisor, scope);
+      if (startupSession !== null) { inspector.attachStartupSession(startupSession); }
+    }
     kernel = new Kernel({ config, identities, scope, guard, supervisor, inspector, publisher, storage, resources, options });
     kernel.emit({ previousShutdownClean: previous.status === 'valid' && previous.value.cleanShutdown });
     await bootstrap.close();
     return new CoordinatorBackend(kernel, { value: runtime, sha256 }, options.onStartupPhase);
   } catch (error) {
     error = resources?.captureFailure(error) ?? error;
+    await startupInspector?.closeStartupSession();
+    await startupSession?.close();
     await bootstrap.close();
     if (guard !== null && supervisor !== null) {
       // Failed native termination retains the instance guard while this process
       // lives. A second writer must never race a possibly active predecessor.
-      for (const role of ['core', 'publication', 'provider', 'watcher', 'metadata'] as const) { await supervisor.verifyQuiescent(role); }
+      for (const role of processRoles) { await supervisor.verifyQuiescent(role); }
       await guard.release();
     }
     if (error !== null && typeof error === 'object' && 'code' in error) { throw error; }

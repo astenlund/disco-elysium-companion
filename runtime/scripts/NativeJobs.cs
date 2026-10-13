@@ -161,7 +161,7 @@ public static class NativeJobs
 
     private static void ValidateName(string name)
     {
-        if (!Regex.IsMatch(name, @"^Global\\game-companion-process-[a-f0-9]{32}-(core|publication|provider|watcher|metadata)$", RegexOptions.CultureInvariant))
+        if (!Regex.IsMatch(name, @"^Global\\game-companion-process-[a-f0-9]{32}-(core|publication|provider|watcher|metadata|startupMetadata)$", RegexOptions.CultureInvariant))
         {
             throw new ArgumentException("Invalid process job name.", nameof(name));
         }
