@@ -39,7 +39,7 @@ function model() {
   if (snapshot.cursor.status === 'valid') { memory.seed('journal/cursor-agent-session.json', snapshot.cursor.value); }
   const boundaries: string[] = [];
   const forbidden = async (): Promise<never> => { throw new Error('Pure capacity control reached a native boundary.'); };
-  const inspector = { inspect: memory.inspect.bind(memory), metadata: forbidden, idle: async () => {} };
+  const inspector = { inspect: memory.inspect.bind(memory), metadata: forbidden, idle: async () => {}, closeStartupSession: async () => {} };
   const resources = new ResourceAuthority(memory.scope, inspector as never, new OperationStore(memory as unknown as ScopeStorage));
   resources.inventory = async () => complete;
   const observation = resources as unknown as { observe: () => Promise<ResourceObservation>; readSafety: () => Promise<StateSafety> };
@@ -149,6 +149,9 @@ describe('capacity phase-E selection and command result', () => {
   }
   it('does not add a phase-E capacity pass to chat startup', async () => {
     const value = model(); let retention = 0; let capacityCallbacks = 0;
+    let releaseReservations = 0;
+    const reserve = value.resources.reserve.bind(value.resources);
+    value.resources.reserve = async (...args) => { if (args[0] === 'release') { releaseReservations++; } await reserve(...args); };
     const internal = value.backend as unknown as { cleanup(): Promise<void>; initializeStorage(): Promise<void>; retention(): Promise<void>; recovery: RecoveryCoordinator; consumer: ConsumerCoordinator; delivery: DeliveryCoordinator };
     internal.cleanup = async () => {}; internal.initializeStorage = async () => {};
     internal.retention = async () => { retention++; }; internal.consumer.startup = async () => null;
@@ -157,7 +160,32 @@ describe('capacity phase-E selection and command result', () => {
       freshness: value.kernel.status.freshness, relevanceFingerprint: 'a'.repeat(64) });
     value.kernel.drain = async () => value.snapshot;
     const result = await value.backend.startup({ kind: 'chat' });
-    assert.equal(capacityCallbacks, 0); assert.equal(retention, 1); assert.equal(result.requiredWorkCompleted, true); assert.equal(result.capacityRewind, null);
+    assert.equal(capacityCallbacks, 0); assert.equal(retention, 1); assert.equal(releaseReservations, 1);
+    assert.equal(result.requiredWorkCompleted, true); assert.equal(result.capacityRewind, null);
+  });
+  it('retries a refused release reservation before initializing storage under its lease', async () => {
+    const value = model(); let releaseReservations = 0; let initialized = 0;
+    const retention: boolean[] = [];
+    const reserve = value.resources.reserve.bind(value.resources);
+    value.resources.reserve = async (...args) => {
+      if (args[0] === 'release' && ++releaseReservations === 1) { throw refusal('release'); }
+      await reserve(...args);
+    };
+    const internal = value.backend as unknown as { cleanup(): Promise<void>; initializeStorage(): Promise<void>; retention(reevaluate?: boolean): Promise<void>;
+      recovery: RecoveryCoordinator; consumer: ConsumerCoordinator; delivery: DeliveryCoordinator };
+    internal.cleanup = async () => {};
+    internal.initializeStorage = async () => { assert.equal(value.resources.assertReservation(), 'release'); initialized++; };
+    internal.retention = async (reevaluate = true) => { retention.push(reevaluate); };
+    internal.consumer.startup = async () => null;
+    internal.recovery.startup = async () => {};
+    internal.delivery.acquire = async () => ({ interaction: { interactionId: 'startup', requestReceivedAt: at }, generation, disclosureOnly: true,
+      freshness: value.kernel.status.freshness, relevanceFingerprint: 'a'.repeat(64) });
+    value.kernel.drain = async () => value.snapshot;
+    const result = await value.backend.startup({ kind: 'chat' });
+    assert.equal(result.requiredWorkCompleted, true);
+    assert.equal(releaseReservations, 2);
+    assert.equal(initialized, 1);
+    assert.deepEqual(retention, [false, true]);
   });
   it('runs repair retention before fresh ordinary assessment and starts no root on admission', async () => {
     const value = model(); const recovery = new RecoveryCoordinator(value.kernel); const calls: string[] = [];

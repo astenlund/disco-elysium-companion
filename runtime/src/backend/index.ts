@@ -89,7 +89,7 @@ export class CoordinatorBackend implements RuntimeBackend {
   private async initializeStorage(): Promise<void> {
     const k = this.kernel;
     await k.resources.withTransition('release', async () => {
-      await k.resources.reserve('release');
+      requireControl(k.resources.assertReservation() === 'release');
       if (k.scope.createdHere) { await k.safetyStore.initializeNew(); }
       await initializeJournal(k.storage, k.inspector, k.publisher);
       await k.storage.ensureDirectory('operations'); await k.storage.ensureDirectory('quarantine');
@@ -123,18 +123,19 @@ export class CoordinatorBackend implements RuntimeBackend {
       this.onStartupPhase?.('storageRecovery');
       try { await k.resources.withTransition('maintenance', () => this.cleanup()); }
       catch (error) { return this.preparationFailed(capacityError(error, 'maintenance', 'publicationScope')); }
-      try {
-        try { await k.resources.withTransition('release', () => k.resources.reserve('release')); }
-        catch (error) {
-          if (!(error instanceof RuntimeCapacityError)) { throw error; }
-          await this.retention(false);
-          await k.resources.withTransition('release', () => k.resources.reserve('release'));
-        }
-      } catch (error) { return this.preparationFailed(error); }
       let failed = false;
       try {
-        await this.initializeStorage();
-      } catch (error) { failed = true; this.recordFailure(error); k.diagnose('initializeJournalAndSafety', error); }
+        await k.resources.withTransition('release', async () => {
+          try { await k.resources.reserve('release'); }
+          catch (error) {
+            if (!(error instanceof RuntimeCapacityError)) { throw error; }
+            await this.retention(false);
+            await k.resources.reserve('release');
+          }
+          try { await this.initializeStorage(); }
+          catch (error) { failed = true; this.recordFailure(error); k.diagnose('initializeJournalAndSafety', error); }
+        });
+      } catch (error) { return this.preparationFailed(error); }
       try {
         this.onStartupPhase?.('consumerReconciliation');
         const consumerStartup = await this.consumer.startup(command);
