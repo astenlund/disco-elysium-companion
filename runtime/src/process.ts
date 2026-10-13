@@ -5,7 +5,7 @@ import { PassThrough, type Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { guardScopeToken } from './guard.ts';
-import { asInteger, hasExactKeys, parseStrictJson, stringifyJson } from './json.ts';
+import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 
 export const processRoles = ['core', 'publication', 'provider', 'watcher', 'metadata', 'startupMetadata'] as const;
 export type ProcessRole = typeof processRoles[number];
@@ -33,7 +33,7 @@ const wait = (milliseconds: number): Promise<void> => new Promise(resolve => set
 const spawnBroker: BrokerSpawn = options => spawn('pwsh', ['-NoProfile', '-File', path.join(scripts, 'Invoke-OwnedProcess.ps1')], { cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
 // These bootstrap scripts inspect metadata only and never start another process or write a file.
-function inspectNative(script: 'Get-ProcessIdentity.ps1' | 'Get-OwnedJobState.ps1', args: readonly string[], timeoutMs = 5000): Promise<ReturnType<typeof parseStrictJson>> {
+function inspectNative(script: 'Get-ProcessIdentity.ps1' | 'Get-OwnedJobState.ps1' | 'Get-OwnedJobStates.ps1', args: readonly string[], timeoutMs = 5000): Promise<ReturnType<typeof parseStrictJson>> {
   return new Promise((resolve, reject) => {
     execFile('pwsh', ['-NoProfile', '-File', path.join(scripts, script), ...args], { windowsHide: true, timeout: timeoutMs, maxBuffer: 65_536, encoding: 'buffer' }, (error, stdout) => {
       if (error !== null) { reject(new SupervisorError('termination-unverified', 'Native process metadata is unavailable.')); return; }
@@ -61,6 +61,27 @@ async function jobAbsent(name: string, timeoutMs: number): Promise<boolean> {
   const count = asInteger(value['processes']);
   if (value['state'] === 'present' && count !== undefined && count >= 0) { return false; }
   throw new SupervisorError('termination-unverified', 'Job state is unavailable.');
+}
+
+/** @internal A partial or reordered batch cannot establish startup quiescence. */
+export function parseStartupJobStates(value: JsonValue, names: readonly string[]): readonly boolean[] {
+  if (!hasExactKeys(value, ['jobs']) || !Array.isArray(value['jobs']) || value['jobs'].length !== names.length) {
+    throw new SupervisorError('termination-unverified', 'Startup job observations are incomplete.');
+  }
+  return value['jobs'].map((entry, index) => {
+    if (!hasExactKeys(entry, ['name', 'state', 'processes']) || entry['name'] !== names[index]) {
+      throw new SupervisorError('termination-unverified', 'Startup job observation identity is invalid.');
+    }
+    if (entry['state'] === 'absent' && entry['processes'] === null) { return true; }
+    const count = asInteger(entry['processes']);
+    if (entry['state'] === 'present' && count !== undefined && count >= 0) { return false; }
+    throw new SupervisorError('termination-unverified', 'Startup job state is unavailable.');
+  });
+}
+
+async function jobsAbsent(names: readonly string[]): Promise<readonly boolean[]> {
+  const value = await inspectNative('Get-OwnedJobStates.ps1', ['-JobNamesJson', JSON.stringify(names)], 30000);
+  return parseStartupJobStates(value, names);
 }
 
 export class OwnedProcess extends EventEmitter {
@@ -232,7 +253,22 @@ export class ProcessSupervisor {
   }
 
   async admitStartup(): Promise<void> {
-    for (const role of processRoles) { await this.verifyQuiescent(role); }
+    const owners = new Map<ProcessRole, OwnedProcess | null | undefined>();
+    for (const role of processRoles) {
+      const owner = this.active.get(role);
+      if (owner?.terminationState === 'verifying') { await owner.terminated; }
+      const current = this.active.get(role);
+      if (current === null || current !== undefined && !current.brokerClosed) {
+        throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.');
+      }
+      owners.set(role, current);
+    }
+    const absent = await jobsAbsent(processRoles.map(role => this.jobName(role)));
+    for (const [index, role] of processRoles.entries()) {
+      if (this.active.get(role) !== owners.get(role)) { throw new SupervisorError('termination-unverified', 'Process ownership changed during startup admission.'); }
+      if (absent[index]) { this.active.delete(role); }
+      else { await this.verifyQuiescent(role); }
+    }
   }
 
   stop(role: ProcessRole, graceMs = 0): Promise<void> {
