@@ -181,6 +181,11 @@ remains only for manual inspection that must not consume.
   instead of copying the recipe inline; mirroring a sibling's fixture inline is how
   test-suite duplication is born. (Promoted from the 2026-08-13 revise-code
   authoring retrospective: all eight confirmed findings were this class.)
+- Before awaiting a callback while holding a `SerialQueue` or `FilePublisher` guard,
+  trace the queues the callback can enter and the order other paths acquire them.
+  If it can re-enter the held queue or invert that order, run it outside the guard
+  and revalidate protected state before the write; cover the concurrent path with
+  a regression.
 
 ## Hard limits
 
