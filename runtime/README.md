@@ -2,7 +2,7 @@
 
 The single-session coordinator hosts one provider session, supervises the state core, journals accepted state events, and exposes `SessionHostV1` to an in-process text client. The governing contract is the [Coordinator MVP design](../.nightshift/features/companion-execution-runtime.md#coordinator-mvp-design).
 
-Implementation verification is still in progress. This delivery has not switched the real companion root away from the bridge. All mutating integration checks use private fixtures; running-game cutover remains unverified.
+The real companion root was handed over to the runtime on 2026-10-13. Startup and restart were exercised in a live chat session; further live gameplay behavior is not implied by those checks. Mutating integration tests use private fixtures.
 
 ## Requirements and configuration
 
@@ -25,7 +25,9 @@ Run the entry point as `node runtime/src/cli.ts <command>` from the companion ch
 | `consumer bridge --abandon-undelivered` | Performs explicit abandon release, preserving correction and recovery evidence as required by the design. |
 | `repair` | Runs startup reconciliation and repair under runtime ownership. |
 
-The consumer and repair commands mutate state. They are not part of the real-root verification performed for this dark delivery. Installing the runtime or reading status does not transfer consumption.
+The consumer and repair commands mutate state. Installing the runtime or reading status does not transfer consumption.
+
+`chat` reports timestamped startup phases and elapsed time to the host's stderr stream. A 15-second timer emits a still-working update after the current phase has been quiet for at least 15 seconds; timer alignment and a busy event loop can delay it. Handled completion, ownership refusal and failure paths emit terminal outcomes, and chat readiness is announced only after the text client attaches. The progress data contains phase names and timing, not save content, credentials or paths. Programmatic callers can direct structured `StartupProgress` events to another sink through `runCli`'s progress callback. This reports waiting; it does not shorten startup.
 
 The text client accepts one question at a time. `/think <question>` selects the configured per-question override; `/new` requests a new provider session; `/status` displays live status; `/quit` shuts down. Dialogs are answered within that same client. Attach, live changes and `/status` show operational warnings; a reaper discovery-limit warning names its `tmp` or `state` root and the stop, reduce and rerun remedy. The runtime never automatically resubmits a failed player message.
 

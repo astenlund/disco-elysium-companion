@@ -12,6 +12,7 @@ import { parseStateSafety } from '../../src/safety-records.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { bytesHash } from '../../src/storage.ts';
+import type { StartupPhase } from '../../src/startup-progress.ts';
 import { CrashFixture, readDocument } from '../backend-crash/support.ts';
 import { FakeProvider, instructionHash } from './support.ts';
 
@@ -19,6 +20,7 @@ test('first owner resumes a witnessed lostJournal repair before provider input a
   const fixture = await CrashFixture.create('first-owner-recovery', ['lostJournalPrepared'], ['lostJournalPrepared'], 'runtime');
   let backend: RuntimeBackend | null = null;
   let host: SessionHost | null = null;
+  const recoveryPhases: StartupPhase[] = [];
   try {
     assert.equal((await fixture.child('first-owner-handover')).boundary, 'firstOwnerHandedOver');
     const cut = await fixture.child('first-owner-cut', 'lostJournalPrepared');
@@ -58,9 +60,12 @@ test('first owner resumes a witnessed lostJournal repair before provider input a
     assert.deepEqual(blockedProvider.sessions, []);
     await host.shutdown(); host = null; backend = null;
 
-    backend = await openBackend({ companionRoot: fixture.fixture.root });
+    backend = await openBackend({ companionRoot: fixture.fixture.root, onStartupPhase: phase => recoveryPhases.push(phase) });
     const repaired = await backend.startup({ kind: 'repair' });
     assert.equal(repaired.notOwner, false);
+    assert.ok(recoveryPhases.includes('streamRecovery'));
+    assert.ok(recoveryPhases.includes('outboxDrain'));
+    assert.ok(recoveryPhases.includes('retention'));
     const headerAfterRepair = parseJournalHeader(await readDocument(headerPath));
     const repairAfter = parseOperation(await readDocument(operationPath), scopeHash);
     const safetyAfterRepair = parseStateSafety(await readDocument(safetyPath), scopeHash);

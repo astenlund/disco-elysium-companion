@@ -46,11 +46,13 @@ export class CoordinatorBackend implements RuntimeBackend {
   private readonly queueContext = new AsyncLocalStorage<{ active: boolean }>();
   private readonly deliverySources = new WeakMap<object, CapacitySource>();
   private readonly watcher: WatcherSupervisor;
+  private readonly onStartupPhase: BackendOptions['onStartupPhase'];
   private runtime: { value: RuntimeRecord; sha256: string };
   private started = false;
   private shuttingDown: Promise<void> | null = null;
 
-  constructor(kernel: Kernel, runtime: { value: RuntimeRecord; sha256: string }) {
+  constructor(kernel: Kernel, runtime: { value: RuntimeRecord; sha256: string }, onStartupPhase?: BackendOptions['onStartupPhase']) {
+    this.onStartupPhase = onStartupPhase;
     this.kernel = kernel; this.runtime = runtime;
     this.recovery = new RecoveryCoordinator(kernel); this.consumer = new ConsumerCoordinator(kernel); this.delivery = new DeliveryCoordinator(kernel, () => this.retention(false));
     this.watcher = new WatcherSupervisor({ companionRoot: kernel.scope.companionRoot, adapter: kernel.config.adapter, enabled: kernel.config.watcher.enabled, supervisor: kernel.supervisor,
@@ -117,6 +119,7 @@ export class CoordinatorBackend implements RuntimeBackend {
     return this.enqueue(async () => {
       requireControl(!this.started); this.started = true;
       const k = this.kernel;
+      this.onStartupPhase?.('storageRecovery');
       try { await k.resources.withTransition('maintenance', () => this.cleanup()); }
       catch (error) { return this.preparationFailed(capacityError(error, 'maintenance', 'publicationScope')); }
       try {
@@ -132,6 +135,7 @@ export class CoordinatorBackend implements RuntimeBackend {
         await this.initializeStorage();
       } catch (error) { failed = true; this.recordFailure(error); k.diagnose('initializeJournalAndSafety', error); }
       try {
+        this.onStartupPhase?.('consumerReconciliation');
         const consumerStartup = await this.consumer.startup(command);
         if (consumerStartup !== null) { return consumerStartup; }
       } catch (error) {
@@ -139,26 +143,31 @@ export class CoordinatorBackend implements RuntimeBackend {
         failed = true; this.recordFailure(error);
       }
       try {
+        this.onStartupPhase?.('streamRecovery');
         await this.recovery.startup(() => this.consumer.transferPending(), command.kind === 'repair' ? () => this.recovery.capacityCheckpoint(() => this.retention(false)) : undefined);
+        this.onStartupPhase?.('outboxDrain');
         await k.resources.withTransition('ordinary', async () => { await k.resources.reserve('ordinary'); await k.drain(Deadline.after(120000)); });
         const active = (await k.operations.list()).records.find(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record));
-        if (active !== undefined) { await this.recovery.resume(active.record.operationId); }
+        if (active !== undefined) { this.onStartupPhase?.('streamRecovery'); await this.recovery.resume(active.record.operationId); }
       } catch (error) { failed = true; this.recordFailure(error); }
       if (command.kind === 'chat') {
         try {
+          this.onStartupPhase?.('startupAcquisition');
           await k.resources.withTransition('ordinary', () => this.delivery.acquire({ interactionId: k.identities.runtimeSessionId, requestReceivedAt: utcNow() }));
         } catch (error) { failed = true; this.recordFailure(error); }
         if (k.status.consumer === 'notOwner') { return { notOwner: true, consumerResult: null, requiredWorkCompleted: false, capacityRewind: null }; }
         try {
+          this.onStartupPhase?.('safetyReconciliation');
           const safety = await k.safety();
           const unfinished = (await k.operations.list()).records.some(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record));
           if (unfinished || safety.pendingCheck !== null || safety.recoveryWitness?.phase === 'preparing' || safety.recoveryWitness?.phase === 'transferring') { await this.recovery.startup(); }
         } catch (error) { failed = true; this.recordFailure(error); }
       }
+      this.onStartupPhase?.('retention');
       try { await this.retention(); await reconcileAcknowledgedRecovery(k); } catch (error) { failed = true; this.recordFailure(error); }
       if (failed) { k.emit({ freshness: { ...k.status.freshness, state: 'failed', class: 'journal', reason: k.status.journal.fault ?? k.status.freshness.reason ?? 'journalUnavailable' } }); }
       try { await k.observeStatus(); } catch { k.emit({ stateSafety: { state: 'unavailable', correction: null, carryRelease: 'unavailable' } }); }
-      if (command.kind === 'chat') { await this.watcher.start(); }
+      if (command.kind === 'chat') { this.onStartupPhase?.('watcher'); await this.watcher.start(); }
       let complete = !failed;
       if (command.kind === 'repair') {
         try {
@@ -256,7 +265,9 @@ export class CoordinatorBackend implements RuntimeBackend {
 }
 
 export async function openBackend(options: BackendOptions): Promise<RuntimeBackend> {
+  options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
+  options.onStartupPhase?.('scopeAdmission');
   const bootstrap = await createReadOnlyInspection(options.companionRoot);
   let guard: Awaited<ReturnType<typeof takeInstanceGuard>> | null = null;
   let kernel: Kernel | null = null;
@@ -267,6 +278,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     try { principal = await resolvePrincipal(bootstrap.inspector, options.companionRoot); }
     catch { throw Object.assign(new Error('Windows principal identity is unavailable.'), { code: 'identityUnavailable' }); }
     const candidate = await discoverScope(bootstrap.inspector, options.companionRoot, config.game, principal);
+    options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
     supervisor = await ProcessSupervisor.create(candidate.dataRoot);
     const inspector = new PathInspector(supervisor);
@@ -285,6 +297,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
         requireControl(free.bavail * free.bsize >= BigInt(bytes.byteLength) * 4n);
       }, invalidate: () => { kernel?.journal.invalidate(); resources?.invalidate(); } });
     const scope = await initializeScope(inspector, candidate, guard, publisher);
+    options.onStartupPhase?.('runtimeMarker');
     const storage = new ScopeStorage({ scope, guard, inspector, publisher, prospectiveFailure, bind: action => resources?.bind(action) ?? action,
       beforeWrite: (relative, deadline) => resources?.beforeWrite(relative, deadline) ?? Promise.resolve() });
     const operations = new OperationStore(storage, prospectiveFailure, action => resources?.bind(action) ?? action);
@@ -293,7 +306,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     kernel = new Kernel({ config, identities, scope, guard, supervisor, inspector, publisher, storage, resources, options });
     kernel.emit({ previousShutdownClean: previous.status === 'valid' && previous.value.cleanShutdown });
     await bootstrap.close();
-    return new CoordinatorBackend(kernel, { value: runtime, sha256 });
+    return new CoordinatorBackend(kernel, { value: runtime, sha256 }, options.onStartupPhase);
   } catch (error) {
     error = resources?.captureFailure(error) ?? error;
     await bootstrap.close();

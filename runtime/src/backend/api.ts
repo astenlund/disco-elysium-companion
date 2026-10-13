@@ -11,6 +11,7 @@ import type { BoundSession, SessionBindingProof, SessionStore } from '../session
 import type { Deadline } from '../deadline.ts';
 import type { PathInspector } from '../admission.ts';
 import type { ProcessSupervisor } from '../process.ts';
+import type { StartupPhase } from '../startup-progress.ts';
 import type { CarryReleaseStatus } from './provider-authority.ts';
 
 export type BackendCommand = { readonly kind: 'chat' | 'repair' } | { readonly kind: 'consumer'; readonly owner: 'runtime' | 'bridge'; readonly abandonUndelivered: boolean };
@@ -77,6 +78,7 @@ export interface BackendOptions {
   readonly onStatus?: (status: BackendStatus) => void;
   readonly onInvalidated?: (reason: CorrectionReason) => void;
   readonly onDiagnostic?: (phase: string, error: unknown) => void;
+  readonly onStartupPhase?: (phase: StartupPhase) => void;
 }
 
 export interface RuntimeBackend {

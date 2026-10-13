@@ -4,6 +4,7 @@ import test from 'node:test';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
+import type { StartupProgress } from '../../src/startup-progress.ts';
 
 test('CLI admits exactly the four command grammars without touching state on invalid input', async () => {
   assert.deepEqual(parseCommand([]), { kind: 'chat' });
@@ -17,6 +18,17 @@ test('CLI admits exactly the four command grammars without touching state on inv
     assert.equal(output.length, 1);
     assert.match(output[0]!, /^Usage:/);
   }
+});
+
+test('failed chat startup reports a terminal progress event without exposing its root', async () => {
+  const output: string[] = [];
+  const progress: StartupProgress[] = [];
+  await assert.rejects(runCli(['chat'], 'C:/intentionally-nonexistent-fixture', text => output.push(text), event => progress.push(event)));
+  assert.deepEqual(progress.map(event => event.kind), ['phase', 'failed']);
+  assert.equal(progress[0]?.phase, 'configuration');
+  assert.equal(progress.at(-1)?.phase, null);
+  assert.ok(progress.every(event => !JSON.stringify(event).includes('intentionally-nonexistent-fixture')));
+  assert.deepEqual(output, []);
 });
 
 test('a successful bridge release exits successfully even though runtime is no longer owner', () => {

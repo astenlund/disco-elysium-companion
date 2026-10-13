@@ -38,7 +38,8 @@ test('text client renders previews and routes numbered, free-text and override i
     return { kind: 'completed', text: 'done' };
   };
   const { input, output, read } = clientStreams();
-  const running = runTextClient(host, { input, output, terminal: false });
+  let attached = 0;
+  const running = runTextClient(host, { input, output, terminal: false, onAttached: () => { attached += 1; assert.equal(read(), ''); } });
   input.write('/think literal @path /command\n');
   await until(() => read().includes('preview evidence'));
   input.write('2\n');
@@ -48,6 +49,7 @@ test('text client renders previews and routes numbered, free-text and override i
   input.write('/quit\n');
   await running;
   assert.ok(read().includes('2. Second: two'));
+  assert.equal(attached, 1);
   assert.equal(backend.acquisitionCount, 1);
   assert.equal(backend.events.at(-1), 'shutdown');
 });

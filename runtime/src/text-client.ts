@@ -58,7 +58,7 @@ export function formatStatus(status: HostStatus): string {
   return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}`;
 }
 
-export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean }
+export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean; readonly onAttached?: () => void }
 
 // Rendering and input routing own no provider or state authority. Dialog answers
 // remain one correlated host operation, including across a detach and reattach.
@@ -113,6 +113,7 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
   const attached = host.attach(receive);
   if (attached.result !== 'attached') { rl.close(); throw new Error('A presentation client is already attached.'); }
   status = attached.snapshot.status;
+  options.onAttached?.();
   line(formatStatus(status));
   line('Enter a question. /think <question>, /new, /status, /quit.');
   if (attached.snapshot.openDialog !== null) { dialog = attached.snapshot.openDialog; running = true; renderQuestion(); }

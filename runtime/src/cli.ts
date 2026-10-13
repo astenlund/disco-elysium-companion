@@ -5,6 +5,7 @@ import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { createChatRuntime } from './runtime.ts';
+import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
 import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
 
 export type CliCommand = BackendCommand | { readonly kind: 'status' };
@@ -53,7 +54,9 @@ export function formatCapacityRewind(result: CapacityRewindResult | null): strin
   return `capacity rewind: affectedEvents=${verified ? count(result.affectedEvents) : 'unknown'}; inclusiveRange=${range}; retainedHandoffs=${count(result.retainedHandoffs)}; replayableHandoffs=${count(result.replayableHandoffs)}; presentationRetiredHandoffs=${count(result.presentationRetiredHandoffs)}; survivingCoreRecords=${count(result.survivingCoreRecords)}${certainty}`;
 }
 
-export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)), write: (text: string) => void = text => { process.stdout.write(`${text}\n`); }): Promise<number> {
+export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),
+  write: (text: string) => void = text => { process.stdout.write(`${text}\n`); },
+  progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); }): Promise<number> {
   const command = parseCommand(args);
   if (command === null) { write('Usage: chat | status | consumer <runtime|bridge> [--abandon-undelivered] | repair'); return 2; }
   if (command.kind === 'status') {
@@ -62,11 +65,14 @@ export async function runCli(args: readonly string[], companionRoot = fileURLToP
     return 0;
   }
   if (command.kind === 'chat') {
-    const runtime = await createChatRuntime(companionRoot);
-    if (runtime.result === 'notOwner') { write('notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.'); return 1; }
-    if (runtime.result === 'providerUnavailable') { write('providerUnavailable: The provider could not start.'); return 1; }
-    await runTextClient(runtime.host);
-    return 0;
+    const progress = new StartupProgressReporter(progressSink);
+    try {
+      const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase));
+      if (runtime.result === 'notOwner') { progress.finish('notOwner'); write('notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.'); return 1; }
+      if (runtime.result === 'providerUnavailable') { progress.finish('providerUnavailable'); write('providerUnavailable: The provider could not start.'); return 1; }
+      await runTextClient(runtime.host, { onAttached: () => progress.finish('ready') });
+      return 0;
+    } catch (error) { progress.finish('failed'); throw error; }
   }
   if (command.kind === 'repair') { write('Repair may set aside undelivered journal changes if a capacity rewind is admitted, then disclose missing history with a current-state resync. Surviving exact core records remain replayable under their retained bindings. No capacity rewind is yet known.'); }
   const backend = await openBackend({ companionRoot });

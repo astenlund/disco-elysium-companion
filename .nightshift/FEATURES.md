@@ -136,7 +136,7 @@ Investigate whether confirmed deletion-only cleanup failures can be distinguishe
 
 ### [Coordinator startup latency](features/runtime-startup-latency.md)
 
-Measure clean and recovery startup separately, design safe reductions in repeated admission work, and show truthful progress during long startup phases.
+Progress reporting is implemented; measure clean and recovery startup separately and design safe reductions in repeated admission work.
 
 ### [Coordinator whole-turn latency](features/runtime-interaction-latency.md)
 
