@@ -35,9 +35,11 @@ async function directoryEmpty(directory: string): Promise<boolean> {
 
 export async function discoverScope(inspector: PathInspector, companionRoot: string, game: string, principal: string): Promise<ScopeCandidate> {
   const components = scopeComponents(game, principal);
-  const root = await inspector.inspect(companionRoot, companionRoot);
+  const requested = path.join(companionRoot, ...components);
+  const [root, candidate] = await inspector.inspectMany(companionRoot, [companionRoot, requested], true);
+  if (root === undefined || candidate === undefined) { throw new DataRootUnavailableError('Scope admission is incomplete.'); }
   if (root.kind !== 'directory') { throw new DataRootUnavailableError('Companion root is not a directory.'); }
-  const candidate = await inspector.inspect(root.path, path.join(root.path, ...components), true);
+  if (path.win32.relative(path.join(root.path, ...components), candidate.path) !== '') { throw new DataRootUnavailableError('Scope path changed during admission.'); }
   if (candidate.exists && candidate.kind !== 'directory') { throw new DataRootUnavailableError('Runtime scope is not a directory.'); }
 
   return { companionRoot: root.path, dataRoot: candidate.path, game, principal };
@@ -45,10 +47,10 @@ export async function discoverScope(inspector: PathInspector, companionRoot: str
 
 export async function readScope(inspector: PathInspector, candidate: ScopeCandidate): Promise<RuntimeScope | null> {
   verifyCandidate(candidate);
-  const directory = await inspector.inspect(candidate.companionRoot, candidate.dataRoot, true);
+  const [directory, binding] = await inspector.inspectMany(candidate.companionRoot, [candidate.dataRoot, path.join(candidate.dataRoot, 'scope.json')], true);
+  if (directory === undefined || binding === undefined) { throw new DataRootUnavailableError('Scope binding admission is incomplete.'); }
   if (!directory.exists) { return null; }
   if (directory.kind !== 'directory') { throw new DataRootUnavailableError('Scope directory changed kind.'); }
-  const binding = await inspector.inspect(candidate.companionRoot, path.join(candidate.dataRoot, 'scope.json'), true);
   if (!binding.exists) {
     if (!await directoryEmpty(candidate.dataRoot)) { throw new DataRootUnavailableError('Nonempty scope has no verified ownership binding.'); }
 
