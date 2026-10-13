@@ -24,7 +24,6 @@ These user-tracked cleanups came from Nightshift run cffcf94d-49be-4cab-afcb-3fa
 - **Tool-boundary fixture attribution.** Credit direct native admission tests for path containment and keep hook-to-native integration marked unverified.
 - **First-install correction disclosure.** Document the first-scope correction and recovering status created by conservative resync, with a focused discharge assertion.
 - **Bridge-consumed history notice.** Disclose missing intermediate bridge-consumed history when a provider session resumes at a later runtime snapshot.
-- **Core runtime status paragraph.** Remove the stale statement that documentation review and run closing remain due from state-extraction section 7.6.
 - **Reconnect summary exceptions.** Qualify the generic reattachment summary when an unresolved pending check forbids provider reconnect.
 - **Known-unavailable hosted cache.** Tell hosted guidance when research-cache file tools are refused so it need not attempt known-unavailable access.
 - **Startup quiescence code summary.** Document the code-less termination-unverified startup failure and its runtimeUnavailable CLI rendering.
