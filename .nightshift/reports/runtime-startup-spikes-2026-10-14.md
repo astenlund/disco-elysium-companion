@@ -59,4 +59,29 @@ On 2026-10-14, the user reported that a later live `chat` launch reached the pro
 
 A new named-source-checked watcher-enabled no-save private control at `.tmp/startup-spikes/backend/marker-detail-clean-result.json` reached fake-provider binding and verified worker stop in 47.907 seconds, with failed freshness, ready safety and a healthy journal. The fixture checked its own script and 22 named production files before and after the run, not every import. Its marker-to-storage phase took 18.369 seconds, compared with 19.232 seconds in the earlier warm no-save control. These separate runs support the phase's approximate size but do not measure the user's live marker cost. The test-only timestamp trace separated nonoverlapping operations: marker residue cleanup 2.637 seconds, marker capacity reservation 2.153 seconds, runtime record read 2.048 seconds, watcher and startup process-job checks 1.233 seconds, runtime marker write 6.231 seconds, worker opening 3.452 seconds and final bootstrap process check 0.613 seconds. The write interval contained two fresh path admissions at 2.016 and 2.101 seconds and a native publication near 2.107 seconds; the worker opening interval contained a 2.047-second source-evidence helper and about 1.405 seconds of child startup and handshake. Those nested figures must not be added to their parent intervals.
 
-The current marker sequence uses the fresh observations and post-write checks for capacity, physical path identity, publication and process ownership. The trace shows no unexplained idle interval or proven redundant call. Moving source evidence earlier would make its `.tmp` admission older at worker spawn; dropping a marker path check would change the current admission or publication proof. Neither is a measured low-risk change from this result. The private test changed only ignored instrumentation and fixture files; tracked production sources remained unchanged. A stage-resolved live launch and an independently agreed design are needed before another marker-path optimization is selected.
+The current marker sequence uses the fresh observations and post-write checks for capacity, physical path identity, publication and process ownership. The trace shows no unexplained idle interval or proven redundant call. Moving source evidence earlier would make its `.tmp` admission older at worker spawn; dropping a marker path check would change the current admission or publication proof. Neither is a measured low-risk change from this result. The private test changed only ignored instrumentation and fixture files; tracked production sources remained unchanged. The later stage-resolved live launch is recorded below; another marker-path optimization still needs an independently agreed authority design.
+
+## Stage-resolved live launch and provider binding
+
+The user supplied a later `chat` progress trace from 2026-10-14T08:59:40.798Z through 09:00:35.519Z. The timestamp difference is 54.721 seconds to `chat client ready`; the displayed integer elapsed value was 54 seconds. The final status was consumer owner, fresh state, current operational observation, no warnings, healthy journal, ready safety and provider, with zero unacknowledged events, pending outbox records and unfinished operations. This is one user-reported live run, with no source snapshot or subphase instrumentation inside the phase boundaries. Its final status does not by itself prove that no recovery work occurred during startup.
+
+| Phase | Seconds until next phase |
+| --- | ---: |
+| configuration | 0.003 |
+| scopeAdmission | 4.395 |
+| instanceGuard | 2.647 |
+| runtimeMarker | 19.237 |
+| storageRecovery | 0.817 |
+| consumerReconciliation | 0.015 |
+| streamRecovery | 2.281 |
+| outboxDrain | 0.097 |
+| startupAcquisition | 11.198 |
+| safetyReconciliation | 0.015 |
+| retention | 2.370 |
+| watcher | 3.388 |
+| providerPreparation | 0.625 |
+| providerStart through ready | 7.633 |
+
+The live marker span of 19.237 seconds is close to the two private warm controls at 19.232 and 18.369 seconds. State acquisition and provider start were the next two largest live spans at 11.198 and 7.633 seconds. The live phase events do not separate core publication, SDK initialization, durable binding, worker stop or client attachment within those spans.
+
+A named-source-checked current-tree private fake-provider control at `.tmp/startup-spikes/backend/provider-detail-clean-result.json` reached its fake-provider and verified-worker boundary in 48.693 seconds. The test checked its own script and 22 named production files before and after the run, used an enabled watcher and no save, and ended with failed freshness, ready safety and a healthy journal. In that control, `SessionHost.start` took 4.320 seconds, of which `SessionStore.bind` took 4.245 seconds; the fake-provider callback was effectively zero time. The binding interval contained a 2.078-second `agent-session.json` publication and a 2.115-second session-index replacement. Verified worker shutdown then took 1.275 seconds, including a 0.615-second process-job absence check. The private provider plus worker interval was 5.595 seconds. This fixture does not use the real SDK or time production instruction assembly, so the difference from the 7.633-second live phase cannot be assigned to one cause. The two durable writes and post-stop check are current authority steps; collapsing or overlapping them has not been designed against their crash and ownership boundaries. No tracked production source or real companion root was changed by these private probes.
