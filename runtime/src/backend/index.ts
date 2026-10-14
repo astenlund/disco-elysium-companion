@@ -23,7 +23,7 @@ import type { RuntimeRecord } from '../runtime-records.ts';
 import { discoverScope, initializeScope } from '../scope.ts';
 import { SerialQueue } from '../serial.ts';
 import { ScopeStorage } from '../storage.ts';
-import { StartupMetadataSession } from '../startup-metadata.ts';
+import { StartupWorkerGroup } from '../startup-workers.ts';
 import type { BackendCommand, BackendOptions, BackendStartup, RuntimeBackend } from './api.ts';
 import { ConsumerCoordinator } from './consumer.ts';
 import { PendingStateCheckError } from './api.ts';
@@ -247,7 +247,20 @@ export class CoordinatorBackend implements RuntimeBackend {
     return this.shuttingDown;
   }
 
-  closeStartupMetadata(): Promise<void> { return this.kernel.inspector.closeStartupSession(); }
+  closeStartupMetadata(): Promise<void> { return this.closeStartupWorkers(); }
+
+  async closeStartupWorkers(): Promise<void> {
+    const k = this.kernel;
+    const closed = await Promise.allSettled([k.inspector.closeStartupSession(), k.publisher.closeStartupMutationSession()]);
+    const closeFailure = closed.find(result => result.status === 'rejected');
+    if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
+    const absent = await Promise.allSettled([
+      k.supervisor.verifyQuiescent('startupMetadata'), k.supervisor.verifyQuiescent('startupCoreReply'),
+      k.supervisor.verifyQuiescent('startupMutation'),
+    ]);
+    const absenceFailure = absent.find(result => result.status === 'rejected');
+    if (absenceFailure?.status === 'rejected') { throw absenceFailure.reason; }
+  }
 
   async shutdown(providerAndToolsQuiescent: boolean): Promise<void> {
     await this.beginShutdown();
@@ -255,7 +268,7 @@ export class CoordinatorBackend implements RuntimeBackend {
     await this.queue.idle();
     const k = this.kernel;
     await k.core.idle(); await k.journal.idle(); await k.storage.idle(); await k.publisher.idle(); await k.inspector.idle();
-    await this.closeStartupMetadata();
+    await this.closeStartupWorkers();
     for (const role of processRoles) { await k.supervisor.verifyQuiescent(role); }
     await k.resources.withTransition('runtimeMarker', async () => {
       await k.resources.reserveRuntimeMarker();
@@ -281,7 +294,8 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
   let supervisor: ProcessSupervisor | null = null;
   let resources: ResourceAuthority | null = null;
   let startupInspector: PathInspector | null = null;
-  let startupSession: StartupMetadataSession | null = null;
+  let startupPublisher: FilePublisher | null = null;
+  let startupGroup: StartupWorkerGroup | null = null;
   try {
     let principal: string;
     try { principal = await resolvePrincipal(bootstrap.inspector, options.companionRoot); }
@@ -306,6 +320,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
         const free = await fs.statfs(candidate.companionRoot, { bigint: true });
         requireControl(free.bavail * free.bsize >= BigInt(bytes.byteLength) * 4n);
       }, invalidate: () => { kernel?.journal.invalidate(); resources?.invalidate(); } });
+    startupPublisher = publisher;
     const scope = await initializeScope(inspector, candidate, guard, publisher);
     options.onStartupPhase?.('runtimeMarker');
     const storage = new ScopeStorage({ scope, guard, inspector, publisher, prospectiveFailure, bind: action => resources?.bind(action) ?? action,
@@ -315,24 +330,28 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     const markerSupervisor = supervisor;
     const { identities, runtime, sha256, previous, startupWorker } = await initializeRuntimeMarker(
       { scope, guard, inspector, supervisor: markerSupervisor, storage, resources }, undefined,
-      options.startupMetadata === true ? () => StartupMetadataSession.prepareOpen(inspector, markerSupervisor, scope) : undefined);
-    startupSession = startupWorker;
-    if (startupSession !== null) { inspector.attachStartupSession(startupSession); }
+      options.startupMetadata === true ? () => StartupWorkerGroup.prepare(inspector, markerSupervisor, scope) : undefined);
+    startupGroup = startupWorker;
+    if (startupGroup?.metadata !== null && startupGroup?.metadata !== undefined) { inspector.attachStartupSession(startupGroup.metadata); }
+    if (startupGroup?.coreReply !== null && startupGroup?.coreReply !== undefined) { inspector.attachStartupCoreReplySession(startupGroup.coreReply); }
+    if (startupGroup?.mutation !== null && startupGroup?.mutation !== undefined) { publisher.attachStartupMutationSession(startupGroup.mutation); }
     kernel = new Kernel({ config, identities, scope, guard, supervisor, inspector, publisher, storage, resources, options });
     kernel.emit({ previousShutdownClean: previous.status === 'valid' && previous.value.cleanShutdown });
     await bootstrap.close();
     return new CoordinatorBackend(kernel, { value: runtime, sha256 }, options.onStartupPhase);
   } catch (error) {
     error = resources?.captureFailure(error) ?? error;
-    await startupInspector?.closeStartupSession();
-    await startupSession?.close();
+    const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupPublisher?.closeStartupMutationSession(), startupGroup?.close()]);
+    const closeFailure = closed.find(result => result.status === 'rejected');
     await bootstrap.close();
     if (guard !== null && supervisor !== null) {
       // Failed native termination retains the instance guard while this process
       // lives. A second writer must never race a possibly active predecessor.
       for (const role of processRoles) { await supervisor.verifyQuiescent(role); }
+      if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
       await guard.release();
     }
+    if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
     if (error !== null && typeof error === 'object' && 'code' in error) { throw error; }
     throw new DataRootUnavailableError(error instanceof Error ? error.message : 'Runtime startup authority is unavailable.', { cause: error });
   }

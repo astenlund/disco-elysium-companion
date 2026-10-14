@@ -14,7 +14,7 @@ export type ChatRuntime = { readonly result: 'ready'; readonly host: SessionHost
 export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeBackend | null, host: SessionHost | null, files: FileToolAdapter | null): Promise<never> {
   let cleanupFailed = false;
   let cleanupFailure: unknown;
-  try { await backend?.closeStartupMetadata(); }
+  try { await backend?.closeStartupWorkers(); }
   catch (failure) { cleanupFailed = true; cleanupFailure = failure; }
   try {
     if (host !== null) { await host.shutdown(); }
@@ -38,7 +38,7 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     const opened: RuntimeBackend = await openBackend({ companionRoot, startupMetadata: true, onStatus: () => host?.statusChanged(), onInvalidated: (reason: Correction['reason']) => host?.invalidate(reason), onStartupPhase });
     backend = opened;
     const startup = await backend.startup({ kind: 'chat' });
-    if (startup.notOwner) { await backend.closeStartupMetadata(); await backend.shutdown(true); return { result: 'notOwner' }; }
+    if (startup.notOwner) { await backend.closeStartupWorkers(); await backend.shutdown(true); return { result: 'notOwner' }; }
     onStartupPhase?.('providerPreparation');
     const instructions = await assembleInstructions(backend.inspector, backend.scope.companionRoot);
     files = await FileToolAdapter.create({ companionRoot: backend.scope.companionRoot, inspector: backend.inspector, supervisor: backend.supervisor,
@@ -50,8 +50,8 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     host = new SessionHost({ backend, provider, instructionsSha256: instructions.sha256,
       providerTerminated: instance => fileTools.providerTerminated(instance), verifyTools: () => fileTools.verifyQuiescent(), closeTools: () => fileTools.close() });
     onStartupPhase?.('providerStart');
-    if (!await host.start() && host.status.provider.state === 'failed') { await backend.closeStartupMetadata(); await host.shutdown(); return { result: 'providerUnavailable' }; }
-    await backend.closeStartupMetadata();
+    if (!await host.start() && host.status.provider.state === 'failed') { await backend.closeStartupWorkers(); await host.shutdown(); return { result: 'providerUnavailable' }; }
+    await backend.closeStartupWorkers();
     return { result: 'ready', host };
   } catch (error) {
     return cleanupFailedChatRuntime(error, backend, host, files);

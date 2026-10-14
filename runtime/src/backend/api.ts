@@ -103,5 +103,6 @@ export interface RuntimeBackend {
   acknowledge(handle: DeliveryHandle, binding: AgentSessionBinding, provider: ProviderIdentity, options: AcknowledgementOptions): Promise<BoundSession | null>;
   beginShutdown(): Promise<void>;
   closeStartupMetadata(): Promise<void>;
+  closeStartupWorkers(): Promise<void>;
   shutdown(providerAndToolsQuiescent: boolean): Promise<void>;
 }

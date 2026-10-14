@@ -9,7 +9,7 @@ import type { SessionHost } from '../../src/session-host.ts';
 test('worker close failure still shuts down a started host', async () => {
   const order: string[] = [];
   const closeFailure = new Error('Worker close failed.');
-  const backend = { closeStartupMetadata: async () => { order.push('worker'); throw closeFailure; } } as unknown as RuntimeBackend;
+  const backend = { closeStartupWorkers: async () => { order.push('worker'); throw closeFailure; } } as unknown as RuntimeBackend;
   const host = { shutdown: async () => { order.push('host'); } } as unknown as SessionHost;
   await assert.rejects(cleanupFailedChatRuntime(new Error('Startup failed.'), backend, host, null), error => error === closeFailure);
   assert.deepEqual(order, ['worker', 'host']);
@@ -19,7 +19,7 @@ test('worker close failure still stops an opened backend without a host', async 
   const order: string[] = [];
   const closeFailure = new Error('Worker close failed.');
   const backend = {
-    closeStartupMetadata: async () => { order.push('worker'); throw closeFailure; },
+    closeStartupWorkers: async () => { order.push('worker'); throw closeFailure; },
     beginShutdown: async () => { order.push('watcher and core'); },
     supervisor: { verifyQuiescent: async () => { order.push('provider'); } },
     shutdown: async () => { order.push('backend'); },
@@ -32,7 +32,7 @@ test('worker close failure still stops an opened backend without a host', async 
 
 test('successful cleanup preserves the original startup failure', async () => {
   const startupFailure = new Error('Startup failed.');
-  const backend = { closeStartupMetadata: async () => {} } as unknown as RuntimeBackend;
+  const backend = { closeStartupWorkers: async () => {} } as unknown as RuntimeBackend;
   const host = { shutdown: async () => {} } as unknown as SessionHost;
   await assert.rejects(cleanupFailedChatRuntime(startupFailure, backend, host, null), error => error === startupFailure);
 });
