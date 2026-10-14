@@ -10,6 +10,7 @@ import { FilePublisher, PublicationError } from '../src/files.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, utcNow } from '../src/json.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
+import type { StartupMutationSession } from '../src/startup-mutation.ts';
 import { OutboxReader } from '../src/outbox.ts';
 import { companionFixture } from './support/companion.ts';
 
@@ -115,15 +116,24 @@ describe('file-backed lossless codec', () => {
       assert.deepEqual(invalidated, ['invalid.json', 'wrong-sequence.json', 'wrong-hash.json'].map(name => path.join(dataRoot, name)));
 
       const run = supervisor.run.bind(supervisor);
-      let loseReply = true;
+      let executions = 0;
+      let verifications = 0;
       supervisor.run = async (role, options, timeout) => {
-        const result = await run(role, options, timeout);
-        if (role === 'publication' && loseReply) {
-          loseReply = false;
-          throw new SupervisorError('result-invalid', 'Fixture discarded the complete native reply.');
+        if (role === 'publication' && path.basename(options.args[2] ?? '') === 'Invoke-PayloadCodec.ps1') {
+          if (options.args.includes('-VerifyOnly')) { verifications++; }
+          else { executions++; }
         }
-        return result;
+        return run(role, options, timeout);
       };
+      let fallBack = false;
+      const session = { get canFallBack() { return fallBack; },
+        handles: (options: Parameters<ProcessSupervisor['run']>[1]) => path.basename(options.args[2] ?? '') === 'Invoke-PayloadCodec.ps1',
+        async invoke(options: Parameters<ProcessSupervisor['run']>[1], timeout: number) {
+          await supervisor.run('publication', options, timeout);
+          fallBack = true;
+          throw new SupervisorError('result-invalid', 'Fixture discarded the complete native reply.');
+        }, async close() {} } as unknown as StartupMutationSession;
+      publisher.attachStartupMutationSession(session);
       const recovered = await codec.rewriteEvent('event.json', compacted.bytes, { ...acceptedMetadata, compacted: true, acknowledgedAt: now }, true);
       assert.equal(recovered.metadata['acknowledgedAt'], now);
       assert.equal(recovered.metadata['payloadBindingSha256'], created.metadata['payloadBindingSha256']);
@@ -133,8 +143,11 @@ describe('file-backed lossless codec', () => {
       await assert.rejects(publisher.publishJson('next.json', {}), PublicationError);
       assert.deepEqual(await fs.readdir(dataRoot), ['event.json']);
       assert.equal(reservations, 12);
+      assert.equal(executions, 1);
+      assert.equal(verifications, 1);
     } finally {
       await publisher.idle();
+      await publisher.closeStartupMutationSession();
       await guard.release();
       await fixture.close();
     }
