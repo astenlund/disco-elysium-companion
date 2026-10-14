@@ -32,3 +32,7 @@ These user-tracked cleanups came from Nightshift run cffcf94d-49be-4cab-afcb-3fa
 - **Coordinator documentation accuracy sweep.** Recheck recorded minor documentation gaps against current code and correct only the claims that remain stale.
 - **Private verification provenance.** State attempt selection criteria, cite supporting artifacts, and preserve attempt-specific results before reruns.
 - **Generated client fixture evidence.** Modernize or retire the ignored full-session fixture before using it as acceptance evidence.
+
+## Startup latency follow-ups
+
+- **Startup timing history wording.** In the Coordinator startup latency feature, qualify the 47.588-second best-fixture statement as historical; the matched private control report records a 40.002-second fixture.
