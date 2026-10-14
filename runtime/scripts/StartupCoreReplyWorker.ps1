@@ -71,38 +71,51 @@ function Get-BundleHash {
 
 try {
     if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
-    $sources = @('NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
-    Add-Type -Path @($sources | ForEach-Object { Join-Path $PSScriptRoot $_ })
-    $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
-    $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
-    if (-not $admittedData.IsDirectory -or -not $admittedSources.IsDirectory) { throw [IO.IOException]::new('Worker scope is unavailable.') }
-    $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
-    $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
-    $protocolPath = Join-Path $PSScriptRoot 'StartupWorkerProtocol.ps1'
-    $protocolBefore = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
-    . $protocolPath
-    $protocolAfter = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
-    if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($protocolBefore, $protocolAfter)) {
-        throw [IO.IOException]::new('Worker protocol changed during import.')
+    $sourceLocks = [Collections.Generic.List[IO.FileStream]]::new()
+    try {
+        foreach ($name in $runtimeNames) {
+            $sourceLocks.Add([IO.FileStream]::new((Join-Path $PSScriptRoot $name), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        }
+        $coreRoot = Join-Path $CompanionRoot 'core'
+        foreach ($name in $coreNames) {
+            $sourceLocks.Add([IO.FileStream]::new((Join-Path $coreRoot $name), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        }
+        $sources = @('NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
+        Add-Type -Path @($sources | ForEach-Object { Join-Path $PSScriptRoot $_ })
+        $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
+        $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
+        if (-not $admittedData.IsDirectory -or -not $admittedSources.IsDirectory) { throw [IO.IOException]::new('Worker scope is unavailable.') }
+        $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
+        $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
+        $protocolPath = Join-Path $PSScriptRoot 'StartupWorkerProtocol.ps1'
+        $protocolBefore = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
+        . $protocolPath
+        $protocolAfter = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
+        if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($protocolBefore, $protocolAfter)) {
+            throw [IO.IOException]::new('Worker protocol changed during import.')
+        }
+        $validationPath = Join-Path $PSScriptRoot 'CoreReplyValidation.ps1'
+        $validationBefore = Read-BoundFile -Root $SourceRoot -Target $validationPath -MaximumBytes 1048576
+        . $validationPath
+        $validationAfter = Read-BoundFile -Root $SourceRoot -Target $validationPath -MaximumBytes 1048576
+        if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($validationBefore, $validationAfter)) {
+            throw [IO.IOException]::new('Core validation changed during import.')
+        }
+        $beforeImport = Get-BundleHash
+        $modulePath = Join-Path $CompanionRoot 'core/DigestDiff.psm1'
+        $module = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $modulePath, $false)
+        if ($module.IsDirectory) { throw [IO.IOException]::new('Core module is not an ordinary file.') }
+        Import-Module $module.Path -Force -DisableNameChecking
+        $sourceSha256 = Get-BundleHash
+        if ($sourceSha256 -cne $beforeImport) { throw [IO.IOException]::new('Core source changed during import.') }
     }
-    $validationPath = Join-Path $PSScriptRoot 'CoreReplyValidation.ps1'
-    $validationBefore = Read-BoundFile -Root $SourceRoot -Target $validationPath -MaximumBytes 1048576
-    . $validationPath
-    $validationAfter = Read-BoundFile -Root $SourceRoot -Target $validationPath -MaximumBytes 1048576
-    if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($validationBefore, $validationAfter)) {
-        throw [IO.IOException]::new('Core validation changed during import.')
-    }
-    $beforeImport = Get-BundleHash
-    $modulePath = Join-Path $CompanionRoot 'core/DigestDiff.psm1'
-    $module = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $modulePath, $false)
-    if ($module.IsDirectory) { throw [IO.IOException]::new('Core module is not an ordinary file.') }
-    Import-Module $module.Path -Force -DisableNameChecking
-    $sourceSha256 = Get-BundleHash
-    if ($sourceSha256 -cne $beforeImport) { throw [IO.IOException]::new('Core source changed during import.') }
+    finally { foreach ($held in $sourceLocks) { $held.Dispose() } }
     Write-Frame -Text (ConvertTo-Json -InputObject ([ordered]@{ version = 1; nonce = $Nonce; scopeSha256 = $scopeSha256; sourceSha256 = $sourceSha256 }) -Compress)
 
     $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     while ($null -ne ($text = Read-Frame)) {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        if ((Get-BundleHash) -cne $sourceSha256) { throw [IO.IOException]::new('Worker source changed.') }
         $document = [Text.Json.JsonDocument]::Parse($text)
         try {
             $request = $document.RootElement
@@ -131,8 +144,6 @@ try {
             if ($utf8.GetByteCount($stdout) -gt 65536 -or $utf8.GetByteCount($stderr) -gt 65536) {
                 throw [IO.InvalidDataException]::new('Core stream exceeds its capture bound.')
             }
-            $watch = [Diagnostics.Stopwatch]::StartNew()
-            if ((Get-BundleHash) -cne $sourceSha256) { throw [IO.IOException]::new('Worker source changed.') }
             if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Core validation deadline expired.') }
             $control = ConvertTo-Json -InputObject ([ordered]@{ exitCode = $exitCode; stdout = $stdout; stderr = $stderr }) -Compress
             $validationFailed = $false

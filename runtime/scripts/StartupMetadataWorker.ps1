@@ -15,6 +15,8 @@ $inputStream = [Console]::OpenStandardInput()
 $outputStream = [Console]::OpenStandardOutput()
 $maximumInputFrame = 2097152
 $maximumOutputFrame = 65536
+$sourceNames = @('StartupMetadataWorker.ps1', 'StartupWorkerProtocol.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs',
+    'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
 
 function Read-BoundFile {
     param([string] $Root, [string] $Target, [int] $MaximumBytes)
@@ -33,28 +35,10 @@ function Read-BoundFile {
     return ,$bytes
 }
 
-try {
-    if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
-    $sources = @('NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs', 'EventDocuments.cs', 'PayloadCodec.cs',
-        'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
-    Add-Type -Path @($sources | ForEach-Object { Join-Path $PSScriptRoot $_ })
-    $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
-    if (-not $admittedData.IsDirectory) { throw [IO.IOException]::new('Runtime scope is unavailable.') }
-    $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
-    if (-not $admittedSources.IsDirectory) { throw [IO.IOException]::new('Worker source root is unavailable.') }
-    $protocolPath = Join-Path $PSScriptRoot 'StartupWorkerProtocol.ps1'
-    $protocolBefore = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
-    . $protocolPath
-    $protocolAfter = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
-    if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($protocolBefore, $protocolAfter)) {
-        throw [IO.IOException]::new('Worker protocol changed during import.')
-    }
-    $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
-    $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
+function Get-BundleHash {
     $bundle = [IO.MemoryStream]::new()
     try {
-        foreach ($name in @('StartupMetadataWorker.ps1', 'StartupWorkerProtocol.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs',
-            'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')) {
+        foreach ($name in $sourceNames) {
             $bytes = Read-BoundFile -Root $SourceRoot -Target (Join-Path $PSScriptRoot $name) -MaximumBytes 1048576
             $length = $bytes.Length
             $header = [byte[]]::new(4)
@@ -65,13 +49,44 @@ try {
             $bundle.Write($header, 0, 4)
             $bundle.Write($bytes, 0, $length)
         }
-        $sourceSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($bundle.ToArray()))
+
+        return [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($bundle.ToArray()))
     }
     finally { $bundle.Dispose() }
+}
+
+try {
+    if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
+    $sourceLocks = [Collections.Generic.List[IO.FileStream]]::new()
+    try {
+        foreach ($name in $sourceNames) {
+            $sourceLocks.Add([IO.FileStream]::new((Join-Path $PSScriptRoot $name), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        }
+        $sources = @('NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs', 'EventDocuments.cs', 'PayloadCodec.cs',
+            'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
+        Add-Type -Path @($sources | ForEach-Object { Join-Path $PSScriptRoot $_ })
+        $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
+        if (-not $admittedData.IsDirectory) { throw [IO.IOException]::new('Runtime scope is unavailable.') }
+        $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
+        if (-not $admittedSources.IsDirectory) { throw [IO.IOException]::new('Worker source root is unavailable.') }
+        $protocolPath = Join-Path $PSScriptRoot 'StartupWorkerProtocol.ps1'
+        $protocolBefore = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
+        . $protocolPath
+        $protocolAfter = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
+        if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($protocolBefore, $protocolAfter)) {
+            throw [IO.IOException]::new('Worker protocol changed during import.')
+        }
+        $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
+        $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
+        $sourceSha256 = Get-BundleHash
+    }
+    finally { foreach ($held in $sourceLocks) { $held.Dispose() } }
     Write-Frame -Text (ConvertTo-Json -InputObject ([ordered]@{ version = 1; nonce = $Nonce; scopeSha256 = $scopeSha256; sourceSha256 = $sourceSha256 }) -Compress)
 
     $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     while ($null -ne ($text = Read-Frame)) {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        if ((Get-BundleHash) -cne $sourceSha256) { throw [IO.IOException]::new('Worker source changed.') }
         $document = [Text.Json.JsonDocument]::Parse($text)
         try {
             $request = $document.RootElement
@@ -90,7 +105,7 @@ try {
             if ($remainingMs -lt 1 -or $remainingMs -gt 30000) { throw [IO.InvalidDataException]::new('Invalid request deadline.') }
             $admittedRoot = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $root, $false)
             if (-not $admittedRoot.IsDirectory) { throw [IO.InvalidDataException]::new('Invalid request root.') }
-            $watch = [Diagnostics.Stopwatch]::StartNew()
+            if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Metadata deadline expired.') }
             if ($operation -ceq 'admit') {
                 $targets = $request.GetProperty('targets')
                 if ($targets.ValueKind -ne [Text.Json.JsonValueKind]::Array -or $targets.GetArrayLength() -lt 1 -or $targets.GetArrayLength() -gt 64 -or $utf8.GetByteCount($targets.GetRawText()) -gt 65536) {

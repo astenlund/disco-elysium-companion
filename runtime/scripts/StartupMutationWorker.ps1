@@ -70,25 +70,34 @@ function Read-Boolean {
 
 try {
     if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
-    $nativeNames = @('NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
-    Add-Type -Path @($nativeNames | ForEach-Object { Join-Path $PSScriptRoot $_ })
-    $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
-    $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
-    if (-not $admittedData.IsDirectory -or -not $admittedSources.IsDirectory) { throw [IO.IOException]::new('Worker scope is unavailable.') }
-    $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
-    $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
-    $protocolPath = Join-Path $PSScriptRoot 'StartupWorkerProtocol.ps1'
-    $protocolBefore = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
-    . $protocolPath
-    $protocolAfter = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
-    if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($protocolBefore, $protocolAfter)) {
-        throw [IO.IOException]::new('Worker protocol changed during import.')
+    $sourceLocks = [Collections.Generic.List[IO.FileStream]]::new()
+    try {
+        foreach ($name in $sourceNames) {
+            $sourceLocks.Add([IO.FileStream]::new((Join-Path $PSScriptRoot $name), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        }
+        $nativeNames = @('NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
+        Add-Type -Path @($nativeNames | ForEach-Object { Join-Path $PSScriptRoot $_ })
+        $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
+        $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
+        if (-not $admittedData.IsDirectory -or -not $admittedSources.IsDirectory) { throw [IO.IOException]::new('Worker scope is unavailable.') }
+        $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
+        $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
+        $protocolPath = Join-Path $PSScriptRoot 'StartupWorkerProtocol.ps1'
+        $protocolBefore = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
+        . $protocolPath
+        $protocolAfter = Read-BoundFile -Root $SourceRoot -Target $protocolPath -MaximumBytes 1048576
+        if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($protocolBefore, $protocolAfter)) {
+            throw [IO.IOException]::new('Worker protocol changed during import.')
+        }
+        $sourceSha256 = Get-BundleHash
     }
-    $sourceSha256 = Get-BundleHash
+    finally { foreach ($held in $sourceLocks) { $held.Dispose() } }
     Write-Frame -Text (ConvertTo-Json -InputObject ([ordered]@{ version = 1; nonce = $Nonce; scopeSha256 = $scopeSha256; sourceSha256 = $sourceSha256 }) -Compress)
 
     $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     while ($null -ne ($text = Read-Frame)) {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        if ((Get-BundleHash) -cne $sourceSha256) { throw [IO.IOException]::new('Worker source changed.') }
         $document = [Text.Json.JsonDocument]::Parse($text)
         try {
             $request = $document.RootElement
@@ -117,8 +126,6 @@ try {
             $inputFile = Read-String -Element ($request.GetProperty('inputFile'))
             $inputSha256 = Read-String -Element ($request.GetProperty('inputSha256'))
             if ($inputSha256 -cnotmatch '^[a-f0-9]{64}$') { throw [IO.InvalidDataException]::new('Invalid staged-input hash.') }
-            $watch = [Diagnostics.Stopwatch]::StartNew()
-            if ((Get-BundleHash) -cne $sourceSha256) { throw [IO.IOException]::new('Worker source changed.') }
             if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Mutation deadline expired.') }
             if ($operation -ceq 'publish') {
                 $profile = Read-String -Element ($request.GetProperty('profile'))
