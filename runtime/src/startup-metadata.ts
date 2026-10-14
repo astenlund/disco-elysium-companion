@@ -174,10 +174,28 @@ export class StartupMetadataSession {
   }
 
   static async open(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope, handshakeTimeoutMs = 30000): Promise<StartupMetadataSession | null> {
+    const launch = await this.prepareOpen(inspector, supervisor, scope, handshakeTimeoutMs);
+
+    return launch === null ? null : launch();
+  }
+
+  static async prepareOpen(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope,
+    handshakeTimeoutMs = 30000): Promise<(() => Promise<StartupMetadataSession | null>) | null> {
     if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 30000) { throw unavailable(); }
-    const tempRoot = path.join(scope.companionRoot, '.tmp');
     const expected = await sourceEvidence(inspector, scope);
     if (expected === null) { return null; }
+    let used = false;
+
+    return () => {
+      if (used) { throw unavailable(); }
+      used = true;
+      return this.openWithEvidence(supervisor, scope, expected, handshakeTimeoutMs);
+    };
+  }
+
+  private static async openWithEvidence(supervisor: ProcessSupervisor, scope: RuntimeScope,
+    expected: { scopeSha256: string; sourceSha256: string }, handshakeTimeoutMs: number): Promise<StartupMetadataSession | null> {
+    const tempRoot = path.join(scope.companionRoot, '.tmp');
     const nonce = randomBytes(16).toString('hex');
     let child: OwnedProcess;
     try {

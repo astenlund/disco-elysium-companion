@@ -312,11 +312,12 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
       beforeWrite: (relative, deadline) => resources?.beforeWrite(relative, deadline) ?? Promise.resolve() });
     const operations = new OperationStore(storage, prospectiveFailure, action => resources?.bind(action) ?? action);
     resources = new ResourceAuthority(scope, inspector, operations);
-    const { identities, runtime, sha256, previous } = await initializeRuntimeMarker({ scope, guard, inspector, supervisor, storage, resources });
-    if (options.startupMetadata === true) {
-      startupSession = await StartupMetadataSession.open(inspector, supervisor, scope);
-      if (startupSession !== null) { inspector.attachStartupSession(startupSession); }
-    }
+    const markerSupervisor = supervisor;
+    const { identities, runtime, sha256, previous, startupWorker } = await initializeRuntimeMarker(
+      { scope, guard, inspector, supervisor: markerSupervisor, storage, resources }, undefined,
+      options.startupMetadata === true ? () => StartupMetadataSession.prepareOpen(inspector, markerSupervisor, scope) : undefined);
+    startupSession = startupWorker;
+    if (startupSession !== null) { inspector.attachStartupSession(startupSession); }
     kernel = new Kernel({ config, identities, scope, guard, supervisor, inspector, publisher, storage, resources, options });
     kernel.emit({ previousShutdownClean: previous.status === 'valid' && previous.value.cleanShutdown });
     await bootstrap.close();

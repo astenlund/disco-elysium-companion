@@ -52,3 +52,43 @@ for (const failureAt of ['cleanup', 'reserve', 'read', 'watcher', 'admit', 'writ
     assert.deepEqual(f.calls, order.slice(0, order.indexOf(failureAt) + 1));
   });
 }
+
+test('chat worker opens alongside marker publication but is returned only after both complete', async () => {
+  const f = fixture();
+  const opening = Promise.withResolvers<{ close(): Promise<void> }>();
+  const worker = { async close() {} };
+  const pending = initializeRuntimeMarker(f.dependencies, f.cleanup, async () => {
+    f.calls.push('prepare');
+    return async () => { f.calls.push('open'); return opening.promise; };
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(f.calls.includes('write'));
+  assert.ok(f.calls.includes('open'));
+  assert.ok(f.calls.indexOf('prepare') < f.calls.indexOf('write'));
+  opening.resolve(worker);
+  assert.equal((await pending).startupWorker, worker);
+});
+
+test('marker refusal closes a worker that finished opening', async () => {
+  const error = new Error('Marker publication refused.');
+  const f = fixture('write', error);
+  let closed = false;
+  await assert.rejects(initializeRuntimeMarker(f.dependencies, f.cleanup, async () => async () => ({
+    async close() { closed = true; },
+  })), caught => caught === error);
+  assert.equal(closed, true);
+});
+
+test('worker preparation refusal leaves the prior marker unchanged', async () => {
+  const error = new Error('Worker source unavailable.');
+  const f = fixture();
+  await assert.rejects(initializeRuntimeMarker(f.dependencies, f.cleanup, async () => { throw error; }), caught => caught === error);
+  assert.equal(f.calls.includes('write'), false);
+});
+
+test('worker opening refusal follows a completed dirty marker publication', async () => {
+  const error = new Error('Worker hello unavailable.');
+  const f = fixture();
+  await assert.rejects(initializeRuntimeMarker(f.dependencies, f.cleanup, async () => async () => { throw error; }), caught => caught === error);
+  assert.equal(f.calls.includes('write'), true);
+});

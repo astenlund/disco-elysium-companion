@@ -19,8 +19,11 @@ interface MarkerBootstrap {
   readonly resources: Pick<ResourceAuthority, 'withTransition' | 'reserveRuntimeMarker'>;
 }
 
+interface MarkerWorker { close(): Promise<void> }
+
 /** @internal The common pre-command marker path; openBackend owns scope and guard admission. */
-export async function initializeRuntimeMarker(dependencies: MarkerBootstrap, cleanup = cleanupRuntimeMarkerResidue) {
+export async function initializeRuntimeMarker<TWorker extends MarkerWorker = MarkerWorker>(dependencies: MarkerBootstrap,
+  cleanup = cleanupRuntimeMarkerResidue, prepareWorker?: () => Promise<(() => Promise<TWorker | null>) | null>) {
   const { scope, guard, inspector, supervisor, storage, resources } = dependencies;
   await cleanup(scope, guard, inspector, supervisor);
   return resources.withTransition('runtimeMarker', async () => {
@@ -29,9 +32,25 @@ export async function initializeRuntimeMarker(dependencies: MarkerBootstrap, cle
     requireControl(previous.status !== 'invalid');
     await reconcileWatcherOrphan(previous.status === 'valid' ? previous.value : null, supervisor, scope.companionRoot);
     await supervisor.admitStartup();
+    requireControl(guard.held);
+    const launch = prepareWorker === undefined ? null : await prepareWorker();
     const identities = mintProcessIdentities(previous.status === 'valid' ? previous.value.runtimeInstanceId : null);
     const runtime: RuntimeRecord = { runtimeInstanceId: identities.runtimeInstanceId, startedAt: utcNow(), cleanShutdown: false, watcher: null };
-    const sha256 = await storage.write('runtime.json', runtime, 'config', previous.status === 'valid' ? previous.sha256 : null);
-    return { identities, runtime, sha256, previous };
+    const write = () => storage.write('runtime.json', runtime, 'config', previous.status === 'valid' ? previous.sha256 : null);
+    if (launch === null) {
+      const sha256 = await write();
+
+      return { identities, runtime, sha256, previous, startupWorker: null as TWorker | null };
+    }
+    const opening = Promise.resolve().then(launch);
+    const publication = write();
+    const [workerResult, writeResult] = await Promise.allSettled([opening, publication]);
+    if (workerResult.status === 'rejected' || writeResult.status === 'rejected') {
+      if (workerResult.status === 'fulfilled') { await workerResult.value?.close(); }
+      if (writeResult.status === 'rejected') { throw writeResult.reason; }
+      throw (workerResult as PromiseRejectedResult).reason;
+    }
+
+    return { identities, runtime, sha256: writeResult.value, previous, startupWorker: workerResult.value };
   });
 }
