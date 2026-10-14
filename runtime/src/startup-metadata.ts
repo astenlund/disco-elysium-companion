@@ -6,6 +6,7 @@ import { DataRootUnavailableError, type PathInspector } from './admission.ts';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 import { SupervisorError, type CommandResult, type OwnedProcess, type ProcessSupervisor } from './process.ts';
 import type { RuntimeScope } from './scope.ts';
+import type { StartupWorkerEvidence } from './startup-worker-sources.ts';
 
 const script = fileURLToPath(new URL('../scripts/StartupMetadataWorker.ps1', import.meta.url));
 const sourceScript = fileURLToPath(new URL('../scripts/Get-StartupMetadataSource.ps1', import.meta.url));
@@ -117,7 +118,7 @@ export function encodeStartupMetadataFrame(value: unknown): Buffer {
   return Buffer.concat([header, body]);
 }
 
-function validateHello(value: JsonValue, nonce: string, expected: { scopeSha256: string; sourceSha256: string }): void {
+export function validateStartupHello(value: JsonValue, nonce: string, expected: { scopeSha256: string; sourceSha256: string }): void {
   if (!hasExactKeys(value, ['version', 'nonce', 'scopeSha256', 'sourceSha256']) || asInteger(value['version']) !== 1
     || value['nonce'] !== nonce || value['scopeSha256'] !== expected.scopeSha256 || value['sourceSha256'] !== expected.sourceSha256) {
     throw unavailable();
@@ -174,7 +175,7 @@ export class StartupMetadataSession {
   }
 
   static async open(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope, handshakeTimeoutMs = 30000): Promise<StartupMetadataSession | null> {
-    const launch = await this.prepareOpen(inspector, supervisor, scope, handshakeTimeoutMs);
+    const launch = await StartupMetadataSession.prepareOpen(inspector, supervisor, scope, handshakeTimeoutMs);
 
     return launch === null ? null : launch();
   }
@@ -184,12 +185,27 @@ export class StartupMetadataSession {
     if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 30000) { throw unavailable(); }
     const expected = await sourceEvidence(inspector, scope);
     if (expected === null) { return null; }
+
+    return StartupMetadataSession.preparePinnedOpen(supervisor, scope, expected, handshakeTimeoutMs);
+  }
+
+  static prepareWithEvidence(supervisor: ProcessSupervisor, scope: RuntimeScope, evidence: StartupWorkerEvidence,
+    handshakeTimeoutMs = 30000): () => Promise<StartupMetadataSession | null> {
+    if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 30000
+      || evidence.scopeSha256 !== scope.bindingSha256 || !isLowerHex(evidence.metadataSha256, 64)) { throw unavailable(); }
+
+    return StartupMetadataSession.preparePinnedOpen(supervisor, scope,
+      { scopeSha256: evidence.scopeSha256, sourceSha256: evidence.metadataSha256 }, handshakeTimeoutMs);
+  }
+
+  private static preparePinnedOpen(supervisor: ProcessSupervisor, scope: RuntimeScope,
+    expected: { scopeSha256: string; sourceSha256: string }, handshakeTimeoutMs: number): () => Promise<StartupMetadataSession | null> {
     let used = false;
 
     return () => {
       if (used) { throw unavailable(); }
       used = true;
-      return this.openWithEvidence(supervisor, scope, expected, handshakeTimeoutMs);
+      return StartupMetadataSession.openWithEvidence(supervisor, scope, expected, handshakeTimeoutMs);
     };
   }
 
@@ -222,7 +238,7 @@ export class StartupMetadataSession {
       const remaining = Math.floor(handshakeTimeoutMs - (performance.now() - startedAt));
       if (remaining < 1) { throw unavailable(); }
       const hello = parseStrictJson(await Promise.race([replies.next(remaining), expired]));
-      validateHello(hello, nonce, expected);
+      validateStartupHello(hello, nonce, expected);
       if (child.brokerClosed || replies.fault !== null) { throw unavailable(); }
       return new StartupMetadataSession(supervisor, child, replies, scope);
     } catch (error) {
