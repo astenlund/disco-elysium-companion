@@ -12,6 +12,7 @@ const sourceScript = fileURLToPath(new URL('../scripts/Get-StartupMetadataSource
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
 const admissionScript = fileURLToPath(new URL('../scripts/Get-PathAdmission.ps1', import.meta.url));
 const hashesScript = fileURLToPath(new URL('../scripts/Get-FileHashes.ps1', import.meta.url));
+const resourceScript = fileURLToPath(new URL('../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
 const maximumInputFrame = 2_097_152;
 const maximumOutputFrame = 65_536;
 const maximumHashInput = 1_048_576;
@@ -124,17 +125,33 @@ function validateHello(value: JsonValue, nonce: string, expected: { scopeSha256:
 }
 
 /** @internal Complete reply validation before an observation reaches its reader. */
-export function parseStartupMetadataReply(frameBytes: Uint8Array, id: string, operation: 'admit' | 'hash'): CommandResult {
+const inventoryFields = ['uncompactedEvents', 'retainedHandoffs', 'retainedHandoffIdentitySha256', 'potentialHandoffs',
+  'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox', 'uncertainWorkspace', 'freeBytes'] as const;
+const inventoryCounts = ['uncompactedEvents', 'retainedHandoffs', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations',
+  'invalidEvents', 'invalidOperations', 'pendingOutbox'] as const;
+
+function validateInventoryResult(value: JsonValue): void {
+  if (!hasExactKeys(value, inventoryFields) || inventoryCounts.some(key => {
+    const count = asInteger(value[key]);
+    return count === undefined || count < 0;
+  }) || !isLowerHex(value['retainedHandoffIdentitySha256'], 64) || typeof value['uncertainWorkspace'] !== 'boolean'
+    || typeof value['freeBytes'] !== 'string' || !/^[0-9]+$/.test(value['freeBytes'])) { throw unavailable(); }
+}
+
+export function parseStartupMetadataReply(frameBytes: Uint8Array, id: string, operation: 'admit' | 'hash' | 'inventory'): CommandResult {
   const response = parseStrictJson(frameBytes);
   if (hasExactKeys(response, ['version', 'id', 'op', 'status', 'code'])) {
-    const code = operation === 'admit' ? 'admissionUnavailable' : 'hashUnavailable';
+    const code = operation === 'admit' ? 'admissionUnavailable' : operation === 'hash' ? 'hashUnavailable' : 'inventoryUnavailable';
     if (asInteger(response['version']) !== 1 || response['id'] !== id || response['op'] !== operation
       || response['status'] !== 'error' || response['code'] !== code) { throw unavailable(); }
     return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   }
   if (hasExactKeys(response, ['version', 'id', 'op', 'status', 'result'])) {
     if (asInteger(response['version']) !== 1 || response['id'] !== id || response['op'] !== operation || response['status'] !== 'ok') { throw unavailable(); }
-    return { exitCode: 0, stdout: Buffer.from(stringifyJson(response['result']), 'utf8'), stderr: Buffer.alloc(0) };
+    const result = response['result'];
+    if (result === undefined) { throw unavailable(); }
+    if (operation === 'inventory') { validateInventoryResult(result); }
+    return { exitCode: 0, stdout: Buffer.from(stringifyJson(result), 'utf8'), stderr: Buffer.alloc(0) };
   }
   throw unavailable();
 }
@@ -143,15 +160,17 @@ export class StartupMetadataSession {
   private readonly supervisor: ProcessSupervisor;
   private readonly child: OwnedProcess;
   private readonly replies: FramedReplies;
+  private readonly scope: Pick<RuntimeScope, 'companionRoot' | 'dataRoot' | 'bindingSha256'>;
   private closed = false;
   private closePromise: Promise<void> | null = null;
   private inFlight = false;
   private stoppedVerified = false;
 
-  private constructor(supervisor: ProcessSupervisor, child: OwnedProcess, replies: FramedReplies) {
+  private constructor(supervisor: ProcessSupervisor, child: OwnedProcess, replies: FramedReplies, scope: RuntimeScope) {
     this.supervisor = supervisor;
     this.child = child;
     this.replies = replies;
+    this.scope = { companionRoot: scope.companionRoot, dataRoot: scope.dataRoot, bindingSha256: scope.bindingSha256 };
   }
 
   static async open(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope, handshakeTimeoutMs = 30000): Promise<StartupMetadataSession | null> {
@@ -187,7 +206,7 @@ export class StartupMetadataSession {
       const hello = parseStrictJson(await Promise.race([replies.next(remaining), expired]));
       validateHello(hello, nonce, expected);
       if (child.brokerClosed || replies.fault !== null) { throw unavailable(); }
-      return new StartupMetadataSession(supervisor, child, replies);
+      return new StartupMetadataSession(supervisor, child, replies, scope);
     } catch (error) {
       replies.fail(unavailable());
       await supervisor.stop('startupMetadata');
@@ -196,12 +215,17 @@ export class StartupMetadataSession {
     } finally { clearTimeout(timer); }
   }
 
-  supports(scriptPath: string): boolean { return scriptPath === admissionScript || scriptPath === hashesScript; }
+  supports(scriptPath: string, args: readonly string[] = [], input?: Uint8Array): boolean {
+    if (scriptPath === admissionScript || scriptPath === hashesScript) { return true; }
+    return scriptPath === resourceScript && input === undefined && args.length === 8 && args[0] === '-Root'
+      && args[2] === '-ScopeSha256' && args[4] === '-CompanionRoot' && args[6] === '-Mode'
+      && (args[7] === 'Inventory' || args[7] === 'Marker');
+  }
   get canFallBack(): boolean { return this.stoppedVerified; }
 
   async invoke(scriptPath: string, args: readonly string[], cwd: string, timeoutMs: number, input?: Uint8Array): Promise<CommandResult> {
-    if (this.closed || this.inFlight || !this.supports(scriptPath) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { throw unavailable(); }
-    let operation: 'admit' | 'hash';
+    if (this.closed || this.inFlight || !this.supports(scriptPath, args, input) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { throw unavailable(); }
+    let operation: 'admit' | 'hash' | 'inventory';
     let fields: Record<string, unknown>;
     if (scriptPath === admissionScript) {
       if ((args.length !== 4 && args.length !== 5) || args[0] !== '-Root' || args[2] !== '-TargetsJson'
@@ -210,7 +234,7 @@ export class StartupMetadataSession {
       if (!Array.isArray(targets) || targets.length < 1 || targets.length > 64 || !targets.every(target => typeof target === 'string')) { throw unavailable(); }
       operation = 'admit';
       fields = { targets, allowMissing: args.length === 5 };
-    } else {
+    } else if (scriptPath === hashesScript) {
       if ((args.length !== 2 && args.length !== 4) || args[0] !== '-Root' || args[1] !== cwd || args.length === 4 && args[2] !== '-ScopeSha256'
         || input === undefined || input.byteLength < 1 || input.byteLength > maximumHashInput) { throw unavailable(); }
       const bound = args.length === 4 ? args[3]! : null;
@@ -218,6 +242,11 @@ export class StartupMetadataSession {
       operation = 'hash';
       const bytes = Buffer.from(input);
       fields = { inputBase64: bytes.toString('base64'), inputSha256: createHash('sha256').update(bytes).digest('hex'), scopeSha256: bound };
+    } else {
+      if (args[1] !== cwd || cwd !== this.scope.dataRoot || args[3] !== this.scope.bindingSha256
+        || args[5] !== this.scope.companionRoot) { throw unavailable(); }
+      operation = 'inventory';
+      fields = { mode: args[7], scopeSha256: this.scope.bindingSha256, companionRoot: this.scope.companionRoot };
     }
     const id = randomBytes(16).toString('hex');
     const request = encodeStartupMetadataFrame({ version: 1, id, op: operation, root: cwd, remainingMs: timeoutMs, ...fields });

@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
 import type { ProcessSupervisor } from '../src/process.ts';
-import { encodeStartupMetadataFrame, FramedReplies, parseStartupMetadataReply, type StartupMetadataSession } from '../src/startup-metadata.ts';
+import { encodeStartupMetadataFrame, FramedReplies, parseStartupMetadataReply, StartupMetadataSession } from '../src/startup-metadata.ts';
+
+const resourceScript = fileURLToPath(new URL('../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
 
 function workerStream() {
   const stdout = new PassThrough();
@@ -77,6 +80,52 @@ test('reply parser refuses wrong correlation, duplicate fields, and unrecognized
     assert.throws(() => parseStartupMetadataReply(Buffer.from(JSON.stringify(value)), id, 'admit'));
   }
   assert.throws(() => parseStartupMetadataReply(Buffer.from('{"version":1,"version":1,"id":"' + id + '"}', 'utf8'), id, 'admit'));
+});
+
+test('inventory replies require complete bounded current observations', () => {
+  const id = 'a'.repeat(32);
+  const result = { uncompactedEvents: 0, retainedHandoffs: 0, retainedHandoffIdentitySha256: 'b'.repeat(64), potentialHandoffs: 0,
+    fullTerminalOperations: 0, unfinishedOperations: 0, invalidEvents: 0, invalidOperations: 0, pendingOutbox: 0,
+    uncertainWorkspace: false, freeBytes: '1024' };
+  const frame = (value: unknown) => Buffer.from(JSON.stringify(value));
+  const reply = (value: unknown) => ({ version: 1, id, op: 'inventory', status: 'ok', result: value });
+  assert.deepEqual(JSON.parse(parseStartupMetadataReply(frame(reply(result)), id, 'inventory').stdout.toString('utf8')), result);
+  assert.equal(parseStartupMetadataReply(frame({ version: 1, id, op: 'inventory', status: 'error', code: 'inventoryUnavailable' }), id, 'inventory').exitCode, 1);
+  for (const invalid of [
+    { ...result, freeBytes: '-1' },
+    { ...result, uncertainWorkspace: 'false' },
+    { ...result, retainedHandoffIdentitySha256: 'B'.repeat(64) },
+    { ...result, pendingOutbox: -1 },
+    { ...result, pendingOutbox: 1.5 },
+    { ...result, pendingOutbox: Number.MAX_SAFE_INTEGER + 1 },
+    { ...result, extra: true },
+    { ...result, freeBytes: undefined },
+  ]) {
+    assert.throws(() => parseStartupMetadataReply(frame(reply(invalid)), id, 'inventory'), DataRootUnavailableError);
+  }
+  assert.throws(() => parseStartupMetadataReply(frame({ version: 1, id, op: 'inventory', status: 'error', code: 'hashUnavailable' }), id, 'inventory'));
+});
+
+test('only exact read-only resource modes use the startup worker', async () => {
+  const routed: string[] = [];
+  const prototype = Object.create(StartupMetadataSession.prototype) as StartupMetadataSession;
+  const session = {
+    supports: prototype.supports.bind(prototype), canFallBack: false,
+    invoke: async () => { routed.push('worker'); return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; },
+    close: async () => {},
+  } as unknown as StartupMetadataSession;
+  const supervisor = {
+    run: async () => { routed.push('one-shot'); return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; },
+  } as unknown as ProcessSupervisor;
+  const inspector = new PathInspector(supervisor);
+  inspector.attachStartupSession(session);
+  const common = ['-Root', 'root', '-ScopeSha256', 'f'.repeat(64), '-CompanionRoot', 'companion', '-Mode'];
+  await inspector.metadata(resourceScript, [...common, 'Inventory'], 'root');
+  await inspector.metadata(resourceScript, [...common, 'Marker'], 'root');
+  await inspector.metadata(resourceScript, [...common, 'Event'], 'root', 30000, Buffer.from('{}'));
+  await inspector.metadata(resourceScript, [...common, 'Quarantine'], 'root', 30000, Buffer.from('[]'));
+  await inspector.closeStartupSession();
+  assert.deepEqual(routed, ['worker', 'worker', 'one-shot', 'one-shot']);
 });
 
 test('hash transport admits a full decoded control input without losing the framed bound', () => {

@@ -10,11 +10,17 @@ import type { RuntimeBackend } from '../../src/backend/api.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { Deadline } from '../../src/deadline.ts';
 import { readFileHashes } from '../../src/file-hashes.ts';
-import { SupervisorError } from '../../src/process.ts';
+import { SupervisorError, type CommandResult } from '../../src/process.ts';
 import type { StartupMetadataSession } from '../../src/startup-metadata.ts';
 import { companionFixture } from '../support/companion.ts';
 
 const exclusiveScript = fileURLToPath(new URL('./fixtures/Exclusive-FileHandle.ps1', import.meta.url));
+const resourceScript = fileURLToPath(new URL('../../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
+
+function resourceObservation(backend: RuntimeBackend, mode: 'Inventory' | 'Marker'): Promise<CommandResult> {
+  return backend.inspector.metadata(resourceScript, ['-Root', backend.scope.dataRoot, '-ScopeSha256', backend.scope.bindingSha256,
+    '-CompanionRoot', backend.scope.companionRoot, '-Mode', mode], backend.scope.dataRoot);
+}
 
 test('startup worker freshly admits and hashes private files, then restores one-shot inspection', { timeout: 600000 }, async () => {
   const fixture = await companionFixture('runtime-owned-empty');
@@ -25,6 +31,46 @@ test('startup worker freshly admits and hashes private files, then restores one-
     backend = await openBackend({ companionRoot: fixture.root, startupMetadata: true });
     stage = 'active worker';
     await assert.rejects(backend.supervisor.verifyQuiescent('startupMetadata'), SupervisorError);
+    stage = 'fresh inventory';
+    const inventory = async (mode: 'Inventory' | 'Marker'): Promise<boolean> => {
+      const reply = await resourceObservation(backend!, mode);
+      assert.equal(reply.exitCode, 0);
+      assert.equal(reply.stderr.length, 0);
+      return (JSON.parse(reply.stdout.toString('utf8')) as { uncertainWorkspace: boolean }).uncertainWorkspace;
+    };
+    assert.equal(await inventory('Inventory'), false);
+    assert.equal(await inventory('Marker'), false);
+    await backend.supervisor.verifyQuiescent('metadata');
+    const scopeBinding = path.join(backend.scope.dataRoot, 'scope.json');
+    const exclusiveScope = await backend.supervisor.run('metadata', { command: 'pwsh',
+      args: ['-NoProfile', '-File', exclusiveScript, '-Path', scopeBinding], cwd: fixture.root }, 30000);
+    assert.equal(exclusiveScope.exitCode, 0);
+    const linkedScope = path.join(fixture.root, '.tmp', 'scope-link.json');
+    await fs.link(scopeBinding, linkedScope);
+    try {
+      const refused = await resourceObservation(backend, 'Inventory');
+      assert.equal(refused.exitCode, 1);
+    } finally { await fs.unlink(linkedScope); }
+    assert.equal(await inventory('Inventory'), false);
+    await assert.rejects(backend.inspector.metadata(resourceScript, ['-Root', backend.scope.dataRoot, '-ScopeSha256', '0'.repeat(64),
+      '-CompanionRoot', backend.scope.companionRoot, '-Mode', 'Inventory'], backend.scope.dataRoot), DataRootUnavailableError);
+    await assert.rejects(backend.supervisor.verifyQuiescent('startupMetadata'), SupervisorError);
+    assert.equal(await inventory('Inventory'), false);
+    const residue = path.join(backend.scope.dataRoot, 'codec.json');
+    const aliasTarget = path.join(fixture.root, '.tmp', 'inventory-alias-target.json');
+    await fs.writeFile(aliasTarget, '{}', { flag: 'wx' });
+    await fs.symlink(aliasTarget, residue, 'file');
+    try {
+      const refused = await resourceObservation(backend, 'Inventory');
+      assert.equal(refused.exitCode, 1);
+    } finally { await fs.unlink(residue); await fs.unlink(aliasTarget); }
+    assert.equal(await inventory('Inventory'), false);
+    await fs.writeFile(residue, '{}', { flag: 'wx' });
+    try {
+      assert.equal(await inventory('Inventory'), true);
+      assert.equal(await inventory('Marker'), false);
+    } finally { await fs.unlink(residue); }
+    assert.equal(await inventory('Inventory'), false);
     const sample = path.join(fixture.root, '.tmp', 'sample.json');
     stage = 'fresh admission';
     assert.equal((await backend.inspector.inspect(fixture.root, sample, true)).exists, false);
@@ -70,8 +116,10 @@ test('an exited worker fails the next observation and permits one-shot work afte
     backend = await openBackend({ companionRoot: fixture.root, startupMetadata: true });
     const target = path.join(fixture.root, 'runtime', 'companion.config.json');
     assert.equal((await backend.inspector.inspect(fixture.root, target)).kind, 'file');
+    assert.equal((await resourceObservation(backend, 'Inventory')).exitCode, 0);
     await backend.supervisor.stop('startupMetadata');
-    await assert.rejects(backend.inspector.inspect(fixture.root, target), DataRootUnavailableError);
+    await assert.rejects(resourceObservation(backend, 'Inventory'), DataRootUnavailableError);
+    assert.equal((await resourceObservation(backend, 'Inventory')).exitCode, 0);
     assert.equal((await backend.inspector.inspect(fixture.root, target)).kind, 'file');
     await backend.closeStartupMetadata();
     await backend.shutdown(true);

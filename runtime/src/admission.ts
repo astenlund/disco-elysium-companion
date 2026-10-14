@@ -82,7 +82,7 @@ export class PathInspector {
     const run = async (): Promise<CommandResult> => {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
-      if (startupSession !== null && startupSession.supports(scriptPath)) {
+      if (startupSession !== null && startupSession.supports(scriptPath, frozenArgs, frozenInput)) {
         if (startupSession.canFallBack) { this.startupSession = null; }
         else { return startupSession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
       }

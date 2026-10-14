@@ -89,13 +89,12 @@ function Read-BoundFile {
     param([string] $Root, [string] $Target, [int] $MaximumBytes)
     $before = [Companion.Runtime.NativeFiles]::AdmitWithin($Root, $Target, $false)
     if (-not $before.Exists -or $before.IsDirectory -or $before.Links -ne 1) { throw [IO.IOException]::new('Source admission failed.') }
-    if (([IO.FileInfo]::new($before.Path)).Length -gt $MaximumBytes) { throw [IO.IOException]::new('Source exceeds its bound.') }
-    $bytes = [IO.File]::ReadAllBytes($before.Path)
+    $bytes = [Companion.Runtime.JsonDocuments]::ReadBounded($before.Path, $MaximumBytes)
     $after = [Companion.Runtime.NativeFiles]::AdmitWithin($Root, $Target, $false)
-    if ($bytes.Length -gt $MaximumBytes -or [string]::CompareOrdinal($before.Volume, $after.Volume) -ne 0 -or [string]::CompareOrdinal($before.Identity, $after.Identity) -ne 0 -or $after.Links -ne 1) {
+    if ([string]::CompareOrdinal($before.Volume, $after.Volume) -ne 0 -or [string]::CompareOrdinal($before.Identity, $after.Identity) -ne 0 -or $after.Links -ne 1) {
         throw [IO.IOException]::new('Source changed during admission.')
     }
-    $again = [IO.File]::ReadAllBytes($after.Path)
+    $again = [Companion.Runtime.JsonDocuments]::ReadBounded($after.Path, $MaximumBytes)
     if ($again.Length -ne $bytes.Length -or -not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($bytes, $again)) {
         throw [IO.IOException]::new('Source changed during observation.')
     }
@@ -105,7 +104,8 @@ function Read-BoundFile {
 
 try {
     if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
-    $sources = @('NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs')
+    $sources = @('NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs', 'EventDocuments.cs', 'PayloadCodec.cs',
+        'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
     Add-Type -Path @($sources | ForEach-Object { Join-Path $PSScriptRoot $_ })
     $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
     if (-not $admittedData.IsDirectory) { throw [IO.IOException]::new('Runtime scope is unavailable.') }
@@ -115,7 +115,8 @@ try {
     $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
     $bundle = [IO.MemoryStream]::new()
     try {
-        foreach ($name in @('StartupMetadataWorker.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs')) {
+        foreach ($name in @('StartupMetadataWorker.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs',
+            'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')) {
             $bytes = Read-BoundFile -Root $SourceRoot -Target (Join-Path $PSScriptRoot $name) -MaximumBytes 1048576
             $length = $bytes.Length
             $header = [byte[]]::new(4)
@@ -140,6 +141,7 @@ try {
             $operation = Read-String -Element ($request.GetProperty('op'))
             if ($operation -ceq 'admit') { Assert-ExactFields -Element $request -Names @('version', 'id', 'op', 'root', 'remainingMs', 'targets', 'allowMissing') }
             elseif ($operation -ceq 'hash') { Assert-ExactFields -Element $request -Names @('version', 'id', 'op', 'root', 'remainingMs', 'inputBase64', 'inputSha256', 'scopeSha256') }
+            elseif ($operation -ceq 'inventory') { Assert-ExactFields -Element $request -Names @('version', 'id', 'op', 'root', 'remainingMs', 'mode', 'scopeSha256', 'companionRoot') }
             else { throw [IO.InvalidDataException]::new('Unknown worker operation.') }
             if ((Read-Integer -Element ($request.GetProperty('version'))) -ne 1) { throw [IO.InvalidDataException]::new('Invalid request version.') }
             $id = Read-String -Element ($request.GetProperty('id'))
@@ -182,7 +184,7 @@ try {
                 if ($failed) { Write-Frame -Text ('{"version":1,"id":"' + $id + '","op":"admit","status":"error","code":"admissionUnavailable"}') }
                 else { Write-Frame -Text ('{"version":1,"id":"' + $id + '","op":"admit","status":"ok","result":' + $result + '}') }
             }
-            else {
+            elseif ($operation -ceq 'hash') {
                 $inputBase64 = Read-String -Element ($request.GetProperty('inputBase64'))
                 $inputSha256 = Read-String -Element ($request.GetProperty('inputSha256'))
                 if ($inputSha256 -cnotmatch '^[a-f0-9]{64}$') { throw [IO.InvalidDataException]::new('Invalid hash request digest.') }
@@ -211,6 +213,38 @@ try {
                 finally { $source.Dispose() }
                 if ($failed) { Write-Frame -Text ('{"version":1,"id":"' + $id + '","op":"hash","status":"error","code":"hashUnavailable"}') }
                 else { Write-Frame -Text ('{"version":1,"id":"' + $id + '","op":"hash","status":"ok","result":' + $result + '}') }
+            }
+            else {
+                $mode = Read-String -Element ($request.GetProperty('mode'))
+                $requestScopeSha256 = Read-String -Element ($request.GetProperty('scopeSha256'))
+                $requestCompanionRoot = Read-String -Element ($request.GetProperty('companionRoot'))
+                if (($mode -cne 'Inventory' -and $mode -cne 'Marker') -or
+                    [string]::CompareOrdinal($root, $DataRoot) -ne 0 -or
+                    [string]::CompareOrdinal($requestScopeSha256, $scopeSha256) -ne 0 -or
+                    [string]::CompareOrdinal($requestCompanionRoot, $CompanionRoot) -ne 0) {
+                    throw [IO.InvalidDataException]::new('Inventory scope or mode is invalid.')
+                }
+                $failed = $false
+                try {
+                    if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Inventory timed out.') }
+                    $reply = [Companion.Runtime.ResourceInventory]::Read($root, $scopeSha256, ($mode -ceq 'Marker'), $CompanionRoot)
+                }
+                catch {
+                    if ($_.Exception -is [TimeoutException]) { throw }
+                    $failed = $true
+                }
+                if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Inventory timed out.') }
+                if ($failed) { Write-Frame -Text ('{"version":1,"id":"' + $id + '","op":"inventory","status":"error","code":"inventoryUnavailable"}') }
+                else {
+                    $result = $utf8.GetString($reply)
+                    $parsed = [Text.Json.JsonDocument]::Parse($result)
+                    try {
+                        if ($parsed.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw [IO.InvalidDataException]::new('Inventory result is invalid.') }
+                        $result = $parsed.RootElement.GetRawText()
+                    }
+                    finally { $parsed.Dispose() }
+                    Write-Frame -Text ('{"version":1,"id":"' + $id + '","op":"inventory","status":"ok","result":' + $result + '}')
+                }
             }
         }
         finally { $document.Dispose() }
