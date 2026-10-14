@@ -1,0 +1,22 @@
+# Chat startup progress
+
+`node runtime/src/cli.ts chat` writes UTC timestamps and elapsed time to stderr. Each line marks the start of a phase, not its completion. The time until the next line gives a rough phase duration; recovery can revisit a phase, and a failed start can stop before later phases appear.
+
+| Message | What the runtime is doing |
+|---|---|
+| Loading configuration | Reads and validates the runtime and adapter settings. |
+| Validating the companion scope | Checks the companion root, Windows principal and physical paths used to select the runtime data scope. |
+| Claiming the runtime instance | Takes the single-instance guard and prepares the bound runtime scope so another writer cannot start there. |
+| Initializing runtime metadata | Checks the prior runtime marker, admitted residue, old watcher and supervised process jobs; writes this start's marker and may open the read-only startup worker. |
+| Checking durable storage | Reconciles owned publication residue and reads or initializes the journal, safety record and required directories. |
+| Reconciling consumer ownership | Resumes an unfinished handover or release. Chat stops if a completed release returned consumption to the bridge. |
+| Reconciling recovery | Resumes interrupted repair, handover or journal work while retaining unresolved obligations. |
+| Draining pending state records | Moves accepted core outbox records into the runtime journal and settles them as required. |
+| Acquiring current state | Reads the current save through the core, publishing and settling a new state event when needed. No player message is sent here. |
+| Checking state safety | Checks pending safety obligations and resumes required recovery before provider admission. |
+| Finishing storage maintenance | Applies eligible retention and refreshes capacity and operational observations. |
+| Starting the save watcher | Starts or checks the watcher that notices later saves; its status appears in the client. |
+| Preparing provider tools and instructions | Builds the provider instructions and tool boundary for this runtime session. |
+| Starting the provider session | Checks provider safety, starts or resumes a session, writes its binding and verifies the startup worker has stopped. |
+
+`still working` means the current phase has been quiet for at least 15 seconds while the event loop could report progress. It is not a percentage or a deadline. `chat client ready` means the text client attached. A status-only client can also attach after some authority failures, so read the following consumer, state, journal, safety and provider status before treating the session as usable. The current performance target counts only a healthy attached session.
