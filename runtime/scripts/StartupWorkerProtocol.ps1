@@ -68,3 +68,33 @@ function Read-Integer {
 
     return $value
 }
+
+function Write-WorkerReply {
+    param([string] $Id, [string] $Operation, [string] $Status, $ResultJson, $Code)
+
+    if ($Status -cnotin @('ok', 'error') -or ($Status -ceq 'ok' -and ($null -eq $ResultJson -or $null -ne $Code)) -or
+        ($Status -ceq 'error' -and ($null -ne $ResultJson -or $null -eq $Code))) {
+        throw [IO.InvalidDataException]::new('Worker reply fields are invalid.')
+    }
+    $buffer = [IO.MemoryStream]::new()
+    $writer = [Text.Json.Utf8JsonWriter]::new($buffer)
+    try {
+        $writer.WriteStartObject()
+        $writer.WriteNumber('version', 1)
+        $writer.WriteString('id', $Id)
+        $writer.WriteString('op', $Operation)
+        $writer.WriteString('status', $Status)
+        if ($Status -ceq 'ok') {
+            $writer.WritePropertyName('result')
+            $writer.WriteRawValue([string] $ResultJson)
+        }
+        else { $writer.WriteString('code', [string] $Code) }
+        $writer.WriteEndObject()
+        $writer.Flush()
+        Write-Frame -Text ($utf8.GetString($buffer.ToArray()))
+    }
+    finally {
+        $writer.Dispose()
+        $buffer.Dispose()
+    }
+}
