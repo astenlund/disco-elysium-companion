@@ -147,9 +147,13 @@ export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pi
     }
     return { admitted, sha256: admitted.exists ? await digest(admitted.path) : null };
   };
+  const verifyWritersAbsent = async (): Promise<void> => {
+    await supervisor.verifyQuiescent('publication');
+    await supervisor.verifyQuiescent('startupMutation');
+  };
   try {
     owned();
-    await supervisor.verifyQuiescent('publication');
+    await verifyWritersAbsent();
     const bindingPath = path.join(scope.dataRoot, 'scope.json');
     const targetPath = path.join(scope.dataRoot, 'runtime.json');
     const [root, binding, target] = await inspect([scope.dataRoot, bindingPath, targetPath]);
@@ -176,7 +180,7 @@ export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pi
     const removed: string[] = [];
     for (const candidate of candidates) {
       owned();
-      await supervisor.verifyQuiescent('publication');
+      await verifyWritersAbsent();
       const [currentRoot, currentBinding, currentTarget, currentSibling] = await inspect([scope.dataRoot, bindingPath, targetPath, candidate.snapshot.admitted.path]);
       if (currentRoot === undefined || currentBinding === undefined || currentTarget === undefined || currentSibling === undefined
         || !sameMarkerObject(root, currentRoot) || !sameMarkerObject(binding, currentBinding) || await digest(bindingPath) !== scope.bindingSha256

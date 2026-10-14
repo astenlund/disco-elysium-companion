@@ -15,7 +15,7 @@ try {
             if ($_.ValueKind -ne [Text.Json.JsonValueKind]::String) { throw [FormatException]::new('A job name is invalid.') }
             $_.GetString()
         })
-        if ($names.Count -lt 1 -or $names.Count -gt 6) { throw [FormatException]::new('Job count is invalid.') }
+        if ($names.Count -lt 1 -or $names.Count -gt 8) { throw [FormatException]::new('Job count is invalid.') }
         $unique = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($name in $names) {
             if ([string]::IsNullOrEmpty($name) -or -not $unique.Add($name)) { throw [FormatException]::new('A job name is repeated or empty.') }

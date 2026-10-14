@@ -263,7 +263,9 @@ export class CoordinatorBackend implements RuntimeBackend {
       const sha256 = await k.storage.write('runtime.json', value, 'config', this.runtime.sha256);
       this.runtime = { value, sha256 };
     }).catch(error => { throw this.recordFailure(error); });
-    await k.supervisor.verifyQuiescent('metadata'); await k.supervisor.verifyQuiescent('startupMetadata'); await k.supervisor.verifyQuiescent('publication');
+    await k.supervisor.verifyQuiescent('metadata'); await k.supervisor.verifyQuiescent('startupMetadata');
+    await k.supervisor.verifyQuiescent('startupCoreReply'); await k.supervisor.verifyQuiescent('startupMutation');
+    await k.supervisor.verifyQuiescent('publication');
     k.journal.invalidate();
     await k.guard.release();
   }

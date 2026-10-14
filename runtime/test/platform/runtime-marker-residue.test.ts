@@ -41,7 +41,10 @@ function fixture(names: readonly string[] = [tmp], withTarget = false) {
       return targets.map(file => ({ ...(admissions.get(file) ?? { path: file, exists: false, kind: null, links: null, volume: null, identity: null, missing: [path.basename(file)] }) }));
     },
   };
-  const supervisor = { async verifyQuiescent(role: string) { assert.equal(role, 'publication'); calls.push(role); control.hook('quiescent:' + ++quiescence); } };
+  const supervisor = { async verifyQuiescent(role: string) {
+    assert.ok(role === 'publication' || role === 'startupMutation');
+    calls.push(role); control.hook('quiescent:' + ++quiescence);
+  } };
   const io: MarkerResidueIO = {
     async *entries(directory) {
       assert.equal(directory, dataRoot); calls.push('scan');
@@ -71,8 +74,16 @@ for (const [name, withTarget] of [[tmp, false], [bak, true], [tmp, true], [bak, 
     assert.deepEqual(await f.run(), { removed: [name] });
     assert.equal(f.bytes.get(f.resolve('runtime.json')), prior);
     assert.equal(f.calls.filter(call => call === 'publication').length, 2);
+    assert.equal(f.calls.filter(call => call === 'startupMutation').length, 2);
   });
 }
+
+test('marker cleanup verifies both writers before each selected deletion', async () => {
+  const f = fixture([tmp, bak], true);
+  assert.deepEqual(await f.run(), { removed: [tmp, bak] });
+  assert.deepEqual(f.calls.filter(call => call === 'publication' || call === 'startupMutation'),
+    ['publication', 'startupMutation', 'publication', 'startupMutation', 'publication', 'startupMutation']);
+});
 
 test('empty selection preserves near matches and other phase-D residue families', async () => {
   const names = ['Runtime.json.' + '1'.repeat(32) + '.tmp', 'runtime.json.' + 'A'.repeat(32) + '.bak', 'runtime.json.' + '1'.repeat(31) + '.tmp', tmp + '.other', 'runtime.json.foreign.tmp', 'state-safety.json.' + '1'.repeat(32) + '.tmp'];
@@ -107,7 +118,7 @@ for (const defect of ['sibling lost', 'sibling identity', 'sibling bytes', 'targ
   test('marker cleanup refuses post-scan ' + defect, async () => {
     const f = fixture([tmp], defect !== 'target appears');
     f.control.hook = event => {
-      if (event !== 'quiescent:2') { return; }
+      if (event !== 'quiescent:4') { return; }
       if (defect === 'sibling lost') { f.admissions.delete(f.resolve(tmp)); }
       if (defect === 'sibling identity') { f.put(tmp, f.bytes.get(f.resolve(tmp))!); }
       if (defect === 'sibling bytes') { f.bytes.set(f.resolve(tmp), Buffer.from('changed')); }
@@ -123,8 +134,8 @@ for (const defect of ['sibling lost', 'sibling identity', 'sibling bytes', 'targ
   });
 }
 
-for (const stage of [1, 2]) {
-  test('publication termination uncertainty remains typed at quiescence check ' + stage, async () => {
+for (const [stage, role] of [[1, 'publication'], [2, 'startupMutation'], [3, 'publication'], [4, 'startupMutation']] as const) {
+  test(role + ' termination uncertainty remains typed at quiescence check ' + stage, async () => {
     const f = fixture(); const failure = new SupervisorError('termination-unverified', 'Fixture uncertainty.');
     f.control.hook = event => { if (event === 'quiescent:' + stage) { throw failure; } };
     await assert.rejects(f.run(), error => error === failure);

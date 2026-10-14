@@ -44,22 +44,24 @@ test('batches startup admission after a prior owned metadata child', { timeout: 
   await supervisor.verifyQuiescent('metadata');
 });
 
-test('refuses startup admission while an owned child is running', { timeout: 60000 }, async () => {
-  const scope = path.join(root, '.tmp', `startup-job-batch-${randomUUID()}`);
-  const supervisor = await ProcessSupervisor.create(scope);
-  const child = supervisor.spawn('watcher', { command: process.execPath, args: [childScript, 'wait'], cwd: root });
-  child.stdout.resume(); child.stderr.resume(); child.stdin.end();
-  try {
-    await child.ready;
-    const names = processRoles.map(role => supervisor.jobName(role));
-    const observed = await execute('pwsh', ['-NoProfile', '-File', batchScript, '-JobNamesJson', JSON.stringify(names)],
-      { windowsHide: true, timeout: 10000, maxBuffer: 65536 });
-    assert.deepEqual(parseStartupJobStates(parseStrictJson(Buffer.from(observed.stdout)), names), [true, true, true, false, true, true]);
-    await assert.rejects(execute('pwsh', ['-NoProfile', '-File', batchScript, '-JobNamesJson', JSON.stringify([names[0], names[0]])],
-      { windowsHide: true, timeout: 10000, maxBuffer: 65536 }));
-    await assert.rejects(supervisor.admitStartup(), error => error instanceof SupervisorError && error.reason === 'termination-unverified');
-  } finally {
-    await supervisor.stop('watcher');
-  }
-  await supervisor.admitStartup();
-});
+for (const activeRole of ['watcher', 'startupCoreReply', 'startupMutation'] as const) {
+  test('refuses startup admission while an owned ' + activeRole + ' child is running', { timeout: 60000 }, async () => {
+    const scope = path.join(root, '.tmp', `startup-job-batch-${randomUUID()}`);
+    const supervisor = await ProcessSupervisor.create(scope);
+    const child = supervisor.spawn(activeRole, { command: process.execPath, args: [childScript, 'wait'], cwd: root });
+    child.stdout.resume(); child.stderr.resume(); child.stdin.end();
+    try {
+      await child.ready;
+      const names = processRoles.map(role => supervisor.jobName(role));
+      const observed = await execute('pwsh', ['-NoProfile', '-File', batchScript, '-JobNamesJson', JSON.stringify(names)],
+        { windowsHide: true, timeout: 10000, maxBuffer: 65536 });
+      assert.deepEqual(parseStartupJobStates(parseStrictJson(Buffer.from(observed.stdout)), names), processRoles.map(role => role !== activeRole));
+      await assert.rejects(execute('pwsh', ['-NoProfile', '-File', batchScript, '-JobNamesJson', JSON.stringify([names[0], names[0]])],
+        { windowsHide: true, timeout: 10000, maxBuffer: 65536 }));
+      await assert.rejects(supervisor.admitStartup(), error => error instanceof SupervisorError && error.reason === 'termination-unverified');
+    } finally {
+      await supervisor.stop(activeRole);
+    }
+    await supervisor.admitStartup();
+  });
+}
