@@ -5,6 +5,7 @@ import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } 
 import { ProcessSupervisor, type CommandResult } from './process.ts';
 import { SerialQueue } from './serial.ts';
 import type { StartupMetadataSession } from './startup-metadata.ts';
+import type { StartupCoreReplySession } from './startup-core-reply.ts';
 
 export class DataRootUnavailableError extends Error {
   override readonly name = 'DataRootUnavailableError';
@@ -46,6 +47,7 @@ export class PathInspector {
   private readonly supervisor: ProcessSupervisor;
   private readonly queue = new SerialQueue();
   private startupSession: StartupMetadataSession | null = null;
+  private coreReplySession: StartupCoreReplySession | null = null;
   private startupClosing: Promise<void> | null = null;
 
   constructor(supervisor: ProcessSupervisor) { this.supervisor = supervisor; }
@@ -57,12 +59,22 @@ export class PathInspector {
     this.startupSession = session;
   }
 
+  attachStartupCoreReplySession(session: StartupCoreReplySession): void {
+    if (this.coreReplySession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup core reply session is already attached.'); }
+    this.coreReplySession = session;
+  }
+
   closeStartupSession(): Promise<void> {
     if (this.startupClosing !== null) { return this.startupClosing; }
-    const session = this.startupSession;
+    const sessions = [this.startupSession, this.coreReplySession].filter(session => session !== null);
     this.startupSession = null;
-    if (session === null) { return Promise.resolve(); }
-    this.startupClosing = this.queue.idle().then(() => session.close());
+    this.coreReplySession = null;
+    if (sessions.length === 0) { return Promise.resolve(); }
+    this.startupClosing = this.queue.idle().then(async () => {
+      const results = await Promise.allSettled(sessions.map(session => session.close()));
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure?.status === 'rejected') { throw failure.reason; }
+    });
     return this.startupClosing;
   }
 
@@ -78,6 +90,7 @@ export class PathInspector {
     const frozenArgs = [...args];
     const frozenInput = input === undefined ? undefined : Buffer.from(input);
     const startupSession = this.startupSession;
+    const coreReplySession = this.coreReplySession;
     const closing = this.startupClosing;
     const run = async (): Promise<CommandResult> => {
       const remaining = Math.floor(deadline - performance.now());
@@ -85,6 +98,10 @@ export class PathInspector {
       if (startupSession !== null && startupSession.supports(scriptPath, frozenArgs, frozenInput)) {
         if (startupSession.canFallBack) { this.startupSession = null; }
         else { return startupSession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
+      }
+      if (coreReplySession !== null && coreReplySession.supports(scriptPath, frozenArgs, frozenInput)) {
+        if (coreReplySession.canFallBack) { this.coreReplySession = null; }
+        else { return coreReplySession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
       }
       return this.supervisor.run('metadata', { command: 'pwsh', args: ['-NoProfile', '-File', scriptPath, ...frozenArgs], cwd }, remaining, frozenInput);
     };

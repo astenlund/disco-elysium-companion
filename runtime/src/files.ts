@@ -7,8 +7,9 @@ import { DataRootUnavailableError, PathInspector, type PathAdmission } from './a
 import type { Deadline } from './deadline.ts';
 import type { InstanceGuard } from './guard.ts';
 import { hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type ProspectiveJsonFailure } from './json.ts';
-import { ProcessSupervisor, SupervisorError } from './process.ts';
+import { ProcessSupervisor, SupervisorError, type CommandResult, type OwnedSpawnOptions } from './process.ts';
 import { SerialQueue } from './serial.ts';
+import type { StartupMutationSession } from './startup-mutation.ts';
 
 export class PublicationError extends Error {
   override readonly name = 'PublicationError';
@@ -114,19 +115,45 @@ export class FilePublisher {
   private readonly options: PublicationOptions;
   private readonly queue = new SerialQueue();
   private unavailable = false;
+  private startupMutation: StartupMutationSession | null = null;
+  private startupMutationClosing: Promise<void> | null = null;
 
   constructor(options: PublicationOptions) { this.options = options; }
 
   get blocked(): boolean { return this.unavailable; }
   idle(): Promise<void> { return this.queue.idle(); }
 
+  attachStartupMutationSession(session: StartupMutationSession): void {
+    if (this.startupMutation !== null || this.startupMutationClosing !== null) { throw new PublicationError('Startup mutation session is already attached.', true); }
+    this.startupMutation = session;
+  }
+
+  closeStartupMutationSession(): Promise<void> {
+    if (this.startupMutationClosing !== null) { return this.startupMutationClosing; }
+    const session = this.startupMutation;
+    this.startupMutation = null;
+    if (session === null) { return Promise.resolve(); }
+    this.startupMutationClosing = this.queue.idle().then(() => session.close());
+    return this.startupMutationClosing;
+  }
+
+  runNativePublication(options: OwnedSpawnOptions, timeoutMs: number): Promise<CommandResult> {
+    const session = this.startupMutation;
+    if (session !== null && session.handles(options)) {
+      if (session.canFallBack) { this.startupMutation = null; }
+      else { return session.invoke(options, timeoutMs); }
+    }
+    return this.options.supervisor.run('publication', options, timeoutMs);
+  }
+
   // Codec and ordinary publication share this owner and queue, including cleanup failure.
   exclusive<T>(operation: (options: PublicationOptions) => Promise<T>, deadline?: Deadline): Promise<T> {
     const captured = this.options.bind?.(() => operation(this.options)) ?? (() => operation(this.options));
-    return this.queue.run(async () => {
+    const run = () => this.queue.run(async () => {
       deadline?.check(); this.requireOwnership();
       return captured();
     });
+    return this.startupMutationClosing === null ? run() : this.startupMutationClosing.then(run);
   }
 
   block(): void { this.unavailable = true; this.options.invalidate(this.options.root); }
@@ -203,7 +230,7 @@ export class FilePublisher {
         let reply: ReturnType<typeof parseStrictJson> | null = null;
         try {
           this.requireOwnership();
-          const result = await this.options.supervisor.run('publication', { command: 'pwsh', args, cwd: this.options.root }, deadline?.remaining() ?? 30000);
+          const result = await this.runNativePublication({ command: 'pwsh', args, cwd: this.options.root }, deadline?.remaining() ?? 30000);
           if (result.exitCode === 0) {
             try { reply = parseStrictJson(result.stdout); } catch { /* Exact target bytes decide a lost or malformed reply. */ }
           }

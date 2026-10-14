@@ -180,7 +180,7 @@ export class PayloadCodec {
           const timeout = remaining();
           if (mutation && !verifyOnly) { publicationAttempted = true; }
           try {
-            const result = await options.supervisor.run('publication', { command: 'pwsh', args: [...args, ...(verifyOnly ? ['-VerifyOnly'] : [])], cwd: options.root }, timeout);
+            const result = await this.publisher.runNativePublication({ command: 'pwsh', args: [...args, ...(verifyOnly ? ['-VerifyOnly'] : [])], cwd: options.root }, timeout);
             if (result.exitCode !== 0) {
               if (result.stderr.toString('utf8').trim() === 'Invoke-PayloadCodec: document-invalid') { throw new CodecDocumentError('Codec rejected an invalid document.'); }
               throw new SupervisorError('result-invalid', 'Codec helper could not complete.');
