@@ -1,6 +1,6 @@
 # Integrated startup execution toward healthy 30 seconds
 
-Status: decision-complete candidate design for the next startup execution slice; implementation and publication require their separate project decisions. This breakout belongs to [Coordinator startup latency](runtime-startup-latency.md) and is governed by [companion execution runtime](companion-execution-runtime.md) and [state extraction](state-extraction.md). It changes helper execution authority only; those documents retain their ownership, state-event, journal, safety, recovery, provider and client contracts.
+Status: agreed execution design for the startup slice; implementation is in local validation, while publication and live validation remain separate decisions. This breakout belongs to [Coordinator startup latency](runtime-startup-latency.md) and is governed by [companion execution runtime](companion-execution-runtime.md) and [state extraction](state-extraction.md). It changes helper execution authority only; those documents retain their ownership, state-event, journal, safety, recovery, provider and client contracts.
 
 ## Objective and evidence boundary
 
