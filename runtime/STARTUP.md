@@ -17,6 +17,11 @@
 | Finishing storage maintenance | Applies eligible retention and refreshes capacity and operational observations. |
 | Starting the save watcher | Starts or checks the watcher that notices later saves; its status appears in the client. |
 | Preparing provider tools and instructions | Builds the provider instructions and tool boundary for this runtime session. |
-| Starting the provider session | Checks provider safety, starts or resumes a session, writes its binding and verifies the startup worker has stopped. |
+| Checking provider safety and session binding | Checks current safety and the stored session binding before deciding whether to resume or start fresh. |
+| Starting the provider session | Starts or resumes the provider process and waits for its initialization. No player message is sent here. |
+| Binding the provider session durably | Writes and verifies the current session binding before the provider can serve the client. |
+| Switching to a fresh provider session | After a failed resume, closes that attempt and immediately tries a fresh session. |
+| Waiting to retry provider startup | Waits before another provider start attempt after a fresh start fails. |
+| Closing startup workers | Drains, stops and verifies startup workers before attachment, refusal, or failed-start cleanup continues. |
 
 `still working` means the current phase has been quiet for at least 15 seconds while the event loop could report progress. It is not a percentage or a deadline. `chat client ready` means the text client attached. A status-only client can also attach after some authority failures, so read the following consumer, state, journal, safety and provider status before treating the session as usable. The current performance target counts only a healthy attached session.
