@@ -4,6 +4,7 @@ import { utcNow } from './json.ts';
 import type { Provider, ProviderCapabilities, ProviderReconnectReason, ProviderSession } from './provider.ts';
 import type { AgentSessionBinding } from './session-records.ts';
 import type { HostNotice, ResumeResult, StartReason } from './session-host-contract.ts';
+import { reportStartupPhase, type StartupPhase } from './startup-progress.ts';
 
 export interface ProviderLifecycleOptions {
   readonly backend: RuntimeBackend;
@@ -69,10 +70,11 @@ export class ProviderLifecycle {
     if (this.current === previous) { this.current = null; }
   }
 
-  private async establish(resume: AgentSessionBinding | null): Promise<void> {
+  private async establish(resume: AgentSessionBinding | null, onStartupPhase?: (phase: StartupPhase) => void): Promise<void> {
     if (this.closed || this.incompatible) { throw new Error('The provider lifecycle is unavailable.'); }
     const safety = await this.options.backend.providerSafety();
     if (resume !== null && resume.stateGeneration !== safety.generation) { throw new Error('The session generation has expired.'); }
+    reportStartupPhase(onStartupPhase, 'providerStart');
     const session = await this.options.provider.start(resume?.providerSessionId ?? null);
     if (this.closed) {
       await session.close();
@@ -88,6 +90,7 @@ export class ProviderLifecycle {
       : { ...resume, needsState: true };
     try {
       if (session.providerSessionId !== binding.providerSessionId) { throw new Error('Provider returned another session.'); }
+      reportStartupPhase(onStartupPhase, 'providerBinding');
       const durable = await this.options.backend.sessions.bind(binding, this.options.backend.sessionProof(this.identity(session)));
       if (!this.isCurrent(session.providerInstanceId)) { throw new Error('Provider binding became unavailable.'); }
       this.bound = durable.binding;
@@ -113,19 +116,20 @@ export class ProviderLifecycle {
     }
   }
 
-  private async attempts(resume: AgentSessionBinding | null): Promise<boolean> {
+  private async attempts(resume: AgentSessionBinding | null, onStartupPhase?: (phase: StartupPhase) => void): Promise<boolean> {
     for (const delay of [1000, 5000, 30000]) {
       if (this.closed) { return false; }
+      reportStartupPhase(onStartupPhase, 'providerRetry');
       await (this.options.delay ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))))(delay);
       if (this.closed) { return false; }
-      try { await this.establish(resume); return true; }
+      try { await this.establish(resume, onStartupPhase); return true; }
       catch { await this.endCurrent(); }
     }
     this.state('failed');
     return false;
   }
 
-  async start(): Promise<boolean> {
+  async start(onStartupPhase?: (phase: StartupPhase) => void): Promise<boolean> {
     if (this.incompatible) { return false; }
     this.state('starting');
     let safety;
@@ -143,12 +147,12 @@ export class ProviderLifecycle {
         else if (stored.value.instructionsSha256 !== this.options.instructionsSha256) { reason = 'instructionsChanged'; }
         else if (stored.value.providerId !== this.options.provider.providerId || !this.options.provider.capabilities.resume) { reason = 'resumeUnavailable'; }
         else {
-          try { await this.establish(stored.value); return true; }
-          catch { reason = 'resumeFailed'; }
+          try { await this.establish(stored.value, onStartupPhase); return true; }
+          catch { reason = 'resumeFailed'; reportStartupPhase(onStartupPhase, 'providerFallback'); }
         }
       } else if (stored.status === 'invalid') { reason = 'stateInvalidated'; }
-      try { await this.establish(null); }
-      catch { if (!await this.attempts(null)) { return false; } }
+      try { await this.establish(null, onStartupPhase); }
+      catch { if (!await this.attempts(null, onStartupPhase)) { return false; } }
       this.options.emit({ type: 'notice', code: 'agentSessionStarted', reason });
       return true;
     } catch { this.state('failed'); return false; }

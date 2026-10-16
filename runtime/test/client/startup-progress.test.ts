@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { formatStartupProgress, startupHeartbeatMs, StartupProgressReporter, type StartupProgress } from '../../src/startup-progress.ts';
+import { formatStartupProgress, reportStartupPhase, startupHeartbeatMs, StartupProgressReporter, type StartupProgress } from '../../src/startup-progress.ts';
 
 test('startup progress reports timestamped phases, bounded heartbeats and one terminal result', async () => {
   assert.equal(startupHeartbeatMs, 15000);
@@ -12,21 +12,36 @@ test('startup progress reports timestamped phases, bounded heartbeats and one te
   elapsedMs = 31000;
   await new Promise(resolve => setTimeout(resolve, 25));
   assert.ok(events.some(event => event.kind === 'heartbeat' && event.phase === 'streamRecovery'));
+  reporter.phase('providerSelection');
   reporter.phase('providerStart');
+  reporter.phase('providerFallback');
+  reporter.phase('providerStart');
+  reporter.phase('providerRetry');
+  reporter.phase('providerStart');
+  reporter.phase('providerBinding');
+  reporter.phase('startupWorkerClosure');
   reporter.finish('ready');
   reporter.finish('failed');
   const count = events.length;
   await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(events.length, count);
   assert.deepEqual(events.filter(event => event.kind === 'ready' || event.kind === 'failed').map(event => event.kind), ['ready']);
+  assert.deepEqual(events.filter(event => event.kind === 'phase').map(event => event.phase),
+    ['streamRecovery', 'providerSelection', 'providerStart', 'providerFallback', 'providerStart', 'providerRetry', 'providerStart', 'providerBinding', 'startupWorkerClosure']);
   assert.equal(formatStartupProgress(events[0]!), '[2026-10-13T13:00:00.000Z] startup: reconciling recovery; elapsed 0s');
   assert.equal(formatStartupProgress(events.find(event => event.kind === 'heartbeat')!), '[2026-10-13T13:00:00.000Z] startup: reconciling recovery; elapsed 31s; still working');
+  assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerSelection')!), '[2026-10-13T13:00:00.000Z] startup: checking provider safety and session binding; elapsed 31s');
+  assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerFallback')!), '[2026-10-13T13:00:00.000Z] startup: switching to a fresh provider session; elapsed 31s');
+  assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerRetry')!), '[2026-10-13T13:00:00.000Z] startup: waiting to retry provider startup; elapsed 31s');
+  assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerBinding')!), '[2026-10-13T13:00:00.000Z] startup: binding the provider session durably; elapsed 31s');
+  assert.equal(formatStartupProgress(events.find(event => event.phase === 'startupWorkerClosure')!), '[2026-10-13T13:00:00.000Z] startup: closing startup workers; elapsed 31s');
   assert.equal(formatStartupProgress(events.at(-1)!), '[2026-10-13T13:00:00.000Z] startup: chat client ready; elapsed 31s');
 });
 
 test('progress sink failure does not change startup outcome', () => {
   const reporter = new StartupProgressReporter(() => { throw new Error('sink failed'); });
   assert.doesNotThrow(() => { reporter.phase('configuration'); reporter.finish('failed'); });
+  assert.doesNotThrow(() => reportStartupPhase(() => { throw new Error('callback failed'); }, 'providerStart'));
 });
 
 test('terminal progress distinguishes ownership and provider refusal from startup failure', () => {

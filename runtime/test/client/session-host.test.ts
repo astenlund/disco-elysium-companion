@@ -6,6 +6,7 @@ import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { indexCurrentBinding } from '../../src/session-records.ts';
+import type { StartupPhase } from '../../src/startup-progress.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
 import { deferred, FakeBackend, FakeProvider, flush, generation, instructionHash, timestamp, until } from './support.ts';
 
@@ -19,6 +20,54 @@ async function fixture(declarations: ConstructorParameters<typeof FakeProvider>[
   await flush();
   return { host, backend, provider, events };
 }
+
+test('initial startup phase callback brackets provider start and binding without following later sessions', async () => {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const phases: StartupPhase[] = [];
+  const start = provider.start.bind(provider);
+  provider.start = async resume => {
+    assert.equal(phases.at(-1), 'providerStart');
+    return start(resume);
+  };
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(phase => phases.push(phase)), true);
+  assert.deepEqual(phases, ['providerStart', 'providerBinding']);
+  assert.equal(backend.binding?.providerSessionId, provider.current.providerSessionId);
+  provider.start = start;
+  assert.equal(await host.startNewAgentSession(), 'started');
+  assert.deepEqual(phases, ['providerStart', 'providerBinding']);
+  await host.shutdown();
+});
+
+test('throwing startup phase callback cannot prevent provider start or durable binding', async () => {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(() => { throw new Error('progress callback failed'); }), true);
+  assert.equal(provider.calls.length, 1);
+  assert.equal(backend.binding?.providerSessionId, provider.current.providerSessionId);
+  assert.equal(host.status.provider.state, 'ready');
+  await host.shutdown();
+});
+
+test('failed startup resume reports immediate fallback separately from delayed retries', async () => {
+  const backend = new FakeBackend();
+  backend.binding = { agentSessionVersion: 1, providerId: 'fake', providerSessionId: 'stored-session', createdAt: timestamp,
+    turnsCompleted: 0, needsState: true, instructionsSha256: instructionHash, stateGeneration: generation };
+  const provider = new FakeProvider();
+  provider.failures.add('stored-session');
+  const phases: StartupPhase[] = [];
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(phase => phases.push(phase)), true);
+  assert.deepEqual(provider.calls, ['stored-session', null]);
+  assert.deepEqual(phases, ['providerStart', 'providerFallback', 'providerStart', 'providerBinding']);
+  assert.equal(backend.binding?.providerSessionId, provider.current.providerSessionId);
+  await host.shutdown();
+});
 
 test('one admitted interaction has exact identity on events and no queued second turn', async () => {
   const { host, backend, provider, events } = await fixture();
@@ -244,11 +293,13 @@ test('actual provider start failures exhaust the documented delays and report un
   const backend = new FakeBackend();
   const provider = new FakeProvider(); provider.failAll = true;
   const delays: number[] = [];
+  const phases: StartupPhase[] = [];
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {},
     delay: async milliseconds => { delays.push(milliseconds); } });
-  assert.equal(await host.start(), false);
+  assert.equal(await host.start(phase => phases.push(phase)), false);
   assert.deepEqual(delays, [1000, 5000, 30000]);
   assert.equal(provider.calls.length, 4);
+  assert.deepEqual(phases, ['providerStart', 'providerRetry', 'providerStart', 'providerRetry', 'providerStart', 'providerRetry', 'providerStart']);
   assert.equal(host.status.provider.state, 'failed');
   assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'providerUnavailable');
   await host.shutdown();
@@ -502,8 +553,10 @@ for (const stage of ['acquisition', 'sendFallback'] as const) {
 test('unavailable safety prevents any provider startup', async () => {
   const backend = new FakeBackend(); backend.unavailable = true;
   const provider = new FakeProvider();
+  const phases: StartupPhase[] = [];
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
-  assert.equal(await host.start(), false);
+  assert.equal(await host.start(phase => phases.push(phase)), false);
+  assert.deepEqual(phases, []);
   assert.equal(provider.calls.length, 0);
   assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'notReady');
   assert.equal(host.attach(() => {}).result, 'attached');

@@ -36,3 +36,22 @@ test('successful cleanup preserves the original startup failure', async () => {
   const host = { shutdown: async () => {} } as unknown as SessionHost;
   await assert.rejects(cleanupFailedChatRuntime(startupFailure, backend, host, null), error => error === startupFailure);
 });
+
+test('failed startup reports worker closure before cleanup even if the phase callback throws', async () => {
+  const order: string[] = [];
+  const startupFailure = new Error('Instruction preparation failed.');
+  const backend = { closeStartupWorkers: async () => { order.push('worker'); } } as unknown as RuntimeBackend;
+  const host = { shutdown: async () => { order.push('host'); } } as unknown as SessionHost;
+  await assert.rejects(cleanupFailedChatRuntime(startupFailure, backend, host, null, phase => {
+    order.push(`phase:${phase}`);
+    throw new Error('Progress callback failed.');
+  }), error => error === startupFailure);
+  assert.deepEqual(order, ['phase:startupWorkerClosure', 'worker', 'host']);
+});
+
+test('cleanup without an opened backend reports no worker closure', async () => {
+  const phases: string[] = [];
+  const startupFailure = new Error('Backend open failed.');
+  await assert.rejects(cleanupFailedChatRuntime(startupFailure, null, null, null, phase => phases.push(phase)), error => error === startupFailure);
+  assert.deepEqual(phases, []);
+});

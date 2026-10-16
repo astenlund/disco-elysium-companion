@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 
 export type StartupPhase = 'configuration' | 'scopeAdmission' | 'instanceGuard' | 'runtimeMarker' | 'storageRecovery'
   | 'consumerReconciliation' | 'streamRecovery' | 'outboxDrain' | 'startupAcquisition' | 'safetyReconciliation'
-  | 'retention' | 'watcher' | 'providerPreparation' | 'providerStart';
+  | 'retention' | 'watcher' | 'providerPreparation' | 'providerSelection' | 'providerStart' | 'providerBinding' | 'providerFallback' | 'providerRetry' | 'startupWorkerClosure';
 export type StartupProgressKind = 'phase' | 'heartbeat' | 'ready' | 'notOwner' | 'providerUnavailable' | 'failed';
 export interface StartupProgress {
   readonly kind: StartupProgressKind;
@@ -27,8 +27,18 @@ const phaseLabels: Readonly<Record<StartupPhase, string>> = {
   retention: 'finishing storage maintenance',
   watcher: 'starting the save watcher',
   providerPreparation: 'preparing provider tools and instructions',
+  providerSelection: 'checking provider safety and session binding',
   providerStart: 'starting the provider session',
+  providerBinding: 'binding the provider session durably',
+  providerFallback: 'switching to a fresh provider session',
+  providerRetry: 'waiting to retry provider startup',
+  startupWorkerClosure: 'closing startup workers',
 };
+
+export function reportStartupPhase(callback: ((phase: StartupPhase) => void) | undefined, phase: StartupPhase): void {
+  try { callback?.(phase); }
+  catch { /* Progress reporting cannot change startup authority or its failure path. */ }
+}
 
 export function formatStartupProgress(event: StartupProgress): string {
   const elapsed = `${Math.floor(event.elapsedMs / 1000)}s`;

@@ -7,6 +7,7 @@ import { ProviderLifecycle } from './provider-lifecycle.ts';
 import type { Provider, ProviderReconnectReason, ProviderSession, ProviderSignal } from './provider.ts';
 import { SerialQueue } from './serial.ts';
 import type { ClientSink, Correction, HostEvent, HostSnapshot, HostStatus, Interaction, ResumeResult, SessionHostV1, SubmitResult, TurnFailure } from './session-host-contract.ts';
+import type { StartupPhase } from './startup-progress.ts';
 import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './window-recovery.ts';
 
 export interface SessionHostOptions {
@@ -87,8 +88,8 @@ export class SessionHost implements SessionHostV1 {
   }
   get dialogsAvailable(): boolean { return this.lifecycle.capabilities.dialogs; }
 
-  async start(): Promise<boolean> {
-    const started = await this.lifecycle.start();
+  async start(onStartupPhase?: (phase: StartupPhase) => void): Promise<boolean> {
+    const started = await this.lifecycle.start(onStartupPhase);
     this.ready = started;
     this.statusChanged();
     return started;
