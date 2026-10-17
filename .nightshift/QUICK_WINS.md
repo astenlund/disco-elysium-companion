@@ -35,4 +35,5 @@ These user-tracked cleanups came from Nightshift run cffcf94d-49be-4cab-afcb-3fa
 
 ## Startup latency follow-ups
 
+- **Attachment witness wording.** Describe the attach reservation as host-local and single-use, including a later attach after detach; distinguish native `verifyLive` at binding and attachment from synchronous `isLive` at send in the startup execution design.
 - **Startup timing history wording.** In the Coordinator startup latency feature, qualify the 47.588-second best-fixture statement as historical; the matched private control report records a 40.002-second fixture.

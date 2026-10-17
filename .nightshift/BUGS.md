@@ -183,6 +183,22 @@ Investigate why a fresh status brief urged spending all available skill points w
 
 **Requires:** none.
 
+## Startup prototype deferred bugs
+
+These minor findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
+
+### [Suppressed provider readiness readout](bugs/runtime-suppressed-provider-ready.md)
+
+A correction can leave a status-only snapshot labeled provider ready after input authority has been suppressed; preserve the no-input gate while correcting the readout.
+
+**Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
+
+### [Early input lost during verified attachment](bugs/runtime-async-attach-input-loss.md)
+
+Text entered while the asynchronous attachment proof is pending can be lost before the readline listener is registered.
+
+**Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed.
