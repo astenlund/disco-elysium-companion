@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -13,20 +14,23 @@ namespace Companion.Runtime;
 
 public static class ProcessBroker
 {
-    public static async Task<int> RunAsync(Stream input, Stream output, Stream error)
+    public static async Task<int> RunAsync(Stream input, Stream output, Stream error, bool allowChildEnvironment = false)
     {
         using var bufferedInput = new BufferedStream(input, 65536);
         var frame = ReadFrame(bufferedInput);
         JsonDocuments.Validate(frame, "config");
         using var document = JsonDocument.Parse(frame, new JsonDocumentOptions { MaxDepth = 64 });
         var root = document.RootElement;
-        string[] fields = ["command", "args", "cwd", "jobName", "parentPid", "parentCreated"];
+        string[] fields = allowChildEnvironment
+            ? ["command", "args", "cwd", "jobName", "parentPid", "parentCreated", "brokerProtocolVersion", "childEnvironment"]
+            : ["command", "args", "cwd", "jobName", "parentPid", "parentCreated"];
         if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != fields.Length || fields.Any(field => !root.TryGetProperty(field, out _)))
         {
             throw new InvalidDataException("Invalid broker control fields.");
         }
 
         var command = StringValue(root.GetProperty("command"));
+        var childEnvironment = allowChildEnvironment ? ParseChildEnvironment(root) : null;
         var directory = StringValue(root.GetProperty("cwd"));
         var jobName = StringValue(root.GetProperty("jobName"));
         var expectedParent = StringValue(root.GetProperty("parentCreated"));
@@ -62,6 +66,15 @@ public static class ProcessBroker
             foreach (var argument in arguments)
             {
                 child.StartInfo.ArgumentList.Add(argument);
+            }
+
+            if (childEnvironment is not null)
+            {
+                child.StartInfo.Environment.Clear();
+                foreach (var (name, value) in childEnvironment)
+                {
+                    child.StartInfo.Environment.Add(name, value);
+                }
             }
 
             if (parent.HasExited || !child.Start())
@@ -105,6 +118,7 @@ public static class ProcessBroker
             var value = input.ReadByte();
             if (value == 10)
             {
+
                 return frame.ToArray();
             }
 
@@ -133,6 +147,33 @@ public static class ProcessBroker
         }
 
         return value;
+    }
+
+    private static Dictionary<string, string> ParseChildEnvironment(JsonElement root)
+    {
+        if (!root.GetProperty("brokerProtocolVersion").TryGetInt32(out var version) || version != 2)
+        {
+            throw new InvalidDataException("Invalid broker protocol version.");
+        }
+
+        var element = root.GetProperty("childEnvironment");
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException("Invalid child environment.");
+        }
+
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in element.EnumerateObject())
+        {
+            var name = property.Name;
+            var value = StringValue(property.Value, true);
+            if (name.Length == 0 || name.Contains('=') || name.Contains('\0') || value.Contains('\0') || !environment.TryAdd(name, value))
+            {
+                throw new InvalidDataException("Invalid child environment entry.");
+            }
+        }
+
+        return environment;
     }
 
     private static async Task MonitorParentAsync(Process parent, CancellationToken cancellationToken)

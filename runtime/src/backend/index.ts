@@ -6,6 +6,7 @@ import { DataRootUnavailableError, PathInspector } from '../admission.ts';
 import { capacityError, firstCapacityRefusal, RuntimeCapacityError } from '../capacity.ts';
 import type { CapacitySource } from '../resource-lifecycle/resources.ts';
 import { loadRuntimeConfig } from '../config.ts';
+import { compiledBrokerSpawn, type CompiledBrokerArtifact } from '../compiled-broker.ts';
 import { requireControl } from '../control-values.ts';
 import { resolvePrincipal } from '../core-client.ts';
 import { Deadline } from '../deadline.ts';
@@ -16,7 +17,7 @@ import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts
 import { OperationStore } from '../operations.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
-import { ProcessSupervisor, processRoles } from '../process.ts';
+import { ProcessSupervisor, processRoles, type PrivateNativeStartupJobs } from '../process.ts';
 import { createReadOnlyInspection } from '../read-only-inspection.ts';
 import { maintainRuntimeStorage } from '../resource-lifecycle/retention.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
@@ -45,9 +46,12 @@ export const privateScopeSourceBatch = Symbol('privateScopeSourceBatch');
 export const privateRecheckSupervisorIdentity = Symbol('privateRecheckSupervisorIdentity');
 export const privateWarmJobObserver = Symbol('privateWarmJobObserver');
 export const privateCombinedBootstrap = Symbol('privateCombinedBootstrap');
+export const privateCompiledProcessBroker = Symbol('privateCompiledProcessBroker');
+export const privateNativeStartupJobs = Symbol('privateNativeStartupJobs');
 type FixtureBackendOptions = BackendOptions & { readonly [privateStartupMetadataPlacement]?: 'postGuard'; readonly [privateScopeSourceBatch]?: true;
   readonly [privateRecheckSupervisorIdentity]?: true; readonly [privateWarmJobObserver]?: true;
-  readonly [privateCombinedBootstrap]?: true };
+  readonly [privateCombinedBootstrap]?: true; readonly [privateCompiledProcessBroker]?: CompiledBrokerArtifact;
+  readonly [privateNativeStartupJobs]?: PrivateNativeStartupJobs };
 
 /** @internal Composition of already-admitted primitives; openBackend owns admission. */
 export class CoordinatorBackend implements RuntimeBackend {
@@ -323,8 +327,10 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     }
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
+    const broker = options[privateCompiledProcessBroker] === undefined ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]);
+    const nativeJobs = options[privateNativeStartupJobs];
     supervisor = options[privateRecheckSupervisorIdentity] === true
-      ? await ProcessSupervisor.create(candidate.dataRoot) : bootstrap.supervisorFor(candidate.dataRoot);
+      ? await ProcessSupervisor.create(candidate.dataRoot, broker, nativeJobs) : bootstrap.supervisorFor(candidate.dataRoot, broker, nativeJobs);
     const inspector = new PathInspector(supervisor);
     startupInspector = inspector;
     const prospectiveFailure = (error: ProspectiveJsonBudgetError): Error => resources?.prospectiveFailure(error) ?? error;

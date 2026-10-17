@@ -1,7 +1,9 @@
-import { openBackend, privateCombinedBootstrap, privateScopeSourceBatch, privateStartupMetadataPlacement, privateWarmJobObserver } from './backend/index.ts';
+import { openBackend, privateCombinedBootstrap, privateCompiledProcessBroker, privateNativeStartupJobs, privateScopeSourceBatch, privateStartupMetadataPlacement, privateWarmJobObserver } from './backend/index.ts';
 import type { RuntimeBackend } from './backend/api.ts';
 import { ClaudeProvider } from './claude-provider.ts';
 import { FileToolAdapter } from './file-tool-adapter.ts';
+import type { CompiledBrokerArtifact } from './compiled-broker.ts';
+import type { PrivateNativeStartupJobs } from './process.ts';
 import { assembleInstructions } from './instructions.ts';
 import { PendingProviderStart, selectPendingProviderStart } from './provider-lifecycle.ts';
 import type { Provider } from './provider.ts';
@@ -17,16 +19,21 @@ export interface PrivateRuntimeStartupOptions {
   readonly [privateRuntimeStartup]?: {
     readonly allowUnboundProviderPrestart?: boolean;
     readonly fastCopiedStartup?: true;
+    readonly compiledBroker?: CompiledBrokerArtifact;
+    readonly nativeStartupJobs?: PrivateNativeStartupJobs;
     readonly providerFactory: (text: string, fileTools: FileToolAdapter, backend: RuntimeBackend) => Provider;
   };
 }
 
 /** @internal Private copied-root routing; production does not supply the selector. */
 export function chatBackendOptions(companionRoot: string, onStatus: () => void, onInvalidated: (reason: Correction['reason']) => void,
-  onStartupPhase: ((phase: StartupPhase) => void) | undefined, fastCopiedStartup: boolean): Parameters<typeof openBackend>[0] {
+  onStartupPhase: ((phase: StartupPhase) => void) | undefined, fastCopiedStartup: boolean,
+  compiledBroker?: CompiledBrokerArtifact, nativeStartupJobs?: PrivateNativeStartupJobs): Parameters<typeof openBackend>[0] {
   return { companionRoot, startupMetadata: true, onStatus, onInvalidated, onStartupPhase,
     ...(fastCopiedStartup ? { [privateCombinedBootstrap]: true as const, [privateScopeSourceBatch]: true as const,
-      [privateWarmJobObserver]: true as const, [privateStartupMetadataPlacement]: 'postGuard' as const } : {}) };
+      [privateWarmJobObserver]: true as const, [privateStartupMetadataPlacement]: 'postGuard' as const,
+      ...(compiledBroker === undefined ? {} : { [privateCompiledProcessBroker]: compiledBroker }),
+      ...(nativeStartupJobs === undefined ? {} : { [privateNativeStartupJobs]: nativeStartupJobs }) } : {}) };
 }
 
 /** @internal Cleanup must continue even when the worker cannot close. */
@@ -72,7 +79,8 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
   try {
     const opened: RuntimeBackend = await openBackend(chatBackendOptions(companionRoot, () => host?.statusChanged(),
       (reason: Correction['reason']) => { pending?.abort(); if (host === null) { invalidatedBeforeHost = reason; } else { host.invalidate(reason); } }, reportPhase,
-      privateOptions[privateRuntimeStartup]?.fastCopiedStartup === true));
+      privateOptions[privateRuntimeStartup]?.fastCopiedStartup === true, privateOptions[privateRuntimeStartup]?.compiledBroker,
+      privateOptions[privateRuntimeStartup]?.nativeStartupJobs));
     backend = opened;
     let earlyInstructions: Awaited<ReturnType<typeof assembleInstructions>> | null = null;
     if (privateOptions[privateRuntimeStartup]?.allowUnboundProviderPrestart === true) {

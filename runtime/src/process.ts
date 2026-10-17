@@ -1,9 +1,11 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { closeSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough, type Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
+import { admitPrivateDirectory, pinPrivateFile, verifyPinnedPrivateFile, type PinnedFile } from './compiled-broker.ts';
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 
@@ -25,12 +27,39 @@ export interface OwnedSpawnOptions {
 }
 export interface OwnedExit { readonly code: number | null; readonly signal: NodeJS.Signals | null; readonly failure: Error | null }
 export interface CommandResult { readonly exitCode: number; readonly stdout: Buffer; readonly stderr: Buffer }
-export type BrokerSpawn = (options: OwnedSpawnOptions) => ChildProcessWithoutNullStreams;
+export type BrokerSpawn = ((options: OwnedSpawnOptions) => ChildProcessWithoutNullStreams) & { readonly controlVersion?: 2 };
+export interface PrivateNativeStartupJobs {
+  readonly binary: string;
+  readonly source: string;
+  readonly manifest: string;
+  readonly scratch: string;
+  readonly binarySha256: string;
+  readonly sourceSha256: string;
+  readonly manifestSha256: string;
+  readonly onObservation?: (roles: readonly ProcessRole[], elapsedMs: number, outcome: 'ok' | 'failed') => void;
+}
 
 const scripts = fileURLToPath(new URL('../scripts/', import.meta.url));
 const creationToken = /^[1-9][0-9]{0,18}$/;
 const wait = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
 const spawnBroker: BrokerSpawn = options => spawn('pwsh', ['-NoProfile', '-File', path.join(scripts, 'Invoke-OwnedProcess.ps1')], { cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+
+/** @internal Freeze the v2 child environment before the private broker changes its own profile. */
+export function childEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
+  const selected: Record<string, string> = Object.create(null) as Record<string, string>;
+  const folded = new Set<string>();
+  for (const name of Object.keys(source).sort()) {
+    const value = source[name];
+    if (value === undefined) { continue; }
+    if (name.length === 0 || name.includes('=') || name.includes(String.fromCharCode(0))
+      || typeof value !== 'string' || value.includes(String.fromCharCode(0))) {
+      throw new SupervisorError('result-invalid', 'Owned child environment is not representable.');
+    }
+    const key = name.toUpperCase();
+    if (!folded.has(key)) { folded.add(key); selected[name] = value; }
+  }
+  return selected;
+}
 
 // These bootstrap scripts inspect metadata only and never start another process or write a file.
 function inspectNative(script: 'Get-ProcessIdentity.ps1' | 'Get-OwnedJobState.ps1' | 'Get-OwnedJobStates.ps1' | 'Get-OwnedProcessLive.ps1', args: readonly string[], timeoutMs = 5000): Promise<ReturnType<typeof parseStrictJson>> {
@@ -92,6 +121,53 @@ async function jobsAbsent(names: readonly string[], owned?: { name: string; iden
   return parseStartupJobStates({ jobs: observedJobs }, names);
 }
 
+async function nativeJobsAbsent(names: readonly string[], selection: PrivateNativeStartupJobs,
+  owned?: { name: string; identity: ProcessIdentity; brokerPid: number }, timeoutMs = 30000): Promise<readonly boolean[]> {
+  const started = performance.now();
+  const pinned: PinnedFile[] = [];
+  let value: ReturnType<typeof parseStrictJson> | undefined;
+  let failure: unknown;
+  try {
+    admitPrivateDirectory(selection.scratch);
+    pinned.push(pinPrivateFile(selection.binary, selection.binarySha256));
+    pinned.push(pinPrivateFile(selection.source, selection.sourceSha256));
+    pinned.push(pinPrivateFile(selection.manifest, selection.manifestSha256));
+    const record = parseStrictJson(readFileSync(selection.manifest));
+    if (!hasExactKeys(record, ['sourceSha256', 'binarySha256', 'toolchain', 'output', 'provenance'])
+      || record['binarySha256'] !== selection.binarySha256 || record['sourceSha256'] !== selection.sourceSha256) {
+      throw new SupervisorError('termination-unverified', 'Private native job observer provenance is unavailable.');
+    }
+    const remaining = Math.floor(timeoutMs - (performance.now() - started));
+    if (remaining < 1) { throw new SupervisorError('termination-unverified', 'Private native job observation expired.'); }
+    const request = JSON.stringify({ names, ...(owned === undefined ? {} : { owned: {
+      name: owned.name, processId: owned.identity.pid, brokerId: owned.brokerPid, created: owned.identity.created,
+    } }) });
+    value = await new Promise<ReturnType<typeof parseStrictJson>>((resolve, reject) => {
+      execFile(selection.binary, [request], { cwd: selection.scratch, windowsHide: true, timeout: remaining, maxBuffer: 65_536,
+        encoding: 'buffer', env: { ...process.env, TEMP: selection.scratch, TMP: selection.scratch, HOME: selection.scratch,
+          USERPROFILE: selection.scratch, APPDATA: selection.scratch, LOCALAPPDATA: selection.scratch, GOTELEMETRY: 'off' } }, (error, stdout) => {
+        if (error !== null) { reject(new SupervisorError('termination-unverified', 'Private native job observer is unavailable.')); return; }
+        try { resolve(parseStrictJson(stdout)); }
+        catch { reject(new SupervisorError('termination-unverified', 'Private native job observation is invalid.')); }
+      });
+    });
+    for (const file of pinned) { verifyPinnedPrivateFile(file); }
+    if (performance.now() - started >= timeoutMs) { throw new SupervisorError('termination-unverified', 'Private native job observation expired.'); }
+  } catch (error) { failure = error; }
+  for (const file of pinned) {
+    try { closeSync(file.descriptor); }
+    catch (error) { failure ??= error; }
+  }
+  if (failure !== undefined || value === undefined) {
+    throw failure instanceof SupervisorError ? failure : new SupervisorError('termination-unverified', 'Private native job observation is unavailable.');
+  }
+  if (owned === undefined) { return parseStartupJobStates(value, names); }
+  if (!hasExactKeys(value, ['jobs', 'owned']) || value['owned'] !== true) {
+    throw new SupervisorError('termination-unverified', 'Private owned startup job membership is unverified.');
+  }
+  return parseStartupJobStates({ jobs: value['jobs']! }, names);
+}
+
 export class OwnedProcess extends EventEmitter {
   readonly stdin: Writable;
   readonly stdout = new PassThrough();
@@ -112,14 +188,18 @@ export class OwnedProcess extends EventEmitter {
   constructor(jobName: string, parent: ProcessIdentity, options: OwnedSpawnOptions, verifyTermination: () => Promise<void>, createBroker: BrokerSpawn = spawnBroker) {
     super();
     options.signal?.throwIfAborted();
-    const frame = stringifyJson({ command: options.command, args: options.args, cwd: options.cwd, jobName, parentPid: parent.pid, parentCreated: parent.created });
+    const control = { command: options.command, args: options.args, cwd: options.cwd, jobName, parentPid: parent.pid, parentCreated: parent.created };
+    const environment = createBroker.controlVersion === 2 ? childEnvironment(options.env ?? process.env) : undefined;
+    const frame = environment === undefined ? stringifyJson(control)
+      : stringifyJson({ ...control, brokerProtocolVersion: 2, childEnvironment: environment });
+    const launchOptions = environment === undefined ? options : { ...options, env: environment };
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.terminated = new Promise((resolve, reject) => { this.resolveTermination = resolve; this.rejectTermination = reject; });
     // SDK consumers use events; runtime consumers additionally await these original promises.
     void this.ready.catch(() => undefined);
     void this.terminated.catch(() => undefined);
     this.on('error', error => { this.failure ??= error as Error; });
-    this.broker = createBroker(options);
+    this.broker = createBroker(launchOptions);
     this.stdin = this.broker.stdin;
     let failing = false;
     const fail = (error: Error): void => {
@@ -216,21 +296,26 @@ export class OwnedProcess extends EventEmitter {
 export class ProcessSupervisor {
   private readonly parent: ProcessIdentity;
   private readonly scope: string;
+  private readonly createBroker: BrokerSpawn;
+  private readonly nativeJobs: PrivateNativeStartupJobs | undefined;
   private readonly active = new Map<ProcessRole, OwnedProcess | null>();
   private readonly stopping = new Map<ProcessRole, Promise<void>>();
   private startupJobObserver: ((names: readonly string[], timeoutMs: number) => Promise<readonly boolean[]>) | null = null;
 
-  private constructor(parent: ProcessIdentity, canonicalScope: string) { this.parent = parent; this.scope = guardScopeToken(canonicalScope); }
+  private constructor(parent: ProcessIdentity, canonicalScope: string, createBroker: BrokerSpawn = spawnBroker,
+    nativeJobs?: PrivateNativeStartupJobs) {
+    this.parent = parent; this.scope = guardScopeToken(canonicalScope); this.createBroker = createBroker; this.nativeJobs = nativeJobs;
+  }
 
-  static async create(canonicalScope: string): Promise<ProcessSupervisor> {
+  static async create(canonicalScope: string, createBroker?: BrokerSpawn, nativeJobs?: PrivateNativeStartupJobs): Promise<ProcessSupervisor> {
     const parent = await readProcessIdentity(process.pid);
     if (parent === null) { throw new SupervisorError('termination-unverified', 'Runtime process identity is unavailable.'); }
 
-    return new ProcessSupervisor(parent, canonicalScope);
+    return new ProcessSupervisor(parent, canonicalScope, createBroker, nativeJobs);
   }
 
-  forScope(canonicalScope: string): ProcessSupervisor {
-    return new ProcessSupervisor(this.parent, canonicalScope);
+  forScope(canonicalScope: string, createBroker?: BrokerSpawn, nativeJobs?: PrivateNativeStartupJobs): ProcessSupervisor {
+    return new ProcessSupervisor(this.parent, canonicalScope, createBroker, nativeJobs);
   }
 
   jobName(role: ProcessRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
@@ -242,7 +327,31 @@ export class ProcessSupervisor {
 
   clearStartupJobObserver(): void { this.startupJobObserver = null; }
 
+  private async observeNativeJobs(names: readonly string[], timeoutMs: number,
+    owned?: { name: string; identity: ProcessIdentity; brokerPid: number }): Promise<readonly boolean[]> {
+    const selection = this.nativeJobs;
+    if (selection === undefined) { throw new SupervisorError('termination-unverified', 'Private native job selection is absent.'); }
+    const allNames = processRoles.map(role => this.jobName(role));
+    const roles = names.map(name => {
+      const index = allNames.indexOf(name);
+      if (index < 0) { throw new SupervisorError('termination-unverified', 'Private job request names an unrelated role.'); }
+      return processRoles[index]!;
+    });
+    if (new Set(roles).size !== roles.length) { throw new SupervisorError('termination-unverified', 'Private job request repeats a role.'); }
+    const started = performance.now();
+    let outcome: 'ok' | 'failed' = 'failed';
+    try {
+      const allAbsent = await nativeJobsAbsent(allNames, selection, owned, timeoutMs);
+      outcome = 'ok';
+      return names.map(name => allAbsent[allNames.indexOf(name)]!);
+    } finally {
+      try { selection.onObservation?.(roles, performance.now() - started, outcome); }
+      catch { /* Private timing must not change admission. */ }
+    }
+  }
+
   private async observeUnownedJobs(names: readonly string[], timeoutMs: number): Promise<readonly boolean[]> {
+    if (this.nativeJobs !== undefined) { return this.observeNativeJobs(names, timeoutMs); }
     const observer = this.startupJobObserver;
     if (observer === null || names.includes(this.jobName('startupMetadata')) || names.includes(this.jobName('metadata'))) {
       return names.length === 1 ? [await jobAbsent(names[0]!, timeoutMs)] : jobsAbsent(names, undefined, timeoutMs);
@@ -367,8 +476,9 @@ export class ProcessSupervisor {
     if (metadataIdentity !== undefined && (brokerPid === undefined || !Number.isSafeInteger(brokerPid) || brokerPid < 1)) {
       throw new SupervisorError('termination-unverified', 'Owned startup metadata broker identity is unavailable.');
     }
-    const absent = await jobsAbsent(processRoles.map(role => this.jobName(role)), metadataIdentity === undefined ? undefined
-      : { name: this.jobName('startupMetadata'), identity: metadataIdentity, brokerPid: brokerPid! });
+    const names = processRoles.map(role => this.jobName(role));
+    const owned = metadataIdentity === undefined ? undefined : { name: this.jobName('startupMetadata'), identity: metadataIdentity, brokerPid: brokerPid! };
+    const absent = this.nativeJobs === undefined ? await jobsAbsent(names, owned) : await this.observeNativeJobs(names, 30000, owned);
     for (const [index, role] of processRoles.entries()) {
       if (this.active.get(role) !== owners.get(role)) { throw new SupervisorError('termination-unverified', 'Process ownership changed during startup admission.'); }
       if (role === 'startupMetadata' && metadataIdentity !== undefined) {
@@ -418,7 +528,7 @@ export class ProcessSupervisor {
     this.active.set(role, null);
     try {
       let child: OwnedProcess;
-      child = new OwnedProcess(this.jobName(role), this.parent, options, () => this.verifyOwner(role, child));
+      child = new OwnedProcess(this.jobName(role), this.parent, options, () => this.verifyOwner(role, child), this.createBroker);
       this.active.set(role, child);
       return child;
     }
