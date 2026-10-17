@@ -9,6 +9,7 @@ import type { InstanceGuard } from './guard.ts';
 import { hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type ProspectiveJsonFailure } from './json.ts';
 import { ProcessSupervisor, SupervisorError, type CommandResult, type OwnedSpawnOptions } from './process.ts';
 import { SerialQueue } from './serial.ts';
+import type { RuntimeScope } from './scope.ts';
 import type { StartupMutationSession } from './startup-mutation.ts';
 
 export class PublicationError extends Error {
@@ -128,12 +129,40 @@ export class FilePublisher {
     this.startupMutation = session;
   }
 
+  trimStartupQuarantine(scope: RuntimeScope, protectedBytes: Uint8Array, timeoutMs = 30000): Promise<CommandResult | null> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) {
+      return Promise.reject(new PublicationError('Invalid quarantine maintenance deadline.', true));
+    }
+    if (scope.dataRoot !== this.options.root) { return Promise.reject(new PublicationError('Quarantine maintenance scope is invalid.', true)); }
+    const frozenBytes = Buffer.from(protectedBytes);
+    const expires = performance.now() + timeoutMs;
+    const selectedSession = this.startupMutation;
+    const selectedClosure = this.startupMutationClosing;
+    return this.exclusive(async () => {
+      if (this.startupMutation !== selectedSession || this.startupMutationClosing !== selectedClosure) {
+        throw new PublicationError('Startup mutation worker changed during quarantine maintenance.', true);
+      }
+      if (selectedSession === null || selectedSession.canFallBack) { return null; }
+      const remaining = Math.floor(expires - performance.now());
+      if (remaining < 1) { throw new PublicationError('Quarantine maintenance deadline expired.', true); }
+      const result = await selectedSession.trimQuarantine(scope, frozenBytes, remaining);
+      this.requireOwnership();
+      if (this.startupMutation !== selectedSession || this.startupMutationClosing !== selectedClosure) {
+        throw new PublicationError('Startup mutation worker changed during quarantine maintenance.', true);
+      }
+      if (performance.now() >= expires) { throw new PublicationError('Quarantine maintenance deadline expired after mutation.', true); }
+      return result;
+    });
+  }
+
   closeStartupMutationSession(): Promise<void> {
     if (this.startupMutationClosing !== null) { return this.startupMutationClosing; }
     const session = this.startupMutation;
-    this.startupMutation = null;
     if (session === null) { return Promise.resolve(); }
-    this.startupMutationClosing = this.queue.idle().then(() => session.close());
+    this.startupMutationClosing = this.queue.idle().then(async () => {
+      await session.close();
+      if (this.startupMutation === session) { this.startupMutation = null; }
+    });
     return this.startupMutationClosing;
   }
 

@@ -20,10 +20,12 @@ import { ProcessSupervisor, processRoles } from '../process.ts';
 import { createReadOnlyInspection } from '../read-only-inspection.ts';
 import { maintainRuntimeStorage } from '../resource-lifecycle/retention.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
-import { discoverScope, initializeScope } from '../scope.ts';
+import { discoverScope, discoverScopeWithPrincipal, initializeScope, scopeFromAdmittedBinding, type ScopeCandidate } from '../scope.ts';
 import { SerialQueue } from '../serial.ts';
 import { ScopeStorage } from '../storage.ts';
+import { StartupMetadataSession } from '../startup-metadata.ts';
 import { StartupWorkerGroup } from '../startup-workers.ts';
+import { observeBootstrapWorkerSources, observeStartupWorkerSources } from '../startup-worker-sources.ts';
 import type { BackendCommand, BackendOptions, BackendStartup, RuntimeBackend } from './api.ts';
 import { ConsumerCoordinator } from './consumer.ts';
 import { PendingStateCheckError } from './api.ts';
@@ -36,6 +38,16 @@ import { ResourceAuthority } from './resources.ts';
 
 export { readRuntimeStatus as readBackendStatus } from '../platform/index.ts';
 export type * from './api.ts';
+
+/** @internal Private fixture selector. Production callers omit this symbol. */
+export const privateStartupMetadataPlacement = Symbol('privateStartupMetadataPlacement');
+export const privateScopeSourceBatch = Symbol('privateScopeSourceBatch');
+export const privateRecheckSupervisorIdentity = Symbol('privateRecheckSupervisorIdentity');
+export const privateWarmJobObserver = Symbol('privateWarmJobObserver');
+export const privateCombinedBootstrap = Symbol('privateCombinedBootstrap');
+type FixtureBackendOptions = BackendOptions & { readonly [privateStartupMetadataPlacement]?: 'postGuard'; readonly [privateScopeSourceBatch]?: true;
+  readonly [privateRecheckSupervisorIdentity]?: true; readonly [privateWarmJobObserver]?: true;
+  readonly [privateCombinedBootstrap]?: true };
 
 /** @internal Composition of already-admitted primitives; openBackend owns admission. */
 export class CoordinatorBackend implements RuntimeBackend {
@@ -251,6 +263,7 @@ export class CoordinatorBackend implements RuntimeBackend {
 
   async closeStartupWorkers(): Promise<void> {
     const k = this.kernel;
+    k.supervisor.clearStartupJobObserver();
     const closed = await Promise.allSettled([k.inspector.closeStartupSession(), k.publisher.closeStartupMutationSession()]);
     const closeFailure = closed.find(result => result.status === 'rejected');
     if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
@@ -284,7 +297,7 @@ export class CoordinatorBackend implements RuntimeBackend {
   }
 }
 
-export async function openBackend(options: BackendOptions): Promise<RuntimeBackend> {
+export async function openBackend(options: FixtureBackendOptions): Promise<RuntimeBackend> {
   options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
@@ -295,15 +308,22 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
   let resources: ResourceAuthority | null = null;
   let startupInspector: PathInspector | null = null;
   let startupPublisher: FilePublisher | null = null;
+  let earlyMetadata: StartupMetadataSession | null = null;
   let startupGroup: StartupWorkerGroup | null = null;
   try {
-    let principal: string;
-    try { principal = await resolvePrincipal(bootstrap.inspector, options.companionRoot); }
-    catch { throw Object.assign(new Error('Windows principal identity is unavailable.'), { code: 'identityUnavailable' }); }
-    const candidate = await discoverScope(bootstrap.inspector, options.companionRoot, config.game, principal);
+    let candidate: ScopeCandidate;
+    if (options[privateCombinedBootstrap] === true) {
+      candidate = await discoverScopeWithPrincipal(bootstrap.inspector, options.companionRoot, config.game);
+    } else {
+      let principal: string;
+      try { principal = await resolvePrincipal(bootstrap.inspector, options.companionRoot); }
+      catch { throw Object.assign(new Error('Windows principal identity is unavailable.'), { code: 'identityUnavailable' }); }
+      candidate = await discoverScope(bootstrap.inspector, options.companionRoot, config.game, principal);
+    }
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
-    supervisor = await ProcessSupervisor.create(candidate.dataRoot);
+    supervisor = options[privateRecheckSupervisorIdentity] === true
+      ? await ProcessSupervisor.create(candidate.dataRoot) : bootstrap.supervisorFor(candidate.dataRoot);
     const inspector = new PathInspector(supervisor);
     startupInspector = inspector;
     const prospectiveFailure = (error: ProspectiveJsonBudgetError): Error => resources?.prospectiveFailure(error) ?? error;
@@ -321,7 +341,31 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
         requireControl(free.bavail * free.bsize >= BigInt(bytes.byteLength) * 4n);
       }, invalidate: () => { kernel?.journal.invalidate(); resources?.invalidate(); } });
     startupPublisher = publisher;
-    const scope = await initializeScope(inspector, candidate, guard, publisher);
+    const hoistMetadata = options.startupMetadata === true && options[privateStartupMetadataPlacement] === 'postGuard';
+    const batchScope = hoistMetadata && options[privateScopeSourceBatch] === true;
+    if (batchScope) { await supervisor.verifyQuiescent('startupMetadata'); }
+    const bootstrapProof = batchScope ? await observeBootstrapWorkerSources(inspector, candidate) : null;
+    const scope = bootstrapProof?.status === 'present' && bootstrapProof.scopeBytes !== null
+      ? scopeFromAdmittedBinding(candidate, bootstrapProof.scopeBytes)
+      : await initializeScope(inspector, candidate, guard, publisher);
+    requireControl(guard.held);
+    if (hoistMetadata) {
+      if (!batchScope) { await supervisor.verifyQuiescent('startupMetadata'); }
+      const evidence = bootstrapProof?.status === 'present' ? bootstrapProof.evidence
+        : bootstrapProof?.status === 'absent' ? null : await observeStartupWorkerSources(inspector, scope);
+      if (evidence !== null && evidence.scopeSha256 !== scope.bindingSha256) {
+        throw new DataRootUnavailableError('Bootstrap scope changed before startup worker admission.');
+      }
+      if (evidence !== null) {
+        earlyMetadata = await StartupMetadataSession.prepareWithEvidence(supervisor, scope, evidence)();
+        if (earlyMetadata !== null) {
+          inspector.attachStartupSession(earlyMetadata);
+          if (options[privateWarmJobObserver] === true) {
+            supervisor.attachStartupJobObserver((names, timeoutMs) => inspector.observeStartupJobs(names, timeoutMs));
+          }
+        }
+      }
+    }
     options.onStartupPhase?.('runtimeMarker');
     const storage = new ScopeStorage({ scope, guard, inspector, publisher, prospectiveFailure, bind: action => resources?.bind(action) ?? action,
       beforeWrite: (relative, deadline) => resources?.beforeWrite(relative, deadline) ?? Promise.resolve() });
@@ -329,10 +373,15 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     resources = new ResourceAuthority(scope, inspector, operations);
     const markerSupervisor = supervisor;
     const { identities, runtime, sha256, previous, startupWorker } = await initializeRuntimeMarker(
-      { scope, guard, inspector, supervisor: markerSupervisor, storage, resources }, undefined,
-      options.startupMetadata === true ? () => StartupWorkerGroup.prepare(inspector, markerSupervisor, scope) : undefined);
+      { scope, guard, inspector, supervisor: markerSupervisor, storage, resources, earlyMetadata }, undefined,
+      options.startupMetadata === true ? proveEarly => hoistMetadata
+        ? bootstrapProof?.status === 'absent' ? Promise.resolve(null)
+          : StartupWorkerGroup.prepare(inspector, markerSupervisor, scope, undefined, earlyMetadata, false, proveEarly)
+        : StartupWorkerGroup.prepare(inspector, markerSupervisor, scope) : undefined);
     startupGroup = startupWorker;
-    if (startupGroup?.metadata !== null && startupGroup?.metadata !== undefined) { inspector.attachStartupSession(startupGroup.metadata); }
+    if (startupGroup?.metadata !== null && startupGroup?.metadata !== undefined && startupGroup.metadata !== earlyMetadata) {
+      inspector.attachStartupSession(startupGroup.metadata);
+    }
     if (startupGroup?.coreReply !== null && startupGroup?.coreReply !== undefined) { inspector.attachStartupCoreReplySession(startupGroup.coreReply); }
     if (startupGroup?.mutation !== null && startupGroup?.mutation !== undefined) { publisher.attachStartupMutationSession(startupGroup.mutation); }
     kernel = new Kernel({ config, identities, scope, guard, supervisor, inspector, publisher, storage, resources, options });
@@ -341,7 +390,8 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     return new CoordinatorBackend(kernel, { value: runtime, sha256 }, options.onStartupPhase);
   } catch (error) {
     error = resources?.captureFailure(error) ?? error;
-    const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupPublisher?.closeStartupMutationSession(), startupGroup?.close()]);
+    supervisor?.clearStartupJobObserver();
+    const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupPublisher?.closeStartupMutationSession(), startupGroup?.close(), earlyMetadata?.close()]);
     const closeFailure = closed.find(result => result.status === 'rejected');
     await bootstrap.close();
     if (guard !== null && supervisor !== null) {

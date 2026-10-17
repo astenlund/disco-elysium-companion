@@ -3,22 +3,23 @@
 param(
     [Parameter(Mandatory)] [string] $CompanionRoot,
     [Parameter(Mandatory)] [string] $DataRoot,
-    [Parameter(Mandatory)] [string] $SourceRoot
+    [Parameter(Mandatory)] [string] $SourceRoot,
+    [switch] $IncludeScopeBytes
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $scriptName = [IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
 $maximumSourceBytes = 1048576
-$metadataNames = @('StartupMetadataWorker.ps1', 'StartupWorkerProtocol.ps1', 'NativeFiles.cs', 'JsonDocuments.cs',
-    'FileHashes.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs',
+$metadataNames = @('StartupMetadataWorker.ps1', 'StartupWorkerProtocol.ps1', 'NativeFiles.cs', 'NativeJobs.cs', 'JsonDocuments.cs',
+    'FileHashes.cs', 'EventDocuments.cs', 'EventInspection.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs',
     'resource-lifecycle/ResourceInventory.cs')
 $coreReplyNames = @('StartupCoreReplyWorker.ps1', 'StartupWorkerProtocol.ps1', 'Read-CoreReply.ps1',
     'CoreReplyValidation.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs',
     'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
 $mutationNames = @('StartupMutationWorker.ps1', 'StartupWorkerProtocol.ps1', 'Write-RuntimeFile.ps1',
     'Invoke-PayloadCodec.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs',
-    'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
+    'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
 $coreNames = @('DigestDiff.psm1', 'private/CompanionJson.ps1', 'private/SourceIdentity.ps1',
     'private/DocumentValidation.ps1', 'private/AdapterConfig.ps1', 'private/DiffEngine.ps1',
     'private/ProcessRunner.ps1', 'private/Acquisition.ps1', 'private/StateFiles.ps1',
@@ -79,15 +80,25 @@ try {
         exit 0
     }
     if (-not $temp.IsDirectory) { throw [IO.IOException]::new('Temporary directory is invalid.') }
-    $scope = Read-AdmittedFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json')
+    $bindingPath = Join-Path $DataRoot 'scope.json'
+    if ($IncludeScopeBytes) {
+        $bindingAdmission = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $bindingPath, $true)
+        if (-not $bindingAdmission.Exists) {
+            [Console]::Out.Write((ConvertTo-Json -InputObject ([ordered]@{ status = 'scopeAbsent' }) -Compress))
+            exit 0
+        }
+    }
+    $scope = Read-AdmittedFile -Root $CompanionRoot -Target $bindingPath
     $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scope))
     $metadataSha256 = Get-BundleHash -RuntimeNames $metadataNames -CoreNames @()
     $coreReplySha256 = Get-BundleHash -RuntimeNames $coreReplyNames -CoreNames $coreNames
     $mutationSha256 = Get-BundleHash -RuntimeNames $mutationNames -CoreNames @()
-    [Console]::Out.Write((ConvertTo-Json -InputObject ([ordered]@{
+    $reply = [ordered]@{
         status = 'present'; scopeSha256 = $scopeSha256; metadataSha256 = $metadataSha256;
         coreReplySha256 = $coreReplySha256; mutationSha256 = $mutationSha256
-    }) -Compress))
+    }
+    if ($IncludeScopeBytes) { $reply['scopeBytesBase64'] = if ($scope.Length -le 32768) { [Convert]::ToBase64String($scope) } else { $null } }
+    [Console]::Out.Write((ConvertTo-Json -InputObject $reply -Compress))
     exit 0
 }
 catch {

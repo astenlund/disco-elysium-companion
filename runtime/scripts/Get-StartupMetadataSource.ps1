@@ -10,8 +10,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $scriptName = [IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
 $maximumSourceBytes = 1048576
-$sourceNames = @('StartupMetadataWorker.ps1', 'StartupWorkerProtocol.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'FileHashes.cs',
-    'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
+$sourceNames = @('StartupMetadataWorker.ps1', 'StartupWorkerProtocol.ps1', 'NativeFiles.cs', 'NativeJobs.cs', 'JsonDocuments.cs', 'FileHashes.cs',
+    'EventDocuments.cs', 'EventInspection.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
 
 function Read-AdmittedSource {
     param([string] $Root, [string[]] $Targets)

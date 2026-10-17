@@ -93,6 +93,34 @@ test('startup mutation worker matches native publication and codec on a private 
         '-ControlFile', codecControl.input, '-ControlSha256', codecControl.hash], cwd: root }, 30000);
       assert.equal(nativeCodec.exitCode, 0);
       assert.deepEqual(warmCodec['result'], parseStrictJson(nativeCodec.stdout));
+
+      const quarantine = path.join(root, 'quarantine');
+      await fs.mkdir(quarantine, { recursive: true });
+      assert.deepEqual(await fs.readdir(quarantine), []);
+      const protectedBytes = Buffer.from('[]');
+      const trim = { op: 'quarantineTrim', scopeSha256: backend.scope.bindingSha256,
+        inputBase64: protectedBytes.toString('base64'), inputSha256: sha256(protectedBytes) };
+      const empty = await request(trim);
+      assert.equal(empty['status'], 'ok');
+      assert.ok(isObject(empty['result']));
+      assert.equal(asInteger(empty['result']['removed']), 0);
+      assert.equal(asInteger(empty['result']['remaining']), 0);
+      const valid = path.join(quarantine, 'probe.' + randomBytes(16).toString('hex') + '.quarantined');
+      await fs.writeFile(valid, 'private', { flag: 'wx' });
+      created.push(valid);
+      const retained = await request(trim);
+      assert.equal(retained['status'], 'ok');
+      assert.ok(isObject(retained['result']));
+      assert.equal(asInteger(retained['result']['removed']), 0);
+      assert.equal(asInteger(retained['result']['remaining']), 1);
+      const invalid = path.join(quarantine, 'rogue.txt');
+      await fs.writeFile(invalid, 'private', { flag: 'wx' });
+      created.push(invalid);
+      const refused = await request(trim);
+      assert.equal(refused['status'], 'error');
+      assert.equal(refused['code'], 'quarantineUnavailable');
+      assert.equal(await fs.readFile(valid, 'utf8'), 'private');
+      assert.equal(await fs.readFile(invalid, 'utf8'), 'private');
     } finally {
       replies.close();
       child.stdin.end();

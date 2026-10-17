@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, type PathInspector } from './admission.ts';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
-import { SupervisorError, type CommandResult, type OwnedProcess, type ProcessSupervisor } from './process.ts';
+import { parseStartupJobStates, SupervisorError, type CommandResult, type OwnedProcess, type ProcessSupervisor } from './process.ts';
 import type { RuntimeScope } from './scope.ts';
 import type { StartupWorkerEvidence } from './startup-worker-sources.ts';
 
@@ -14,8 +14,10 @@ const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
 const admissionScript = fileURLToPath(new URL('../scripts/Get-PathAdmission.ps1', import.meta.url));
 const hashesScript = fileURLToPath(new URL('../scripts/Get-FileHashes.ps1', import.meta.url));
 const resourceScript = fileURLToPath(new URL('../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
+const eventScript = fileURLToPath(new URL('../scripts/Get-EventMetadata.ps1', import.meta.url));
 const maximumInputFrame = 2_097_152;
-const maximumOutputFrame = 65_536;
+const maximumOutputFrame = 131_072;
+const maximumNormalOutput = 65_536;
 const maximumHashInput = 1_048_576;
 const frameBudget = { maxBytes: maximumInputFrame, maxTokens: 65_536, maxTextBytes: maximumInputFrame } as const;
 
@@ -139,10 +141,15 @@ function validateInventoryResult(value: JsonValue): void {
     || typeof value['freeBytes'] !== 'string' || !/^[0-9]+$/.test(value['freeBytes'])) { throw unavailable(); }
 }
 
-export function parseStartupMetadataReply(frameBytes: Uint8Array, id: string, operation: 'admit' | 'hash' | 'inventory'): CommandResult {
+type StartupMetadataOperation = 'admit' | 'hash' | 'inventory' | 'eventBatch' | 'sourceEvidence' | 'jobBatch';
+
+export function parseStartupMetadataReply(frameBytes: Uint8Array, id: string, operation: StartupMetadataOperation): CommandResult {
+  if (operation !== 'eventBatch' && frameBytes.byteLength > maximumNormalOutput) { throw unavailable(); }
   const response = parseStrictJson(frameBytes);
   if (hasExactKeys(response, ['version', 'id', 'op', 'status', 'code'])) {
-    const code = operation === 'admit' ? 'admissionUnavailable' : operation === 'hash' ? 'hashUnavailable' : 'inventoryUnavailable';
+    const code = operation === 'admit' ? 'admissionUnavailable' : operation === 'hash' ? 'hashUnavailable'
+      : operation === 'inventory' ? 'inventoryUnavailable' : operation === 'eventBatch' ? 'inspectionUnavailable'
+        : operation === 'jobBatch' ? 'jobUnavailable' : 'sourceUnavailable';
     if (asInteger(response['version']) !== 1 || response['id'] !== id || response['op'] !== operation
       || response['status'] !== 'error' || response['code'] !== code) { throw unavailable(); }
     return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
@@ -151,6 +158,19 @@ export function parseStartupMetadataReply(frameBytes: Uint8Array, id: string, op
     if (asInteger(response['version']) !== 1 || response['id'] !== id || response['op'] !== operation || response['status'] !== 'ok') { throw unavailable(); }
     const result = response['result'];
     if (result === undefined) { throw unavailable(); }
+    if (operation === 'eventBatch') {
+      if (!hasExactKeys(result, ['compressedBase64', 'sha256']) || typeof result['compressedBase64'] !== 'string'
+        || !isLowerHex(result['sha256'], 64)) { throw unavailable(); }
+      const bytes = Buffer.from(result['compressedBase64'], 'base64');
+      if (bytes.length < 1 || bytes.length > 65_536 || bytes.toString('base64') !== result['compressedBase64']
+        || createHash('sha256').update(bytes).digest('hex') !== result['sha256']) { throw unavailable(); }
+      return { exitCode: 0, stdout: bytes, stderr: Buffer.alloc(0) };
+    }
+    if (operation === 'sourceEvidence' && (!hasExactKeys(result, ['scopeSha256', 'metadataSha256', 'coreReplySha256', 'mutationSha256'])
+      || !isLowerHex(result['scopeSha256'], 64) || !isLowerHex(result['metadataSha256'], 64)
+      || !isLowerHex(result['coreReplySha256'], 64) || !isLowerHex(result['mutationSha256'], 64))) { throw unavailable(); }
+    if (operation === 'jobBatch' && (!hasExactKeys(result, ['jobs']) || !Array.isArray(result['jobs'])
+      || result['jobs'].length < 1 || result['jobs'].length > 8)) { throw unavailable(); }
     if (operation === 'inventory') { validateInventoryResult(result); }
     return { exitCode: 0, stdout: Buffer.from(stringifyJson(result), 'utf8'), stderr: Buffer.alloc(0) };
   }
@@ -162,16 +182,18 @@ export class StartupMetadataSession {
   private readonly child: OwnedProcess;
   private readonly replies: FramedReplies;
   private readonly scope: Pick<RuntimeScope, 'companionRoot' | 'dataRoot' | 'bindingSha256'>;
+  private readonly sourceSha256: string;
   private closed = false;
   private closePromise: Promise<void> | null = null;
   private inFlight = false;
   private stoppedVerified = false;
 
-  private constructor(supervisor: ProcessSupervisor, child: OwnedProcess, replies: FramedReplies, scope: RuntimeScope) {
+  private constructor(supervisor: ProcessSupervisor, child: OwnedProcess, replies: FramedReplies, scope: RuntimeScope, sourceSha256: string) {
     this.supervisor = supervisor;
     this.child = child;
     this.replies = replies;
     this.scope = { companionRoot: scope.companionRoot, dataRoot: scope.dataRoot, bindingSha256: scope.bindingSha256 };
+    this.sourceSha256 = sourceSha256;
   }
 
   static async open(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope, handshakeTimeoutMs = 30000): Promise<StartupMetadataSession | null> {
@@ -240,7 +262,7 @@ export class StartupMetadataSession {
       const hello = parseStrictJson(await Promise.race([replies.next(remaining), expired]));
       validateStartupHello(hello, nonce, expected);
       if (child.brokerClosed || replies.fault !== null) { throw unavailable(); }
-      return new StartupMetadataSession(supervisor, child, replies, scope);
+      return new StartupMetadataSession(supervisor, child, replies, scope, expected.sourceSha256);
     } catch (error) {
       replies.fail(unavailable());
       await supervisor.stop('startupMetadata');
@@ -251,15 +273,24 @@ export class StartupMetadataSession {
 
   supports(scriptPath: string, args: readonly string[] = [], input?: Uint8Array): boolean {
     if (scriptPath === admissionScript || scriptPath === hashesScript) { return true; }
+    if (scriptPath === eventScript) { return args.length === 3 && args[0] === '-Root' && args[2] === '-Batch'
+      && input !== undefined && input.byteLength > 0 && input.byteLength <= maximumHashInput; }
     return scriptPath === resourceScript && input === undefined && args.length === 8 && args[0] === '-Root'
       && args[2] === '-ScopeSha256' && args[4] === '-CompanionRoot' && args[6] === '-Mode'
       && (args[7] === 'Inventory' || args[7] === 'Marker');
   }
   get canFallBack(): boolean { return this.stoppedVerified; }
 
+  matchesStartupEvidence(scope: RuntimeScope, evidence: StartupWorkerEvidence): boolean {
+    return !this.closed && !this.inFlight && !this.stoppedVerified && !this.child.brokerClosed && this.child.terminationState === 'running'
+      && this.replies.fault === null && this.scope.companionRoot === scope.companionRoot
+      && this.scope.dataRoot === scope.dataRoot && this.scope.bindingSha256 === scope.bindingSha256
+      && evidence.scopeSha256 === scope.bindingSha256 && evidence.metadataSha256 === this.sourceSha256;
+  }
+
   async invoke(scriptPath: string, args: readonly string[], cwd: string, timeoutMs: number, input?: Uint8Array): Promise<CommandResult> {
     if (this.closed || this.inFlight || !this.supports(scriptPath, args, input) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { throw unavailable(); }
-    let operation: 'admit' | 'hash' | 'inventory';
+    let operation: 'admit' | 'hash' | 'inventory' | 'eventBatch';
     let fields: Record<string, unknown>;
     if (scriptPath === admissionScript) {
       if ((args.length !== 4 && args.length !== 5) || args[0] !== '-Root' || args[2] !== '-TargetsJson'
@@ -276,12 +307,44 @@ export class StartupMetadataSession {
       operation = 'hash';
       const bytes = Buffer.from(input);
       fields = { inputBase64: bytes.toString('base64'), inputSha256: createHash('sha256').update(bytes).digest('hex'), scopeSha256: bound };
+    } else if (scriptPath === eventScript) {
+      if (args[1] !== cwd || cwd !== this.scope.dataRoot || input === undefined) { throw unavailable(); }
+      const bytes = Buffer.from(input);
+      operation = 'eventBatch';
+      fields = { scopeSha256: this.scope.bindingSha256, inputBase64: bytes.toString('base64'),
+        inputSha256: createHash('sha256').update(bytes).digest('hex') };
     } else {
       if (args[1] !== cwd || cwd !== this.scope.dataRoot || args[3] !== this.scope.bindingSha256
         || args[5] !== this.scope.companionRoot) { throw unavailable(); }
       operation = 'inventory';
       fields = { mode: args[7], scopeSha256: this.scope.bindingSha256, companionRoot: this.scope.companionRoot };
     }
+    return this.exchange(operation, cwd, timeoutMs, fields);
+  }
+
+  async observeWorkerSources(scope: RuntimeScope, timeoutMs = 30000): Promise<StartupWorkerEvidence> {
+    if (scope.companionRoot !== this.scope.companionRoot || scope.dataRoot !== this.scope.dataRoot
+      || scope.bindingSha256 !== this.scope.bindingSha256) { throw unavailable(); }
+    const reply = await this.exchange('sourceEvidence', this.scope.dataRoot, timeoutMs, { scopeSha256: this.scope.bindingSha256 });
+    if (reply.exitCode !== 0) { throw unavailable(); }
+    const value = parseStrictJson(reply.stdout);
+    if (!hasExactKeys(value, ['scopeSha256', 'metadataSha256', 'coreReplySha256', 'mutationSha256'])
+      || value['scopeSha256'] !== scope.bindingSha256 || value['metadataSha256'] !== this.sourceSha256
+      || !isLowerHex(value['coreReplySha256'], 64) || !isLowerHex(value['mutationSha256'], 64)) { throw unavailable(); }
+    return { scopeSha256: scope.bindingSha256, metadataSha256: this.sourceSha256,
+      coreReplySha256: value['coreReplySha256'], mutationSha256: value['mutationSha256'] };
+  }
+
+  async observeJobStates(names: readonly string[], timeoutMs = 5000): Promise<readonly boolean[]> {
+    if (names.length < 1 || names.length > 8 || new Set(names).size !== names.length) { throw unavailable(); }
+    const reply = await this.exchange('jobBatch', this.scope.dataRoot, timeoutMs,
+      { scopeSha256: this.scope.bindingSha256, names: [...names] });
+    if (reply.exitCode !== 0) { throw unavailable(); }
+    return parseStartupJobStates(parseStrictJson(reply.stdout), names);
+  }
+
+  private async exchange(operation: StartupMetadataOperation, cwd: string, timeoutMs: number, fields: Record<string, unknown>): Promise<CommandResult> {
+    if (this.closed || this.inFlight || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { throw unavailable(); }
     const id = randomBytes(16).toString('hex');
     const request = encodeStartupMetadataFrame({ version: 1, id, op: operation, root: cwd, remainingMs: timeoutMs, ...fields });
     this.inFlight = true;

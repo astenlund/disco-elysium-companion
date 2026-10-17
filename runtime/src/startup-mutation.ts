@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError } from './admission.ts';
@@ -12,19 +13,23 @@ const codecScript = fileURLToPath(new URL('../scripts/Invoke-PayloadCodec.ps1', 
 const line = String.fromCharCode(10);
 
 function unavailable(): DataRootUnavailableError { return new DataRootUnavailableError('Startup mutation transport is unavailable.'); }
-function refused(script: 'Write-RuntimeFile' | 'Invoke-PayloadCodec', reason: string): CommandResult {
+function refused(script: 'Write-RuntimeFile' | 'Invoke-PayloadCodec' | 'Get-ResourceInventory', reason: string): CommandResult {
   return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.from(`${script}: ${reason}${line}`) };
 }
 
 export class StartupMutationSession {
   private readonly transport: StartupWorkerTransport;
   private readonly root: string;
+  private readonly companionRoot: string;
+  private readonly scopeSha256: string;
 
-  private constructor(transport: StartupWorkerTransport, root: string) { this.transport = transport; this.root = root; }
+  private constructor(transport: StartupWorkerTransport, scope: RuntimeScope) {
+    this.transport = transport; this.root = scope.dataRoot; this.companionRoot = scope.companionRoot; this.scopeSha256 = scope.bindingSha256;
+  }
 
   static async open(supervisor: ProcessSupervisor, scope: RuntimeScope, sourceSha256: string): Promise<StartupMutationSession | null> {
     const transport = await StartupWorkerTransport.open(supervisor, scope, 'startupMutation', workerScript, sourceSha256);
-    return transport === null ? null : new StartupMutationSession(transport, scope.dataRoot);
+    return transport === null ? null : new StartupMutationSession(transport, scope);
   }
 
   handles(options: OwnedSpawnOptions): boolean {
@@ -33,6 +38,29 @@ export class StartupMutationSession {
   }
 
   get canFallBack(): boolean { return this.transport.canFallBack; }
+
+  async trimQuarantine(scope: RuntimeScope, protectedBytes: Uint8Array, timeoutMs: number): Promise<CommandResult> {
+    if (scope.dataRoot !== this.root || scope.companionRoot !== this.companionRoot || scope.bindingSha256 !== this.scopeSha256
+      || protectedBytes.byteLength < 1 || protectedBytes.byteLength > 1_048_576
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) { throw unavailable(); }
+    const bytes = Buffer.from(protectedBytes);
+    const reply = await this.transport.request('quarantineTrim', { scopeSha256: this.scopeSha256,
+      inputBase64: bytes.toString('base64'), inputSha256: createHash('sha256').update(bytes).digest('hex') }, Math.min(timeoutMs, 30000));
+    if (reply.status === 'error') {
+      if (reply.code === 'quarantineUnavailable') { return refused('Get-ResourceInventory', 'resource-authority-unavailable'); }
+      await this.transport.invalidate();
+      throw unavailable();
+    }
+    const result = reply.result;
+    if (!hasExactKeys(result, ['removed', 'remaining'])) { await this.transport.invalidate(); throw unavailable(); }
+    const removed = asInteger(result['removed']);
+    const remaining = asInteger(result['remaining']);
+    if (removed === undefined || removed < 0 || remaining === undefined || remaining < 0) {
+      await this.transport.invalidate();
+      throw unavailable();
+    }
+    return { exitCode: 0, stdout: Buffer.from(stringifyJson(result), 'utf8'), stderr: Buffer.alloc(0) };
+  }
 
   async invoke(options: OwnedSpawnOptions, timeoutMs: number): Promise<CommandResult> {
     if (!this.handles(options) || options.cwd !== this.root || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) { throw unavailable(); }

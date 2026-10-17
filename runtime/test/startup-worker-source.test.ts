@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { openBackend } from '../src/backend/index.ts';
 import { asInteger, isLowerHex, isObject, parseStrictJson } from '../src/json.ts';
 import type { ProcessRole } from '../src/process.ts';
-import { FramedReplies } from '../src/startup-metadata.ts';
+import { FramedReplies, StartupMetadataSession } from '../src/startup-metadata.ts';
+import { scopeFromAdmittedBinding } from '../src/scope.ts';
+import { observeBootstrapWorkerSources } from '../src/startup-worker-sources.ts';
 import { companionFixture } from './support/companion.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -38,6 +40,23 @@ test('one source observation matches each private startup worker bundle', { time
     const priorEvidence = parseStrictJson(prior.stdout);
     assert.ok(isObject(priorEvidence));
     assert.equal(evidence['metadataSha256'], priorEvidence['sourceSha256']);
+    const combined = await observeBootstrapWorkerSources(backend.inspector, backend.scope);
+    assert.equal(combined.status, 'present');
+    if (combined.status === 'present') {
+      assert.ok(combined.scopeBytes);
+      assert.equal(scopeFromAdmittedBinding(backend.scope, combined.scopeBytes).bindingSha256, backend.scope.bindingSha256);
+      assert.deepEqual(combined.evidence, { scopeSha256: evidence['scopeSha256'], metadataSha256: evidence['metadataSha256'],
+        coreReplySha256: evidence['coreReplySha256'], mutationSha256: evidence['mutationSha256'] });
+    }
+    const metadataSession = await StartupMetadataSession.open(backend.inspector, backend.supervisor, backend.scope);
+    assert.ok(metadataSession);
+    try {
+      assert.deepEqual(await metadataSession.observeWorkerSources(backend.scope), {
+        scopeSha256: evidence['scopeSha256'], metadataSha256: evidence['metadataSha256'],
+        coreReplySha256: evidence['coreReplySha256'], mutationSha256: evidence['mutationSha256'],
+      });
+    } finally { await metadataSession.close(); }
+    await backend.supervisor.verifyQuiescent('startupMetadata');
 
     const observeWorker = async (role: ProcessRole, script: string): Promise<ReturnType<typeof parseStrictJson>> => {
       const nonce = randomBytes(16).toString('hex');
@@ -74,6 +93,10 @@ test('one source observation matches each private startup worker bundle', { time
     const stagedArgs = ['-CompanionRoot', fixture.root, '-DataRoot', backend.scope.dataRoot, '-SourceRoot', stagedSource];
     const complete = await backend.inspector.metadata(sourceScript, stagedArgs, fixture.root);
     assert.equal(complete.exitCode, 0);
+    const absentScope = await backend.inspector.metadata(sourceScript, ['-CompanionRoot', fixture.root,
+      '-DataRoot', path.join(fixture.root, 'runtime-data', 'private-missing'), '-SourceRoot', stagedSource, '-IncludeScopeBytes'], fixture.root);
+    assert.equal(absentScope.exitCode, 0);
+    assert.deepEqual(JSON.parse(absentScope.stdout.toString('utf8')), { status: 'scopeAbsent' });
     await fs.rm(path.join(stagedSource, 'runtime', 'scripts', 'StartupMutationWorker.ps1'));
     const missing = await backend.inspector.metadata(sourceScript, stagedArgs, fixture.root);
     assert.equal(missing.exitCode, 1);

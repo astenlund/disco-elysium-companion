@@ -79,9 +79,17 @@ export function parseStartupJobStates(value: JsonValue, names: readonly string[]
   });
 }
 
-async function jobsAbsent(names: readonly string[]): Promise<readonly boolean[]> {
-  const value = await inspectNative('Get-OwnedJobStates.ps1', ['-JobNamesJson', JSON.stringify(names)], 30000);
-  return parseStartupJobStates(value, names);
+async function jobsAbsent(names: readonly string[], owned?: { name: string; identity: ProcessIdentity; brokerPid: number }, timeoutMs = 30000): Promise<readonly boolean[]> {
+  const args = ['-JobNamesJson', JSON.stringify(names)];
+  if (owned !== undefined) { args.push('-OwnedJobName', owned.name, '-OwnedProcessId', String(owned.identity.pid), '-OwnedBrokerProcessId', String(owned.brokerPid), '-OwnedProcessCreated', owned.identity.created); }
+  const value = await inspectNative('Get-OwnedJobStates.ps1', args, timeoutMs);
+  if (owned === undefined) { return parseStartupJobStates(value, names); }
+  if (!hasExactKeys(value, ['jobs', 'owned']) || value['owned'] !== true) {
+    throw new SupervisorError('termination-unverified', 'Owned startup metadata job membership is unverified.');
+  }
+  const observedJobs = value['jobs'];
+  if (observedJobs === undefined) { throw new SupervisorError('termination-unverified', 'Startup job observations are incomplete.'); }
+  return parseStartupJobStates({ jobs: observedJobs }, names);
 }
 
 export class OwnedProcess extends EventEmitter {
@@ -197,6 +205,7 @@ export class OwnedProcess extends EventEmitter {
   }
 
   get killed(): boolean { return this.broker.killed; }
+  get brokerPid(): number | undefined { return this.broker.pid; }
   get brokerClosed(): boolean { return this.closed; }
   get terminationState(): 'running' | 'verifying' | 'verified' | 'unverified' { return this.verification; }
   get exitCode(): number | null { return this.broker.exitCode; }
@@ -209,6 +218,7 @@ export class ProcessSupervisor {
   private readonly scope: string;
   private readonly active = new Map<ProcessRole, OwnedProcess | null>();
   private readonly stopping = new Map<ProcessRole, Promise<void>>();
+  private startupJobObserver: ((names: readonly string[], timeoutMs: number) => Promise<readonly boolean[]>) | null = null;
 
   private constructor(parent: ProcessIdentity, canonicalScope: string) { this.parent = parent; this.scope = guardScopeToken(canonicalScope); }
 
@@ -219,12 +229,37 @@ export class ProcessSupervisor {
     return new ProcessSupervisor(parent, canonicalScope);
   }
 
+  forScope(canonicalScope: string): ProcessSupervisor {
+    return new ProcessSupervisor(this.parent, canonicalScope);
+  }
+
   jobName(role: ProcessRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
+
+  attachStartupJobObserver(observer: (names: readonly string[], timeoutMs: number) => Promise<readonly boolean[]>): void {
+    if (this.startupJobObserver !== null) { throw new SupervisorError('result-invalid', 'Startup job observer is already attached.'); }
+    this.startupJobObserver = observer;
+  }
+
+  clearStartupJobObserver(): void { this.startupJobObserver = null; }
+
+  private async observeUnownedJobs(names: readonly string[], timeoutMs: number): Promise<readonly boolean[]> {
+    const observer = this.startupJobObserver;
+    if (observer === null || names.includes(this.jobName('startupMetadata')) || names.includes(this.jobName('metadata'))) {
+      return names.length === 1 ? [await jobAbsent(names[0]!, timeoutMs)] : jobsAbsent(names, undefined, timeoutMs);
+    }
+    let result: readonly boolean[];
+    try { result = await observer([...names], timeoutMs); }
+    catch { throw new SupervisorError('termination-unverified', 'Startup job observation is unavailable.'); }
+    if (result.length !== names.length || result.some(value => typeof value !== 'boolean')) {
+      throw new SupervisorError('termination-unverified', 'Startup job observation is invalid.');
+    }
+    return result;
+  }
 
   async observeJobAbsent(role: ProcessRole): Promise<boolean> {
     const owner = this.active.get(role);
     if (owner !== undefined) { throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.'); }
-    const absent = await jobAbsent(this.jobName(role), 5000);
+    const absent = (await this.observeUnownedJobs([this.jobName(role)], 5000))[0]!;
     if (this.active.get(role) !== owner) { throw new SupervisorError('termination-unverified', 'Process ownership changed during verification.'); }
     return absent;
   }
@@ -235,6 +270,40 @@ export class ProcessSupervisor {
     await this.verifyOwner(role, owner);
   }
 
+  async verifyQuiescentMany(roles: readonly ProcessRole[]): Promise<void> {
+    if (roles.length < 1 || roles.length > processRoles.length || new Set(roles).size !== roles.length
+      || roles.some(role => !(processRoles as readonly string[]).includes(role))) {
+      throw new SupervisorError('result-invalid', 'Invalid process-role batch.');
+    }
+    const owners = new Map<ProcessRole, OwnedProcess | null | undefined>();
+    for (const role of roles) {
+      const owner = this.active.get(role);
+      if (owner?.terminationState === 'verifying') { await owner.terminated; }
+      const current = this.active.get(role);
+      if (current === null || current !== undefined && !current.brokerClosed) {
+        throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.');
+      }
+      owners.set(role, current);
+    }
+    const names = roles.map(role => this.jobName(role));
+    let absent = await this.observeUnownedJobs(names, 5000);
+    if (absent.some(value => !value)) {
+      for (const [index, role] of roles.entries()) {
+        if (absent[index]) { continue; }
+        const owner = owners.get(role);
+        await this.verifyOwner(role, owner);
+        owners.set(role, undefined);
+      }
+      absent = await this.observeUnownedJobs(names, 5000);
+    }
+    for (const [index, role] of roles.entries()) {
+      const owner = owners.get(role);
+      if (this.active.get(role) !== owner) { throw new SupervisorError('termination-unverified', 'Process ownership changed during verification.'); }
+      if (!absent[index]) { throw new SupervisorError('termination-unverified', 'A predecessor process job is still present.'); }
+      this.active.delete(role);
+    }
+  }
+
   private async verifyOwner(role: ProcessRole, owner: OwnedProcess | null | undefined): Promise<void> {
     if (this.active.get(role) !== owner) { throw new SupervisorError('termination-unverified', 'Process ownership changed before verification.'); }
     if (owner === null || owner !== undefined && !owner.brokerClosed) { throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.'); }
@@ -242,7 +311,7 @@ export class ProcessSupervisor {
     do {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { break; }
-      if (await jobAbsent(this.jobName(role), remaining)) {
+      if ((await this.observeUnownedJobs([this.jobName(role)], remaining))[0]) {
         if (this.active.get(role) !== owner) { throw new SupervisorError('termination-unverified', 'Process ownership changed during verification.'); }
         this.active.delete(role);
         return;
@@ -252,20 +321,48 @@ export class ProcessSupervisor {
     throw new SupervisorError('termination-unverified', 'A predecessor process job is still present.');
   }
 
-  async admitStartup(): Promise<void> {
+  async admitStartup(allowOwnedStartupMetadata = false): Promise<void> {
     const owners = new Map<ProcessRole, OwnedProcess | null | undefined>();
+    let metadataIdentity: ProcessIdentity | undefined;
     for (const role of processRoles) {
       const owner = this.active.get(role);
       if (owner?.terminationState === 'verifying') { await owner.terminated; }
       const current = this.active.get(role);
+      if (role === 'startupMetadata' && allowOwnedStartupMetadata
+        && current !== undefined && current !== null && !current.brokerClosed
+        && !this.stopping.has(role) && current.terminationState === 'running') {
+        const identity = await current.ready;
+        if (current.brokerClosed || this.active.get(role) !== current || this.stopping.has(role)) {
+          throw new SupervisorError('termination-unverified', 'Owned startup process changed during admission.');
+        }
+        metadataIdentity = identity;
+        owners.set(role, current);
+        continue;
+      }
       if (current === null || current !== undefined && !current.brokerClosed) {
         throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.');
       }
       owners.set(role, current);
     }
-    const absent = await jobsAbsent(processRoles.map(role => this.jobName(role)));
+    if (allowOwnedStartupMetadata && metadataIdentity === undefined) {
+      throw new SupervisorError('termination-unverified', 'Owned startup metadata process is unavailable.');
+    }
+    const metadataOwner = owners.get('startupMetadata');
+    const brokerPid = metadataOwner?.brokerPid;
+    if (metadataIdentity !== undefined && (brokerPid === undefined || !Number.isSafeInteger(brokerPid) || brokerPid < 1)) {
+      throw new SupervisorError('termination-unverified', 'Owned startup metadata broker identity is unavailable.');
+    }
+    const absent = await jobsAbsent(processRoles.map(role => this.jobName(role)), metadataIdentity === undefined ? undefined
+      : { name: this.jobName('startupMetadata'), identity: metadataIdentity, brokerPid: brokerPid! });
     for (const [index, role] of processRoles.entries()) {
       if (this.active.get(role) !== owners.get(role)) { throw new SupervisorError('termination-unverified', 'Process ownership changed during startup admission.'); }
+      if (role === 'startupMetadata' && metadataIdentity !== undefined) {
+        const owner = owners.get(role);
+        if (absent[index] || owner === undefined || owner === null || owner.brokerClosed || owner.terminationState !== 'running' || this.stopping.has(role)) {
+          throw new SupervisorError('termination-unverified', 'Owned startup metadata job changed during admission.');
+        }
+        continue;
+      }
       if (absent[index]) { this.active.delete(role); }
       else { await this.verifyQuiescent(role); }
     }

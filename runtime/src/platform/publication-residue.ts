@@ -122,7 +122,7 @@ function sameMarkerObject(left: PathAdmission, right: PathAdmission): boolean {
 // This pre-marker pass has a narrower authority than the full phase-D cleanup:
 // retain the exact target and reject any changed selected object, including loss.
 export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pick<InstanceGuard, 'held'>,
-  inspector: Pick<PathInspector, 'inspectMany'>, supervisor: Pick<ProcessSupervisor, 'verifyQuiescent'>,
+  inspector: Pick<PathInspector, 'inspectMany'>, supervisor: Pick<ProcessSupervisor, 'verifyQuiescentMany'>,
   deadline = Deadline.after(120000), io: MarkerResidueIO = markerResidueIO): Promise<{ readonly removed: readonly string[] }> {
   const owned = (): void => {
     deadline.check();
@@ -148,8 +148,7 @@ export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pi
     return { admitted, sha256: admitted.exists ? await digest(admitted.path) : null };
   };
   const verifyWritersAbsent = async (): Promise<void> => {
-    await supervisor.verifyQuiescent('publication');
-    await supervisor.verifyQuiescent('startupMutation');
+    await supervisor.verifyQuiescentMany(['publication', 'startupMutation']);
   };
   try {
     owned();

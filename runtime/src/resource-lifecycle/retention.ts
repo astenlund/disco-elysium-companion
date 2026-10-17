@@ -7,6 +7,7 @@ import { RuntimeCapacityError, runtimeLimits } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { EventReader } from '../event-reader.ts';
+import type { FilePublisher } from '../files.ts';
 import type { Journal } from '../journal.ts';
 import { eventRewriteMetadata, type EventDescription } from '../journal-records.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson } from '../json.ts';
@@ -264,6 +265,7 @@ export function selectOperationRetention(operations: readonly StoredOperation[],
 export interface MaintenanceDependencies {
   readonly scope: RuntimeScope;
   readonly inspector: PathInspector;
+  readonly publisher?: Pick<FilePublisher, 'trimStartupQuarantine'>;
   readonly storage: ScopeStorage;
   readonly journal: Journal;
   readonly operations: OperationStore;
@@ -374,7 +376,8 @@ export async function maintainRuntimeStorage(deps: MaintenanceDependencies, dead
 async function trimQuarantine(deps: MaintenanceDependencies, protectedPaths: ReadonlySet<string>, deadline?: Deadline): Promise<number> {
   await deps.storage.ensureDirectory('quarantine', deadline);
   const control = Buffer.from(stringifyJson([...protectedPaths]), 'utf8');
-  const result = await deps.inspector.metadata(resourceScript, ['-Root', deps.scope.dataRoot, '-ScopeSha256', deps.scope.bindingSha256, '-Mode', 'Quarantine'], deps.scope.dataRoot, deadline?.remaining(), control);
+  const warm = await deps.publisher?.trimStartupQuarantine(deps.scope, control, deadline?.remaining());
+  const result = warm ?? await deps.inspector.metadata(resourceScript, ['-Root', deps.scope.dataRoot, '-ScopeSha256', deps.scope.bindingSha256, '-Mode', 'Quarantine'], deps.scope.dataRoot, deadline?.remaining(), control);
   requireControl(result.exitCode === 0);
   const reply = parseStrictJson(result.stdout);
   requireControl(hasExactKeys(reply, ['removed', 'remaining']));

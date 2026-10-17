@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
 import { ProcessSupervisor, type CommandResult } from './process.ts';
 import { SerialQueue } from './serial.ts';
+import type { RuntimeScope } from './scope.ts';
 import type { StartupMetadataSession } from './startup-metadata.ts';
 import type { StartupCoreReplySession } from './startup-core-reply.ts';
 
@@ -25,7 +26,8 @@ const script = fileURLToPath(new URL('../scripts/Get-PathAdmission.ps1', import.
 export const maximumPathAdmissionBatchEntries = 64;
 export const maximumPathAdmissionControlBytes = 65_536;
 
-function parseAdmission(value: JsonValue, target: string, allowMissing: boolean): PathAdmission {
+/** @internal Shared parser for the exact native path admission envelope. */
+export function parseAdmission(value: JsonValue, target: string, allowMissing: boolean): PathAdmission {
   if (!hasExactKeys(value, ['path', 'exists', 'kind', 'links', 'volume', 'identity', 'missing']) || typeof value['path'] !== 'string' || path.win32.relative(path.win32.resolve(target), path.win32.resolve(value['path'])) !== '' || typeof value['exists'] !== 'boolean' || !Array.isArray(value['missing']) || !value['missing'].every(part => typeof part === 'string' && part.length > 0 && !part.includes('/') && !part.includes(path.win32.sep))) {
     throw new DataRootUnavailableError('Path admission metadata is invalid.');
   }
@@ -53,6 +55,15 @@ export class PathInspector {
   constructor(supervisor: ProcessSupervisor) { this.supervisor = supervisor; }
 
   idle(): Promise<void> { return this.queue.idle(); }
+
+  observeStartupJobs(names: readonly string[], timeoutMs = 5000): Promise<readonly boolean[]> {
+    return this.queue.run(() => {
+      if (this.startupClosing !== null || this.startupSession === null) {
+        throw new DataRootUnavailableError('Startup job observation is unavailable.');
+      }
+      return this.startupSession.observeJobStates(names, timeoutMs);
+    });
+  }
 
   attachStartupSession(session: StartupMetadataSession): void {
     if (this.startupSession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup metadata session is already attached.'); }

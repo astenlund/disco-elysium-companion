@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,7 @@ import type { ProcessSupervisor } from '../src/process.ts';
 import { encodeStartupMetadataFrame, FramedReplies, parseStartupMetadataReply, StartupMetadataSession } from '../src/startup-metadata.ts';
 
 const resourceScript = fileURLToPath(new URL('../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
+const eventScript = fileURLToPath(new URL('../scripts/Get-EventMetadata.ps1', import.meta.url));
 
 function workerStream() {
   const stdout = new PassThrough();
@@ -46,7 +48,7 @@ test('framed worker rejects oversized output and timed-out or noisy replies', as
   const output = new FramedReplies(oversized.child);
   const pending = output.next(1000);
   const header = Buffer.alloc(4);
-  header.writeUInt32BE(65537);
+  header.writeUInt32BE(131073);
   oversized.stdout.write(header);
   await assert.rejects(pending, DataRootUnavailableError);
   assert.equal(oversized.kills(), 1);
@@ -80,6 +82,7 @@ test('reply parser refuses wrong correlation, duplicate fields, and unrecognized
     assert.throws(() => parseStartupMetadataReply(Buffer.from(JSON.stringify(value)), id, 'admit'));
   }
   assert.throws(() => parseStartupMetadataReply(Buffer.from('{"version":1,"version":1,"id":"' + id + '"}', 'utf8'), id, 'admit'));
+  assert.throws(() => parseStartupMetadataReply(Buffer.alloc(65537), id, 'admit'), DataRootUnavailableError);
 });
 
 test('inventory replies require complete bounded current observations', () => {
@@ -106,7 +109,48 @@ test('inventory replies require complete bounded current observations', () => {
   assert.throws(() => parseStartupMetadataReply(frame({ version: 1, id, op: 'inventory', status: 'error', code: 'hashUnavailable' }), id, 'inventory'));
 });
 
-test('only exact read-only resource modes use the startup worker', async () => {
+test('event batch reply keeps exact bounded compressed bytes', () => {
+  const id = 'a'.repeat(32);
+  const bytes = Buffer.from([1, 2, 3, 4]);
+  const value = { compressedBase64: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex') };
+  const frame = (result: unknown) => Buffer.from(JSON.stringify({ version: 1, id, op: 'eventBatch', status: 'ok', result }));
+  assert.deepEqual(parseStartupMetadataReply(frame(value), id, 'eventBatch').stdout, bytes);
+  for (const invalid of [{ ...value, sha256: '0'.repeat(64) }, { ...value, compressedBase64: '!' },
+    { ...value, extra: true }, { ...value, compressedBase64: Buffer.alloc(65537).toString('base64') }]) {
+    assert.throws(() => parseStartupMetadataReply(frame(invalid), id, 'eventBatch'), DataRootUnavailableError);
+  }
+  assert.equal(parseStartupMetadataReply(Buffer.from(JSON.stringify({ version: 1, id, op: 'eventBatch', status: 'error',
+    code: 'inspectionUnavailable' })), id, 'eventBatch').exitCode, 1);
+});
+
+test('worker source proof requires four exact hashes', () => {
+  const id = 'a'.repeat(32);
+  const evidence = { scopeSha256: 'a'.repeat(64), metadataSha256: 'b'.repeat(64),
+    coreReplySha256: 'c'.repeat(64), mutationSha256: 'd'.repeat(64) };
+  const frame = (result: unknown) => Buffer.from(JSON.stringify({ version: 1, id, op: 'sourceEvidence', status: 'ok', result }));
+  assert.deepEqual(JSON.parse(parseStartupMetadataReply(frame(evidence), id, 'sourceEvidence').stdout.toString('utf8')), evidence);
+  for (const invalid of [{ ...evidence, metadataSha256: 'B'.repeat(64) }, { ...evidence, extra: true },
+    { ...evidence, mutationSha256: null }]) {
+    assert.throws(() => parseStartupMetadataReply(frame(invalid), id, 'sourceEvidence'), DataRootUnavailableError);
+  }
+  assert.equal(parseStartupMetadataReply(Buffer.from(JSON.stringify({ version: 1, id, op: 'sourceEvidence', status: 'error',
+    code: 'sourceUnavailable' })), id, 'sourceEvidence').exitCode, 1);
+});
+
+test('job observation replies keep the exact bounded job envelope', () => {
+  const id = 'a'.repeat(32);
+  const name = 'Global' + String.fromCharCode(92) + 'game-companion-process-' + '0'.repeat(32) + '-publication';
+  const result = { jobs: [{ name, state: 'absent', processes: null }] };
+  const reply = (value: unknown) => Buffer.from(JSON.stringify({ version: 1, id, op: 'jobBatch', status: 'ok', result: value }));
+  assert.deepEqual(JSON.parse(parseStartupMetadataReply(reply(result), id, 'jobBatch').stdout.toString('utf8')), result);
+  assert.equal(parseStartupMetadataReply(Buffer.from(JSON.stringify({ version: 1, id, op: 'jobBatch', status: 'error',
+    code: 'jobUnavailable' })), id, 'jobBatch').exitCode, 1);
+  for (const invalid of [{ jobs: [] }, { jobs: result.jobs, extra: true }, { jobs: Array(10).fill(result.jobs[0]) }]) {
+    assert.throws(() => parseStartupMetadataReply(reply(invalid), id, 'jobBatch'), DataRootUnavailableError);
+  }
+});
+
+test('only bounded read-only metadata operations use the startup worker', async () => {
   const routed: string[] = [];
   const prototype = Object.create(StartupMetadataSession.prototype) as StartupMetadataSession;
   const session = {
@@ -122,10 +166,13 @@ test('only exact read-only resource modes use the startup worker', async () => {
   const common = ['-Root', 'root', '-ScopeSha256', 'f'.repeat(64), '-CompanionRoot', 'companion', '-Mode'];
   await inspector.metadata(resourceScript, [...common, 'Inventory'], 'root');
   await inspector.metadata(resourceScript, [...common, 'Marker'], 'root');
+  await inspector.metadata(eventScript, ['-Root', 'root', '-Batch'], 'root', 30000, Buffer.from('[]'));
+  await inspector.metadata(eventScript, ['-Root', 'root', '-Batch'], 'root', 30000, Buffer.alloc(1048577));
   await inspector.metadata(resourceScript, [...common, 'Event'], 'root', 30000, Buffer.from('{}'));
-  await inspector.metadata(resourceScript, [...common, 'Quarantine'], 'root', 30000, Buffer.from('[]'));
+  await inspector.metadata(resourceScript, ['-Root', 'root', '-ScopeSha256', 'f'.repeat(64), '-Mode', 'Quarantine'],
+    'root', 30000, Buffer.from('[]'));
   await inspector.closeStartupSession();
-  assert.deepEqual(routed, ['worker', 'worker', 'one-shot', 'one-shot']);
+  assert.deepEqual(routed, ['worker', 'worker', 'worker', 'one-shot', 'one-shot', 'one-shot']);
 });
 
 test('hash transport admits a full decoded control input without losing the framed bound', () => {

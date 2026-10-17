@@ -4,7 +4,7 @@ import type { RuntimeScope } from './scope.ts';
 import { StartupCoreReplySession } from './startup-core-reply.ts';
 import { StartupMetadataSession } from './startup-metadata.ts';
 import { StartupMutationSession } from './startup-mutation.ts';
-import { observeStartupWorkerSources } from './startup-worker-sources.ts';
+import { observeStartupWorkerSources, type StartupWorkerEvidence } from './startup-worker-sources.ts';
 
 interface StartupWorkerOpeners {
   readonly observe: typeof observeStartupWorkerSources;
@@ -30,10 +30,19 @@ export class StartupWorkerGroup {
     mutation: StartupMutationSession | null) { this.metadata = metadata; this.coreReply = coreReply; this.mutation = mutation; }
 
   static async prepare(inspector: PathInspector, supervisor: ProcessSupervisor, scope: RuntimeScope,
-    openers: StartupWorkerOpeners = defaultOpeners): Promise<(() => Promise<StartupWorkerGroup | null>) | null> {
-    const evidence = await openers.observe(inspector, scope);
-    if (evidence === null) { return null; }
-    const openMetadata = openers.metadata(supervisor, scope, evidence);
+    openers: StartupWorkerOpeners = defaultOpeners, existingMetadata: StartupMetadataSession | null = null,
+    launchMetadata = true, proveEarly?: (evidence: StartupWorkerEvidence) => void): Promise<(() => Promise<StartupWorkerGroup | null>) | null> {
+    const evidence = existingMetadata === null ? await openers.observe(inspector, scope) : await existingMetadata.observeWorkerSources(scope);
+    if (evidence === null) {
+      if (existingMetadata !== null) { throw new Error('Startup metadata source disappeared after worker admission.'); }
+      return null;
+    }
+    if (existingMetadata !== null && !existingMetadata.matchesStartupEvidence(scope, evidence)) {
+      throw new Error('Startup metadata ownership or source changed after worker admission.');
+    }
+    if (existingMetadata !== null) { proveEarly?.(evidence); }
+    const openMetadata = existingMetadata !== null ? async () => existingMetadata
+      : launchMetadata ? openers.metadata(supervisor, scope, evidence) : async () => null;
     let used = false;
 
     return async () => {
@@ -46,7 +55,8 @@ export class StartupWorkerGroup {
       ]);
       const failure = opened.find(result => result.status === 'rejected');
       if (failure?.status === 'rejected') {
-        const close = await Promise.allSettled(opened.map(result => result.status === 'fulfilled' ? result.value?.close() : undefined));
+        const close = await Promise.allSettled(opened.map((result, index) => result.status === 'fulfilled' && (index !== 0 || existingMetadata === null)
+          ? result.value?.close() : undefined));
         const closeFailure = close.find(result => result.status === 'rejected');
         if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
         throw failure.reason;

@@ -17,7 +17,7 @@ $maximumInputFrame = 2097152
 $maximumOutputFrame = 65536
 $sourceNames = @('StartupMutationWorker.ps1', 'StartupWorkerProtocol.ps1', 'Write-RuntimeFile.ps1',
     'Invoke-PayloadCodec.ps1', 'NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs',
-    'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
+    'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs', 'resource-lifecycle/ResourceInventory.cs')
 
 # Bootstrap source admission must run before the shared protocol is imported.
 function Read-BoundFile {
@@ -68,6 +68,21 @@ function Read-Boolean {
     return $Element.GetBoolean()
 }
 
+function Read-ControlBytes {
+    param([Text.Json.JsonElement] $Request)
+    $inputBase64 = Read-String -Element ($Request.GetProperty('inputBase64'))
+    $inputSha256 = Read-String -Element ($Request.GetProperty('inputSha256'))
+    if ($inputSha256 -cnotmatch '^[a-f0-9]{64}$') { throw [IO.InvalidDataException]::new('Invalid quarantine input digest.') }
+    $inputBytes = [Convert]::FromBase64String($inputBase64)
+    if ($inputBytes.Length -lt 1 -or $inputBytes.Length -gt 1048576 -or
+        [string]::CompareOrdinal([Convert]::ToBase64String($inputBytes), $inputBase64) -ne 0 -or
+        [string]::CompareOrdinal([Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($inputBytes)), $inputSha256) -ne 0) {
+        throw [IO.InvalidDataException]::new('Invalid quarantine input.')
+    }
+
+    return ,$inputBytes
+}
+
 try {
     if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
     $sourceLocks = [Collections.Generic.List[IO.FileStream]]::new()
@@ -75,7 +90,8 @@ try {
         foreach ($name in $sourceNames) {
             $sourceLocks.Add([IO.FileStream]::new((Join-Path $PSScriptRoot $name), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
         }
-        $nativeNames = @('NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs')
+        $nativeNames = @('NativeFiles.cs', 'JsonDocuments.cs', 'EventDocuments.cs', 'PayloadCodec.cs', 'RuntimeFilePublication.cs', 'RuntimeCodec.cs',
+            'resource-lifecycle/ResourceInventory.cs')
         Add-Type -Path @($nativeNames | ForEach-Object { Join-Path $PSScriptRoot $_ })
         $admittedData = [Companion.Runtime.NativeFiles]::AdmitWithin($CompanionRoot, $DataRoot, $false)
         $admittedSources = [Companion.Runtime.NativeFiles]::AdmitWithin($SourceRoot, $PSScriptRoot, $false)
@@ -109,6 +125,9 @@ try {
             elseif ($operation -ceq 'codec') {
                 Assert-ExactFields -Element $request -Names @('version', 'id', 'op', 'root', 'remainingMs', 'target', 'inputFile', 'inputSha256', 'controlFile', 'controlSha256', 'verifyOnly', 'preview')
             }
+            elseif ($operation -ceq 'quarantineTrim') {
+                Assert-ExactFields -Element $request -Names @('version', 'id', 'op', 'root', 'remainingMs', 'scopeSha256', 'inputBase64', 'inputSha256')
+            }
             else { throw [IO.InvalidDataException]::new('Invalid mutation operation.') }
             if ((Read-Integer -Element ($request.GetProperty('version'))) -ne 1) { throw [IO.InvalidDataException]::new('Invalid request version.') }
             $id = Read-String -Element ($request.GetProperty('id'))
@@ -122,6 +141,30 @@ try {
             }
             $remainingMs = Read-Integer -Element ($request.GetProperty('remainingMs'))
             if ($remainingMs -lt 1 -or $remainingMs -gt 30000) { throw [IO.InvalidDataException]::new('Invalid request deadline.') }
+            if ($operation -ceq 'quarantineTrim') {
+                $requestScopeSha256 = Read-String -Element ($request.GetProperty('scopeSha256'))
+                if ([string]::CompareOrdinal($requestScopeSha256, $scopeSha256) -ne 0) {
+                    throw [IO.InvalidDataException]::new('Quarantine trim scope is invalid.')
+                }
+                $inputBytes = Read-ControlBytes -Request $request
+                $code = $null
+                try {
+                    if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Quarantine trim timed out.') }
+                    $replyBytes = [Companion.Runtime.ResourceInventory]::TrimQuarantine($root, $scopeSha256, $inputBytes)
+                    if ($watch.ElapsedMilliseconds -ge $remainingMs) { throw [TimeoutException]::new('Quarantine trim timed out.') }
+                    $parsed = [Text.Json.JsonDocument]::Parse($utf8.GetString($replyBytes))
+                    try { $reply = $parsed.RootElement.GetRawText() }
+                    finally { $parsed.Dispose() }
+                }
+                catch {
+                    if ($_.Exception -is [TimeoutException]) { throw }
+                    $reply = $null
+                    $code = 'quarantineUnavailable'
+                }
+                if ($null -eq $code) { Write-WorkerReply -Id $id -Operation $operation -Status 'ok' -ResultJson $reply -Code $null }
+                else { Write-WorkerReply -Id $id -Operation $operation -Status 'error' -ResultJson $null -Code $code }
+                continue
+            }
             $target = Read-String -Element ($request.GetProperty('target'))
             $inputFile = Read-String -Element ($request.GetProperty('inputFile'))
             $inputSha256 = Read-String -Element ($request.GetProperty('inputSha256'))

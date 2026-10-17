@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { DataRootUnavailableError, PathInspector } from './admission.ts';
+import { DataRootUnavailableError, parseAdmission, PathInspector, type PathAdmission } from './admission.ts';
 import { FilePublisher } from './files.ts';
 import type { InstanceGuard } from './guard.ts';
 import { isOpaqueToken } from './identity.ts';
@@ -12,6 +13,7 @@ export interface ScopeCandidate { readonly companionRoot: string; readonly dataR
 export interface RuntimeScope extends ScopeCandidate { readonly bindingSha256: string; readonly createdHere: boolean }
 
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex');
+const bootstrapScript = fileURLToPath(new URL('../scripts/Get-BootstrapScope.ps1', import.meta.url));
 const freshScopes = new WeakSet<RuntimeScope>();
 
 export function consumeFreshScope(scope: RuntimeScope): boolean { return freshScopes.delete(scope); }
@@ -33,16 +35,36 @@ async function directoryEmpty(directory: string): Promise<boolean> {
   finally { await handle.close(); }
 }
 
-export async function discoverScope(inspector: PathInspector, companionRoot: string, game: string, principal: string): Promise<ScopeCandidate> {
+function admittedScope(game: string, principal: string, root: PathAdmission, candidate: PathAdmission): ScopeCandidate {
   const components = scopeComponents(game, principal);
-  const requested = path.join(companionRoot, ...components);
-  const [root, candidate] = await inspector.inspectMany(companionRoot, [companionRoot, requested], true);
-  if (root === undefined || candidate === undefined) { throw new DataRootUnavailableError('Scope admission is incomplete.'); }
   if (root.kind !== 'directory') { throw new DataRootUnavailableError('Companion root is not a directory.'); }
   if (path.win32.relative(path.join(root.path, ...components), candidate.path) !== '') { throw new DataRootUnavailableError('Scope path changed during admission.'); }
   if (candidate.exists && candidate.kind !== 'directory') { throw new DataRootUnavailableError('Runtime scope is not a directory.'); }
 
   return { companionRoot: root.path, dataRoot: candidate.path, game, principal };
+}
+
+export async function discoverScope(inspector: PathInspector, companionRoot: string, game: string, principal: string): Promise<ScopeCandidate> {
+  const requested = path.join(companionRoot, ...scopeComponents(game, principal));
+  const [root, candidate] = await inspector.inspectMany(companionRoot, [companionRoot, requested], true);
+  if (root === undefined || candidate === undefined) { throw new DataRootUnavailableError('Scope admission is incomplete.'); }
+
+  return admittedScope(game, principal, root, candidate);
+}
+
+/** @internal Private startup spike, pending governing design revision. */
+export async function discoverScopeWithPrincipal(inspector: PathInspector, companionRoot: string, game: string): Promise<ScopeCandidate> {
+  const reply = await inspector.metadata(bootstrapScript, ['-Root', companionRoot, '-Game', game], companionRoot);
+  if (reply.exitCode !== 0) { throw new DataRootUnavailableError('Combined bootstrap observation failed.'); }
+  const value = parseStrictJson(reply.stdout);
+  if (!hasExactKeys(value, ['sid', 'paths']) || !isOpaqueToken(value['sid']) || !Array.isArray(value['paths'])
+    || value['paths'].length !== 2) { throw new DataRootUnavailableError('Combined bootstrap observation is incomplete.'); }
+  const principal = value['sid'];
+  const requested = path.join(companionRoot, ...scopeComponents(game, principal));
+  const root = parseAdmission(value['paths'][0]!, companionRoot, true);
+  const candidate = parseAdmission(value['paths'][1]!, requested, true);
+
+  return admittedScope(game, principal, root, candidate);
 }
 
 export async function readScope(inspector: PathInspector, candidate: ScopeCandidate): Promise<RuntimeScope | null> {
@@ -58,6 +80,13 @@ export async function readScope(inspector: PathInspector, candidate: ScopeCandid
   }
   if (binding.kind !== 'file') { throw new DataRootUnavailableError('Scope binding is not a file.'); }
   const bytes = await readBoundedFile(binding.path, 1_048_576);
+
+  return scopeFromAdmittedBinding(candidate, bytes);
+}
+
+/** @internal The caller must supply bytes from a fresh physical admission of scope.json. */
+export function scopeFromAdmittedBinding(candidate: ScopeCandidate, bytes: Uint8Array): RuntimeScope {
+  verifyCandidate(candidate);
   const value = parseStrictJson(bytes, 'config');
   if (!hasExactKeys(value, ['runtimeScopeVersion', 'game', 'principal']) || asInteger(value['runtimeScopeVersion']) !== 1 || value['game'] !== candidate.game || value['principal'] !== candidate.principal) {
     throw new DataRootUnavailableError('Scope ownership binding is invalid or belongs to other identities.');

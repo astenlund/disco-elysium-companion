@@ -41,9 +41,10 @@ function fixture(names: readonly string[] = [tmp], withTarget = false) {
       return targets.map(file => ({ ...(admissions.get(file) ?? { path: file, exists: false, kind: null, links: null, volume: null, identity: null, missing: [path.basename(file)] }) }));
     },
   };
-  const supervisor = { async verifyQuiescent(role: string) {
-    assert.ok(role === 'publication' || role === 'startupMutation');
-    calls.push(role); control.hook('quiescent:' + ++quiescence);
+  const supervisor = { async verifyQuiescentMany(roles: readonly string[]) {
+    assert.deepEqual(roles, ['publication', 'startupMutation']);
+    calls.push('batch');
+    for (const role of roles) { calls.push(role); control.hook('quiescent:' + ++quiescence); }
   } };
   const io: MarkerResidueIO = {
     async *entries(directory) {
@@ -75,6 +76,7 @@ for (const [name, withTarget] of [[tmp, false], [bak, true], [tmp, true], [bak, 
     assert.equal(f.bytes.get(f.resolve('runtime.json')), prior);
     assert.equal(f.calls.filter(call => call === 'publication').length, 2);
     assert.equal(f.calls.filter(call => call === 'startupMutation').length, 2);
+    assert.equal(f.calls.filter(call => call === 'batch').length, 2);
   });
 }
 
@@ -83,6 +85,7 @@ test('marker cleanup verifies both writers before each selected deletion', async
   assert.deepEqual(await f.run(), { removed: [tmp, bak] });
   assert.deepEqual(f.calls.filter(call => call === 'publication' || call === 'startupMutation'),
     ['publication', 'startupMutation', 'publication', 'startupMutation', 'publication', 'startupMutation']);
+  assert.equal(f.calls.filter(call => call === 'batch').length, 3);
 });
 
 test('empty selection preserves near matches and other phase-D residue families', async () => {

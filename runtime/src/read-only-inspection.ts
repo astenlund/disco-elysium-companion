@@ -15,7 +15,7 @@ class CommandInspector extends PathInspector {
   stop(): void { this.accepting = false; }
 }
 
-export interface ReadOnlyInspection { readonly inspector: PathInspector; close(): Promise<void> }
+export interface ReadOnlyInspection { readonly inspector: PathInspector; supervisorFor(canonicalScope: string): ProcessSupervisor; close(): Promise<void> }
 
 // Status and pre-identity admission must not contend for the live writer's metadata
 // job. This per-command namespace is only a name; no directory or scope is created.
@@ -24,7 +24,7 @@ export async function createReadOnlyInspection(companionRoot: string): Promise<R
   const supervisor = await ProcessSupervisor.create(namespace);
   const inspector = new CommandInspector(supervisor);
   let completion: Promise<void> | null = null;
-  return Object.freeze({ inspector, close: () => {
+  return Object.freeze({ inspector, supervisorFor: (canonicalScope: string) => supervisor.forScope(canonicalScope), close: () => {
     inspector.stop();
     completion ??= (async () => { await inspector.idle(); await supervisor.verifyQuiescent('metadata'); })();
     return completion;

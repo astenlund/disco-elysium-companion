@@ -89,4 +89,56 @@ describe('runtime publication boundary', () => {
       await fixture.close();
     }
   });
+
+  it('drains queued publication through the warm worker before selecting one-shot after close', { timeout: 120000 }, async () => {
+    const fixture = await companionFixture();
+    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const inspector = new PathInspector(supervisor);
+    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+    const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor,
+      preflight: async (_target, bytes, profile) => { parseStrictJson(bytes, profile); }, invalidate: () => {} });
+    const nativeRun = supervisor.run.bind(supervisor);
+    let warmCalls = 0;
+    let oneShotCalls = 0;
+    supervisor.run = async (role, options, timeout, input) => {
+      if (role === 'publication') { oneShotCalls += 1; }
+      return nativeRun(role, options, timeout, input);
+    };
+    const session = { canFallBack: false, handles: () => true,
+      invoke: async (options: Parameters<ProcessSupervisor['run']>[1], timeout: number) => {
+        warmCalls += 1;
+        return nativeRun('startupMutation', options, timeout);
+      }, close: async () => { await supervisor.verifyQuiescent('startupMutation'); } } as unknown as StartupMutationSession;
+    publisher.attachStartupMutationSession(session);
+    let entered!: () => void;
+    let release!: () => void;
+    const active = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const blocker = publisher.exclusive(async () => { entered(); await gate; });
+    try {
+      await active;
+      const queued = publisher.publishJson('queued.json', { value: 1 }, true);
+      void queued.catch(() => undefined);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const closing = publisher.closeStartupMutationSession();
+      release();
+      await blocker;
+      const published = await queued;
+      await closing;
+      assert.equal(published.cleanupComplete, true);
+      assert.equal(await fs.readFile(path.join(fixture.root, 'queued.json'), 'utf8'), '{"value":1}');
+      assert.equal(warmCalls, 1);
+      assert.equal(oneShotCalls, 0);
+      const later = await publisher.publishJson('later.json', { value: 2 }, true);
+      assert.equal(later.cleanupComplete, true);
+      assert.equal(await fs.readFile(path.join(fixture.root, 'later.json'), 'utf8'), '{"value":2}');
+      assert.equal(warmCalls, 1);
+      assert.equal(oneShotCalls, 1);
+    } finally {
+      release();
+      await publisher.closeStartupMutationSession();
+      await guard.release();
+      await fixture.close();
+    }
+  });
 });

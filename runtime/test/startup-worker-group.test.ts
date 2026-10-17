@@ -73,3 +73,35 @@ test('successful group closes its three roles once and rejects a second launch',
   await group.close();
   assert.deepEqual(closed.sort(), ['core', 'metadata', 'mutation']);
 });
+
+test('reuses an admitted metadata worker and never opens a second one', async () => {
+  const closed: string[] = [];
+  let proofs = 0;
+  const metadata = { matchesStartupEvidence: () => true, observeWorkerSources: async () => evidence,
+    async close() { closed.push('metadata'); } } as unknown as StartupMetadataSession;
+  const plan = await StartupWorkerGroup.prepare(inspector, supervisor, scope, {
+    observe: async () => { throw new Error('One-shot source proof ran with an owned metadata worker.'); },
+    metadata: () => { throw new Error('Duplicate metadata launch.'); },
+    coreReply: async () => null,
+    mutation: async () => null,
+  }, metadata, false, current => { assert.deepEqual(current, evidence); proofs++; });
+  assert.ok(plan);
+  assert.equal(proofs, 1);
+  const group = await plan();
+  assert.equal(group?.metadata, metadata);
+  await group?.close();
+  assert.deepEqual(closed, ['metadata']);
+});
+
+test('an absent source or changed early worker refuses startup rather than relaunching', async () => {
+  const metadata = { matchesStartupEvidence: () => false, observeWorkerSources: async () => evidence } as unknown as StartupMetadataSession;
+  const openers = { observe: async () => evidence, metadata: () => { throw new Error('Duplicate metadata launch.'); },
+    coreReply: async () => null, mutation: async () => null };
+  await assert.rejects(StartupWorkerGroup.prepare(inspector, supervisor, scope, openers, metadata, false));
+  const missing = { matchesStartupEvidence: () => true,
+    observeWorkerSources: async () => { throw new Error('Source proof unavailable.'); } } as unknown as StartupMetadataSession;
+  await assert.rejects(StartupWorkerGroup.prepare(inspector, supervisor, scope, openers, missing, false));
+  const oneShot = await StartupWorkerGroup.prepare(inspector, supervisor, scope, openers, null, false);
+  assert.ok(oneShot);
+  assert.equal(await oneShot(), null);
+});
