@@ -1,22 +1,43 @@
+import { performance } from 'node:perf_hooks';
+
 import { PendingStateCheckError, type DeliveryHandle, type RuntimeBackend } from './backend/api.ts';
 import { isCapacityBlocked, RuntimeCapacityError } from './capacity.ts';
 import { Dialogs } from './dialogs.ts';
 import { newIdentity } from './identity.ts';
 import { utcNow } from './json.ts';
-import { ProviderLifecycle } from './provider-lifecycle.ts';
+import { ProviderLifecycle, type PendingProviderStart } from './provider-lifecycle.ts';
 import type { Provider, ProviderReconnectReason, ProviderSession, ProviderSignal } from './provider.ts';
 import { SerialQueue } from './serial.ts';
 import type { ClientSink, Correction, HostEvent, HostSnapshot, HostStatus, Interaction, ResumeResult, SessionHostV1, SubmitResult, TurnFailure } from './session-host-contract.ts';
 import type { StartupPhase } from './startup-progress.ts';
 import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './window-recovery.ts';
 
+const startupWorkerRoles = ['startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
+const attachmentSafetyLifetimeMs = 3_000;
+const attachmentLivenessLifetimeMs = 1_000;
+interface AttachmentSafetyWitness {
+  readonly generation: string;
+  readonly binding: NonNullable<ProviderLifecycle['binding']>;
+  readonly status: RuntimeBackend['status'];
+  readonly observedAt: number;
+}
+interface AttachmentReservation {
+  cancelled: boolean;
+  readonly settled: Promise<void>;
+  readonly settle: () => void;
+}
+export type VerifiedAttachResult = ReturnType<SessionHostV1['attach']> | { readonly result: 'attachCancelled' | 'attachStateChanged' };
+
 export interface SessionHostOptions {
   readonly backend: RuntimeBackend;
   readonly provider: Provider;
   readonly instructionsSha256: string;
+  readonly pendingStart?: PendingProviderStart | null;
+  readonly requireVerifiedAttach?: boolean;
   readonly providerTerminated: (instance: string) => Promise<void>;
   readonly verifyTools: () => Promise<void>;
   readonly closeTools: () => Promise<void>;
+  readonly monotonicNow?: () => number;
   readonly delay?: (milliseconds: number) => Promise<void>;
 }
 interface Turn extends Interaction {
@@ -33,6 +54,7 @@ interface Turn extends Interaction {
 
 export class SessionHost implements SessionHostV1 {
   private readonly options: SessionHostOptions;
+  private readonly monotonicNow: () => number;
   private readonly lifecycle: ProviderLifecycle;
   private readonly dialogs: Dialogs;
   private readonly maintenance = new SerialQueue();
@@ -42,10 +64,17 @@ export class SessionHost implements SessionHostV1 {
   private recovery: WindowRecovery;
   private sink: ClientSink | null = null;
   private attachedOnce = false;
+  private attachWitness = false;
+  private attachmentReservation: AttachmentReservation | null = null;
+  private attachmentSafetyWitness: AttachmentSafetyWitness | null = null;
   private active: Turn | null = null;
   private ingressOrder = 0;
   private ready = false;
   private pendingCheckBlocked = false;
+  private initialStartCompleted = false;
+  private initialStartupInvalidated = false;
+  private finalSafetyBlocked = false;
+  private initialStartPromise: Promise<boolean> | null = null;
   private closing = false;
   private switching = false;
   private sessionControl: Promise<unknown> | null = null;
@@ -59,12 +88,14 @@ export class SessionHost implements SessionHostV1 {
 
   constructor(options: SessionHostOptions) {
     this.options = options;
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     const config = options.backend.config.provider;
     this.ordinaryFingerprint = recoveryFingerprint(options.provider.providerId, options.instructionsSha256, JSON.stringify({ model: config.model, effort: config.effort, verbatim: true }));
     this.overrideFingerprint = options.provider.capabilities.questionOverride && config.questionOverride !== null
       ? recoveryFingerprint(options.provider.providerId, options.instructionsSha256, JSON.stringify({ ...config.questionOverride, verbatim: true })) : null;
     this.recovery = new WindowRecovery('', this.ordinaryFingerprint, this.overrideFingerprint);
     this.lifecycle = new ProviderLifecycle({ backend: options.backend, provider: options.provider, instructionsSha256: options.instructionsSha256,
+      pendingStart: options.pendingStart,
       emit: event => this.emit(event), changed: () => this.statusChanged(), onTerminated: options.providerTerminated,
       onBound: session => { this.maintenanceFailure = null; this.recovery.bind(session.providerSessionId, session.providerInstanceId); },
       onExit: (instance, reason) => { this.reconnect = { instance, reason }; if (this.active === null) { this.scheduleTransition(); } },
@@ -81,6 +112,7 @@ export class SessionHost implements SessionHostV1 {
     return { ...this.options.backend.status, provider: this.lifecycle.status, windowRecovery: this.recovery.summary() };
   }
   get turnInProgress(): boolean { return this.active !== null; }
+  get requiresVerifiedAttach(): boolean { return this.options.requireVerifiedAttach ?? false; }
   isProviderCurrent(instance: string): boolean { return this.lifecycle.isCurrent(instance); }
   isToolActive(instance: string, session: string): boolean {
     return this.active !== null && this.active.sent && !this.active.terminal && !this.active.interrupted && !this.active.invalidated
@@ -89,16 +121,49 @@ export class SessionHost implements SessionHostV1 {
   get dialogsAvailable(): boolean { return this.lifecycle.capabilities.dialogs; }
 
   async start(onStartupPhase?: (phase: StartupPhase) => void): Promise<boolean> {
-    const started = await this.lifecycle.start(onStartupPhase);
-    this.ready = started;
+    if (this.initialStartPromise !== null) { return this.initialStartPromise; }
+    const starting = this.initialStartupInvalidated ? this.lifecycle.discardPending().then(() => false) : this.lifecycle.start(onStartupPhase);
+    this.initialStartPromise = starting;
+    try {
+      const started = await starting;
+      this.ready = started && !this.initialStartupInvalidated;
+      return this.ready;
+    } finally {
+      this.initialStartCompleted = true;
+      this.initialStartPromise = null;
+      this.statusChanged();
+      this.scheduleTransition();
+    }
+  }
+
+  async prepareAttachmentWitness(): Promise<void> {
+    this.attachmentSafetyWitness = null;
+    const binding = this.lifecycle.binding;
+    if (!this.ready || binding === null || !this.options.backend.guardHeld()) { throw new Error('Healthy attachment safety cannot be prepared without a bound provider and guard.'); }
+    const safety = await this.options.backend.providerSafety();
+    const observedAt = this.monotonicNow();
+    const status = this.options.backend.status;
+    if (safety.generation !== binding.stateGeneration || this.lifecycle.binding !== binding || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')
+      || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(status)) { throw new Error('Healthy attachment safety changed during preparation.'); }
+    this.attachmentSafetyWitness = { generation: safety.generation, binding, status, observedAt };
+  }
+
+  async blockAfterFinalSafety(): Promise<void> {
+    this.ready = false;
+    this.finalSafetyBlocked = true;
+    this.attachmentSafetyWitness = null;
+    this.replacement = false;
+    this.reconnect = null;
+    this.lifecycle.suppress();
+    await this.transition;
+    await this.lifecycle.finishFinalSafetyBlock();
     this.statusChanged();
-    return started;
   }
 
   attach(sink: ClientSink): ReturnType<SessionHostV1['attach']> {
+    if (this.options.requireVerifiedAttach && !this.attachWitness) { throw new Error('Client attachment has not passed final admission.'); }
+    this.attachWitness = false;
     if (this.sink !== null) { return { result: 'clientAlreadyAttached' }; }
-    this.sink = sink;
-    this.attachedOnce = true;
     const binding = this.lifecycle.binding;
     const open = this.dialogs.open;
     const turn = this.active;
@@ -108,10 +173,85 @@ export class SessionHost implements SessionHostV1 {
       agentSession: binding === null ? null : { providerId: binding.providerId, providerSessionId: binding.providerSessionId, createdAt: binding.createdAt, turnsCompleted: binding.turnsCompleted, needsState: binding.needsState },
       openDialog: open === null || turn === null ? null : { ...this.interaction(turn), dialogId: open.dialogId, questions: open.questions },
     };
+    const deliveredSnapshot = structuredClone(snapshot);
+    this.sink = sink;
+    this.attachedOnce = true;
     queueMicrotask(() => { if (this.sink === sink) { for (const event of this.startupNotices.splice(0)) { this.emit(event); } } });
-    return { result: 'attached', snapshot: structuredClone(snapshot) };
+    return { result: 'attached', snapshot: deliveredSnapshot };
   }
-  detach(): void { this.sink = null; }
+
+  async attachVerified(sink: ClientSink): Promise<VerifiedAttachResult> {
+    if (!this.options.requireVerifiedAttach) { return this.attach(sink); }
+    if (this.sink !== null || this.attachmentReservation !== null) { return { result: 'clientAlreadyAttached' }; }
+    let settle = () => {};
+    const settled = new Promise<void>(resolve => { settle = resolve; });
+    const reservation: AttachmentReservation = { cancelled: false, settled, settle };
+    this.attachmentReservation = reservation;
+    try {
+      return await this.attachVerifiedReserved(sink, reservation);
+    } catch (error) {
+      if (reservation.cancelled || this.closing) { return { result: 'attachCancelled' }; }
+      throw error;
+    } finally {
+      if (this.attachmentReservation === reservation) { this.attachmentReservation = null; }
+      reservation.settle();
+    }
+  }
+
+  private async attachVerifiedReserved(sink: ClientSink, reservation: AttachmentReservation): Promise<VerifiedAttachResult> {
+    if (!this.options.backend.guardHeld()) { throw new Error('Client attachment lost the runtime guard.'); }
+    const verifyWorkers = () => Promise.all(startupWorkerRoles.map(role => this.options.backend.supervisor.verifyQuiescent(role)));
+    const expectedStatus = this.options.backend.status;
+    const expectedStatusBytes = JSON.stringify(expectedStatus);
+    const expectedBinding = this.lifecycle.binding;
+    const expectedSession = this.lifecycle.session;
+    const expectedReady = this.ready;
+    const expectedProviderState = this.lifecycle.status.state;
+    if (this.ready) {
+      const binding = this.lifecycle.binding;
+      if (binding === null || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(this.options.backend.status)) {
+        throw new Error('Healthy client attachment lost its startup authority.');
+      }
+      const status = this.options.backend.status;
+      let witness = this.attachmentSafetyWitness;
+      this.attachmentSafetyWitness = null;
+      if (witness !== null && (witness.binding !== binding || witness.generation !== binding.stateGeneration || witness.status !== status)) {
+        throw new Error('Healthy client attachment changed after safety observation.');
+      }
+      const observeColdSafety = async (): Promise<AttachmentSafetyWitness> => {
+        const safety = await this.options.backend.providerSafety();
+        const observedAt = this.monotonicNow();
+        if (safety.generation !== binding.stateGeneration || this.lifecycle.binding !== binding || this.options.backend.status !== status
+          || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(status)) { throw new Error('Provider safety generation changed before attachment.'); }
+        return { generation: safety.generation, binding, status, observedAt };
+      };
+      const usedWarmWitness = witness !== null && this.monotonicNow() - witness.observedAt <= attachmentSafetyLifetimeMs;
+      if (witness === null || !usedWarmWitness) { witness = await observeColdSafety(); }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const [livenessObservedAt] = await Promise.all([this.lifecycle.verifyLive().then(() => this.monotonicNow()), verifyWorkers()]);
+        const observedAt = this.monotonicNow();
+        if (this.options.backend.status !== status || this.lifecycle.binding !== binding || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(status)
+          || witness.generation !== binding.stateGeneration || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) {
+          throw new Error('Healthy client attachment changed during final proof.');
+        }
+        if (observedAt - witness.observedAt <= attachmentSafetyLifetimeMs && observedAt - livenessObservedAt <= attachmentLivenessLifetimeMs) { break; }
+        if (!usedWarmWitness || attempt !== 0) { throw new Error('Healthy client attachment witness expired during final proof.'); }
+        witness = await observeColdSafety();
+      }
+    } else { await verifyWorkers(); }
+    if (reservation.cancelled || this.attachmentReservation !== reservation || this.closing || this.sink !== null) { return { result: 'attachCancelled' }; }
+    if (!this.options.backend.guardHeld() || this.options.backend.status !== expectedStatus || JSON.stringify(this.options.backend.status) !== expectedStatusBytes
+      || this.lifecycle.binding !== expectedBinding || this.lifecycle.session !== expectedSession || this.ready !== expectedReady
+      || !expectedReady && (this.transition !== null || this.replacement || this.reconnect !== null || this.lifecycle.status.state !== expectedProviderState)
+      || expectedReady && !this.lifecycle.isCurrent(expectedSession?.providerInstanceId ?? '')) { return { result: 'attachStateChanged' }; }
+    this.attachWitness = true;
+    return this.attach(sink);
+  }
+  private healthyAttachmentStatus(status: RuntimeBackend['status']): boolean {
+    return status.consumer === 'owner' && status.freshness.state === 'fresh' && status.journal.state === 'healthy'
+      && status.stateSafety.state === 'ready' && this.lifecycle.status.state === 'ready';
+  }
+  detach(): void { if (this.attachmentReservation !== null) { this.attachmentReservation.cancelled = true; } this.attachmentSafetyWitness = null; this.sink = null; }
 
   private interaction(turn: Interaction): Interaction { return { interactionId: turn.interactionId, requestReceivedAt: turn.requestReceivedAt, ingressOrder: turn.ingressOrder }; }
   private emit(event: HostEvent): void {
@@ -132,7 +272,7 @@ export class SessionHost implements SessionHostV1 {
   submitChat(input: { readonly text: string; readonly questionOverride: boolean }): SubmitResult {
     if (input === null || typeof input !== 'object' || typeof input.text !== 'string' || !input.text.isWellFormed() || input.text.trim().length === 0 || typeof input.questionOverride !== 'boolean') { return { result: 'invalidInput' }; }
     if (this.active !== null) { return { result: 'turnInProgress' }; }
-    if (this.pendingCheckBlocked || isCapacityBlocked(this.options.backend.status.capacity)) { return { result: 'notReady' }; }
+    if (this.pendingCheckBlocked || this.finalSafetyBlocked || isCapacityBlocked(this.options.backend.status.capacity)) { return { result: 'notReady' }; }
     if (this.lifecycle.status.state === 'failed') { return { result: 'providerUnavailable' }; }
     const status = this.options.backend.status;
     if (!this.ready || this.closing || this.switching || this.transition !== null || this.lifecycle.status.state !== 'ready'
@@ -175,15 +315,18 @@ export class SessionHost implements SessionHostV1 {
   }
 
   invalidate(reason: Correction['reason']): void {
+    this.attachmentSafetyWitness = null;
     this.lifecycle.suppress();
-    this.replacement = true;
+    this.ready = false;
+    if (this.initialStartCompleted) { this.replacement = true; }
+    else { this.initialStartupInvalidated = true; this.replacement = false; }
     this.emit({ type: 'notice', code: 'stateContextInvalidated', reason });
     const turn = this.active;
     if (turn !== null) { turn.invalidated = true; this.fail(turn, 'stateInvalidated', true); }
     // Close immediately to suppress native tools; replacement waits for the
     // acquisition or acknowledgement that raised invalidation to finish.
     void this.lifecycle.session?.close().catch(() => { this.ready = false; });
-    if (turn === null) { this.scheduleTransition(); }
+    if (turn === null && this.initialStartCompleted) { this.scheduleTransition(); }
   }
 
   passiveSignal(instance: string, signal: ProviderSignal): void { this.signal(instance, signal); }
@@ -343,10 +486,12 @@ export class SessionHost implements SessionHostV1 {
   }
 
   private scheduleTransition(): void {
-    if (this.closing || this.active !== null || this.transition !== null || !this.replacement && this.reconnect === null) { return; }
+    if (this.closing || this.initialStartupInvalidated || this.finalSafetyBlocked || !this.initialStartCompleted || this.active !== null || this.transition !== null
+      || this.switching || this.sessionControl !== null || this.initialStartPromise !== null || !this.replacement && this.reconnect === null) { return; }
     this.transition = Promise.resolve().then(async () => {
       await this.maintenance.idle();
-      if (this.closing) { return; }
+      if (this.closing || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted || this.active !== null
+        || this.switching || this.sessionControl !== null) { return; }
       if (this.replacement) { this.replacement = false; this.reconnect = null; this.ready = await this.lifecycle.replace('stateInvalidated'); }
       else {
         const pending = this.reconnect;
@@ -358,32 +503,38 @@ export class SessionHost implements SessionHostV1 {
 
   async startNewAgentSession(): ReturnType<SessionHostV1['startNewAgentSession']> {
     if (this.active !== null) { return 'turnInProgress'; }
-    if (this.pendingCheckBlocked) { return 'providerUnavailable'; }
+    if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.lifecycle.status.state === 'failed' || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'providerUnavailable'; }
     if (this.closing || this.switching || this.transition !== null) { return 'providerUnavailable'; }
     this.switching = true;
     const control = (async () => { await this.maintenance.idle(); this.ready = await this.lifecycle.replace('requested'); return this.ready ? 'started' as const : 'providerUnavailable' as const; })();
     this.sessionControl = control;
     try { return await control; }
-    finally { this.sessionControl = null; this.switching = false; this.statusChanged(); }
+    finally { this.sessionControl = null; this.switching = false; this.statusChanged(); this.scheduleTransition(); }
   }
   async resumeAgentSession(sessionId: string): Promise<ResumeResult> {
     if (this.active !== null) { return 'turnInProgress'; }
-    if (this.pendingCheckBlocked) { return 'stateInvalidated'; }
+    if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'stateInvalidated'; }
     if (this.closing || this.switching || this.transition !== null || this.lifecycle.status.state === 'failed') { return 'providerUnavailable'; }
     this.switching = true;
     const control = (async () => { await this.maintenance.idle(); const result = await this.lifecycle.resume(sessionId); this.ready = this.lifecycle.status.state === 'ready'; return result; })();
     this.sessionControl = control;
     try { return await control; }
-    finally { this.sessionControl = null; this.switching = false; this.statusChanged(); }
+    finally { this.sessionControl = null; this.switching = false; this.statusChanged(); this.scheduleTransition(); }
   }
 
   shutdown(): Promise<void> { this.shutdownPromise ??= this.close(); return this.shutdownPromise; }
   private async close(): Promise<void> {
     this.closing = true;
     this.ready = false;
+    this.attachmentSafetyWitness = null;
+    if (this.attachmentReservation !== null) { this.attachmentReservation.cancelled = true; await this.attachmentReservation.settled; }
     const turn = this.active;
     if (turn !== null && !turn.terminal) { turn.interrupted = true; this.fail(turn, 'interrupted', false); await this.lifecycle.session?.interrupt(); }
     if (turn?.completed) { await turn.work; }
+    this.lifecycle.suppress();
+    const owning = await Promise.allSettled([this.initialStartPromise, this.sessionControl, this.transition]);
+    const ownerFailure = owning.find(result => result.status === 'rejected');
+    if (ownerFailure?.status === 'rejected') { throw ownerFailure.reason; }
     const stopping = this.options.backend.beginShutdown();
     const closed = await Promise.allSettled([this.lifecycle.close(), stopping]);
     const failure = closed.find(result => result.status === 'rejected');

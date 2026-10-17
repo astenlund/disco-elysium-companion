@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 
 import { capacityTransitions, type CapacityOwed, type CapacityReason, type CapacityStatus } from './capacity.ts';
+import type { VerifiedAttachResult } from './session-host.ts';
 import type { HostDialog, HostEvent, HostStatus, SessionHostV1 } from './session-host-contract.ts';
 
 export function credentialSourceLabel(source: string | null): string {
@@ -110,7 +111,12 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
       else { line(`[${event.code}${event.reason === null ? '' : `: ${event.reason}`}]`); }
     }
   };
-  const attached = host.attach(receive);
+  let attached: VerifiedAttachResult;
+  try { attached = 'requiresVerifiedAttach' in host && host.requiresVerifiedAttach === true && 'attachVerified' in host && typeof host.attachVerified === 'function'
+    ? await (host.attachVerified as (sink: typeof receive) => Promise<VerifiedAttachResult>)(receive) : host.attach(receive); }
+  catch (error) { rl.close(); await host.shutdown(); throw error; }
+  if (attached.result === 'attachCancelled') { rl.close(); await host.shutdown(); throw new Error('Client attachment was cancelled.'); }
+  if (attached.result === 'attachStateChanged') { rl.close(); await host.shutdown(); throw new Error('Client attachment state changed during verification.'); }
   if (attached.result !== 'attached') { rl.close(); throw new Error('A presentation client is already attached.'); }
   status = attached.snapshot.status;
   options.onAttached?.();

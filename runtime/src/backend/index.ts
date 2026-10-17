@@ -115,6 +115,7 @@ export class CoordinatorBackend implements RuntimeBackend {
   get supervisor() { return this.kernel.supervisor; }
   get inspector() { return this.kernel.inspector; }
   get status() { return this.kernel.status; }
+  guardHeld(): boolean { return this.kernel.guard.held; }
   safety(...args: Parameters<Kernel['safety']>) { return this.kernel.safety(...args); }
   providerSafety(deadline?: Deadline) {
     return this.enqueue(async () => {

@@ -90,6 +90,7 @@ export interface RuntimeBackend {
   readonly supervisor: ProcessSupervisor;
   readonly inspector: PathInspector;
   readonly status: BackendStatus;
+  guardHeld(): boolean;
   startup(command: BackendCommand): Promise<BackendStartup>;
   safety(deadline?: Deadline): Promise<StateSafety>;
   providerSafety(deadline?: Deadline): Promise<StateSafety>;

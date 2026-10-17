@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { SessionHost } from '../../src/session-host.ts';
+import type { SessionHostV1 } from '../../src/session-host-contract.ts';
 import { initialCapacity } from '../../src/capacity.ts';
 import { credentialSourceLabel, formatCapacity, runTextClient } from '../../src/text-client.ts';
 import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
@@ -20,6 +21,12 @@ test('credential source renders SDK metadata without inferring authentication ki
   assert.equal(credentialSourceLabel(null), 'unavailable');
   assert.equal(credentialSourceLabel('none'), 'no API key reported; non-API-key method unspecified');
   assert.equal(credentialSourceLabel('environment'), 'environment');
+});
+
+test('text client reports internal attachment cancellation without an already-attached claim', async () => {
+  const host = { requiresVerifiedAttach: true, attachVerified: async () => ({ result: 'attachCancelled' as const }), shutdown: async () => {} } as unknown as SessionHostV1;
+  const { input, output } = clientStreams();
+  await assert.rejects(runTextClient(host, { input, output, terminal: false }), /Client attachment was cancelled/);
 });
 
 test('text client renders previews and routes numbered, free-text and override input', async () => {

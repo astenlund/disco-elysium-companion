@@ -8,6 +8,7 @@ test('startup progress reports timestamped phases, bounded heartbeats and one te
   const events: StartupProgress[] = [];
   let elapsedMs = 0;
   const reporter = new StartupProgressReporter(event => events.push(event), 10, () => elapsedMs, () => new Date('2026-10-13T13:00:00.000Z'));
+  reporter.phase('providerPrestart');
   reporter.phase('streamRecovery');
   elapsedMs = 31000;
   await new Promise(resolve => setTimeout(resolve, 25));
@@ -19,6 +20,7 @@ test('startup progress reports timestamped phases, bounded heartbeats and one te
   reporter.phase('providerRetry');
   reporter.phase('providerStart');
   reporter.phase('providerBinding');
+  reporter.phase('attachmentSafety');
   reporter.phase('startupWorkerClosure');
   reporter.finish('ready');
   reporter.finish('failed');
@@ -27,13 +29,14 @@ test('startup progress reports timestamped phases, bounded heartbeats and one te
   assert.equal(events.length, count);
   assert.deepEqual(events.filter(event => event.kind === 'ready' || event.kind === 'failed').map(event => event.kind), ['ready']);
   assert.deepEqual(events.filter(event => event.kind === 'phase').map(event => event.phase),
-    ['streamRecovery', 'providerSelection', 'providerStart', 'providerFallback', 'providerStart', 'providerRetry', 'providerStart', 'providerBinding', 'startupWorkerClosure']);
-  assert.equal(formatStartupProgress(events[0]!), '[2026-10-13T13:00:00.000Z] startup: reconciling recovery; elapsed 0s');
+    ['providerPrestart', 'streamRecovery', 'providerSelection', 'providerStart', 'providerFallback', 'providerStart', 'providerRetry', 'providerStart', 'providerBinding', 'attachmentSafety', 'startupWorkerClosure']);
+  assert.equal(formatStartupProgress(events[0]!), '[2026-10-13T13:00:00.000Z] startup: checking guarded unbound provider startup; elapsed 0s');
   assert.equal(formatStartupProgress(events.find(event => event.kind === 'heartbeat')!), '[2026-10-13T13:00:00.000Z] startup: reconciling recovery; elapsed 31s; still working');
   assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerSelection')!), '[2026-10-13T13:00:00.000Z] startup: checking provider safety and session binding; elapsed 31s');
   assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerFallback')!), '[2026-10-13T13:00:00.000Z] startup: switching to a fresh provider session; elapsed 31s');
   assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerRetry')!), '[2026-10-13T13:00:00.000Z] startup: waiting to retry provider startup; elapsed 31s');
   assert.equal(formatStartupProgress(events.find(event => event.phase === 'providerBinding')!), '[2026-10-13T13:00:00.000Z] startup: binding the provider session durably; elapsed 31s');
+  assert.equal(formatStartupProgress(events.find(event => event.phase === 'attachmentSafety')!), '[2026-10-13T13:00:00.000Z] startup: checking final attachment safety; elapsed 31s');
   assert.equal(formatStartupProgress(events.find(event => event.phase === 'startupWorkerClosure')!), '[2026-10-13T13:00:00.000Z] startup: closing startup workers; elapsed 31s');
   assert.equal(formatStartupProgress(events.at(-1)!), '[2026-10-13T13:00:00.000Z] startup: chat client ready; elapsed 31s');
 });

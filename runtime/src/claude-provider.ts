@@ -21,6 +21,7 @@ export interface ProviderChild extends SpawnedProcess { readonly ready: Promise<
 export interface ProviderProcessOwner {
   spawn(role: 'provider', options: OwnedSpawnOptions): ProviderChild;
   verifyQuiescent(role: 'provider'): Promise<void>;
+  verifyOwnedLive(role: 'provider', child: ProviderChild, identity: ProcessIdentity): Promise<void>;
 }
 
 export interface ClaudeProviderOptions {
@@ -76,14 +77,17 @@ class ClaudeSession implements ProviderSession {
   private readonly admissions = new AbortController();
   private readonly query: QueryPort;
   private readonly pump: Promise<void>;
+  private readonly startupSignal: AbortSignal | undefined;
+  private childIdentity: ProcessIdentity | null = null;
   private active: ActiveTurn | null = null;
   private ended = false;
   private closing = false;
   private exitReason: ProviderExitReason = 'subprocessExited';
   private closingPromise: Promise<void> | null = null;
 
-  constructor(options: ClaudeProviderOptions, resumeSessionId: string | null, children: ProviderChild[], environment: Record<string, string>) {
+  constructor(options: ClaudeProviderOptions, resumeSessionId: string | null, children: ProviderChild[], environment: Record<string, string>, startupSignal?: AbortSignal) {
     this.options = options;
+    this.startupSignal = startupSignal;
     this.children = children;
     this.providerInstanceId = newIdentity();
     this.providerSessionId = resumeSessionId ?? randomUUID();
@@ -122,7 +126,10 @@ class ClaudeSession implements ProviderSession {
         finally { control.signal.removeEventListener('abort', abort); this.dialogCancellations.delete(abort); }
       },
       spawnClaudeCodeProcess: supplied => {
-        const child = options.supervisor.spawn('provider', { command: supplied.command, args: supplied.args, cwd: supplied.cwd ?? options.companionRoot, env: supplied.env, signal: supplied.signal });
+        startupSignal?.throwIfAborted();
+        if (this.closing || this.ended) { throw new ProviderUnavailableError('Provider startup was cancelled.'); }
+        const signal = startupSignal === undefined ? supplied.signal : AbortSignal.any([supplied.signal, startupSignal]);
+        const child = options.supervisor.spawn('provider', { command: supplied.command, args: supplied.args, cwd: supplied.cwd ?? options.companionRoot, env: supplied.env, signal });
         child.stderr.resume();
         this.children.push(child);
         child.on('error', () => this.transportFailed());
@@ -136,6 +143,27 @@ class ClaudeSession implements ProviderSession {
   }
 
   get credentialSource(): string | null { return this.source.value; }
+  isLive(): boolean { return !this.ended && !this.closing; }
+
+  async verifyLive(): Promise<void> {
+    const child = this.children[0];
+    const identity = this.childIdentity;
+    if (!this.isLive() || this.children.length !== 1 || child === undefined || identity === null) {
+      throw new ProviderUnavailableError('Provider process liveness is unavailable.');
+    }
+    await boundedProviderControl(() => this.options.supervisor.verifyOwnedLive('provider', child, identity), 7500);
+    if (!this.isLive() || this.children.length !== 1 || this.children[0] !== child || this.childIdentity !== identity) {
+      throw new ProviderUnavailableError('Provider process changed during verification.');
+    }
+  }
+
+  cancelStartup(): void {
+    if (this.closing || this.ended) { return; }
+    this.closing = true;
+    this.stopAdmissions();
+    this.prompts.end();
+    this.requestClose();
+  }
 
   private requestClose(): void {
     try { this.query.close(); }
@@ -161,7 +189,8 @@ class ClaudeSession implements ProviderSession {
   async initialize(): Promise<void> {
     const initialization = await boundedProviderControl(() => this.query.initializationResult(), 30000);
     if (this.ended || this.closing || initialization.hooks_applied === false || this.children.length !== 1) { throw new ProviderUnavailableError('Provider initialization or process ownership is unavailable.'); }
-    await boundedProviderControl(() => this.children[0]!.ready, 10000);
+    this.childIdentity = await boundedProviderControl(() => this.children[0]!.ready, 10000);
+    if (this.ended || this.closing || this.startupSignal?.aborted) { throw new ProviderUnavailableError('Provider startup was cancelled.'); }
     this.source.observe(this.providerInstanceId, initialization.account?.apiKeySource, 'initialize');
   }
 
@@ -317,18 +346,32 @@ export class ClaudeProvider implements Provider {
     this.capabilities = providerCapabilities(options.config);
   }
 
-  async start(resumeSessionId: string | null): Promise<ProviderSession> {
+  async start(resumeSessionId: string | null, signal?: AbortSignal): Promise<ProviderSession> {
     const inheritedEnvironment = this.options.environment ?? process.env;
     assertDefaultProviderProfile(inheritedEnvironment);
     if (resumeSessionId !== null && !isOpaqueToken(resumeSessionId)) { throw new ProviderUnavailableError('Provider session identity is invalid.'); }
+    signal?.throwIfAborted();
     await requirePinnedSdk();
+    signal?.throwIfAborted();
     await this.options.supervisor.verifyQuiescent('provider');
+    signal?.throwIfAborted();
     const environment = providerEnvironment(inheritedEnvironment);
     const children: ProviderChild[] = [];
     let session: ClaudeSession | null = null;
+    let rejectAborted: ((error: Error) => void) | null = null;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+    const onAbort = (): void => {
+      session?.cancelStartup();
+      rejectAborted?.(new ProviderUnavailableError('Provider startup was cancelled.'));
+    };
     try {
-      session = new ClaudeSession(this.options, resumeSessionId, children, environment);
-      await session.initialize();
+      signal?.throwIfAborted();
+      session = new ClaudeSession(this.options, resumeSessionId, children, environment, signal);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); }
+      await Promise.race([session.initialize(), aborted]);
+      signal?.throwIfAborted();
+      if (!session.isLive()) { throw new ProviderUnavailableError('Provider initialization ended before transfer.'); }
       return session;
     } catch {
       if (session !== null) { await session.close(); }
@@ -339,6 +382,6 @@ export class ClaudeProvider implements Provider {
         await this.options.supervisor.verifyQuiescent('provider');
       }
       throw new ProviderUnavailableError('Provider initialization failed.');
-    }
+    } finally { signal?.removeEventListener('abort', onAbort); }
   }
 }

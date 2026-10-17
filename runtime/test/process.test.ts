@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 
@@ -13,8 +14,35 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const fixture = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
 const create = (): Promise<ProcessSupervisor> => ProcessSupervisor.create(path.join(root, '.tmp', `process-${randomUUID()}`));
 const options = (mode: string, ...args: string[]) => ({ command: process.execPath, args: [fixture, mode, ...args], cwd: root });
+const execFileAsync = promisify(execFile);
 
 describe('owned process transport', () => {
+  it('proves exact live provider PID and creation in its scoped job', { timeout: 30000 }, async () => {
+    const supervisor = await create();
+    const otherScope = await create();
+    const child = supervisor.spawn('provider', options('wait'));
+    child.stdout.resume(); child.stderr.resume(); child.stdin.end();
+    try {
+      const identity = await child.ready;
+      await supervisor.verifyOwnedLive('provider', child, identity);
+      const script = fileURLToPath(new URL('../scripts/Get-OwnedProcessLive.ps1', import.meta.url));
+      const observe = async (jobName: string, created: string): Promise<unknown> => {
+        const reply = await execFileAsync('pwsh', ['-NoProfile', '-File', script, '-JobName', jobName, '-ProcessId', String(identity.pid), '-ProcessCreated', created],
+          { timeout: 5000, windowsHide: true });
+        return JSON.parse(reply.stdout);
+      };
+      assert.deepEqual(await observe(otherScope.jobName('provider'), identity.created), { live: false });
+      assert.deepEqual(await observe(supervisor.jobName('provider'), String(BigInt(identity.created) + 1n)), { live: false });
+      await assert.rejects(supervisor.verifyOwnedLive('provider', child, { ...identity, pid: identity.pid + 1 }), SupervisorError);
+      await assert.rejects(supervisor.verifyOwnedLive('provider', child, { ...identity, created: String(BigInt(identity.created) + 1n) }), SupervisorError);
+      await assert.rejects(otherScope.verifyOwnedLive('provider', child, identity), SupervisorError);
+      assert.equal(child.brokerClosed, false);
+    } finally {
+      await supervisor.stop('provider');
+      await assert.rejects(supervisor.verifyOwnedLive('provider', child, await child.ready), SupervisorError);
+    }
+  });
+
   it('survives native broker spawn failure and verifies ownership before reuse', { timeout: 30000 }, async () => {
     const supervisor = await create();
     const missingCwd = path.join(root, '.tmp', `missing-broker-${randomUUID()}`);

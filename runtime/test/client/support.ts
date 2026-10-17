@@ -54,8 +54,10 @@ export class FakeSession implements ProviderSession {
   }
   async interrupt(): Promise<boolean> { this.interruptCount += 1; this.stopped.resolve({ kind: 'failed', code: 'interrupted', retryable: true }); return true; }
   async close(): Promise<void> { this.closed = true; this.stopped.resolve({ kind: 'failed', code: 'subprocessExited', retryable: true }); }
+  isLive(): boolean { return !this.closed; }
+  async verifyLive(): Promise<void> { if (!this.isLive()) { throw new Error('Fake provider session is closed.'); } }
   onExit(listener: (reason: ProviderExitReason) => void): void { this.exits.push(listener); }
-  exit(reason: ProviderExitReason): void { for (const listener of this.exits) { listener(reason); } }
+  exit(reason: ProviderExitReason): void { if (reason !== 'overrideReset') { this.closed = true; } for (const listener of this.exits) { listener(reason); } }
 }
 export class FakeProvider implements Provider {
   readonly providerId = 'fake';
@@ -88,6 +90,7 @@ export class FakeBackend {
     operational: { state: 'current', warnings: [] }, stateSafety: { state: 'ready', correction: null, carryRelease: 'none' }, journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 }, capacity: initialCapacity(), watcher: 'disabled', previousShutdownClean: true };
   safetyValue: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null };
   unavailable = false;
+  held = true;
   acquireWait: Promise<void> | null = null;
   ackWait: Promise<void> | null = null;
   ackCount = 0;
@@ -111,6 +114,7 @@ export class FakeBackend {
   } as SessionStore;
 
   async safety(): Promise<StateSafety> { if (this.unavailable) { throw new Error('Safety unavailable.'); } return this.safetyValue; }
+  guardHeld(): boolean { return this.held; }
   async providerSafety(): Promise<StateSafety> {
     const safety = await this.safety();
     if (safety.pendingCheck !== null || safety.correction !== null && safety.correction.recoveryOperationId === null) { throw new Error('Provider history admission is unresolved.'); }

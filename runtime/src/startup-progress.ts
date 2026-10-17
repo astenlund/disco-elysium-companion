@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 
 export type StartupPhase = 'configuration' | 'scopeAdmission' | 'instanceGuard' | 'runtimeMarker' | 'storageRecovery'
   | 'consumerReconciliation' | 'streamRecovery' | 'outboxDrain' | 'startupAcquisition' | 'safetyReconciliation'
-  | 'retention' | 'watcher' | 'providerPreparation' | 'providerSelection' | 'providerStart' | 'providerBinding' | 'providerFallback' | 'providerRetry' | 'startupWorkerClosure';
+  | 'retention' | 'watcher' | 'providerPreparation' | 'providerPrestart' | 'providerSelection' | 'providerStart' | 'providerBinding' | 'providerFallback' | 'providerRetry' | 'attachmentSafety' | 'startupWorkerClosure';
 export type StartupProgressKind = 'phase' | 'heartbeat' | 'ready' | 'notOwner' | 'providerUnavailable' | 'failed';
 export interface StartupProgress {
   readonly kind: StartupProgressKind;
@@ -27,11 +27,13 @@ const phaseLabels: Readonly<Record<StartupPhase, string>> = {
   retention: 'finishing storage maintenance',
   watcher: 'starting the save watcher',
   providerPreparation: 'preparing provider tools and instructions',
+  providerPrestart: 'checking guarded unbound provider startup',
   providerSelection: 'checking provider safety and session binding',
   providerStart: 'starting the provider session',
   providerBinding: 'binding the provider session durably',
   providerFallback: 'switching to a fresh provider session',
   providerRetry: 'waiting to retry provider startup',
+  attachmentSafety: 'checking final attachment safety',
   startupWorkerClosure: 'closing startup workers',
 };
 

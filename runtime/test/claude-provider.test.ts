@@ -50,6 +50,7 @@ class FakeQuery implements AsyncIterable<SDKMessage> {
   closed = false;
   rejectEffort: string | null = null;
   interrupted = 0;
+  initializationGate: Promise<void> | null = null;
 
   constructor(prompt: AsyncIterable<SDKUserMessage>, options: Options, child: FakeChild) {
     this.options = options;
@@ -66,6 +67,7 @@ class FakeQuery implements AsyncIterable<SDKMessage> {
   }
 
   async initializationResult(): Promise<SDKControlInitializeResponse> {
+    if (this.initializationGate !== null) { await this.initializationGate; }
     return { commands: [], agents: [], models: [], output_style: 'default', available_output_styles: [], account: {}, hooks_applied: true };
   }
 
@@ -113,7 +115,7 @@ class FakeQuery implements AsyncIterable<SDKMessage> {
 }
 
 const config: RuntimeConfig = { configVersion: 1, adapter: 'game', game: 'game', watcher: { enabled: false }, provider: { model: 'base', effort: 'medium', questionOverride: { model: 'override', effort: 'high' } } };
-function setup(queryFactory?: ClaudeProviderOptions['queryFactory'], environment: NodeJS.ProcessEnv = {}) {
+function setup(queryFactory?: ClaudeProviderOptions['queryFactory'], environment: NodeJS.ProcessEnv = {}, initializeGate?: Promise<void>) {
   const child = new FakeChild();
   const calls = { query: 0, spawn: 0, quiescence: 0, boundary: 0 };
   let query!: FakeQuery;
@@ -121,7 +123,8 @@ function setup(queryFactory?: ClaudeProviderOptions['queryFactory'], environment
   let spawnedEnvironment: NodeJS.ProcessEnv | undefined;
   const options: ClaudeProviderOptions = {
     companionRoot: 'C:/fixture', config, appendText: 'runtime instructions', environment, onPassiveSignal: () => {}, isCurrent: instance => current === instance,
-    supervisor: { spawn: (_role, launch) => { calls.spawn++; spawnedEnvironment = launch.env; return child; }, verifyQuiescent: async () => { calls.quiescence++; } },
+    supervisor: { spawn: (_role, launch) => { calls.spawn++; spawnedEnvironment = launch.env; return child; }, verifyQuiescent: async () => { calls.quiescence++; },
+      verifyOwnedLive: async () => {} },
     boundary: (instance, sessionId) => {
       calls.boundary++;
       current = instance;
@@ -132,6 +135,7 @@ function setup(queryFactory?: ClaudeProviderOptions['queryFactory'], environment
       calls.query++;
       if (queryFactory !== undefined) { return queryFactory(input); }
       query = new FakeQuery(input.prompt as AsyncIterable<SDKUserMessage>, input.options!, child);
+      query.initializationGate = initializeGate ?? null;
       return query;
     },
   };
@@ -144,6 +148,59 @@ function turn(overrides: Partial<ProviderTurn> = {}): ProviderTurn {
 }
 
 describe('Claude provider state machine', () => {
+  it('does not construct a query after startup cancellation during preflight', async () => {
+    const fixture = setup();
+    const controller = new AbortController();
+    const gate = deferred<void>();
+    fixture.options.supervisor.verifyQuiescent = async () => { fixture.calls.quiescence++; await gate.promise; };
+    const pending = fixture.provider.start(null, controller.signal);
+    controller.abort();
+    gate.resolve();
+    await assert.rejects(pending);
+    assert.equal(fixture.calls.query, 0);
+    assert.equal(fixture.calls.spawn, 0);
+  });
+
+  it('closes an owned child on cancellation during initialization and rejects late completion', async () => {
+    const gate = deferred<void>();
+    const fixture = setup(undefined, {}, gate.promise);
+    const controller = new AbortController();
+    const pending = fixture.provider.start(null, controller.signal);
+    while (fixture.calls.spawn === 0) { await new Promise(resolve => setImmediate(resolve)); }
+    controller.abort();
+    await assert.rejects(pending, ProviderUnavailableError);
+    assert.equal(fixture.child.killed || fixture.query.closed, true);
+    assert.equal((await fixture.child.terminated).failure, null);
+    assert.throws(() => fixture.query.options.spawnClaudeCodeProcess!({ command: 'fake', args: [], cwd: 'C:/fixture', env: {},
+      signal: new AbortController().signal }));
+    gate.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.calls.spawn, 1);
+  });
+
+  it('rejects verification when process proof fails or the session closes during proof', async () => {
+    const fixture = setup();
+    const session = await fixture.provider.start(null);
+    const gate = deferred<void>();
+    const proof = fixture.options.supervisor.verifyOwnedLive;
+    let seen = 0;
+    fixture.options.supervisor.verifyOwnedLive = async (role, child, identity) => {
+      assert.equal(role, 'provider');
+      assert.equal(child, fixture.child);
+      assert.deepEqual(identity, { pid: 1, created: '1' });
+      seen++;
+      if (seen === 1) { throw new Error('Job membership changed.'); }
+      await gate.promise;
+      await proof(role, child, identity);
+    };
+    await assert.rejects(session.verifyLive());
+    const pending = session.verifyLive();
+    await session.close();
+    gate.resolve();
+    await assert.rejects(pending, ProviderUnavailableError);
+    assert.equal(session.isLive(), false);
+  });
+
   it('refuses inherited profile redirection at construction before any provider work', () => {
     const fixture = setup();
     for (const key of ['CLAUDE_CONFIG_DIR', 'claude_config_dir', 'ClAuDe_CoNfIg_DiR']) {

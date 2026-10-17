@@ -39,6 +39,8 @@ export interface ProviderSession {
   readonly credentialSource: string | null;
   sendTurn(request: ProviderTurn): Promise<ProviderOutcome>;
   interrupt(): Promise<boolean>;
+  isLive(): boolean;
+  verifyLive(): Promise<void>;
   close(): Promise<void>;
   onExit(listener: (reason: ProviderExitReason) => void): void;
 }
@@ -46,5 +48,5 @@ export interface ProviderSession {
 export interface Provider {
   readonly providerId: string;
   readonly capabilities: ProviderCapabilities;
-  start(resumeSessionId: string | null): Promise<ProviderSession>;
+  start(resumeSessionId: string | null, signal?: AbortSignal): Promise<ProviderSession>;
 }

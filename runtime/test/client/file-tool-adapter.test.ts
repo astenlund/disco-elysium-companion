@@ -8,7 +8,8 @@ import { FileToolAdapter } from '../../src/file-tool-adapter.ts';
 test('production file adapter refuses unverified footprints without disabling web or dialogs', async () => {
   const adapter = await FileToolAdapter.create({ companionRoot: 'C:/fixture',
     inspector: { inspect: async () => { throw new Error('No admitted root.'); }, idle: async () => {} } as unknown as PathInspector,
-    supervisor: { spawn: () => { throw new Error('No provider process expected.'); }, verifyQuiescent: async () => {} },
+    supervisor: { spawn: () => { throw new Error('No provider process expected.'); }, verifyQuiescent: async () => {},
+      verifyOwnedLive: async () => { throw new Error('No provider process expected.'); } },
     isActive: () => true, dialogsAvailable: () => true });
   const boundary = adapter.boundary('provider');
   for (const tool of ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash']) {

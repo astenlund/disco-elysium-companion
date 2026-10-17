@@ -39,6 +39,8 @@ const session: ProviderSession = {
   },
   async interrupt() { return false; },
   async close() { active = false; },
+  isLive() { return active; },
+  async verifyLive() { assert.equal(active, true); },
   onExit() {},
 };
 const bound = await backend.sessions.bind({ agentSessionVersion: 1, providerId, providerSessionId, createdAt: utcNow(), turnsCompleted: 0,

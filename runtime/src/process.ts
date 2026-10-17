@@ -33,7 +33,7 @@ const wait = (milliseconds: number): Promise<void> => new Promise(resolve => set
 const spawnBroker: BrokerSpawn = options => spawn('pwsh', ['-NoProfile', '-File', path.join(scripts, 'Invoke-OwnedProcess.ps1')], { cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
 // These bootstrap scripts inspect metadata only and never start another process or write a file.
-function inspectNative(script: 'Get-ProcessIdentity.ps1' | 'Get-OwnedJobState.ps1' | 'Get-OwnedJobStates.ps1', args: readonly string[], timeoutMs = 5000): Promise<ReturnType<typeof parseStrictJson>> {
+function inspectNative(script: 'Get-ProcessIdentity.ps1' | 'Get-OwnedJobState.ps1' | 'Get-OwnedJobStates.ps1' | 'Get-OwnedProcessLive.ps1', args: readonly string[], timeoutMs = 5000): Promise<ReturnType<typeof parseStrictJson>> {
   return new Promise((resolve, reject) => {
     execFile('pwsh', ['-NoProfile', '-File', path.join(scripts, script), ...args], { windowsHide: true, timeout: timeoutMs, maxBuffer: 65_536, encoding: 'buffer' }, (error, stdout) => {
       if (error !== null) { reject(new SupervisorError('termination-unverified', 'Native process metadata is unavailable.')); return; }
@@ -268,6 +268,21 @@ export class ProcessSupervisor {
     const owner = this.active.get(role);
     if (owner?.terminationState === 'verifying') { await owner.terminated; return; }
     await this.verifyOwner(role, owner);
+  }
+
+  async verifyOwnedLive(role: 'provider', child: OwnedProcess, identity: ProcessIdentity): Promise<void> {
+    if (role !== 'provider' || this.active.get(role) !== child || child.brokerClosed || child.terminationState !== 'running' || this.stopping.has(role)
+      || !Number.isSafeInteger(identity.pid) || identity.pid < 1 || identity.pid > 2147483647 || !creationToken.test(identity.created)) {
+      throw new SupervisorError('termination-unverified', 'Owned provider process identity is unavailable.');
+    }
+    const ready = await child.ready;
+    if (ready.pid !== identity.pid || ready.created !== identity.created || this.active.get(role) !== child || child.brokerClosed) {
+      throw new SupervisorError('termination-unverified', 'Owned provider process changed before verification.');
+    }
+    const result = await inspectNative('Get-OwnedProcessLive.ps1', ['-JobName', this.jobName(role), '-ProcessId', String(identity.pid), '-ProcessCreated', identity.created]);
+    if (!hasExactKeys(result, ['live']) || result['live'] !== true || this.active.get(role) !== child || child.brokerClosed || child.terminationState !== 'running' || this.stopping.has(role)) {
+      throw new SupervisorError('termination-unverified', 'Owned provider process liveness is unverified.');
+    }
   }
 
   async verifyQuiescentMany(roles: readonly ProcessRole[]): Promise<void> {
