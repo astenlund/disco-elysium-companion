@@ -108,9 +108,12 @@ export function parseStartupJobStates(value: JsonValue, names: readonly string[]
   });
 }
 
-async function jobsAbsent(names: readonly string[], owned?: { name: string; identity: ProcessIdentity; brokerPid: number }, timeoutMs = 30000): Promise<readonly boolean[]> {
+interface OwnedJobProof { readonly name: string; readonly identity: ProcessIdentity; readonly broker: ProcessIdentity }
+
+async function jobsAbsent(names: readonly string[], owned?: OwnedJobProof, timeoutMs = 30000): Promise<readonly boolean[]> {
   const args = ['-JobNamesJson', JSON.stringify(names)];
-  if (owned !== undefined) { args.push('-OwnedJobName', owned.name, '-OwnedProcessId', String(owned.identity.pid), '-OwnedBrokerProcessId', String(owned.brokerPid), '-OwnedProcessCreated', owned.identity.created); }
+  if (owned !== undefined) { args.push('-OwnedJobName', owned.name, '-OwnedProcessId', String(owned.identity.pid), '-OwnedBrokerProcessId', String(owned.broker.pid),
+    '-OwnedProcessCreated', owned.identity.created, '-OwnedBrokerCreated', owned.broker.created); }
   const value = await inspectNative('Get-OwnedJobStates.ps1', args, timeoutMs);
   if (owned === undefined) { return parseStartupJobStates(value, names); }
   if (!hasExactKeys(value, ['jobs', 'owned']) || value['owned'] !== true) {
@@ -122,7 +125,7 @@ async function jobsAbsent(names: readonly string[], owned?: { name: string; iden
 }
 
 async function nativeJobsAbsent(names: readonly string[], selection: PrivateNativeStartupJobs,
-  owned?: { name: string; identity: ProcessIdentity; brokerPid: number }, timeoutMs = 30000): Promise<readonly boolean[]> {
+  owned?: OwnedJobProof, timeoutMs = 30000): Promise<readonly boolean[]> {
   const started = performance.now();
   const pinned: PinnedFile[] = [];
   let value: ReturnType<typeof parseStrictJson> | undefined;
@@ -140,7 +143,8 @@ async function nativeJobsAbsent(names: readonly string[], selection: PrivateNati
     const remaining = Math.floor(timeoutMs - (performance.now() - started));
     if (remaining < 1) { throw new SupervisorError('termination-unverified', 'Private native job observation expired.'); }
     const request = JSON.stringify({ names, ...(owned === undefined ? {} : { owned: {
-      name: owned.name, processId: owned.identity.pid, brokerId: owned.brokerPid, created: owned.identity.created,
+      name: owned.name, processId: owned.identity.pid, brokerId: owned.broker.pid,
+      created: owned.identity.created, brokerCreated: owned.broker.created,
     } }) });
     value = await new Promise<ReturnType<typeof parseStrictJson>>((resolve, reject) => {
       execFile(selection.binary, [request], { cwd: selection.scratch, windowsHide: true, timeout: remaining, maxBuffer: 65_536,
@@ -178,6 +182,7 @@ export class OwnedProcess extends EventEmitter {
   private failure: Error | null = null;
   private header: Buffer = Buffer.alloc(0);
   private identity: ProcessIdentity | null = null;
+  private brokerIdentity: ProcessIdentity | null = null;
   private closed = false;
   private verification: 'running' | 'verifying' | 'verified' | 'unverified' = 'running';
   private resolveReady!: (identity: ProcessIdentity) => void;
@@ -234,12 +239,20 @@ export class OwnedProcess extends EventEmitter {
           }
           if (newline > 65_536) { throw new SupervisorError('result-invalid', 'Owned-process header exceeds its bound.'); }
           const value = parseStrictJson(this.header.subarray(0, newline));
-          if (!hasExactKeys(value, ['ownedProcessVersion', 'jobName', 'pid', 'created']) || asInteger(value['ownedProcessVersion']) !== 1 || value['jobName'] !== jobName || typeof value['created'] !== 'string' || !creationToken.test(value['created'])) {
+          if (!hasExactKeys(value, ['ownedProcessVersion', 'jobName', 'pid', 'created', 'brokerPid', 'brokerCreated'])
+            || asInteger(value['ownedProcessVersion']) !== 1 || value['jobName'] !== jobName
+            || typeof value['created'] !== 'string' || !creationToken.test(value['created'])
+            || typeof value['brokerCreated'] !== 'string' || !creationToken.test(value['brokerCreated'])) {
             throw new SupervisorError('result-invalid', 'Invalid owned-process header.');
           }
           const pid = asInteger(value['pid']);
-          if (pid === undefined || pid < 1 || pid > 2147483647) { throw new SupervisorError('result-invalid', 'Invalid owned child identity.'); }
+          const brokerPid = asInteger(value['brokerPid']);
+          if (pid === undefined || pid < 1 || pid > 2147483647 || brokerPid === undefined || brokerPid < 1
+            || brokerPid > 2147483647 || brokerPid === pid || brokerPid !== this.broker.pid) {
+            throw new SupervisorError('result-invalid', 'Invalid owned process identities.');
+          }
           this.identity = { pid, created: value['created'] };
+          this.brokerIdentity = { pid: brokerPid, created: value['brokerCreated'] };
           this.resolveReady(this.identity);
           chunk = this.header.subarray(newline + 1);
           this.header = Buffer.alloc(0);
@@ -286,6 +299,7 @@ export class OwnedProcess extends EventEmitter {
 
   get killed(): boolean { return this.broker.killed; }
   get brokerPid(): number | undefined { return this.broker.pid; }
+  get ownedBrokerIdentity(): ProcessIdentity | null { return this.brokerIdentity; }
   get brokerClosed(): boolean { return this.closed; }
   get terminationState(): 'running' | 'verifying' | 'verified' | 'unverified' { return this.verification; }
   get exitCode(): number | null { return this.broker.exitCode; }
@@ -328,7 +342,7 @@ export class ProcessSupervisor {
   clearStartupJobObserver(): void { this.startupJobObserver = null; }
 
   private async observeNativeJobs(names: readonly string[], timeoutMs: number,
-    owned?: { name: string; identity: ProcessIdentity; brokerPid: number }): Promise<readonly boolean[]> {
+    owned?: OwnedJobProof): Promise<readonly boolean[]> {
     const selection = this.nativeJobs;
     if (selection === undefined) { throw new SupervisorError('termination-unverified', 'Private native job selection is absent.'); }
     const allNames = processRoles.map(role => this.jobName(role));
@@ -472,12 +486,13 @@ export class ProcessSupervisor {
       throw new SupervisorError('termination-unverified', 'Owned startup metadata process is unavailable.');
     }
     const metadataOwner = owners.get('startupMetadata');
-    const brokerPid = metadataOwner?.brokerPid;
-    if (metadataIdentity !== undefined && (brokerPid === undefined || !Number.isSafeInteger(brokerPid) || brokerPid < 1)) {
+    const broker = metadataOwner?.ownedBrokerIdentity;
+    if (metadataIdentity !== undefined && (broker === undefined || broker === null || !creationToken.test(broker.created)
+      || broker.pid !== metadataOwner?.brokerPid)) {
       throw new SupervisorError('termination-unverified', 'Owned startup metadata broker identity is unavailable.');
     }
     const names = processRoles.map(role => this.jobName(role));
-    const owned = metadataIdentity === undefined ? undefined : { name: this.jobName('startupMetadata'), identity: metadataIdentity, brokerPid: brokerPid! };
+    const owned = metadataIdentity === undefined ? undefined : { name: this.jobName('startupMetadata'), identity: metadataIdentity, broker: broker! };
     const absent = this.nativeJobs === undefined ? await jobsAbsent(names, owned) : await this.observeNativeJobs(names, 30000, owned);
     for (const [index, role] of processRoles.entries()) {
       if (this.active.get(role) !== owners.get(role)) { throw new SupervisorError('termination-unverified', 'Process ownership changed during startup admission.'); }

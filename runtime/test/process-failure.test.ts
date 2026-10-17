@@ -14,6 +14,7 @@ function deferred() {
 }
 
 class Broker extends EventEmitter {
+  readonly pid = 456;
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
@@ -22,7 +23,10 @@ class Broker extends EventEmitter {
   exitCode: number | null = null;
   readonly signalCode = null;
   kill(): boolean { this.killed = true; this.kills++; return true; }
-  header(): void { this.stdout.write(JSON.stringify({ ownedProcessVersion: 1, jobName: 'fixture', pid: 123, created: '123' }) + '\n'); }
+  header(fields: Record<string, unknown> = {}): void {
+    this.stdout.write(JSON.stringify({ ownedProcessVersion: 1, jobName: 'fixture', pid: 123, created: '123',
+      brokerPid: this.pid, brokerCreated: '456', ...fields }) + '\n');
+  }
   close(): void { this.exitCode = 1; this.emit('close', 1, null); }
 }
 
@@ -35,6 +39,18 @@ function fixture() {
 }
 
 describe('owned transport failure supervision', () => {
+  for (const fields of [{ brokerPid: 457 }, { brokerPid: 123 }, { brokerCreated: '0' }, { brokerCreated: 456 }]) {
+    it('rejects an unbound broker header', async () => {
+      const { broker, child, proof } = fixture();
+      broker.header(fields);
+      await assert.rejects(child.ready, error => error instanceof SupervisorError && error.reason === 'result-invalid');
+      assert.equal(child.ownedBrokerIdentity, null);
+      broker.close();
+      proof.resolve();
+      await child.terminated;
+    });
+  }
+
   for (const channel of ['stdout', 'stderr', 'stdin', 'process', 'exposedStdout', 'exposedStderr'] as const) {
     for (const stage of ['beforeHeader', 'duringOutput', 'duringVerification'] as const) {
       it(`supervises ${channel} failure ${stage} and waits for termination proof`, async () => {

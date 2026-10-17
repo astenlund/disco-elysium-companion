@@ -110,10 +110,13 @@ test('admits only the exact live owned startup metadata job', { timeout: 60000 }
   try {
     const identity = await child.ready;
     const names = processRoles.map(role => supervisor.jobName(role));
-    const observe = async (created: string) => {
+    const broker = child.ownedBrokerIdentity;
+    assert.ok(broker !== null);
+    assert.equal(broker.pid, child.brokerPid);
+    const observe = async (created: string, brokerCreated: string) => {
       const result = await execute('pwsh', ['-NoProfile', '-File', batchScript, '-JobNamesJson', JSON.stringify(names),
         '-OwnedJobName', supervisor.jobName('startupMetadata'), '-OwnedProcessId', String(identity.pid),
-        '-OwnedBrokerProcessId', String(child.brokerPid), '-OwnedProcessCreated', created],
+        '-OwnedBrokerProcessId', String(broker.pid), '-OwnedProcessCreated', created, '-OwnedBrokerCreated', brokerCreated],
       { windowsHide: true, timeout: 10000, maxBuffer: 65536 });
       const value = parseStrictJson(Buffer.from(result.stdout));
       assert.ok(hasExactKeys(value, ['jobs', 'owned']));
@@ -125,10 +128,11 @@ test('admits only the exact live owned startup metadata job', { timeout: 60000 }
       assert.ok(count === 2 || count === 3);
       return { owned: value['owned'], count };
     };
-    const admitted = await observe(identity.created);
+    const admitted = await observe(identity.created, broker.created);
     assert.equal(admitted.owned, true);
     t.diagnostic(`owned startup metadata job has ${admitted.count} members`);
-    assert.equal((await observe('1')).owned, false);
+    assert.equal((await observe('1', broker.created)).owned, false);
+    assert.equal((await observe(identity.created, String(BigInt(broker.created) + 1n))).owned, false);
     await supervisor.admitStartup(true);
     await assert.rejects(supervisor.admitStartup(), SupervisorError);
     await assert.rejects(competitor.admitStartup(), SupervisorError);

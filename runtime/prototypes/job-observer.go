@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -31,13 +33,16 @@ type job struct {
 }
 
 type request struct {
-	Names []string `json:"names"`
-	Owned *struct {
-		Name      string `json:"name"`
-		ProcessID int    `json:"processId"`
-		BrokerID  int    `json:"brokerId"`
-		Created   string `json:"created"`
-	} `json:"owned,omitempty"`
+	Names []string      `json:"names"`
+	Owned *ownedRequest `json:"owned,omitempty"`
+}
+
+type ownedRequest struct {
+	Name          string `json:"name"`
+	ProcessID     int    `json:"processId"`
+	BrokerID      int    `json:"brokerId"`
+	Created       string `json:"created"`
+	BrokerCreated string `json:"brokerCreated"`
 }
 
 var roles = map[string]bool{"core": true, "publication": true, "provider": true, "watcher": true,
@@ -54,6 +59,60 @@ var systemDirectory = kernel.NewProc("GetSystemDirectoryW")
 var snapshot = kernel.NewProc("CreateToolhelp32Snapshot")
 var firstProcess = kernel.NewProc("Process32FirstW")
 var nextProcess = kernel.NewProc("Process32NextW")
+
+func strictObject(input []byte, fields map[string]bool) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, syscall.EINVAL
+	}
+	values := make(map[string]json.RawMessage, len(fields))
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		key, valid := keyToken.(string)
+		if err != nil || !valid || !fields[key] {
+			return nil, syscall.EINVAL
+		}
+		if _, repeated := values[key]; repeated {
+			return nil, syscall.EINVAL
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		values[key] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(values) == 0 {
+		return nil, syscall.EINVAL
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, syscall.EINVAL
+	}
+	return values, nil
+}
+
+func decodeRequest(input []byte) (request, error) {
+	fields, err := strictObject(input, map[string]bool{"names": true, "owned": true})
+	if err != nil {
+		return request{}, err
+	}
+	var spec request
+	if err := json.Unmarshal(fields["names"], &spec.Names); err != nil || spec.Names == nil {
+		return request{}, syscall.EINVAL
+	}
+	if raw, supplied := fields["owned"]; supplied {
+		ownedFields, err := strictObject(raw, map[string]bool{"name": true, "processId": true, "brokerId": true,
+			"created": true, "brokerCreated": true})
+		if err != nil || len(ownedFields) != 5 {
+			return request{}, syscall.EINVAL
+		}
+		if err := json.Unmarshal(raw, &spec.Owned); err != nil || spec.Owned == nil {
+			return request{}, syscall.EINVAL
+		}
+	}
+	return spec, nil
+}
 
 func validName(name string) bool {
 	prefix := "Global" + string(rune(92)) + "game-companion-process-"
@@ -152,21 +211,22 @@ func openIdentity(pid uint32) (uintptr, string, error) {
 	return handle, strconv.FormatUint(value, 10), nil
 }
 
-func conhostParentAndImage(pid uint32) (uint32, string, error) {
+func conhostParentAndImage(pid uint32) (uintptr, uint32, string, error) {
 	handle, _, err := openIdentity(pid)
 	if handle == 0 {
-		return 0, "", err
+		return 0, 0, "", err
 	}
-	defer closeHandle.Call(handle)
 	image := make([]uint16, 32768)
 	size := uint32(len(image))
 	result, _, err := processImage.Call(handle, 0, uintptr(unsafe.Pointer(&image[0])), uintptr(unsafe.Pointer(&size)))
 	if result == 0 || size == 0 || size >= uint32(len(image)) {
-		return 0, "", err
+		closeHandle.Call(handle)
+		return 0, 0, "", err
 	}
 	processList, _, err := snapshot.Call(2, 0)
 	if processList == ^uintptr(0) {
-		return 0, "", err
+		closeHandle.Call(handle)
+		return 0, 0, "", err
 	}
 	defer closeHandle.Call(processList)
 	var entry processEntry
@@ -174,11 +234,12 @@ func conhostParentAndImage(pid uint32) (uint32, string, error) {
 	found, _, err := firstProcess.Call(processList, uintptr(unsafe.Pointer(&entry)))
 	for found != 0 {
 		if entry.ProcessID == pid {
-			return entry.ParentID, syscall.UTF16ToString(image[:size]), nil
+			return handle, entry.ParentID, syscall.UTF16ToString(image[:size]), nil
 		}
 		found, _, err = nextProcess.Call(processList, uintptr(unsafe.Pointer(&entry)))
 	}
-	return 0, "", err
+	closeHandle.Call(handle)
+	return 0, 0, "", err
 }
 
 func systemConhost() (string, error) {
@@ -202,17 +263,23 @@ func sameMembers(left, right []uint32) bool {
 	return true
 }
 
+func validCreationToken(token string) bool {
+	value, err := strconv.ParseUint(token, 10, 64)
+	return err == nil && value != 0 && strconv.FormatUint(value, 10) == token
+}
+
 func proveOwned(spec *request, jobs []job) (bool, error) {
 	owned := spec.Owned
 	if owned == nil {
 		return false, nil
 	}
-	if owned.ProcessID < 1 || owned.BrokerID < 1 || owned.ProcessID == owned.BrokerID || owned.Created == "" {
+	if owned.ProcessID < 1 || owned.ProcessID > 2147483647 || owned.BrokerID < 1 || owned.BrokerID > 2147483647 || owned.ProcessID == owned.BrokerID {
 		return false, syscall.EINVAL
 	}
-	createdValue, err := strconv.ParseUint(owned.Created, 10, 64)
-	if err != nil || createdValue == 0 || strconv.FormatUint(createdValue, 10) != owned.Created {
-		return false, syscall.EINVAL
+	for _, token := range []string{owned.Created, owned.BrokerCreated} {
+		if !validCreationToken(token) {
+			return false, syscall.EINVAL
+		}
 	}
 	index := -1
 	for current, name := range spec.Names {
@@ -246,13 +313,13 @@ func proveOwned(spec *request, jobs []job) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	closeHandle.Call(childHandle)
-	brokerHandle, _, err := openIdentity(broker)
+	defer closeHandle.Call(childHandle)
+	brokerHandle, brokerCreation, err := openIdentity(broker)
 	if err != nil {
 		return false, nil
 	}
-	closeHandle.Call(brokerHandle)
-	verified := creation == owned.Created
+	defer closeHandle.Call(brokerHandle)
+	verified := creation == owned.Created && brokerCreation == owned.BrokerCreated
 	if len(first) == 3 {
 		var console uint32
 		for _, value := range first {
@@ -260,10 +327,11 @@ func proveOwned(spec *request, jobs []job) (bool, error) {
 				console = value
 			}
 		}
-		parent, image, err := conhostParentAndImage(console)
+		consoleHandle, parent, image, err := conhostParentAndImage(console)
 		if err != nil {
 			return false, nil
 		}
+		defer closeHandle.Call(consoleHandle)
 		expected, err := systemConhost()
 		if err != nil {
 			return false, err
@@ -294,8 +362,8 @@ func run() error {
 	if len(os.Args) != 2 || len(os.Args[1]) > 8192 {
 		return syscall.EINVAL
 	}
-	var request request
-	if err := json.Unmarshal([]byte(os.Args[1]), &request); err != nil {
+	request, err := decodeRequest([]byte(os.Args[1]))
+	if err != nil {
 		return err
 	}
 	if len(request.Names) != 8 {

@@ -82,12 +82,15 @@ public static class ProcessBroker
                 throw new InvalidOperationException("Owned child could not be started.");
             }
 
+            using var current = Process.GetCurrentProcess();
             var header = new
             {
                 ownedProcessVersion = 1,
                 jobName,
                 pid = child.Id,
                 created = child.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(CultureInfo.InvariantCulture),
+                brokerPid = current.Id,
+                brokerCreated = current.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(CultureInfo.InvariantCulture),
             };
             var headerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(header) + "\n");
             await output.WriteAsync(headerBytes).ConfigureAwait(false);
