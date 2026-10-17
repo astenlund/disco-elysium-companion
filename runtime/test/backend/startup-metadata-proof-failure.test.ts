@@ -78,3 +78,54 @@ test('invalid prior marker stops the private early worker before guard release',
     await fixture.close();
   }
 });
+
+test('watcher reconciliation refusal stops the private early worker before guard release', { timeout: 180000 }, async () => {
+  const { fixture, dataRoot } = await cleanMarkerFixture();
+  const marker = path.join(dataRoot, 'runtime.json');
+  const originalSpawn = ProcessSupervisor.prototype.spawn;
+  const originalObserve = ProcessSupervisor.prototype.observeJobAbsent;
+  const originalRun = ProcessSupervisor.prototype.run;
+  let metadataSpawns = 0;
+  let orphanAttempts = 0;
+  try {
+    const previous = JSON.parse(await fs.readFile(marker, 'utf8')) as Record<string, unknown>;
+    const recorded = Buffer.from(JSON.stringify({ ...previous, watcher: { pid: 1234, created: '1234' } }));
+    await fs.writeFile(marker, recorded);
+    ProcessSupervisor.prototype.spawn = function (...args: Parameters<ProcessSupervisor['spawn']>) {
+      if (args[0] === 'startupMetadata') { metadataSpawns += 1; }
+      return originalSpawn.call(this, args[0], args[1]);
+    };
+    ProcessSupervisor.prototype.observeJobAbsent = function (role) {
+      if (role === 'watcher') { return Promise.resolve(false); }
+      return originalObserve.call(this, role);
+    };
+    ProcessSupervisor.prototype.run = function (...args: Parameters<ProcessSupervisor['run']>) {
+      if (args[0] === 'metadata' && path.basename(args[1].args[2] ?? '') === 'Stop-OrphanWatcher.ps1') {
+        orphanAttempts += 1;
+        return Promise.reject(new Error('Private watcher reconciliation refusal.'));
+      }
+      return originalRun.apply(this, args);
+    };
+    try {
+      await assert.rejects(openBackend({ companionRoot: fixture.root, startupMetadata: true,
+        [privateStartupMetadataPlacement]: 'postGuard' }));
+    } finally {
+      ProcessSupervisor.prototype.spawn = originalSpawn;
+      ProcessSupervisor.prototype.observeJobAbsent = originalObserve;
+      ProcessSupervisor.prototype.run = originalRun;
+    }
+    assert.equal(metadataSpawns, 1);
+    assert.equal(orphanAttempts, 1);
+    assert.deepEqual(await fs.readFile(marker), recorded);
+    const supervisor = await ProcessSupervisor.create(dataRoot);
+    await supervisor.verifyQuiescentMany(processRoles);
+    const guard = await takeInstanceGuard(dataRoot, () => { throw new Error('Private guard was lost.'); });
+    assert.equal(guard.held, true);
+    await guard.release();
+  } finally {
+    ProcessSupervisor.prototype.spawn = originalSpawn;
+    ProcessSupervisor.prototype.observeJobAbsent = originalObserve;
+    ProcessSupervisor.prototype.run = originalRun;
+    await fixture.close();
+  }
+});
