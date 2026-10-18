@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 import { hasExactKeys, parseStrictJson } from '../src/json.ts';
 import { ProcessSupervisor, processRoles, type OwnedProcess } from '../src/process.ts';
+import { withoutHome } from '../src/compiled-broker.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source = path.join(repository, 'runtime', 'prototypes', 'job-observer.go');
@@ -19,7 +20,7 @@ test('native owned startup proof binds broker and child creation identities', { 
   const scratch = await fs.mkdtemp(path.join(repository, '.tmp', 'native-owned-identity-'));
   const binary = path.join(scratch, 'job-observer.exe');
   const manifest = path.join(scratch, 'job-observer.json');
-  const privateEnvironment = { ...process.env, TEMP: scratch, TMP: scratch, TMPDIR: scratch, HOME: scratch,
+  const privateEnvironment = { ...withoutHome(process.env), TEMP: scratch, TMP: scratch, TMPDIR: scratch,
     USERPROFILE: scratch, APPDATA: scratch, LOCALAPPDATA: scratch, GOCACHE: path.join(scratch, 'go-cache'),
     GOPATH: path.join(scratch, 'go-path'), GOMODCACHE: path.join(scratch, 'go-modules'), GOTELEMETRY: 'off' };
   let supervisor: ProcessSupervisor | undefined;

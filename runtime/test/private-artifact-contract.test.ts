@@ -6,8 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory, pinPrivateFile, verifyPinnedPrivateFile } from '../src/compiled-broker.ts';
-import { childEnvironment, SupervisorError } from '../src/process.ts';
+import { admitPrivateDirectory, brokerEnvironment, pinPrivateFile, verifyPinnedPrivateFile } from '../src/compiled-broker.ts';
+import { childEnvironment, nativeObserverEnvironment, SupervisorError } from '../src/process.ts';
 import { chatBackendOptions } from '../src/runtime.ts';
 import { privateCompiledProcessBroker, privateNativeStartupJobs } from '../src/backend/index.ts';
 
@@ -51,6 +51,27 @@ test('v2 child environment preserves empty values and refuses hidden drive keys'
     error => error instanceof SupervisorError && error.reason === 'result-invalid');
   assert.throws(() => childEnvironment({ 'BAD=KEY': 'value' }), SupervisorError);
   assert.throws(() => childEnvironment({ BAD: 'value' + String.fromCharCode(0) }), SupervisorError);
+});
+
+test('private helper environments omit HOME while the child snapshot preserves it', () => {
+  const scratch = path.join(repository, '.tmp', 'broker-environment-fixture');
+  const options = { command: 'fixture', args: [], cwd: repository, env: { EMPTY: '', HOME: 'inherited-home' } };
+  const child = childEnvironment(options.env);
+  const broker = brokerEnvironment(options, scratch);
+  assert.equal(child.HOME, 'inherited-home');
+  assert.equal(child.EMPTY, '');
+  assert.equal(Object.hasOwn(broker, 'HOME'), false);
+  assert.equal(Object.hasOwn(nativeObserverEnvironment(scratch, options.env), 'HOME'), false);
+  assert.equal(broker.USERPROFILE, scratch);
+  assert.equal(broker.APPDATA, scratch);
+  const absent = brokerEnvironment({ ...options, env: { EMPTY: '' } }, scratch);
+  assert.equal(Object.hasOwn(absent, 'HOME'), false);
+  assert.equal(Object.hasOwn(childEnvironment({ EMPTY: '' }), 'HOME'), false);
+  assert.equal(Object.hasOwn(nativeObserverEnvironment(scratch, { EMPTY: '' }), 'HOME'), false);
+  const differentlyCased = { home: 'lower-home', HoMe: 'mixed-home' };
+  assert.deepEqual(Object.keys(brokerEnvironment({ ...options, env: differentlyCased }, scratch)).filter(name => name.toUpperCase() === 'HOME'), []);
+  assert.deepEqual(Object.keys(nativeObserverEnvironment(scratch, differentlyCased)).filter(name => name.toUpperCase() === 'HOME'), []);
+  assert.equal(childEnvironment({ home: 'lower-home' }).home, 'lower-home');
 });
 
 test('private selectors stay off the default and pre-guard chat options', () => {

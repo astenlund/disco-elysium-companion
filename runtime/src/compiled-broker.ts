@@ -76,9 +76,15 @@ export function verifyPinnedPrivateFile(file: PinnedFile): void {
     || createHash('sha256').update(readFileSync(file.location)).digest('hex') !== file.sha256) { throw unavailable(); }
 }
 
-function brokerEnvironment(options: OwnedSpawnOptions, scratch: string): NodeJS.ProcessEnv {
-  return { ...(options.env ?? process.env), TEMP: scratch, TMP: scratch, TMPDIR: scratch, NODE_COMPILE_CACHE: scratch,
-    HOME: scratch, USERPROFILE: scratch, APPDATA: scratch, LOCALAPPDATA: scratch,
+/** @internal Private helper processes omit HOME while the control frame retains the child snapshot. */
+export function withoutHome(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([name]) => name.toUpperCase() !== 'HOME'));
+}
+
+/** @internal Redirect known writable helper locations to the selected scratch directory. */
+export function brokerEnvironment(options: OwnedSpawnOptions, scratch: string): NodeJS.ProcessEnv {
+  return { ...withoutHome(options.env ?? process.env), TEMP: scratch, TMP: scratch, TMPDIR: scratch, NODE_COMPILE_CACHE: scratch,
+    USERPROFILE: scratch, APPDATA: scratch, LOCALAPPDATA: scratch,
     DOTNET_CLI_HOME: scratch, NUGET_PACKAGES: scratch, NUGET_HTTP_CACHE_PATH: scratch, NUGET_PLUGINS_CACHE_PATH: scratch,
     NUGET_SCRATCH: scratch, DOTNET_BUNDLE_EXTRACT_BASE_DIR: scratch, DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false',
     DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1',

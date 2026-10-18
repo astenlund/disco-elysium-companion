@@ -5,7 +5,7 @@ import path from 'node:path';
 import { PassThrough, type Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory, pinPrivateFile, verifyPinnedPrivateFile, type PinnedFile } from './compiled-broker.ts';
+import { admitPrivateDirectory, pinPrivateFile, verifyPinnedPrivateFile, withoutHome, type PinnedFile } from './compiled-broker.ts';
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 
@@ -124,6 +124,12 @@ async function jobsAbsent(names: readonly string[], owned?: OwnedJobProof, timeo
   return parseStartupJobStates({ jobs: observedJobs }, names);
 }
 
+/** @internal The observer does not receive HOME; it has no child control frame. */
+export function nativeObserverEnvironment(scratch: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...withoutHome(source), TEMP: scratch, TMP: scratch, USERPROFILE: scratch,
+    APPDATA: scratch, LOCALAPPDATA: scratch, GOTELEMETRY: 'off' };
+}
+
 async function nativeJobsAbsent(names: readonly string[], selection: PrivateNativeStartupJobs,
   owned?: OwnedJobProof, timeoutMs = 30000): Promise<readonly boolean[]> {
   const started = performance.now();
@@ -148,8 +154,7 @@ async function nativeJobsAbsent(names: readonly string[], selection: PrivateNati
     } }) });
     value = await new Promise<ReturnType<typeof parseStrictJson>>((resolve, reject) => {
       execFile(selection.binary, [request], { cwd: selection.scratch, windowsHide: true, timeout: remaining, maxBuffer: 65_536,
-        encoding: 'buffer', env: { ...process.env, TEMP: selection.scratch, TMP: selection.scratch, HOME: selection.scratch,
-          USERPROFILE: selection.scratch, APPDATA: selection.scratch, LOCALAPPDATA: selection.scratch, GOTELEMETRY: 'off' } }, (error, stdout) => {
+        encoding: 'buffer', env: nativeObserverEnvironment(selection.scratch) }, (error, stdout) => {
         if (error !== null) { reject(new SupervisorError('termination-unverified', 'Private native job observer is unavailable.')); return; }
         try { resolve(parseStrictJson(stdout)); }
         catch { reject(new SupervisorError('termination-unverified', 'Private native job observation is invalid.')); }
