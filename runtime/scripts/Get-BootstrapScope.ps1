@@ -2,16 +2,25 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Root,
-    [Parameter(Mandatory)] [string] $Game
+    [Parameter(Mandatory)] [string] $Game,
+    [string] $NativeSource = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$scriptName = [IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
+$scriptName = if ([string]::IsNullOrEmpty($PSCommandPath)) { 'Get-BootstrapScope' } else { [IO.Path]::GetFileNameWithoutExtension($PSCommandPath) }
 $identity = $null
 try {
     if (-not $IsWindows -or [string]::IsNullOrEmpty($Game)) { throw [IO.InvalidDataException]::new('Invalid bootstrap input.') }
-    Add-Type -Path (Join-Path $PSScriptRoot 'NativeFiles.cs')
+    if ([string]::IsNullOrEmpty($NativeSource)) {
+        if ([string]::IsNullOrEmpty($PSScriptRoot)) { throw [IO.InvalidDataException]::new('In-memory bootstrap source is unavailable.') }
+        Add-Type -Path (Join-Path $PSScriptRoot 'NativeFiles.cs')
+    } else {
+        if ([Text.UTF8Encoding]::new($false, $true).GetByteCount($NativeSource) -gt 1048576) {
+            throw [IO.InvalidDataException]::new('In-memory bootstrap source exceeds its bound.')
+        }
+        Add-Type -TypeDefinition $NativeSource
+    }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $sid = $identity.User.Value
     if ([string]::IsNullOrEmpty($sid)) { throw [InvalidOperationException]::new('Principal identity is unavailable.') }
