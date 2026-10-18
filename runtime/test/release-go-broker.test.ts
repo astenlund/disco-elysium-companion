@@ -20,3 +20,11 @@ test('broker sources match the fixed release after uniform checkout line-ending 
   assert.throws(() => normalizedGoSourceHash(Buffer.from([97, 13, 98])));
   assert.throws(() => normalizedGoSourceHash(Buffer.from([97])));
 });
+
+test('observer source matches the same fixed release', async () => {
+  const release = readCompiledImageRelease();
+  assert.equal(release.observer.sources.length, 1);
+  const source = release.observer.sources[0]!;
+  const bytes = await fs.readFile(path.join(repository, source.path));
+  assert.equal(normalizedGoSourceHash(bytes), source.sha256);
+});
