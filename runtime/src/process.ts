@@ -1,13 +1,13 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync, readFileSync } from 'node:fs';
+import { closeSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough, type Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory, pinPrivateFile, verifyPinnedPrivateFile, withoutHome, type PinnedFile } from './compiled-broker.ts';
+import { admitPrivateDirectory, pinPrivateFile, readPinnedPrivateFile, verifyPinnedPrivateFile, withoutHome, type PinnedFile } from './compiled-broker.ts';
 import { guardScopeToken } from './guard.ts';
-import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
+import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 
 export const processRoles = ['core', 'publication', 'provider', 'watcher', 'metadata', 'startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
 export type ProcessRole = typeof processRoles[number];
@@ -141,7 +141,7 @@ async function nativeJobsAbsent(names: readonly string[], selection: PrivateNati
     pinned.push(pinPrivateFile(selection.binary, selection.binarySha256));
     pinned.push(pinPrivateFile(selection.source, selection.sourceSha256));
     pinned.push(pinPrivateFile(selection.manifest, selection.manifestSha256));
-    const record = parseStrictJson(readFileSync(selection.manifest));
+    const record = parseStrictJson(readPinnedPrivateFile(pinned[2]!, jsonBudgets.config.maxBytes));
     if (!hasExactKeys(record, ['sourceSha256', 'binarySha256', 'toolchain', 'output', 'provenance'])
       || record['binarySha256'] !== selection.binarySha256 || record['sourceSha256'] !== selection.sourceSha256) {
       throw new SupervisorError('termination-unverified', 'Private native job observer provenance is unavailable.');

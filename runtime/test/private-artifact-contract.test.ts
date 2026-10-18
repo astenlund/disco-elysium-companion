@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory, brokerEnvironment, pinPrivateFile, verifyPinnedPrivateFile } from '../src/compiled-broker.ts';
+import { admitPrivateDirectory, brokerEnvironment, pinPrivateFile, readPinnedPrivateFile, verifyPinnedPrivateFile } from '../src/compiled-broker.ts';
 import { jsonBudgets } from '../src/json.ts';
 import { readBoundedPrivateManifest } from '../src/native-observer-artifact.ts';
 import { childEnvironment, nativeObserverEnvironment, SupervisorError } from '../src/process.ts';
@@ -27,7 +27,11 @@ test('private artifact admission requires a repo-bound ordinary file and directo
   try {
     admitPrivateDirectory(scratch);
     const pinned = pinPrivateFile(ordinary, hash);
-    try { verifyPinnedPrivateFile(pinned); }
+    try {
+      assert.deepEqual(readPinnedPrivateFile(pinned, 1024), await fs.readFile(ordinary));
+      assert.throws(() => readPinnedPrivateFile(pinned, 1));
+      verifyPinnedPrivateFile(pinned);
+    }
     finally { closeSync(pinned.descriptor); }
     assert.throws(() => pinPrivateFile(path.resolve(repository, '..', 'outside.txt'), hash));
     assert.throws(() => admitPrivateDirectory(path.resolve(repository, '..')));

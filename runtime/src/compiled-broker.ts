@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { BrokerSpawn, OwnedSpawnOptions } from './process.ts';
 
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
+const maxPrivateFileBytes = 33_554_432;
 const artifactNames = ['Invoke-OwnedProcess.exe', 'Invoke-OwnedProcess.dll',
   'Invoke-OwnedProcess.deps.json', 'Invoke-OwnedProcess.runtimeconfig.json'] as const;
 const sourceNames = ['runtime/native/process-broker/Program.cs', 'runtime/native/process-broker/Invoke-OwnedProcess.csproj',
@@ -28,6 +29,23 @@ export interface PinnedFile { readonly location: string; readonly descriptor: nu
 
 function unavailable(): Error { return new Error('Private compiled broker artifact is unavailable.'); }
 
+function readStablePrivateBytes(descriptor: number, limit: number): Buffer {
+  const before = fstatSync(descriptor, { bigint: true });
+  if (!before.isFile() || before.size < 1n || before.size > BigInt(limit)) { throw unavailable(); }
+  const bytes = Buffer.allocUnsafe(Number(before.size) + 1);
+  let length = 0;
+  while (length < bytes.length) {
+    const read = readSync(descriptor, bytes, length, bytes.length - length, length);
+    if (read === 0) { break; }
+    length += read;
+  }
+  const after = fstatSync(descriptor, { bigint: true });
+  if (length !== Number(before.size) || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
+    throw unavailable();
+  }
+  return bytes.subarray(0, length);
+}
+
 function within(root: string, candidate: string): boolean {
   const relative = path.win32.relative(root, candidate);
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.win32.sep}`) && !path.win32.isAbsolute(relative);
@@ -45,17 +63,37 @@ export function admitPrivateDirectory(directory: string): void {
   }
 }
 
+export function readBoundedPrivateFile(location: string, limit: number): Buffer {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxPrivateFileBytes || !path.win32.isAbsolute(location)
+    || path.win32.resolve(location) !== location || !within(installationRoot, location)) { throw unavailable(); }
+  admitPrivateDirectory(path.win32.dirname(location));
+  const initial = lstatSync(location, { bigint: true });
+  if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n || initial.ino === 0n
+    || initial.size < 1n || initial.size > BigInt(limit) || realpathSync.native(location).toLowerCase() !== location.toLowerCase()) {
+    throw unavailable();
+  }
+  const descriptor = openSync(location, 'r');
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const bytes = readStablePrivateBytes(descriptor, limit);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (before.dev !== initial.dev || before.ino !== initial.ino || before.size !== initial.size
+      || after.dev !== initial.dev || after.ino !== initial.ino || after.size !== initial.size) { throw unavailable(); }
+    return bytes;
+  } finally { closeSync(descriptor); }
+}
+
 export function pinPrivateFile(location: string, expected: string): PinnedFile {
   if (!/^[a-f0-9]{64}$/.test(expected) || !path.win32.isAbsolute(location)
     || path.win32.resolve(location) !== location || !within(installationRoot, location)) { throw unavailable(); }
   admitPrivateDirectory(path.win32.dirname(location));
   const initial = lstatSync(location, { bigint: true });
   if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n || initial.ino === 0n
-    || initial.size < 1n || initial.size > 33_554_432n || realpathSync.native(location).toLowerCase() !== location.toLowerCase()) { throw unavailable(); }
+    || initial.size < 1n || initial.size > BigInt(maxPrivateFileBytes) || realpathSync.native(location).toLowerCase() !== location.toLowerCase()) { throw unavailable(); }
   const descriptor = openSync(location, 'r');
   try {
     const before = fstatSync(descriptor, { bigint: true });
-    const bytes = readFileSync(descriptor);
+    const bytes = readStablePrivateBytes(descriptor, maxPrivateFileBytes);
     const after = fstatSync(descriptor, { bigint: true });
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     if (!before.isFile() || before.nlink !== 1n || before.ino === 0n || before.dev !== after.dev || before.ino !== after.ino
@@ -65,6 +103,15 @@ export function pinPrivateFile(location: string, expected: string): PinnedFile {
   } catch (error) { closeSync(descriptor); throw error; }
 }
 
+export function readPinnedPrivateFile(file: PinnedFile, limit: number): Buffer {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxPrivateFileBytes || file.identity.size > BigInt(limit)) { throw unavailable(); }
+  const before = fstatSync(file.descriptor, { bigint: true });
+  if (!before.isFile() || before.dev !== file.identity.dev || before.ino !== file.identity.ino || before.size !== file.identity.size) { throw unavailable(); }
+  const bytes = readStablePrivateBytes(file.descriptor, limit);
+  if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) { throw unavailable(); }
+  return bytes;
+}
+
 export function verifyPinnedPrivateFile(file: PinnedFile): void {
   admitPrivateDirectory(path.win32.dirname(file.location));
   const byHandle = fstatSync(file.descriptor, { bigint: true });
@@ -72,8 +119,15 @@ export function verifyPinnedPrivateFile(file: PinnedFile): void {
   const identity = file.identity;
   if (!byHandle.isFile() || !byPath.isFile() || byPath.isSymbolicLink() || byHandle.nlink !== 1n || byPath.nlink !== 1n
     || byHandle.dev !== identity.dev || byPath.dev !== identity.dev || byHandle.ino !== identity.ino || byPath.ino !== identity.ino
-    || byHandle.size !== identity.size || byPath.size !== identity.size
-    || createHash('sha256').update(readFileSync(file.location)).digest('hex') !== file.sha256) { throw unavailable(); }
+    || byHandle.size !== identity.size || byPath.size !== identity.size) { throw unavailable(); }
+  const descriptor = openSync(file.location, 'r');
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== identity.dev || opened.ino !== identity.ino || opened.size !== identity.size
+      || createHash('sha256').update(readStablePrivateBytes(descriptor, Number(identity.size))).digest('hex') !== file.sha256) {
+      throw unavailable();
+    }
+  } finally { closeSync(descriptor); }
 }
 
 /** @internal Private helper processes omit HOME while the control frame retains the child snapshot. */

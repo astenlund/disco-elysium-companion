@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { closeSync, lstatSync, openSync, readSync } from 'node:fs';
+import { closeSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory, pinPrivateFile, verifyPinnedPrivateFile, type PinnedFile } from './compiled-broker.ts';
+import { admitPrivateDirectory, pinPrivateFile, readBoundedPrivateFile, verifyPinnedPrivateFile, type PinnedFile } from './compiled-broker.ts';
 import { hasExactKeys, jsonBudgets, parseStrictJson } from './json.ts';
 import type { PrivateNativeStartupJobs } from './process.ts';
 
@@ -26,25 +26,8 @@ function closePins(pins: readonly PinnedFile[]): boolean {
 
 /** @internal Reads no more than the config JSON budget from an admitted private path. */
 export function readBoundedPrivateManifest(location: string): Buffer {
-  admitPrivateDirectory(path.dirname(location));
-  const limit = jsonBudgets.config.maxBytes;
-  const initial = lstatSync(location, { bigint: true });
-  if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n
-    || initial.size < 1n || initial.size > BigInt(limit)) {
-    throw new Error('Private native job observer manifest is unavailable.');
-  }
-  const descriptor = openSync(location, 'r');
-  try {
-    const bytes = Buffer.allocUnsafe(limit + 1);
-    let length = 0;
-    while (length < bytes.length) {
-      const read = readSync(descriptor, bytes, length, bytes.length - length, length);
-      if (read === 0) { break; }
-      length += read;
-    }
-    if (length === 0 || length > limit) { throw new Error('Private native job observer manifest is unavailable.'); }
-    return bytes.subarray(0, length);
-  } finally { closeSync(descriptor); }
+  try { return readBoundedPrivateFile(location, jsonBudgets.config.maxBytes); }
+  catch { throw new Error('Private native job observer manifest is unavailable.'); }
 }
 
 export function privateNativeJobObserverArtifact(binary: string, manifest: string, scratch: string): PrivateNativeStartupJobs {
