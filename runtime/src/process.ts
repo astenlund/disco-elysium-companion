@@ -6,6 +6,8 @@ import { PassThrough, type Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { admitPrivateDirectory, pinPrivateFile, readPinnedPrivateFile, verifyPinnedPrivateFile, withoutHome, type PinnedFile } from './compiled-broker.ts';
+import { compiledImageGeneration, parseCompiledImageRelease } from './compiled-image-release.ts';
+import { normalizedGoSourceHash } from './go-source.ts';
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 
@@ -36,6 +38,7 @@ export interface PrivateNativeStartupJobs {
   readonly binarySha256: string;
   readonly sourceSha256: string;
   readonly manifestSha256: string;
+  readonly releaseGeneration?: string;
   readonly onObservation?: (roles: readonly ProcessRole[], elapsedMs: number, outcome: 'ok' | 'failed') => void;
 }
 
@@ -141,10 +144,23 @@ async function nativeJobsAbsent(names: readonly string[], selection: PrivateNati
     pinned.push(pinPrivateFile(selection.binary, selection.binarySha256));
     pinned.push(pinPrivateFile(selection.source, selection.sourceSha256));
     pinned.push(pinPrivateFile(selection.manifest, selection.manifestSha256));
-    const record = parseStrictJson(readPinnedPrivateFile(pinned[2]!, jsonBudgets.config.maxBytes));
-    if (!hasExactKeys(record, ['sourceSha256', 'binarySha256', 'toolchain', 'output', 'provenance'])
-      || record['binarySha256'] !== selection.binarySha256 || record['sourceSha256'] !== selection.sourceSha256) {
-      throw new SupervisorError('termination-unverified', 'Private native job observer provenance is unavailable.');
+    const manifestBytes = readPinnedPrivateFile(pinned[2]!, jsonBudgets.config.maxBytes);
+    if (selection.releaseGeneration === undefined) {
+      const record = parseStrictJson(manifestBytes);
+      if (!hasExactKeys(record, ['sourceSha256', 'binarySha256', 'toolchain', 'output', 'provenance'])
+        || record['binarySha256'] !== selection.binarySha256 || record['sourceSha256'] !== selection.sourceSha256) {
+        throw new SupervisorError('termination-unverified', 'Private native job observer provenance is unavailable.');
+      }
+    } else {
+      const release = parseCompiledImageRelease(manifestBytes);
+      const imageRoot = path.win32.dirname(path.win32.dirname(path.win32.dirname(selection.manifest)));
+      if (selection.releaseGeneration !== compiledImageGeneration || release.generation !== selection.releaseGeneration
+        || release.observer.sha256 !== selection.binarySha256
+        || path.win32.join(imageRoot, 'runtime/native/job-observer.exe') !== selection.binary
+        || path.win32.join(imageRoot, release.observer.sources[0]!.path) !== selection.source
+        || normalizedGoSourceHash(readPinnedPrivateFile(pinned[1]!, 1_048_576)) !== release.observer.sources[0]!.sha256) {
+        throw new SupervisorError('termination-unverified', 'Compiled native job observer provenance is unavailable.');
+      }
     }
     const remaining = Math.floor(timeoutMs - (performance.now() - started));
     if (remaining < 1) { throw new SupervisorError('termination-unverified', 'Private native job observation expired.'); }
