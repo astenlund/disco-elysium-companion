@@ -6,6 +6,8 @@ import { readBoundedPrivateFile } from './compiled-broker.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type JsonValue } from './json.ts';
 
 export const compiledImageGeneration = '2d3013059b9625f967f3263ea2e196ca59d24da999a9e5bcfc3691527408f44d';
+export const compiledBrokerSha256 = 'aa52d71f8a2243bdcb83bc394a12fe8193e413eb70b3543130f69df5a99c5d13';
+export const compiledObserverSha256 = 'bb3818599c2b5c5c4da98af42daea4300bfdb3103c0d420009021bd8af313fec';
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
 const manifestPath = path.join(installationRoot, 'runtime/native/compiled-images.json');
 const brokerSources = ['runtime/prototypes/go-process-broker/go.mod',
@@ -60,9 +62,11 @@ export function parseCompiledImageRelease(bytes: Uint8Array): CompiledImageRelea
     || !Array.isArray(toolchain['flags']) || toolchain['flags'].length !== 3
     || toolchain['flags'][0] !== '-buildvcs=false' || toolchain['flags'][1] !== '-trimpath'
     || toolchain['flags'][2] !== '-ldflags=-buildid=') { throw unavailable(); }
+  const broker = imageEntry(value['broker']!, 'go-broker.exe', brokerSources);
+  const observer = imageEntry(value['observer']!, 'job-observer.exe', observerSources);
+  if (broker.sha256 !== compiledBrokerSha256 || observer.sha256 !== compiledObserverSha256) { throw unavailable(); }
   return { generation,
-    broker: imageEntry(value['broker']!, 'go-broker.exe', brokerSources),
-    observer: imageEntry(value['observer']!, 'job-observer.exe', observerSources) };
+    broker, observer };
 }
 
 export function readCompiledImageRelease(): CompiledImageRelease {
