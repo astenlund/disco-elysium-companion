@@ -17,6 +17,9 @@ describe('independent read-only metadata ownership', () => {
     const first = await createReadOnlyInspection(fixture.root);
     const second = await createReadOnlyInspection(fixture.root);
     try {
+      assert.equal(first.parentIdentity.pid, process.pid);
+      assert.match(first.parentIdentity.created, /^[1-9][0-9]{0,18}$/);
+      assert.deepEqual(second.parentIdentity, first.parentIdentity);
       const [left, right] = await Promise.all([first.inspector.inspect(fixture.root, fixture.root), second.inspector.inspect(fixture.root, fixture.root)]);
       assert.equal(left.kind, 'directory');
       assert.equal(left.identity, right.identity);

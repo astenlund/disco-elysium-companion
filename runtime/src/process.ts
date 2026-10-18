@@ -337,6 +337,8 @@ export class ProcessSupervisor {
     return new ProcessSupervisor(this.parent, canonicalScope, createBroker, nativeJobs);
   }
 
+  parentIdentity(): ProcessIdentity { return Object.freeze({ ...this.parent }); }
+
   jobName(role: ProcessRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
 
   attachStartupJobObserver(observer: (names: readonly string[], timeoutMs: number) => Promise<readonly boolean[]>): void {
