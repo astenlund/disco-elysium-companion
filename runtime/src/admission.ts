@@ -2,7 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
-import { ProcessSupervisor, type CommandResult } from './process.ts';
+import { childEnvironment, ProcessSupervisor, type CommandResult } from './process.ts';
 import { SerialQueue } from './serial.ts';
 import type { RuntimeScope } from './scope.ts';
 import type { StartupMetadataSession } from './startup-metadata.ts';
@@ -117,6 +117,33 @@ export class PathInspector {
       return this.supervisor.run('metadata', { command: 'pwsh', args: ['-NoProfile', '-File', scriptPath, ...frozenArgs], cwd }, remaining, frozenInput);
     };
     return closing === null ? this.queue.run(run) : closing.then(() => this.queue.run(run));
+  }
+
+  /** @internal The caller constructs one fixed expression from captured, verified source bytes. */
+  metadataStdinExpression(expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 30000): Promise<CommandResult> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000 || expression.byteLength < 2
+      || expression.byteLength > 1_048_576 || expression[expression.byteLength - 1] !== 10
+      || this.startupSession !== null || this.coreReplySession !== null || this.startupClosing !== null) {
+      return Promise.reject(new DataRootUnavailableError('Invalid in-memory metadata request.'));
+    }
+    const frozen = Buffer.from(expression);
+    const frozenEnvironment = childEnvironment(env);
+    for (let index = 0; index < frozen.byteLength - 1; index++) {
+      if (frozen[index]! < 32 || frozen[index]! > 126) {
+        return Promise.reject(new DataRootUnavailableError('Invalid in-memory metadata expression.'));
+      }
+    }
+    const deadline = performance.now() + timeoutMs;
+    const run = (): Promise<CommandResult> => {
+      if (this.startupSession !== null || this.coreReplySession !== null || this.startupClosing !== null) {
+        throw new DataRootUnavailableError('In-memory metadata is unavailable after startup worker opening.');
+      }
+      const remaining = Math.floor(deadline - performance.now());
+      if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
+      return this.supervisor.run('metadata', { command: 'pwsh',
+        args: ['-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-'], cwd, env: frozenEnvironment }, remaining, frozen);
+    };
+    return this.queue.run(run);
   }
 
   inspectMany(root: string, targets: readonly string[], allowMissing = false, timeoutMs = 30000): Promise<readonly PathAdmission[]> {
