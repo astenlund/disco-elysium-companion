@@ -144,6 +144,10 @@ Investigate whether confirmed deletion-only cleanup failures can be distinguishe
 
 Measure whole-turn phases separately from the settlement gate and choose a player-facing latency target.
 
+### [Reduce PowerShell runtime dependency](features/runtime-powershell-dependency.md)
+
+If the compiled Go startup path ships, investigate replacing PowerShell execution across the runtime in a later slice to reduce host dependencies, without expanding the current 30-second startup delivery.
+
 ### [TUI companion app](features/tui-companion-app.md)
 
 Wrap the companion runtime in a terminal interface with streaming chat, freshness and error status, native dialogs, a deferred-results inbox, and per-adapter presentation. Candidate slices separate the terminal shell from advanced dialogs, inbox presentation, theming, and model-effort controls.
