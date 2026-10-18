@@ -3,8 +3,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
+import { parseStrictJson } from '../src/json.ts';
 import type { ProcessSupervisor } from '../src/process.ts';
-import { discoverScopeWithPrincipal, scopeComponents } from '../src/scope.ts';
+import { discoverScopeWithPrincipal, parseCombinedScopeReply, scopeComponents } from '../src/scope.ts';
 
 const root = path.win32.join('C:', 'private', 'companion');
 const game = 'disco_elysium';
@@ -42,6 +43,18 @@ test('combined bootstrap refuses partial, foreign, and unsuccessful observations
     await assert.rejects(discoverScopeWithPrincipal(inspector, root, game), DataRootUnavailableError);
     assert.equal(calls, 1);
   }
+});
+
+test('selected bootstrap adds one pin receipt without changing scope admission', () => {
+  const pins = { status: 'absent' };
+  const value = { sid, paths: [admission(root), admission(candidate)], imagePins: pins };
+  const selected = parseStrictJson(Buffer.from(JSON.stringify(value)));
+  const result = parseCombinedScopeReply(selected, root, game, true);
+  assert.deepEqual(result.candidate, { companionRoot: root, dataRoot: candidate, game, principal: sid });
+  assert.equal((result.imagePins as { status: string }).status, 'absent');
+  assert.throws(() => parseCombinedScopeReply(selected, root, game, false), DataRootUnavailableError);
+  assert.throws(() => parseCombinedScopeReply(parseStrictJson(Buffer.from(JSON.stringify({ ...value, imagePins: undefined }))),
+    root, game, true), DataRootUnavailableError);
 });
 
 test('in-memory bootstrap transport sends one bounded expression through the supervised metadata role', async () => {
