@@ -112,32 +112,13 @@ public static class NativeFiles
         return metadata;
     }
 
-    private static bool InvalidComponent(string component)
+    public static PathAdmission DescribeHeld(SafeFileHandle handle, string expectedPath)
     {
-        return component.Length == 0 || component is "." or ".." || component.EndsWith(' ') || component.EndsWith('.') || component.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0 || ReservedName.IsMatch(component);
-    }
-
-    private static void RequireOrdinary(PathAdmission metadata)
-    {
-        if (!metadata.IsDirectory && metadata.Links != 1)
-        {
-            throw new IOException("File link count is not exactly one.");
-        }
-    }
-
-    private static PathAdmission? Inspect(string path)
-    {
-        // The admitted drive path gets an internal extended prefix so long paths are not mistaken for absence.
-        using var handle = CreateFileW(@"\\?\" + path, ReadAttributes, ShareReadWriteDelete, IntPtr.Zero, OpenExisting, OpenReparsePoint | BackupSemantics, IntPtr.Zero);
+        ArgumentNullException.ThrowIfNull(handle);
+        var path = NormalizePath(expectedPath);
         if (handle.IsInvalid)
         {
-            var error = Marshal.GetLastWin32Error();
-            if (error is 2 or 3)
-            {
-                return null;
-            }
-
-            throw new Win32Exception(error);
+            throw new IOException("Pinned handle is invalid.");
         }
 
         if (GetFileType(handle) != DiskFileType)
@@ -193,6 +174,37 @@ public static class NativeFiles
         var fileId = identity.Low.ToString("x16", CultureInfo.InvariantCulture) + identity.High.ToString("x16", CultureInfo.InvariantCulture);
 
         return new PathAdmission(canonical, true, (information.Attributes & DirectoryAttribute) != 0, information.Links, volume, fileId, []);
+    }
+
+    private static bool InvalidComponent(string component)
+    {
+        return component.Length == 0 || component is "." or ".." || component.EndsWith(' ') || component.EndsWith('.') || component.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0 || ReservedName.IsMatch(component);
+    }
+
+    private static void RequireOrdinary(PathAdmission metadata)
+    {
+        if (!metadata.IsDirectory && metadata.Links != 1)
+        {
+            throw new IOException("File link count is not exactly one.");
+        }
+    }
+
+    private static PathAdmission? Inspect(string path)
+    {
+        // The admitted drive path gets an internal extended prefix so long paths are not mistaken for absence.
+        using var handle = CreateFileW(@"\\?\" + path, ReadAttributes, ShareReadWriteDelete, IntPtr.Zero, OpenExisting, OpenReparsePoint | BackupSemantics, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (error is 2 or 3)
+            {
+                return null;
+            }
+
+            throw new Win32Exception(error);
+        }
+
+        return DescribeHeld(handle, path);
     }
 
     [StructLayout(LayoutKind.Sequential)]
