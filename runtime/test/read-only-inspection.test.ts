@@ -26,6 +26,8 @@ describe('independent read-only metadata ownership', () => {
       assert.deepEqual(await fs.readdir(fixture.root), []);
       await first.close();
       await assert.rejects(first.inspector.inspect(fixture.root, fixture.root), DataRootUnavailableError);
+      await assert.rejects(first.inspector.metadataStdinExpression(Buffer.from([38, 32, 49, 10]), fixture.root, {}),
+        DataRootUnavailableError);
       assert.equal((await second.inspector.inspect(fixture.root, fixture.root)).kind, 'directory');
     } finally { await first.close(); await second.close(); await fixture.close(); }
   });

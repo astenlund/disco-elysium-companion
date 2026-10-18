@@ -6,6 +6,8 @@ if (mode === 'arguments') {
   process.stderr.write('diagnostic');
 } else if (mode === 'echo') {
   process.stdin.pipe(process.stdout);
+} else if (mode === 'environment') {
+  process.stdout.write(JSON.stringify({ TEMP: process.env.TEMP ?? null, APPDATA: process.env.APPDATA ?? null }));
 } else if (mode === 'overflow') {
   process.stdout.write('x'.repeat(70_000));
 } else if (mode === 'wait') {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,30 @@ const options = (mode: string, ...args: string[]) => ({ command: process.execPat
 const execFileAsync = promisify(execFile);
 
 describe('owned process transport', () => {
+  it('redirects helper writable locations while preserving the provider environment', { timeout: 30000 }, async () => {
+    const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'helper-environment-'));
+    const providerProfile = path.join(scratch, 'provider');
+    await fs.mkdir(providerProfile);
+    const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
+    const helperEnvironment = { ...inherited, TEMP: scratch, TMP: scratch, TMPDIR: scratch,
+      APPDATA: scratch, LOCALAPPDATA: scratch, USERPROFILE: scratch, DOTNET_CLI_HOME: scratch };
+    const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), undefined, undefined, helperEnvironment);
+    try {
+      const supplied = { ...inherited, TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
+        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile,
+        DOTNET_CLI_HOME: providerProfile };
+      const helper = await supervisor.run('metadata', { ...options('environment'), env: supplied }, 15000);
+      assert.deepEqual(JSON.parse(helper.stdout.toString('utf8')), { TEMP: scratch, APPDATA: scratch });
+      const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 15000);
+      assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')),
+        { TEMP: providerProfile, APPDATA: providerProfile });
+      await supervisor.verifyQuiescentMany(['metadata', 'provider']);
+    } finally {
+      assert.equal(path.relative(root, scratch).startsWith('..'), false);
+      await fs.rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('proves exact live provider PID and creation in its scoped job', { timeout: 30000 }, async () => {
     const supervisor = await create();
     const otherScope = await create();

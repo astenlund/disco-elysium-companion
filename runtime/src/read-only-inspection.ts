@@ -12,6 +12,12 @@ class CommandInspector extends PathInspector {
     return super.metadata(script, args, cwd, timeoutMs, input);
   }
 
+  override metadataStdinExpression(expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv,
+    timeoutMs = 30000): Promise<CommandResult> {
+    if (!this.accepting) { return Promise.reject(new DataRootUnavailableError('Read-only inspection has closed.')); }
+    return super.metadataStdinExpression(expression, cwd, env, timeoutMs);
+  }
+
   stop(): void { this.accepting = false; }
 }
 
@@ -20,9 +26,9 @@ export interface ReadOnlyInspection { readonly inspector: PathInspector; readonl
 
 // Status and pre-identity admission must not contend for the live writer's metadata
 // job. This per-command namespace is only a name; no directory or scope is created.
-export async function createReadOnlyInspection(companionRoot: string): Promise<ReadOnlyInspection> {
+export async function createReadOnlyInspection(companionRoot: string, helperEnvironment?: NodeJS.ProcessEnv): Promise<ReadOnlyInspection> {
   const namespace = path.join(companionRoot, '.tmp', `inspection-${process.pid}-${newIdentity()}`);
-  const supervisor = await ProcessSupervisor.create(namespace);
+  const supervisor = await ProcessSupervisor.create(namespace, undefined, undefined, helperEnvironment);
   const inspector = new CommandInspector(supervisor);
   let completion: Promise<void> | null = null;
   return Object.freeze({ inspector, parentIdentity: supervisor.parentIdentity(), supervisorFor: (canonicalScope: string, createBroker?: BrokerSpawn,
