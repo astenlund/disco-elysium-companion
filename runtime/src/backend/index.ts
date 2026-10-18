@@ -17,7 +17,7 @@ import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts
 import { OperationStore } from '../operations.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
-import { ProcessSupervisor, processRoles, type PrivateNativeStartupJobs } from '../process.ts';
+import { ProcessSupervisor, processRoles, type BrokerSpawn, type PrivateNativeStartupJobs } from '../process.ts';
 import { createReadOnlyInspection } from '../read-only-inspection.ts';
 import { maintainRuntimeStorage } from '../resource-lifecycle/retention.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
@@ -47,10 +47,12 @@ export const privateRecheckSupervisorIdentity = Symbol('privateRecheckSupervisor
 export const privateWarmJobObserver = Symbol('privateWarmJobObserver');
 export const privateCombinedBootstrap = Symbol('privateCombinedBootstrap');
 export const privateCompiledProcessBroker = Symbol('privateCompiledProcessBroker');
+export const privateGoBrokerSpawn = Symbol('privateGoBrokerSpawn');
 export const privateNativeStartupJobs = Symbol('privateNativeStartupJobs');
 type FixtureBackendOptions = BackendOptions & { readonly [privateStartupMetadataPlacement]?: 'postGuard'; readonly [privateScopeSourceBatch]?: true;
   readonly [privateRecheckSupervisorIdentity]?: true; readonly [privateWarmJobObserver]?: true;
   readonly [privateCombinedBootstrap]?: true; readonly [privateCompiledProcessBroker]?: CompiledBrokerArtifact;
+  readonly [privateGoBrokerSpawn]?: BrokerSpawn;
   readonly [privateNativeStartupJobs]?: PrivateNativeStartupJobs };
 
 /** @internal Composition of already-admitted primitives; openBackend owns admission. */
@@ -303,6 +305,12 @@ export class CoordinatorBackend implements RuntimeBackend {
 }
 
 export async function openBackend(options: FixtureBackendOptions): Promise<RuntimeBackend> {
+  if (options[privateCompiledProcessBroker] !== undefined && options[privateGoBrokerSpawn] !== undefined) {
+    throw new Error('Private broker selectors conflict.');
+  }
+  if (options[privateGoBrokerSpawn] !== undefined && options[privateGoBrokerSpawn].controlVersion !== 2) {
+    throw new Error('Private Go broker requires protocol version 2.');
+  }
   options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
@@ -327,7 +335,8 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     }
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
-    const broker = options[privateCompiledProcessBroker] === undefined ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]);
+    const broker = options[privateGoBrokerSpawn] ?? (options[privateCompiledProcessBroker] === undefined
+      ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]));
     const nativeJobs = options[privateNativeStartupJobs];
     supervisor = options[privateRecheckSupervisorIdentity] === true
       ? await ProcessSupervisor.create(candidate.dataRoot, broker, nativeJobs) : bootstrap.supervisorFor(candidate.dataRoot, broker, nativeJobs);
