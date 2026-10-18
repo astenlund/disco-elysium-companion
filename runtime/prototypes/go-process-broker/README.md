@@ -1,6 +1,6 @@
-# Private Go broker control parser
+# Private Go broker prototype
 
-This source-only prototype parses the version-2 broker control frame. It cannot launch a child, own a job or replace the current PowerShell or C# broker. The compiled selector remains off. No test or build has run yet.
+This source-only prototype drafts version-2 control parsing, Windows job ownership and child launch. It cannot replace the current PowerShell or C# broker because it has not been built, run or validated against native process behavior. The compiled selector remains off.
 
 The current parser checks the 1,048,576-byte frame budget, 65,536-token and 524,288-decoded-text-byte config budgets, strict UTF-8, exact top-level fields, duplicate JSON keys, JSON value kinds, required scalar values, protocol version, parent PID, argument array and child environment. Its case-folding of environment names is provisional: Go's Unicode uppercasing is not established as equivalent to the C# broker's ordinal-ignore-case comparison. That difference must be resolved with Windows-specific parity cases before this parser can be used for any supervised child.
 
