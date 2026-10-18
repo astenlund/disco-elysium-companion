@@ -3,7 +3,9 @@
 param(
     [Parameter(Mandatory)] [string] $Root,
     [Parameter(Mandatory)] [string] $Game,
-    [string] $NativeSource = ''
+    [string] $NativeSource = '',
+    [string] $PinSource = '',
+    [string] $PinRequestJson = ''
 )
 
 Set-StrictMode -Version Latest
@@ -42,7 +44,20 @@ try {
             missing = @($admission.Missing)
         }))
     }
-    [Console]::Out.Write((ConvertTo-Json -InputObject ([ordered]@{ sid = $sid; paths = @($results.ToArray()) }) -Depth 8 -Compress))
+    $response = [ordered]@{ sid = $sid; paths = @($results.ToArray()) }
+    if ([string]::IsNullOrEmpty($PinSource) -ne [string]::IsNullOrEmpty($PinRequestJson)) {
+        throw [IO.InvalidDataException]::new('Selected bootstrap inputs are incomplete.')
+    }
+    if (-not [string]::IsNullOrEmpty($PinSource)) {
+        if ([string]::IsNullOrEmpty($NativeSource) -or
+            [Text.UTF8Encoding]::new($false, $true).GetByteCount($PinSource) -gt 1048576 -or
+            [Text.UTF8Encoding]::new($false, $true).GetByteCount($PinRequestJson) -gt 65536) {
+            throw [IO.InvalidDataException]::new('Selected bootstrap source or request is invalid.')
+        }
+        $pinBlock = [ScriptBlock]::Create($PinSource)
+        $response['imagePins'] = & $pinBlock -RequestJson $PinRequestJson -Sid $sid -Paths @($results.ToArray()) -Game $Game
+    }
+    [Console]::Out.Write((ConvertTo-Json -InputObject $response -Depth 16 -Compress))
     exit 0
 }
 catch {
