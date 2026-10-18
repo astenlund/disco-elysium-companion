@@ -4,7 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
-import { createChatRuntime } from './runtime.ts';
+import { createChatRuntime, privateRuntimeStartup } from './runtime.ts';
+import { prepareStartupHelperScratch } from './startup-helper-scratch.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
 import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
 
@@ -54,9 +55,27 @@ export function formatCapacityRewind(result: CapacityRewindResult | null): strin
   return `capacity rewind: affectedEvents=${verified ? count(result.affectedEvents) : 'unknown'}; inclusiveRange=${range}; retainedHandoffs=${count(result.retainedHandoffs)}; replayableHandoffs=${count(result.replayableHandoffs)}; presentationRetiredHandoffs=${count(result.presentationRetiredHandoffs)}; survivingCoreRecords=${count(result.survivingCoreRecords)}${certainty}`;
 }
 
-export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),
-  write: (text: string) => void = text => { process.stdout.write(`${text}\n`); },
-  progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); }): Promise<number> {
+const directMainToken = Symbol('directMainToken');
+const compiledSelectorEnabled = false;
+class DirectImagePinObligation {
+  private state: 'idle' | 'unknown' | 'absent' | 'ready' = 'idle';
+
+  markPossibleTransfer(): void {
+    if (this.state !== 'idle') { throw new Error('Selected image transfer has already started.'); }
+    this.state = 'unknown';
+  }
+
+  verified(status: 'ready' | 'absent'): void {
+    if (this.state !== 'unknown') { throw new Error('Selected image pin state is invalid.'); }
+    this.state = status;
+  }
+
+  get requiresHardExit(): boolean { return this.state === 'unknown' || this.state === 'ready'; }
+}
+
+async function runCliInternal(args: readonly string[], companionRoot: string,
+  write: (text: string) => void, progressSink: StartupProgressSink,
+  directToken?: symbol, pins?: DirectImagePinObligation): Promise<number> {
   const command = parseCommand(args);
   if (command === null) { write('Usage: chat | status | consumer <runtime|bridge> [--abandon-undelivered] | repair'); return 2; }
   if (command.kind === 'status') {
@@ -67,7 +86,19 @@ export async function runCli(args: readonly string[], companionRoot = fileURLToP
   if (command.kind === 'chat') {
     const progress = new StartupProgressReporter(progressSink);
     try {
-      const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase));
+      if (directToken === directMainToken && pins === undefined) { throw new Error('Direct image pin obligation is unavailable.'); }
+      const scratch = directToken === directMainToken && compiledSelectorEnabled ? await prepareStartupHelperScratch() : null;
+      let selectionStartedAt: number | null = null;
+      const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase), scratch === null ? {}
+        : { [privateRuntimeStartup]: { selectedImageBootstrap: {
+          imageRoot: path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url))),
+          scratch: scratch.root, environment: scratch.environment,
+          markPossibleTransfer: () => { pins!.markPossibleTransfer(); selectionStartedAt = performance.now(); },
+          onVerifiedPins: status => {
+            pins!.verified(status);
+            if (status === 'absent') { progress.imageAbsent(selectionStartedAt === null ? 0 : performance.now() - selectionStartedAt); }
+          },
+        } } });
       if (runtime.result === 'notOwner') { progress.finish('notOwner'); write('notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.'); return 1; }
       if (runtime.result === 'providerUnavailable') { progress.finish('providerUnavailable'); write('providerUnavailable: The provider could not start.'); return 1; }
       await runTextClient(runtime.host, { onAttached: () => progress.finish('ready') });
@@ -90,10 +121,25 @@ export async function runCli(args: readonly string[], companionRoot = fileURLToP
   } finally { await backend.shutdown(true); }
 }
 
+export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),
+  write: (text: string) => void = text => { process.stdout.write(`${text}\n`); },
+  progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); }): Promise<number> {
+  return runCliInternal(args, companionRoot, write, progressSink);
+}
+
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  try { process.exitCode = await runCli(process.argv.slice(2)); }
+  const pins = new DirectImagePinObligation();
+  const companionRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
+  const write = (value: string): void => { process.stdout.write(`${value}\n`); };
+  const progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); };
+  try {
+    const code = await runCliInternal(process.argv.slice(2), companionRoot, write, progressSink, directMainToken, pins);
+    if (pins.requiresHardExit) { process.exit(code); }
+    process.exitCode = code;
+  }
   catch (error) {
     process.stderr.write(`${formatCliError(error)}\n`);
+    if (pins.requiresHardExit) { process.exit(1); }
     process.exitCode = 1;
   }
 }

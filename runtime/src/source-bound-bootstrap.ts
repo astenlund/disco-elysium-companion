@@ -50,7 +50,8 @@ export async function observeSourceBoundBootstrap(inspector: PathInspector, pare
   companionRoot: string, game: string, imageRoot: string, environment: NodeJS.ProcessEnv,
   markPossibleTransfer: () => void): Promise<SourceBoundBootstrapResult> {
   const relativeImageRoot = path.win32.relative(installationRoot, imageRoot);
-  if (path.win32.resolve(imageRoot) !== imageRoot || relativeImageRoot === '..'
+  if (path.win32.resolve(companionRoot) !== companionRoot || path.win32.resolve(imageRoot) !== imageRoot
+    || relativeImageRoot === '..'
     || relativeImageRoot.startsWith(`..${path.win32.sep}`) || path.win32.isAbsolute(relativeImageRoot)
     || !Number.isSafeInteger(parent.pid) || parent.pid < 1 || parent.pid > 2147483647
     || !/^[1-9][0-9]{0,18}$/.test(parent.created)) { throw unavailable(); }

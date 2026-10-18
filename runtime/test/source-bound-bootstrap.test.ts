@@ -57,3 +57,11 @@ test('selected bootstrap refuses invalid parent identity before possible transfe
     game, imageRoot, {}, () => { transferred = true; }));
   assert.equal(transferred, false);
 });
+
+test('selected bootstrap rejects trailing-separator scope spelling before transfer', async () => {
+  let transferred = false;
+  const inspector = { metadataStdinExpression: async () => { throw new Error('Helper must not launch.'); } } as unknown as PathInspector;
+  await assert.rejects(observeSourceBoundBootstrap(inspector, parent, `${companionRoot}${path.win32.sep}`,
+    game, imageRoot, {}, () => { transferred = true; }));
+  assert.equal(transferred, false);
+});

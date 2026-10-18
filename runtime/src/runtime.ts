@@ -1,4 +1,6 @@
-import { openBackend, privateCombinedBootstrap, privateCompiledProcessBroker, privateGoBrokerSpawn, privateNativeStartupJobs, privateScopeSourceBatch, privateStartupMetadataPlacement, privateWarmJobObserver } from './backend/index.ts';
+import { openBackend, privateCombinedBootstrap, privateCompiledProcessBroker, privateGoBrokerSpawn,
+  privateNativeStartupJobs, privateScopeSourceBatch, privateSelectedImageBootstrap,
+  privateStartupMetadataPlacement, privateWarmJobObserver, type SelectedImageBootstrap } from './backend/index.ts';
 import type { RuntimeBackend } from './backend/api.ts';
 import { ClaudeProvider } from './claude-provider.ts';
 import { FileToolAdapter } from './file-tool-adapter.ts';
@@ -22,7 +24,8 @@ export interface PrivateRuntimeStartupOptions {
     readonly compiledBroker?: CompiledBrokerArtifact;
     readonly goBrokerSpawn?: BrokerSpawn;
     readonly nativeStartupJobs?: PrivateNativeStartupJobs;
-    readonly providerFactory: (text: string, fileTools: FileToolAdapter, backend: RuntimeBackend) => Provider;
+    readonly selectedImageBootstrap?: SelectedImageBootstrap;
+    readonly providerFactory?: (text: string, fileTools: FileToolAdapter, backend: RuntimeBackend) => Provider;
   };
 }
 
@@ -30,13 +33,14 @@ export interface PrivateRuntimeStartupOptions {
 export function chatBackendOptions(companionRoot: string, onStatus: () => void, onInvalidated: (reason: Correction['reason']) => void,
   onStartupPhase: ((phase: StartupPhase) => void) | undefined, fastCopiedStartup: boolean,
   compiledBroker?: CompiledBrokerArtifact, nativeStartupJobs?: PrivateNativeStartupJobs,
-  goBrokerSpawn?: BrokerSpawn): Parameters<typeof openBackend>[0] {
+  goBrokerSpawn?: BrokerSpawn, selectedImageBootstrap?: SelectedImageBootstrap): Parameters<typeof openBackend>[0] {
   return { companionRoot, startupMetadata: true, onStatus, onInvalidated, onStartupPhase,
-    ...(fastCopiedStartup ? { [privateCombinedBootstrap]: true as const, [privateScopeSourceBatch]: true as const,
+    ...(fastCopiedStartup || selectedImageBootstrap !== undefined ? { [privateCombinedBootstrap]: true as const, [privateScopeSourceBatch]: true as const,
       [privateWarmJobObserver]: true as const, [privateStartupMetadataPlacement]: 'postGuard' as const,
       ...(compiledBroker === undefined ? {} : { [privateCompiledProcessBroker]: compiledBroker }),
       ...(goBrokerSpawn === undefined ? {} : { [privateGoBrokerSpawn]: goBrokerSpawn }),
-      ...(nativeStartupJobs === undefined ? {} : { [privateNativeStartupJobs]: nativeStartupJobs }) } : {}) };
+      ...(nativeStartupJobs === undefined ? {} : { [privateNativeStartupJobs]: nativeStartupJobs }),
+      ...(selectedImageBootstrap === undefined ? {} : { [privateSelectedImageBootstrap]: selectedImageBootstrap }) } : {}) };
 }
 
 /** @internal Cleanup must continue even when the worker cannot close. */
@@ -83,7 +87,8 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     const opened: RuntimeBackend = await openBackend(chatBackendOptions(companionRoot, () => host?.statusChanged(),
       (reason: Correction['reason']) => { pending?.abort(); if (host === null) { invalidatedBeforeHost = reason; } else { host.invalidate(reason); } }, reportPhase,
       privateOptions[privateRuntimeStartup]?.fastCopiedStartup === true, privateOptions[privateRuntimeStartup]?.compiledBroker,
-      privateOptions[privateRuntimeStartup]?.nativeStartupJobs, privateOptions[privateRuntimeStartup]?.goBrokerSpawn));
+      privateOptions[privateRuntimeStartup]?.nativeStartupJobs, privateOptions[privateRuntimeStartup]?.goBrokerSpawn,
+      privateOptions[privateRuntimeStartup]?.selectedImageBootstrap));
     backend = opened;
     let earlyInstructions: Awaited<ReturnType<typeof assembleInstructions>> | null = null;
     if (privateOptions[privateRuntimeStartup]?.allowUnboundProviderPrestart === true) {
@@ -93,7 +98,7 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     }
     const makeTools = () => FileToolAdapter.create({ companionRoot: backend!.scope.companionRoot, inspector: backend!.inspector, supervisor: backend!.supervisor,
       isActive: (instance, session) => host?.isToolActive(instance, session) ?? false, dialogsAvailable: () => host?.dialogsAvailable ?? false });
-    const makeProvider = (text: string, fileTools: FileToolAdapter): Provider => privateOptions[privateRuntimeStartup]?.providerFactory(text, fileTools, backend!)
+    const makeProvider = (text: string, fileTools: FileToolAdapter): Provider => privateOptions[privateRuntimeStartup]?.providerFactory?.(text, fileTools, backend!)
       ?? new ClaudeProvider({ companionRoot: backend!.scope.companionRoot, config: backend!.config,
       appendText: text, supervisor: backend!.supervisor, boundary: instance => fileTools.boundary(instance), isCurrent: instance => host?.isProviderCurrent(instance) ?? false,
       onPassiveSignal: (instance, signal) => host?.passiveSignal(instance, signal) });

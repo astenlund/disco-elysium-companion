@@ -13,8 +13,10 @@ import { Deadline } from '../deadline.ts';
 import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
+import { releaseGoBrokerSpawn } from '../go-broker-artifact.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
 import { OperationStore } from '../operations.ts';
+import { releaseNativeJobObserverArtifact } from '../native-observer-artifact.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
 import { ProcessSupervisor, processRoles, type BrokerSpawn, type PrivateNativeStartupJobs } from '../process.ts';
@@ -22,6 +24,7 @@ import { createReadOnlyInspection } from '../read-only-inspection.ts';
 import { maintainRuntimeStorage } from '../resource-lifecycle/retention.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
 import { discoverScope, discoverScopeWithPrincipal, initializeScope, scopeFromAdmittedBinding, type ScopeCandidate } from '../scope.ts';
+import { observeSourceBoundBootstrap } from '../source-bound-bootstrap.ts';
 import { SerialQueue } from '../serial.ts';
 import { ScopeStorage } from '../storage.ts';
 import { StartupMetadataSession } from '../startup-metadata.ts';
@@ -49,11 +52,20 @@ export const privateCombinedBootstrap = Symbol('privateCombinedBootstrap');
 export const privateCompiledProcessBroker = Symbol('privateCompiledProcessBroker');
 export const privateGoBrokerSpawn = Symbol('privateGoBrokerSpawn');
 export const privateNativeStartupJobs = Symbol('privateNativeStartupJobs');
+export const privateSelectedImageBootstrap = Symbol('privateSelectedImageBootstrap');
+export interface SelectedImageBootstrap {
+  readonly imageRoot: string;
+  readonly scratch: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly markPossibleTransfer: () => void;
+  readonly onVerifiedPins: (status: 'ready' | 'absent') => void;
+}
 type FixtureBackendOptions = BackendOptions & { readonly [privateStartupMetadataPlacement]?: 'postGuard'; readonly [privateScopeSourceBatch]?: true;
   readonly [privateRecheckSupervisorIdentity]?: true; readonly [privateWarmJobObserver]?: true;
   readonly [privateCombinedBootstrap]?: true; readonly [privateCompiledProcessBroker]?: CompiledBrokerArtifact;
   readonly [privateGoBrokerSpawn]?: BrokerSpawn;
-  readonly [privateNativeStartupJobs]?: PrivateNativeStartupJobs };
+  readonly [privateNativeStartupJobs]?: PrivateNativeStartupJobs;
+  readonly [privateSelectedImageBootstrap]?: SelectedImageBootstrap };
 
 /** @internal Composition of already-admitted primitives; openBackend owns admission. */
 export class CoordinatorBackend implements RuntimeBackend {
@@ -305,6 +317,12 @@ export class CoordinatorBackend implements RuntimeBackend {
 }
 
 export async function openBackend(options: FixtureBackendOptions): Promise<RuntimeBackend> {
+  const selected = options[privateSelectedImageBootstrap];
+  if (selected !== undefined && (options[privateCompiledProcessBroker] !== undefined
+    || options[privateGoBrokerSpawn] !== undefined || options[privateNativeStartupJobs] !== undefined
+    || options[privateRecheckSupervisorIdentity] === true)) {
+    throw new Error('Selected image bootstrap conflicts with private process selectors.');
+  }
   if (options[privateCompiledProcessBroker] !== undefined && options[privateGoBrokerSpawn] !== undefined) {
     throw new Error('Private broker selectors conflict.');
   }
@@ -314,7 +332,7 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
   options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
-  const bootstrap = await createReadOnlyInspection(options.companionRoot);
+  const bootstrap = await createReadOnlyInspection(options.companionRoot, selected?.environment);
   let guard: Awaited<ReturnType<typeof takeInstanceGuard>> | null = null;
   let kernel: Kernel | null = null;
   let supervisor: ProcessSupervisor | null = null;
@@ -325,7 +343,14 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
   let startupGroup: StartupWorkerGroup | null = null;
   try {
     let candidate: ScopeCandidate;
-    if (options[privateCombinedBootstrap] === true) {
+    let selectedPins: 'ready' | 'absent' | null = null;
+    if (selected !== undefined) {
+      const observed = await observeSourceBoundBootstrap(bootstrap.inspector, bootstrap.parentIdentity,
+        options.companionRoot, config.game, selected.imageRoot, selected.environment, selected.markPossibleTransfer);
+      candidate = observed.candidate;
+      selectedPins = observed.imagePins.status;
+      selected.onVerifiedPins(selectedPins);
+    } else if (options[privateCombinedBootstrap] === true) {
       candidate = await discoverScopeWithPrincipal(bootstrap.inspector, options.companionRoot, config.game);
     } else {
       let principal: string;
@@ -335,9 +360,11 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     }
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
-    const broker = options[privateGoBrokerSpawn] ?? (options[privateCompiledProcessBroker] === undefined
-      ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]));
-    const nativeJobs = options[privateNativeStartupJobs];
+    const broker = selectedPins === 'ready' ? releaseGoBrokerSpawn(selected!.imageRoot, selected!.scratch)
+      : options[privateGoBrokerSpawn] ?? (options[privateCompiledProcessBroker] === undefined
+        ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]));
+    const nativeJobs = selectedPins === 'ready' ? releaseNativeJobObserverArtifact(selected!.imageRoot, selected!.scratch)
+      : options[privateNativeStartupJobs];
     supervisor = options[privateRecheckSupervisorIdentity] === true
       ? await ProcessSupervisor.create(candidate.dataRoot, broker, nativeJobs) : bootstrap.supervisorFor(candidate.dataRoot, broker, nativeJobs);
     const inspector = new PathInspector(supervisor);

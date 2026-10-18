@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -27,5 +28,19 @@ test('helper profile destinations are distinct admitted directories under reposi
     assert.equal(path.win32.isAbsolute(relative), false);
     assert.equal(relative.startsWith(`.tmp${path.win32.sep}runtime-startup-`), true);
     await fs.rm(prepared.root, { recursive: true, force: true });
+  }
+});
+
+test('helper scratch creates and admits its parent on a fresh installation', async () => {
+  const parent = path.win32.join(repository, '.tmp', `fresh-startup-${randomUUID()}`);
+  assert.equal(await fs.stat(parent).then(() => true, () => false), false);
+  const prepared = await prepareStartupHelperScratch(parent);
+  try {
+    assert.equal(path.win32.dirname(prepared.root), parent);
+    assert.equal((await fs.stat(prepared.environment.TEMP!)).isDirectory(), true);
+  } finally {
+    const relative = path.win32.relative(repository, parent);
+    assert.ok(relative.startsWith(`.tmp${path.win32.sep}fresh-startup-`));
+    await fs.rm(parent, { recursive: true, force: true });
   }
 });

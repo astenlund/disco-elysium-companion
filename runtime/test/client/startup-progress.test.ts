@@ -54,3 +54,18 @@ test('terminal progress distinguishes ownership and provider refusal from startu
   assert.equal(terminal('providerUnavailable'), `[${at}] startup: stopped: provider unavailable; elapsed 1s`);
   assert.equal(terminal('failed'), `[${at}] startup: failed; elapsed 1s`);
 });
+
+test('absent compiled images disclose the fallback and its separate selection time', () => {
+  const events: StartupProgress[] = [];
+  let elapsed = 0;
+  const reporter = new StartupProgressReporter(event => events.push(event), 15000,
+    () => elapsed, () => new Date('2026-10-13T13:00:00.000Z'));
+  reporter.phase('scopeAdmission');
+  elapsed = 6200;
+  reporter.imageAbsent(4100);
+  reporter.finish('ready');
+  assert.equal(formatStartupProgress(events[1]!),
+    '[2026-10-13T13:00:00.000Z] startup: compiled images absent; using PowerShell fallback; image selection 4s; elapsed 6s');
+  assert.equal(events[1]!.selectionMs, 4100);
+  assert.equal(events[2]!.kind, 'ready');
+});

@@ -5,14 +5,22 @@ import { fileURLToPath } from 'node:url';
 import { admitPrivateDirectory } from './compiled-broker.ts';
 
 const installationRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
-const scratchParent = path.win32.join(installationRoot, '.tmp');
+const defaultScratchParent = path.win32.join(installationRoot, '.tmp');
 const writableNames = ['temp', 'tmp', 'tmpdir', 'userprofile', 'appdata', 'localappdata', 'dotnet',
   'nuget-packages', 'nuget-http', 'nuget-plugins', 'nuget-scratch', 'bundle', 'node-cache'] as const;
 
 export interface StartupHelperScratch { readonly root: string; readonly environment: NodeJS.ProcessEnv }
 
 /** @internal Prepares distinct helper-only destinations without changing the provider's ambient profile. */
-export async function prepareStartupHelperScratch(): Promise<StartupHelperScratch> {
+export async function prepareStartupHelperScratch(scratchParent = defaultScratchParent): Promise<StartupHelperScratch> {
+  const relative = path.win32.relative(installationRoot, scratchParent);
+  if (path.win32.resolve(scratchParent) !== scratchParent || relative === '' || relative === '..'
+    || relative.startsWith(`..${path.win32.sep}`) || path.win32.isAbsolute(relative)) {
+    throw new Error('Startup scratch parent is outside the installation root.');
+  }
+  admitPrivateDirectory(path.win32.dirname(scratchParent));
+  try { await fs.mkdir(scratchParent); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; } }
   admitPrivateDirectory(scratchParent);
   const root = await fs.mkdtemp(path.win32.join(scratchParent, 'runtime-startup-'));
   admitPrivateDirectory(root);

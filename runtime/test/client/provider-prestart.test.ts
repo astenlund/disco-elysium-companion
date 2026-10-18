@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { privateCombinedBootstrap, privateScopeSourceBatch, privateStartupMetadataPlacement, privateWarmJobObserver } from '../../src/backend/index.ts';
+import { privateCombinedBootstrap, privateScopeSourceBatch, privateSelectedImageBootstrap,
+  privateStartupMetadataPlacement, privateWarmJobObserver } from '../../src/backend/index.ts';
 import { PendingProviderStart, PendingProviderStopError, selectPendingProviderStart } from '../../src/provider-lifecycle.ts';
 import { chatBackendOptions, finalizeAttachmentSafety } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
@@ -23,6 +24,20 @@ test('copied-root backend selectors route only through the explicit private flag
   assert.equal(privateFixture[privateWarmJobObserver], true);
   assert.equal(privateFixture[privateStartupMetadataPlacement], 'postGuard');
   assert.equal(Object.getOwnPropertySymbols(privateFixture).length, 4);
+});
+
+test('selected image bootstrap is separate from ordinary and copied-root callers', () => {
+  const selection = { imageRoot: 'C:/private/install', scratch: 'C:/private/scratch', environment: {},
+    markPossibleTransfer: () => {}, onVerifiedPins: (_status: 'ready' | 'absent') => {} };
+  const ordinary = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, false);
+  const copied = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, true);
+  const selected = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, false,
+    undefined, undefined, undefined, selection);
+  assert.equal(ordinary[privateSelectedImageBootstrap], undefined);
+  assert.equal(copied[privateSelectedImageBootstrap], undefined);
+  assert.equal(selected[privateSelectedImageBootstrap], selection);
+  assert.equal(selected[privateScopeSourceBatch], true);
+  assert.equal(selected[privateStartupMetadataPlacement], 'postGuard');
 });
 
 test('guarded selector resumes an exact binding without marking it current', async () => {

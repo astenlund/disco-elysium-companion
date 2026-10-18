@@ -54,7 +54,11 @@ function within(root: string, candidate: string): boolean {
 export function admitPrivateDirectory(directory: string): void {
   if (!path.win32.isAbsolute(directory) || path.win32.resolve(directory) !== directory) { throw unavailable(); }
   const resolved = path.win32.resolve(directory);
-  if (!within(installationRoot, resolved) || realpathSync.native(resolved).toLowerCase() !== resolved.toLowerCase()) { throw unavailable(); }
+  if (resolved !== path.win32.resolve(installationRoot) && !within(installationRoot, resolved)
+    || realpathSync.native(resolved).toLowerCase() !== resolved.toLowerCase()) { throw unavailable(); }
+  const root = lstatSync(installationRoot);
+  if (!root.isDirectory() || root.isSymbolicLink()) { throw unavailable(); }
+  if (resolved === path.win32.resolve(installationRoot)) { return; }
   let current = installationRoot;
   for (const component of path.win32.relative(installationRoot, resolved).split(path.win32.sep)) {
     current = path.win32.join(current, component);
