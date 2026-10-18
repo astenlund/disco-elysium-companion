@@ -1,0 +1,51 @@
+{
+  "compiledImagesVersion": 1,
+  "toolchain": {
+    "name": "go",
+    "version": "go1.26.0",
+    "target": "windows/amd64",
+    "flags": [
+      "-buildvcs=false",
+      "-trimpath",
+      "-ldflags=-buildid="
+    ]
+  },
+  "broker": {
+    "file": "go-broker.exe",
+    "bytes": 3492864,
+    "sha256": "aa52d71f8a2243bdcb83bc394a12fe8193e413eb70b3543130f69df5a99c5d13",
+    "sources": [
+      {
+        "path": "runtime/prototypes/go-process-broker/go.mod",
+        "sha256": "88baaaade6c330321d774dfd20671bb0dc5748fbb051c6fee4ae1eae455c957a"
+      },
+      {
+        "path": "runtime/prototypes/go-process-broker/control.go",
+        "sha256": "0bb49ef2da8864fa5919cdcbcf958a4570b0bf5fa10b0fa6dccca020e4d1c696"
+      },
+      {
+        "path": "runtime/prototypes/go-process-broker/child_windows.go",
+        "sha256": "c1421211a9cee8564c015920a8c9d14a6b2ff5c840b64c1e9f58d728964f46b2"
+      },
+      {
+        "path": "runtime/prototypes/go-process-broker/job_windows.go",
+        "sha256": "f23f76c7c53848fe7b2ef8dbb4b3d75e723a35fc49a407d4a66b674c40817841"
+      },
+      {
+        "path": "runtime/prototypes/go-process-broker/cmd/go-broker/main.go",
+        "sha256": "f21929ae4217ced4a3c35829b1d898ff34e19c0ca1dd72cb530d5c8b0b9e13c5"
+      }
+    ]
+  },
+  "observer": {
+    "file": "job-observer.exe",
+    "bytes": 3094016,
+    "sha256": "bb3818599c2b5c5c4da98af42daea4300bfdb3103c0d420009021bd8af313fec",
+    "sources": [
+      {
+        "path": "runtime/prototypes/job-observer.go",
+        "sha256": "41506467461594bb00aab61047371d546e9c1047a0d47c2f3db15e16c2940d26"
+      }
+    ]
+  }
+}

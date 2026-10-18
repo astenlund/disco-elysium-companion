@@ -1,0 +1,2 @@
+runtime/native/*.exe binary
+runtime/native/compiled-images.json text eol=lf
