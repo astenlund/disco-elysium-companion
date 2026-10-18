@@ -7,6 +7,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { admitPrivateDirectory, brokerEnvironment, pinPrivateFile, verifyPinnedPrivateFile } from '../src/compiled-broker.ts';
+import { jsonBudgets } from '../src/json.ts';
+import { readBoundedPrivateManifest } from '../src/native-observer-artifact.ts';
 import { childEnvironment, nativeObserverEnvironment, SupervisorError } from '../src/process.ts';
 import { chatBackendOptions } from '../src/runtime.ts';
 import { privateCompiledProcessBroker, privateNativeStartupJobs } from '../src/backend/index.ts';
@@ -35,6 +37,26 @@ test('private artifact admission requires a repo-bound ordinary file and directo
     await fs.symlink(scratch, junction, 'junction');
     assert.throws(() => admitPrivateDirectory(junction));
     assert.throws(() => pinPrivateFile(path.join(junction, 'ordinary.txt'), hash));
+  } finally {
+    assert.ok(path.relative(repository, scratch).startsWith('.tmp' + path.sep));
+    await fs.rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test('private observer manifest admission refuses an oversized ordinary file', async () => {
+  const scratch = path.join(repository, '.tmp', `observer-manifest-${randomUUID()}`);
+  assert.ok(path.relative(repository, scratch).startsWith('.tmp' + path.sep));
+  await fs.mkdir(scratch, { recursive: true });
+  const ordinary = path.join(scratch, 'manifest.json');
+  const oversized = path.join(scratch, 'oversized.json');
+  const bytes = Buffer.from('{"sourceSha256":"test"}');
+  try {
+    await fs.writeFile(ordinary, bytes, { flag: 'wx' });
+    const handle = await fs.open(oversized, 'wx');
+    try { await handle.truncate(jsonBudgets.config.maxBytes + 1); }
+    finally { await handle.close(); }
+    assert.deepEqual(readBoundedPrivateManifest(ordinary), bytes);
+    assert.throws(() => readBoundedPrivateManifest(oversized), /manifest is unavailable/);
   } finally {
     assert.ok(path.relative(repository, scratch).startsWith('.tmp' + path.sep));
     await fs.rm(scratch, { recursive: true, force: true });
