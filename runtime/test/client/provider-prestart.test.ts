@@ -4,7 +4,7 @@ import test from 'node:test';
 import { privateCombinedBootstrap, privateScopeSourceBatch, privateSelectedImageBootstrap,
   privateStartupMetadataPlacement, privateWarmJobObserver } from '../../src/backend/index.ts';
 import { PendingProviderStart, PendingProviderStopError, selectPendingProviderStart } from '../../src/provider-lifecycle.ts';
-import { chatBackendOptions, finalizeAttachmentSafety } from '../../src/runtime.ts';
+import { chatBackendOptions, cleanupFailedChatRuntime, finalizeAttachmentSafety } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { Provider, ProviderSession } from '../../src/provider.ts';
 import { capabilities, deferred, FakeBackend, FakeProvider, FakeSession, generation, instructionHash, timestamp, until } from './support.ts';
@@ -205,6 +205,27 @@ test('invalidation before initial host start leaves only status authority', asyn
   assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
   await host.shutdown();
 });
+
+for (const trigger of ['invalidation', 'safety refusal'] as const) {
+  test(`an unproved candidate stop after ${trigger} keeps the guard through host cleanup`, async () => {
+    const backend = new FakeBackend();
+    Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+    const provider = new FakeProvider();
+    provider.configure = session => { session.close = async () => { throw new Error('Close failed.'); }; };
+    const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
+    assert.ok(pending);
+    if (trigger === 'safety refusal') { Object.assign(backend, { providerSafety: async () => { throw new Error('Safety unavailable.'); } }); }
+    const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, pendingStart: pending, requireVerifiedAttach: true,
+      providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+    if (trigger === 'invalidation') { host.invalidate('contextUncertain'); }
+    const startFailure = await host.start().then(() => null, (error: unknown) => error);
+    assert.ok(startFailure instanceof PendingProviderStopError);
+    await assert.rejects(cleanupFailedChatRuntime(startFailure, backend.asRuntime(), host, null), PendingProviderStopError);
+    assert.equal(backend.held, true);
+    assert.equal(backend.events.includes('workers'), true);
+    assert.equal(backend.events.includes('shutdown'), false);
+  });
+}
 
 test('later correction waits for a new durable generation before replacing the provider', async () => {
   const backend = new FakeBackend();

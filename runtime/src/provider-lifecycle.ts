@@ -314,10 +314,12 @@ export class ProviderLifecycle {
     } finally { this.initialStartActive = false; }
   }
 
+  /** Keeps the candidate until its stop is proved, so a later close repeats an unproved stop instead of shutting down cleanly. */
   async discardPending(): Promise<void> {
     const pending = this.pendingStart;
-    this.pendingStart = null;
-    await pending?.cancel();
+    if (pending === null) { return; }
+    await pending.cancel();
+    if (this.pendingStart === pending) { this.pendingStart = null; }
   }
 
   async verifyLive(): Promise<void> {
