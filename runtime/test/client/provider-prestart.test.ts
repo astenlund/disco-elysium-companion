@@ -680,7 +680,7 @@ test('a provider that keeps exiting during the final check attaches from its set
 test('after a failed startup phase, valid provider safety still starts and attaches the provider', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
-  Object.assign(backend.status, { journal: { state: 'faulted', fault: 'journalUnavailable', unacknowledgedEvents: 0 },
+  Object.assign(backend.status, { journal: { state: 'fault', fault: 'journalUnavailable', unacknowledgedEvents: 0 },
     freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalUnavailable' } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
