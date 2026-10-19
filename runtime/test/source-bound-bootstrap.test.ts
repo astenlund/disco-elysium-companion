@@ -3,7 +3,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import type { PathInspector } from '../src/admission.ts';
+import { DataRootUnavailableError, type PathInspector } from '../src/admission.ts';
+import { SupervisorError } from '../src/process.ts';
 import { scopeComponents } from '../src/scope.ts';
 import { helperFailureDetail, observeSourceBoundBootstrap, SourceBoundBootstrapError } from '../src/source-bound-bootstrap.ts';
 
@@ -48,6 +49,23 @@ test('selected bootstrap rejects a malformed reply after marking possible remote
   await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot,
     { TEMP: imageRoot }, () => { transferred = true; }));
   assert.equal(transferred, true);
+});
+
+test('helper faults after the transfer mark refuse without settling the pin obligation', async () => {
+  const empty = Buffer.alloc(0);
+  const faults: ReadonlyArray<readonly [string, () => Promise<unknown>]> = [
+    ['late reply', async () => { throw new DataRootUnavailableError('Metadata deadline expired.'); }],
+    ['job-stop uncertainty', async () => { throw new SupervisorError('termination-unverified', 'Process-tree termination is unverified.'); }],
+    ['no receipt', async () => ({ exitCode: 0, stderr: empty, stdout: empty })],
+    ['truncated receipt', async () => ({ exitCode: 0, stderr: empty, stdout: Buffer.from('{"sid":"') })],
+  ];
+  for (const [name, fault] of faults) {
+    let transferred = false;
+    const inspector = { metadataStdinExpression: fault } as unknown as PathInspector;
+    await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot, { TEMP: imageRoot },
+      () => { transferred = true; }), Error, name);
+    assert.equal(transferred, true, name);
+  }
 });
 
 test('a failed helper reports a bounded printable reason without changing the player-facing message', async () => {
