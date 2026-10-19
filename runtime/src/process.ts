@@ -13,6 +13,11 @@ import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, stringifyJson, t
 
 export const processRoles = ['core', 'publication', 'provider', 'watcher', 'metadata', 'startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
 export type ProcessRole = typeof processRoles[number];
+/** Answers warm job observations; resolving null asks the supervisor for a fresh one-shot observation instead. */
+export type StartupJobObserver = (names: readonly string[], timeoutMs: number) => Promise<readonly boolean[] | null>;
+// Roles whose requests run inside the PathInspector queue are always observed one-shot: their stop proofs can be awaited
+// from within that queue, where a warm observation would wait behind its own caller.
+const inspectorQueueRoles: readonly ProcessRole[] = ['startupMetadata', 'metadata', 'startupCoreReply'];
 export type SupervisorReason = 'deadline' | 'capture-overflow' | 'abnormal-exit' | 'result-invalid' | 'termination-unverified';
 export class SupervisorError extends Error {
   override readonly name = 'SupervisorError';
@@ -339,7 +344,7 @@ export class ProcessSupervisor {
   private readonly helperEnvironment: NodeJS.ProcessEnv | undefined;
   private readonly active = new Map<ProcessRole, OwnedProcess | null>();
   private readonly stopping = new Map<ProcessRole, Promise<void>>();
-  private startupJobObserver: ((names: readonly string[], timeoutMs: number) => Promise<readonly boolean[]>) | null = null;
+  private startupJobObserver: StartupJobObserver | null = null;
 
   private constructor(parent: ProcessIdentity, canonicalScope: string, createBroker: BrokerSpawn = spawnBroker,
     nativeJobs?: PrivateNativeStartupJobs, helperEnvironment?: NodeJS.ProcessEnv) {
@@ -364,7 +369,7 @@ export class ProcessSupervisor {
 
   jobName(role: ProcessRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
 
-  attachStartupJobObserver(observer: (names: readonly string[], timeoutMs: number) => Promise<readonly boolean[]>): void {
+  attachStartupJobObserver(observer: StartupJobObserver): void {
     if (this.startupJobObserver !== null) { throw new SupervisorError('result-invalid', 'Startup job observer is already attached.'); }
     this.startupJobObserver = observer;
   }
@@ -394,16 +399,21 @@ export class ProcessSupervisor {
     }
   }
 
+  private observeJobsOneShot(names: readonly string[], timeoutMs: number): Promise<readonly boolean[]> {
+    return names.length === 1 ? jobAbsent(names[0]!, timeoutMs, this.helperEnvironment).then(absent => [absent])
+      : jobsAbsent(names, undefined, timeoutMs, this.helperEnvironment);
+  }
+
   private async observeUnownedJobs(names: readonly string[], timeoutMs: number): Promise<readonly boolean[]> {
     if (this.nativeJobs !== undefined) { return this.observeNativeJobs(names, timeoutMs); }
     const observer = this.startupJobObserver;
-    if (observer === null || names.includes(this.jobName('startupMetadata')) || names.includes(this.jobName('metadata'))) {
-      return names.length === 1 ? [await jobAbsent(names[0]!, timeoutMs, this.helperEnvironment)]
-        : jobsAbsent(names, undefined, timeoutMs, this.helperEnvironment);
+    if (observer === null || inspectorQueueRoles.some(role => names.includes(this.jobName(role)))) {
+      return this.observeJobsOneShot(names, timeoutMs);
     }
-    let result: readonly boolean[];
+    let result: readonly boolean[] | null;
     try { result = await observer([...names], timeoutMs); }
     catch { throw new SupervisorError('termination-unverified', 'Startup job observation is unavailable.'); }
+    if (result === null) { return this.observeJobsOneShot(names, timeoutMs); }
     if (result.length !== names.length || result.some(value => typeof value !== 'boolean')) {
       throw new SupervisorError('termination-unverified', 'Startup job observation is invalid.');
     }

@@ -56,7 +56,12 @@ export class PathInspector {
 
   idle(): Promise<void> { return this.queue.idle(); }
 
-  observeStartupJobs(names: readonly string[], timeoutMs = 5000): Promise<readonly boolean[]> {
+  /** Resolves null once the warm worker has verifiably stopped, so the supervisor takes a fresh one-shot observation. */
+  observeStartupJobs(names: readonly string[], timeoutMs = 5000): Promise<readonly boolean[] | null> {
+    if (this.startupClosing === null && this.startupSession?.canFallBack === true) {
+      this.dropVerifiedStartupSession();
+      return Promise.resolve(null);
+    }
     return this.queue.run(() => {
       if (this.startupClosing !== null || this.startupSession === null) {
         throw new DataRootUnavailableError('Startup job observation is unavailable.');
@@ -68,6 +73,12 @@ export class PathInspector {
   attachStartupSession(session: StartupMetadataSession): void {
     if (this.startupSession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup metadata session is already attached.'); }
     this.startupSession = session;
+  }
+
+  // A verifiably stopped worker supplies no further answers; its warm job observer goes with it.
+  private dropVerifiedStartupSession(): void {
+    this.startupSession = null;
+    this.supervisor.clearStartupJobObserver();
   }
 
   attachStartupCoreReplySession(session: StartupCoreReplySession): void {
@@ -107,7 +118,7 @@ export class PathInspector {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
       if (startupSession !== null && startupSession.supports(scriptPath, frozenArgs, frozenInput)) {
-        if (startupSession.canFallBack) { this.startupSession = null; }
+        if (startupSession.canFallBack) { if (this.startupSession === startupSession) { this.dropVerifiedStartupSession(); } }
         else { return startupSession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
       }
       if (coreReplySession !== null && coreReplySession.supports(scriptPath, frozenArgs, frozenInput)) {

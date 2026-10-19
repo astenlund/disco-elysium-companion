@@ -101,6 +101,55 @@ test('one-shot metadata stop does not reenter its own warm observation queue', {
   } finally { supervisor.clearStartupJobObserver(); }
 });
 
+test('a startup core-reply stop inside the inspector queue is proved without the warm observer', { timeout: 30000 }, async () => {
+  const scope = path.join(root, '.tmp', `core-reply-observer-${randomUUID()}`);
+  const supervisor = await ProcessSupervisor.create(scope);
+  const inspector = new PathInspector(supervisor);
+  let warmQueries = 0;
+  supervisor.attachStartupJobObserver(async () => { warmQueries += 1; throw new Error('Unexpected worker reentry.'); });
+  const child = supervisor.spawn('startupCoreReply', { command: process.execPath, args: [childScript, 'wait'], cwd: root });
+  child.stdout.resume(); child.stderr.resume(); child.stdin.end();
+  let stopped = false;
+  try {
+    await child.ready;
+    inspector.attachStartupCoreReplySession({ supports: () => true, canFallBack: false, close: async () => {},
+      invoke: async () => {
+        await supervisor.stop('startupCoreReply');
+        stopped = true;
+        return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      } } as never);
+    const started = performance.now();
+    await inspector.metadata(identityScript, [], root, 30000, Buffer.from('{}'));
+    assert.equal(stopped, true);
+    assert.equal(warmQueries, 0);
+    assert.ok(performance.now() - started < 10000);
+  } finally {
+    supervisor.clearStartupJobObserver();
+    await supervisor.stop('startupCoreReply');
+  }
+});
+
+test('a verifiably stopped warm worker hands later termination proofs to one-shot observation', { timeout: 60000 }, async () => {
+  for (const dropBy of ['metadata', 'observation'] as const) {
+    const scope = path.join(root, '.tmp', `stopped-worker-observer-${randomUUID()}`);
+    const supervisor = await ProcessSupervisor.create(scope);
+    const inspector = new PathInspector(supervisor);
+    let warmQueries = 0;
+    inspector.attachStartupSession({ canFallBack: true, supports: () => true, close: async () => {},
+      observeJobStates: async (names: readonly string[]) => { warmQueries += 1; return names.map(() => true); } } as never);
+    supervisor.attachStartupJobObserver((names, timeoutMs) => inspector.observeStartupJobs(names, timeoutMs));
+    if (dropBy === 'metadata') {
+      const identity = await inspector.metadata(identityScript, ['-ProcessId', String(process.pid)], root);
+      assert.equal(identity.exitCode, 0, dropBy);
+    }
+    const first = await supervisor.run('core', { command: process.execPath, args: [childScript, 'arguments'], cwd: root }, 30000);
+    const second = await supervisor.run('core', { command: process.execPath, args: [childScript, 'arguments'], cwd: root }, 30000);
+    assert.equal(first.exitCode, 0, dropBy);
+    assert.equal(second.exitCode, 0, dropBy);
+    assert.equal(warmQueries, 0, dropBy);
+  }
+});
+
 test('admits only the exact live owned startup metadata job', { timeout: 60000 }, async t => {
   const scope = path.join(root, '.tmp', `startup-job-batch-${randomUUID()}`);
   const supervisor = await ProcessSupervisor.create(scope);
