@@ -185,7 +185,7 @@ Investigate why a fresh status brief urged spending all available skill points w
 
 ## Startup prototype deferred bugs
 
-These minor findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
+These minor findings belong to the private healthy-startup branch. Unless an entry says otherwise, they remain separate from its safety and timing acceptance gates; the canonical launch spelling entry is a selector acceptance gate.
 
 ### [Suppressed provider readiness readout](bugs/runtime-suppressed-provider-ready.md)
 
