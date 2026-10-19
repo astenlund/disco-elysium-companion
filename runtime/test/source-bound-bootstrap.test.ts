@@ -19,7 +19,7 @@ const reply = (imagePins: unknown) => ({ exitCode: 0, stderr: Buffer.alloc(0),
   stdout: Buffer.from(JSON.stringify({ sid, paths: [admitted(companionRoot), admitted(candidate)], imagePins })) });
 const parent = { pid: 1234, created: '1234567890123456789' };
 
-test('selected bootstrap captures fixed source and accepts only the exact stopped absent reply', async () => {
+test('selected bootstrap captures fixed source and accepts the exact absent reply', async () => {
   let transferred = false;
   const expressions: Buffer[] = [];
   const inspector = { metadataStdinExpression: async (value: Uint8Array, cwd: string, environment: NodeJS.ProcessEnv) => {
@@ -51,7 +51,7 @@ test('selected bootstrap rejects a malformed reply after marking possible remote
   assert.equal(transferred, true);
 });
 
-test('helper faults after the transfer mark refuse without settling the pin obligation', async () => {
+test('helper faults are refused after the possible transfer was marked', async () => {
   const empty = Buffer.alloc(0);
   const faults: ReadonlyArray<readonly [string, () => Promise<unknown>]> = [
     ['late reply', async () => { throw new DataRootUnavailableError('Metadata deadline expired.'); }],
