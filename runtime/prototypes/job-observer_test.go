@@ -24,7 +24,7 @@ func TestDecodeRequestRejectsDuplicateAndIncompleteIdentity(t *testing.T) {
 	}
 }
 
-func TestCreationTokenRejectsMissingAndReusedIdentity(t *testing.T) {
+func TestCreationTokenGrammar(t *testing.T) {
 	if !validCreationToken("133700000000000000") {
 		t.Fatal("valid creation token rejected")
 	}
