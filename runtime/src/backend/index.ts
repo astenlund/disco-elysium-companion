@@ -435,20 +435,29 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     await bootstrap.close();
     return new CoordinatorBackend(kernel, { value: runtime, sha256 }, options.onStartupPhase);
   } catch (error) {
-    error = resources?.captureFailure(error) ?? error;
-    supervisor?.clearStartupJobObserver();
-    const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupPublisher?.closeStartupMutationSession(), startupGroup?.close(), earlyMetadata?.close()]);
-    const closeFailure = closed.find(result => result.status === 'rejected');
-    await bootstrap.close();
-    if (guard !== null && supervisor !== null) {
-      // Failed native termination retains the instance guard while this process
-      // lives. A second writer must never race a possibly active predecessor.
-      for (const role of processRoles) { await supervisor.verifyQuiescent(role); }
-      if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
-      await guard.release();
-    }
-    if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
-    if (error !== null && typeof error === 'object' && 'code' in error) { throw error; }
-    throw new DataRootUnavailableError(error instanceof Error ? error.message : 'Runtime startup authority is unavailable.', { cause: error });
+    let failure: unknown = resources?.captureFailure(error) ?? error;
+    try {
+      supervisor?.clearStartupJobObserver();
+      const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupPublisher?.closeStartupMutationSession(), startupGroup?.close(), earlyMetadata?.close()]);
+      const closeFailure = closed.find(result => result.status === 'rejected');
+      await bootstrap.close();
+      if (guard !== null && supervisor !== null) {
+        // Failed native termination retains the instance guard while this process
+        // lives. A second writer must never race a possibly active predecessor.
+        for (const role of processRoles) { await supervisor.verifyQuiescent(role); }
+        if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
+        await guard.release();
+      }
+      if (closeFailure?.status === 'rejected') { failure = closeFailure.reason; }
+    } catch (cleanupFailure) { failure = cleanupFailure; }
+    throw phaseFatalError(failure);
   }
+}
+
+const phaseFatalCodes: ReadonlySet<unknown> = new Set(['configurationInvalid', 'identityUnavailable', 'dataRootUnavailable', 'runtimeAlreadyRunning']);
+
+/** @internal Phases A through C fail only with their four fatal codes; any other failure keeps its cause under `dataRootUnavailable`. */
+export function phaseFatalError(error: unknown): unknown {
+  if (error !== null && typeof error === 'object' && 'code' in error && phaseFatalCodes.has(error.code)) { return error; }
+  return new DataRootUnavailableError(error instanceof Error ? error.message : 'Runtime startup authority is unavailable.', { cause: error });
 }
