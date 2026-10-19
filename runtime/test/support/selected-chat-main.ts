@@ -44,8 +44,18 @@ function absoluteArgument(value: string | undefined, name: string): string {
   return value;
 }
 
-/** Refuses any root that is the installation itself or whose adapter would read saves outside the copied root. */
+/** The repository holding this installation: the nearest ancestor whose `.git` is a directory, since a worktree's `.git` is a file. */
+async function repositoryRoot(): Promise<string> {
+  for (let current = installationRoot; ; current = path.win32.dirname(current)) {
+    try { if ((await fs.lstat(path.win32.join(current, '.git'))).isDirectory()) { return current; } }
+    catch { /* No repository marker at this level. */ }
+    if (path.win32.dirname(current) === current) { throw new FixtureRefusal('The installation is not inside a repository.'); }
+  }
+}
+
+/** Refuses any root outside the repository, the installation itself, or a root whose adapter would read saves outside it. */
 async function admitCopiedRoot(companionRoot: string): Promise<void> {
+  if (!strictlyInside(await repositoryRoot(), companionRoot)) { throw new FixtureRefusal('The companion root must be inside the repository.'); }
   if (path.win32.relative(installationRoot, companionRoot) === '') { throw new FixtureRefusal('The companion root must be a copied root.'); }
   const readJson = async (...segments: string[]): Promise<Record<string, unknown>> => {
     try { return JSON.parse(await fs.readFile(path.win32.join(companionRoot, ...segments), 'utf8')) as Record<string, unknown>; }

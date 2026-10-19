@@ -80,8 +80,10 @@ test('the fixture main refuses unsafe roots before taking the token', async () =
     await fs.writeFile(path.join(copied, 'runtime', 'companion.config.json'), JSON.stringify({ adapter: 'disco_elysium' }));
     const adapterPath = path.join(copied, 'adapters', 'disco_elysium', 'adapter.json');
     await fs.writeFile(adapterPath, JSON.stringify({ saveDirectory: 'C:/Users/fixture/SaveGames' }));
+    const outside = path.win32.join(path.win32.parse(root).root, 'fixture-main-outside-repository');
     const cases = [
       ['runtime', root, '0', 'no-prestart'],
+      [outside, root, '0', 'no-prestart'],
       [root, root, '0', 'no-prestart'],
       [copied, root, '2', 'no-prestart'],
       [copied, root, '0', 'sometimes'],
@@ -94,6 +96,7 @@ test('the fixture main refuses unsafe roots before taking the token', async () =
       assert.equal(lines[0]!.event, 'result');
       assert.equal(lines[0]!.status, 'refused');
       assert.equal(lines[0]!.pins, 'idle');
+      if (args[0] === outside) { assert.equal(lines[0]!.message, 'The companion root must be inside the repository.'); }
     }
     await assert.rejects(fs.stat(path.join(copied, 'runtime-data')), { code: 'ENOENT' });
   } finally { await fs.rm(scratch, { recursive: true, force: true }); }
