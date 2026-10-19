@@ -169,8 +169,12 @@ export class SessionHost implements SessionHostV1 {
     this.scheduleTransition();
     while (this.transition !== null && !this.invalidatedAfterStart) { await this.transition; }
     if (this.invalidatedAfterStart) { return 'invalidated'; }
+    if (this.ready && this.providerReady) { return 'ready'; }
+    // A provider that ended without a reconnect, such as an incompatible exit, leaves attachment to the status-only branch.
+    this.ready = false;
+    this.statusChanged();
 
-    return this.ready && this.providerReady ? 'ready' : 'unavailable';
+    return 'unavailable';
   }
 
   async blockAfterFinalSafety(): Promise<void> {
@@ -342,7 +346,8 @@ export class SessionHost implements SessionHostV1 {
     this.attachmentSafetyWitness = null;
     this.lifecycle.suppress();
     this.ready = false;
-    if (this.initialStartCompleted) { this.replacement = true; this.invalidatedAfterStart = true; }
+    // A latched final-safety block or startup invalidation keeps any replacement out of this process, so none is queued.
+    if (this.initialStartCompleted) { this.replacement = !this.finalSafetyBlocked && !this.initialStartupInvalidated; this.invalidatedAfterStart = true; }
     else { this.initialStartupInvalidated = true; this.replacement = false; }
     this.emit({ type: 'notice', code: 'stateContextInvalidated', reason });
     const turn = this.active;

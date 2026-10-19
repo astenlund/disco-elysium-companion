@@ -713,6 +713,52 @@ test('after a failed startup phase, refused provider safety leaves a status-only
   await host.shutdown();
 });
 
+test('a later invalidation after a final safety block keeps status-only attachment available', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  let safetyCalls = 0;
+  const providerSafety = backend.providerSafety.bind(backend);
+  Object.assign(backend, { providerSafety: async () => { safetyCalls += 1; if (safetyCalls === 3) { throw new Error('Final safety refused.'); } return providerSafety(); } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  assert.equal(await host.start(), true);
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  host.invalidate('contextUncertain');
+  assert.equal((await host.attachVerified(() => {})).result, 'attached');
+  assert.equal(provider.calls.length, 1);
+  await host.shutdown();
+});
+
+test('a second invalidation after a startup invalidation keeps status-only attachment available', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  host.invalidate('contextUncertain');
+  assert.equal(await host.start(), false);
+  host.invalidate('contextUncertain');
+  assert.equal((await host.attachVerified(() => {})).result, 'attached');
+  assert.equal(provider.calls.length, 0);
+  await host.shutdown();
+});
+
+test('an incompatible provider exit before the final check attaches status-only', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  provider.current.exit('providerUnavailable');
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.equal(attached.snapshot.status.provider.state, 'failed'); }
+  await host.shutdown();
+});
+
 test('final safety refusal waits for a queued correction before status-only attachment', async () => {
   const backend = new FakeBackend();
   const provider = new FakeProvider();
