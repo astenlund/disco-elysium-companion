@@ -5,7 +5,7 @@ import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { createChatRuntime, privateRuntimeStartup } from './runtime.ts';
-import { withDirectMainToken } from './direct-main-capability.ts';
+import { DirectImagePinObligation, withDirectMainToken } from './direct-main-capability.ts';
 import { prepareStartupHelperScratch } from './startup-helper-scratch.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
 import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
@@ -57,21 +57,6 @@ export function formatCapacityRewind(result: CapacityRewindResult | null): strin
 }
 
 const compiledSelectorEnabled = false;
-class DirectImagePinObligation {
-  private state: 'idle' | 'unknown' | 'absent' | 'ready' = 'idle';
-
-  markPossibleTransfer(): void {
-    if (this.state !== 'idle') { throw new Error('Selected image transfer has already started.'); }
-    this.state = 'unknown';
-  }
-
-  verified(status: 'ready' | 'absent'): void {
-    if (this.state !== 'unknown') { throw new Error('Selected image pin state is invalid.'); }
-    this.state = status;
-  }
-
-  get requiresHardExit(): boolean { return this.state === 'unknown' || this.state === 'ready'; }
-}
 
 async function runCliInternal(args: readonly string[], companionRoot: string,
   write: (text: string) => void, progressSink: StartupProgressSink,
