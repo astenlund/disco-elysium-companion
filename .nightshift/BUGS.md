@@ -211,6 +211,14 @@ Every selected chat start leaves a new `.tmp/runtime-startup-*` helper profile b
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+## Host environment findings
+
+### [.NET tools folders leak into the User PATH](bugs/user-path-dotnet-tools-leak.md)
+
+Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the persisted User PATH, which has grown past cmd's PATH limit.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed.
