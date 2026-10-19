@@ -21,7 +21,7 @@ Every image-backed run returned a ready pin set. After `host.shutdown()` stopped
 
 ## Negative cases
 
-Each case builds a damaged copy of the image root inside the installation, runs the fixture main in the product configuration against an already-run copied root, and requires the refusal reason to name the intended check; a refusal for any other cause fails the case. Refusals after the transfer mark keep the pin obligation unknown, so the fixture exits hard. In every refusal case the copied data scope was byte-identical before and after, all roles were stopped, and no executable in the damaged image root stayed locked. The table records the pass on `021b959`, with the rebuilt images; each of its eleven reports records that commit, and the earlier pass on `1cd254f` gave the same pin states and reasons.
+Each case builds a damaged copy of the image root inside the installation, runs the fixture main in the product configuration against an already-run copied root, and requires the refusal reason, and in every refusal case except the foreign-root one a pattern in its bounded detail, to match the intended check. The hard-link pattern also accepts the generic incomplete-release detail, and the foreign-root case checks only its `invalidInputs` reason, which several input checks share; the recorded details still name the intended cause in every case. Refusals after the transfer mark keep the pin obligation unknown, so the fixture exits hard. In every refusal case the copied data scope was byte-identical before and after, all roles were stopped, and no executable in the damaged image root stayed locked. The table records the pass on `021b959`, with the rebuilt images; each of its eleven reports records that commit, and the earlier pass on `1cd254f` gave the same pin states and reasons.
 
 | Case | Pins | Refusal reason |
 |---|---|---|
@@ -71,6 +71,7 @@ These gates remain open, each defined in the governing spec:
 - Launch from a non-canonical spelling of the installation path.
 - The fast backend path's own acceptance matrix, which selection also enables.
 - Release of the ancestor rename restriction after exit.
+- Copied-save runs with ready pins of the remaining post-transfer states the spec lists: not-owner, provider refusal, status-only attachment and failed open. Healthy shutdown and, on the earlier images, guard loss have run.
 - Clean fresh code and documentation reviews.
 - Before any live run, the real SDK's default-profile footprint, with no model input and no tool call during initialization.
 - User-coordinated real-provider new-save, acknowledged-restart and recovery runs.
