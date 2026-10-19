@@ -335,7 +335,9 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
   options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
-  const bootstrap = await createReadOnlyInspection(options.companionRoot, selected?.environment);
+  let bootstrap: Awaited<ReturnType<typeof createReadOnlyInspection>>;
+  try { bootstrap = await createReadOnlyInspection(options.companionRoot, selected?.environment); }
+  catch (error) { throw phaseFatalError(error); }
   let guard: Awaited<ReturnType<typeof takeInstanceGuard>> | null = null;
   let kernel: Kernel | null = null;
   let supervisor: ProcessSupervisor | null = null;
