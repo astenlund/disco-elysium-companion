@@ -150,6 +150,21 @@ test('a verifiably stopped warm worker hands later termination proofs to one-sho
   }
 });
 
+test('a warm observation queued behind a request that stops the worker falls back to one-shot', async () => {
+  let cleared = 0;
+  const supervisor = { clearStartupJobObserver: () => { cleared += 1; } } as unknown as ProcessSupervisor;
+  const inspector = new PathInspector(supervisor);
+  const worker = { canFallBack: false, close: async () => {}, supports: () => true,
+    invoke: async () => { worker.canFallBack = true; return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; },
+    observeJobStates: async () => { throw new Error('The worker session is closed.'); } };
+  inspector.attachStartupSession(worker as never);
+  const request = inspector.metadata(identityScript, [], root);
+  const observation = inspector.observeStartupJobs(['fixture-job']);
+  await request;
+  assert.equal(await observation, null);
+  assert.equal(cleared, 1);
+});
+
 test('admits only the exact live owned startup metadata job', { timeout: 60000 }, async t => {
   const scope = path.join(root, '.tmp', `startup-job-batch-${randomUUID()}`);
   const supervisor = await ProcessSupervisor.create(scope);

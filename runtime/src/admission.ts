@@ -78,9 +78,14 @@ export class PathInspector {
       this.dropVerifiedStartupSession();
       return Promise.resolve(null);
     }
-    return this.queue.run(() => {
+    return this.queue.run(async () => {
       if (this.startupClosing !== null || this.startupSession === null) {
         throw new DataRootUnavailableError('Startup job observation is unavailable.');
+      }
+      // The request queued ahead of this one may have stopped the worker verifiably.
+      if (this.startupSession.canFallBack) {
+        this.dropVerifiedStartupSession();
+        return null;
       }
       return this.startupSession.observeJobStates(names, timeoutMs);
     });
