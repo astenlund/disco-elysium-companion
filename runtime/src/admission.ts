@@ -79,16 +79,16 @@ export class PathInspector {
       this.dropVerifiedStartupSession();
       return Promise.resolve(null);
     }
+    // Like a metadata call, an observation queued before worker closure is served by the session it was queued for.
+    const session = this.startupClosing === null ? this.startupSession : null;
     return this.queue.run(async () => {
       // A request queued ahead of this one may have stopped the worker verifiably, or another observation already dropped it.
-      if (this.startupWorkerStopped) {
-        this.dropVerifiedStartupSession();
+      if (this.startupWorkerStopped || session?.canFallBack === true) {
+        if (this.startupSession === session) { this.dropVerifiedStartupSession(); }
         return null;
       }
-      if (this.startupClosing !== null || this.startupSession === null) {
-        throw new DataRootUnavailableError('Startup job observation is unavailable.');
-      }
-      return this.startupSession.observeJobStates(names, timeoutMs);
+      if (session === null) { throw new DataRootUnavailableError('Startup job observation is unavailable.'); }
+      return session.observeJobStates(names, timeoutMs);
     });
   }
 

@@ -165,6 +165,26 @@ test('a warm observation queued behind a request that stops the worker falls bac
   assert.equal(cleared, 1);
 });
 
+test('a warm observation queued before worker closure is served by its worker, like a queued metadata call', async () => {
+  const supervisor = { clearStartupJobObserver: () => {} } as unknown as ProcessSupervisor;
+  const inspector = new PathInspector(supervisor);
+  let releaseFirst = () => {};
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let observations = 0;
+  const worker = { canFallBack: false, close: async () => {}, supports: () => true,
+    invoke: async () => { await firstGate; return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; },
+    observeJobStates: async (names: readonly string[]) => { observations += 1; return names.map(() => true); } };
+  inspector.attachStartupSession(worker as never);
+  const request = inspector.metadata(identityScript, [], root);
+  const observation = inspector.observeStartupJobs(['fixture-job']);
+  const closing = inspector.closeStartupSession();
+  releaseFirst();
+  assert.equal((await request).exitCode, 0);
+  assert.deepEqual(await observation, [true]);
+  await closing;
+  assert.equal(observations, 1);
+});
+
 test('every warm observation queued behind a verified worker stop falls back to one-shot', async () => {
   const supervisor = { clearStartupJobObserver: () => {} } as unknown as ProcessSupervisor;
   const inspector = new PathInspector(supervisor);
