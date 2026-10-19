@@ -241,6 +241,7 @@ export class SessionHost implements SessionHostV1 {
       || this.lifecycle.session !== expectedSession || this.ready !== expectedReady
       || !expectedReady && (this.transition !== null || this.replacement || this.reconnect !== null || this.lifecycle.status.state !== expectedProviderState)
       || expectedReady && !this.lifecycle.isCurrent(expectedSession?.providerInstanceId ?? '');
+    const cancelled = (): boolean => reservation.cancelled || this.attachmentReservation !== reservation || this.closing || this.sink !== null;
     if (this.ready) {
       const binding = this.lifecycle.binding;
       if (binding === null || !this.options.backend.guardHeld() || !this.providerReady) {
@@ -276,9 +277,13 @@ export class SessionHost implements SessionHostV1 {
       // A status-only client may exist only beside a provider job proved absent; an unproved stop fails closed instead,
       // unless a state change during the proof, such as a replacement starting its provider, explains the failure.
       try { await Promise.all([verifyWorkers(), this.options.backend.supervisor.verifyQuiescent('provider')]); }
-      catch (error) { if (stateChanged()) { return { result: 'attachStateChanged' }; } throw error; }
+      catch (error) {
+        if (cancelled()) { return { result: 'attachCancelled' }; }
+        if (stateChanged()) { return { result: 'attachStateChanged' }; }
+        throw error;
+      }
     }
-    if (reservation.cancelled || this.attachmentReservation !== reservation || this.closing || this.sink !== null) { return { result: 'attachCancelled' }; }
+    if (cancelled()) { return { result: 'attachCancelled' }; }
     if (stateChanged()) { return { result: 'attachStateChanged' }; }
     this.attachWitness = true;
     return this.attach(sink);
