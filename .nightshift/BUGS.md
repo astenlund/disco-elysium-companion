@@ -199,6 +199,12 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+### [Selected path requires canonical launch spelling](bugs/runtime-selected-path-spelling.md)
+
+Launching the direct CLI through a differently cased path would make the selected bootstrap refuse after its transfer mark and exit 1 instead of canonicalizing the roots; latent while the compiled selector is off.
+
+**Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
+
 ### [Per-start helper profiles accumulate](bugs/runtime-helper-profile-accumulation.md)
 
 Every selected chat start leaves a new `.tmp/runtime-startup-*` helper profile behind, and the fresh profile keeps PowerShell from reusing its startup JIT profile; decide on a reused or cleaned-up admitted profile after real-provider timing.
