@@ -223,6 +223,25 @@ test('an invalidated initial start with an unproved provider stop cannot attach 
   await assert.rejects(host.attachVerified(() => {}), /Provider job absence is unproved/);
 });
 
+test('a provider exit followed by an initial-start invalidation still attaches status-only', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  const provider = new FakeProvider();
+  let host: SessionHost | null = null;
+  const bind = backend.sessions.bind.bind(backend.sessions);
+  let exited = false;
+  backend.sessions.bind = async (binding, proof) => {
+    if (!exited) { exited = true; provider.current.exit('subprocessExited'); }
+    return bind(binding, proof);
+  };
+  host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => { host!.invalidate('contextUncertain'); } });
+  assert.equal((await startChatProvider(host, backend.asRuntime())).result, 'ready');
+  assert.equal((await host.attachVerified(() => {})).result, 'attached');
+  assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
 test('invalidation before initial host start leaves only status authority', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });

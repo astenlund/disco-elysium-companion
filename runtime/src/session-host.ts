@@ -351,7 +351,7 @@ export class SessionHost implements SessionHostV1 {
     this.ready = false;
     // A latched final-safety block or startup invalidation keeps any replacement out of this process, so none is queued.
     if (this.initialStartCompleted) { this.replacement = !this.finalSafetyBlocked && !this.initialStartupInvalidated; this.invalidatedAfterStart = true; }
-    else { this.initialStartupInvalidated = true; this.replacement = false; }
+    else { this.initialStartupInvalidated = true; this.replacement = false; this.reconnect = null; }
     this.emit({ type: 'notice', code: 'stateContextInvalidated', reason });
     const turn = this.active;
     if (turn !== null) { turn.invalidated = true; this.fail(turn, 'stateInvalidated', true); }
