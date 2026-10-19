@@ -47,6 +47,18 @@ Tree processes issued no write-class operation outside the repository. 7,794,677
 
 The one acknowledged turn after each new save took 122.5, 123.3 and 125.0 seconds with a provider that answers immediately, consistent with, though not yet confirmed as, the post-acquisition journal drain in `runtime/src/backend/delivery.ts` running until its 120-second gate expires; this belongs to [Coordinator whole-turn latency](../features/runtime-interaction-latency.md). Every helper `pwsh` process rewrote PowerShell's `StartupProfileData-NonInteractive` JIT profile in the per-start helper profile, about 7.8 million write operations in the traced run, and because every chat start creates a new `runtime-startup-*` profile, no start can reuse a warm profile and the folders accumulate under the installation's `.tmp`. Earlier private build probes gave each `dotnet` and `go` build a fresh `DOTNET_CLI_HOME`; the SDK treated each as a first run, leaving 62 `toolpath` first-run markers, one for each tools folder it appends to the persistent user PATH, which overflowed it. Every redirected .NET home now also sets `DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false` and `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`.
 
+## Injected faults
+
+The user chose to cover the fault cases without adding fault hooks to the hash-pinned helper. `runtime/test/Test-NativeImagePins.ps1` drives the native pin primitives against real processes and passed three consecutive runs. It covers the following:
+
+- A target whose creation identity differs by one tick is refused before any duplication.
+- A partial transfer into a live target rolls back, and both files are writable again.
+- A target killed mid-transfer makes the next duplication and the rollback close both fail, yet the operating system released the pin it already held.
+- A helper that transfers a pin and exits without a receipt leaves the pin denying writes inside the target until the target exits hard, which releases it.
+- Replacing a file with identical bytes keeps its path and hash but changes the file identity that the helper's held-versus-admitted comparison checks.
+
+`runtime/test/source-bound-bootstrap.test.ts` adds a late reply, job-stop uncertainty, no receipt and a truncated receipt, each refused after the transfer mark so the direct main's obligation stays unknown. The harness's `guard-loss.mjs` held the copied scope's instance guard while the fixture main started: the pins were verified ready, the guard claim then failed with `Another runtime owns this scope.`, the fixture exited 1 under the hard-exit obligation, the data scope was byte-identical, every role was stopped and both executables were writable afterwards. The composite rollback flow inside `BootstrapImagePins.ps1` is exercised through its primitives rather than end to end, and same-hash replacement inside `OpenHeld`'s own admission-to-open window is covered by the property it relies on, not by winning that race.
+
 ## Still open
 
-These results do not cover the cases that need injected faults: same-hash path replacement, target creation mismatch, partial transfer with rollback, no-receipt helper exit, late reply, job-stop uncertainty and guard loss after transfer. Fresh independent code and documentation reviews, user-coordinated real-provider new-save, acknowledged-restart and recovery runs, and the decision to enable the selector remain open. The 30-second goal is not met until those real-provider runs repeatedly attach healthy within it.
+Fresh independent code and documentation reviews, user-coordinated real-provider new-save, acknowledged-restart and recovery runs, and the decision to enable the selector remain open. The 30-second goal is not met until those real-provider runs repeatedly attach healthy within it.
