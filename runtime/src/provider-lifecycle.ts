@@ -20,6 +20,7 @@ export class PendingProviderStart {
   private claimed = false;
   private taking = false;
   private stopped = false;
+  private cancelling: Promise<void> | null = null;
 
   constructor(backend: RuntimeBackend, provider: Provider, resumeSessionId: string | null, generation: string, instructionsSha256: string) {
     this.backend = backend;
@@ -42,7 +43,9 @@ export class PendingProviderStart {
       return null;
     }
     this.taking = true;
-    const settled = await this.result;
+    let settled: Awaited<typeof this.result>;
+    try { settled = await this.result; }
+    catch { throw new PendingProviderStopError('The pending provider failed while stopping.'); }
     if ('error' in settled) {
       try { await this.backend.supervisor.verifyQuiescent('provider'); }
       catch { throw new PendingProviderStopError('Provider job absence could not be proved after failed start.'); }
@@ -56,8 +59,14 @@ export class PendingProviderStart {
     return settled.session;
   }
 
-  async cancel(): Promise<void> {
-    if (this.claimed) { return; }
+  /** Stops the candidate once; a later call returns the same outcome instead of waiting again. */
+  cancel(): Promise<void> {
+    if (this.claimed) { return Promise.resolve(); }
+    this.cancelling ??= this.stopCandidate();
+    return this.cancelling;
+  }
+
+  private async stopCandidate(): Promise<void> {
     this.abort();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let settled: Awaited<typeof this.result> | null;

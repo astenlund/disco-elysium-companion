@@ -123,6 +123,39 @@ test('a prestarted candidate that dies before binding is stopped, then the start
   await host.shutdown();
 });
 
+test('a failed candidate stop is reported again without a second stop attempt', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  let closes = 0;
+  provider.configure = session => { session.close = async () => { closes += 1; throw new Error('Close failed.'); }; };
+  const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
+  assert.ok(pending);
+  const first = await pending.cancel().then(() => null, (error: unknown) => error);
+  const second = await pending.cancel().then(() => null, (error: unknown) => error);
+  assert.ok(first instanceof PendingProviderStopError);
+  assert.equal(second, first);
+  assert.equal(closes, 1);
+});
+
+test('a candidate cancelled while it is being taken reports a failed close as an unproved stop', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const release = deferred<void>();
+  const provider: Provider = { providerId: 'fake', capabilities, start: async () => {
+    await release.promise;
+    const session = new FakeSession(1, 'session-1', capabilities);
+    session.close = async () => { throw new Error('Close failed.'); };
+    return session;
+  } };
+  const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
+  assert.ok(pending);
+  const taking = pending.take('fake', null, generation, instructionHash);
+  pending.abort();
+  release.resolve();
+  await assert.rejects(taking, PendingProviderStopError);
+});
+
 test('invalidation during candidate liveness proof cannot bind or restart in the old generation', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
