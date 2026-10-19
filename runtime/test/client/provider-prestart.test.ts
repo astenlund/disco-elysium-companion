@@ -182,10 +182,29 @@ test('invalidation during candidate liveness proof cannot bind or restart in the
   assert.equal(starts, 1);
   assert.equal(backend.binding, null);
   assert.notEqual(host.status.provider.state, 'ready');
-  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'providerUnavailable');
+  assert.notEqual(host.status.provider.state, 'failed');
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'notReady');
   const attached = await host.attachVerified(() => {});
   assert.equal(attached.result, 'attached');
   if (attached.result === 'attached') { assert.notEqual(attached.snapshot.status.provider.state, 'ready'); }
+  await host.shutdown();
+});
+
+test('an invalidation during the initial provider start keeps chat as a status-only client', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  provider.configure = session => { session.verifyLive = async () => { host.invalidate('contextUncertain'); }; };
+  const started = await startChatProvider(host, backend.asRuntime());
+  assert.equal(started.result, 'ready');
+  assert.equal(backend.events.includes('shutdown'), false);
+  assert.notEqual(host.status.provider.state, 'ready');
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  assert.equal(await host.startNewAgentSession(), 'providerUnavailable');
   await host.shutdown();
 });
 

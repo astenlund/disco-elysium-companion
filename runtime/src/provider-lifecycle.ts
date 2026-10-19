@@ -310,7 +310,12 @@ export class ProviderLifecycle {
         }
         this.options.emit({ type: 'notice', code: 'agentSessionStarted', reason });
         return true;
-      } catch { await this.discardPending(); this.state('failed'); return false; }
+      } catch (error) {
+        await this.discardPending();
+        // An invalidation is a safety refusal, not a provider failure: the host keeps a status-only client instead of exiting.
+        if (!(error instanceof ProviderStartInvalidatedError)) { this.state('failed'); }
+        return false;
+      }
     } finally { this.initialStartActive = false; }
   }
 
