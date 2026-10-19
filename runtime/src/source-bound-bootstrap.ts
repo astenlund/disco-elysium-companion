@@ -22,17 +22,21 @@ const sourceHashes = {
   packageScript: 'b073b787367b6459f7a8eda94f9466db6535e88cc879b4bf7f49a94750f1014a',
 } as const;
 
-export type SourceBoundBootstrapReason = 'invalidInputs' | 'sourceChanged' | 'expressionTooLarge' | 'helperFailed' | 'releaseMismatch';
+export type SourceBoundBootstrapReason = 'invalidInputs' | 'sourceChanged' | 'expressionTooLarge' | 'helperFailed' | 'replyInvalid'
+  | 'releaseMismatch';
 
-/** The message is the only player-facing text; reason and detail are bounded diagnostics for private fixtures. */
+/**
+ * A phase-A scope admission refusal, so it carries the umbrella `dataRootUnavailable` code. The message is the only
+ * player-facing text; reason and detail are bounded diagnostics for private fixtures.
+ */
 export class SourceBoundBootstrapError extends Error {
   override readonly name = 'SourceBoundBootstrapError';
-  readonly code = 'sourceBoundBootstrapUnavailable';
+  readonly code = 'dataRootUnavailable';
   readonly reason: SourceBoundBootstrapReason;
   readonly detail: string | null;
 
-  constructor(reason: SourceBoundBootstrapReason, detail: string | null = null) {
-    super('Source-bound bootstrap is unavailable.');
+  constructor(reason: SourceBoundBootstrapReason, detail: string | null = null, options?: ErrorOptions) {
+    super('Source-bound bootstrap is unavailable.', options);
     this.reason = reason;
     this.detail = detail;
   }
@@ -46,15 +50,26 @@ export interface SourceBoundBootstrapResult {
 
 const detailLimit = 240;
 
-/** Keeps only printable ASCII from helper stderr, collapsed and bounded, so diagnostics cannot carry control bytes. */
+// Keeps only printable ASCII, collapsed and bounded to its tail, so diagnostics cannot carry control bytes.
+function printableTail(text: string): string {
+  const printable = text.replace(/[^ -~]+/g, ' ').replace(/ +/g, ' ').trim();
+  return printable.length > detailLimit ? printable.slice(printable.length - detailLimit) : printable;
+}
+
+/** Describes a failed helper by its exit code and the printable tail of its stderr. */
 export function helperFailureDetail(exitCode: number | null, stderr: Uint8Array): string {
-  const printable = Buffer.from(stderr).toString('latin1').replace(/[^ -~]+/g, ' ').replace(/ +/g, ' ').trim();
-  const tail = printable.length > detailLimit ? printable.slice(printable.length - detailLimit) : printable;
+  const tail = printableTail(Buffer.from(stderr).toString('latin1'));
   return `exit=${exitCode ?? 'none'}${tail.length > 0 ? `; ${tail}` : ''}`;
 }
 
+function causeDetail(error: unknown): string {
+  return printableTail(error instanceof Error ? `${error.name}: ${error.message}` : 'unknown');
+}
+
 function capturedSource(imageRoot: string, relative: string, expectedHash: string): Buffer {
-  const bytes = readBoundedPrivateFile(path.win32.join(imageRoot, relative), 1_048_576);
+  let bytes: Buffer;
+  try { bytes = readBoundedPrivateFile(path.win32.join(imageRoot, relative), 1_048_576); }
+  catch (error) { throw new SourceBoundBootstrapError('sourceChanged', relative, { cause: error }); }
   if (createHash('sha256').update(bytes).digest('hex') !== expectedHash) { throw new SourceBoundBootstrapError('sourceChanged', relative); }
   return bytes;
 }
@@ -94,12 +109,16 @@ export async function observeSourceBoundBootstrap(token: unknown, inspector: Pat
   if (reply.exitCode !== 0 || reply.stderr.byteLength !== 0) {
     throw new SourceBoundBootstrapError('helperFailed', helperFailureDetail(reply.exitCode, reply.stderr));
   }
-  const value = parseStrictJson(reply.stdout);
-  const combined = parseCombinedScopeReply(value, companionRoot, game, true);
-  const imagePins = parseImagePinReceipt(combined.imagePins!, request, combined.candidate.dataRoot);
+  let combined: ReturnType<typeof parseCombinedScopeReply>;
+  let imagePins: ImagePinReceipt;
+  try {
+    combined = parseCombinedScopeReply(parseStrictJson(reply.stdout), companionRoot, game, true);
+    imagePins = parseImagePinReceipt(combined.imagePins!, request, combined.candidate.dataRoot);
+  } catch (error) { throw new SourceBoundBootstrapError('replyInvalid', causeDetail(error), { cause: error }); }
   if (imagePins.status === 'ready') {
-    const manifest = readBoundedPrivateFile(path.win32.join(imageRoot, 'runtime/native/compiled-images.json'), 1_048_576);
-    const release = parseCompiledImageRelease(manifest);
+    let release: ReturnType<typeof parseCompiledImageRelease>;
+    try { release = parseCompiledImageRelease(readBoundedPrivateFile(path.win32.join(imageRoot, 'runtime/native/compiled-images.json'), 1_048_576)); }
+    catch (error) { throw new SourceBoundBootstrapError('releaseMismatch', causeDetail(error), { cause: error }); }
     if (release.generation !== request.artifactGeneration
       || release.broker.sha256 !== request.brokerSha256 || release.observer.sha256 !== request.observerSha256) {
       throw new SourceBoundBootstrapError('releaseMismatch');

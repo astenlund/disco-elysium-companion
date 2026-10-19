@@ -49,7 +49,13 @@ test('selected bootstrap rejects a malformed reply after marking possible remote
   let transferred = false;
   const inspector = { metadataStdinExpression: async () => reply({ status: 'ready' }) } as unknown as PathInspector;
   await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, imageRoot,
-    { TEMP: imageRoot }, () => { transferred = true; }));
+    { TEMP: imageRoot }, () => { transferred = true; }), (error: unknown) => {
+    assert.ok(error instanceof SourceBoundBootstrapError);
+    assert.equal(error.reason, 'replyInvalid');
+    assert.equal(error.code, 'dataRootUnavailable');
+    assert.ok(error.cause instanceof Error);
+    return true;
+  });
   assert.equal(transferred, true);
 });
 
