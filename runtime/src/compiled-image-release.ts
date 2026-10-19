@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { readBoundedPrivateFile } from './compiled-broker.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type JsonValue } from './json.ts';
 
-export const compiledImageGeneration = 'f5e420c364e0e61973f48e8e8252b500414ae0fa314c4cf2e4cdf8a3d4f6bb7c';
+export const compiledImageGeneration = '300734fa8e21b1f43b9d169004236ba2037dbad1b92c5c9e09b864ed2a69817c';
 export const compiledBrokerSha256 = '7115c9dabaa41c0c220bfc63d1e0d34e8bbc18fb015742598ccc1811f403cef4';
-export const compiledObserverSha256 = 'bb3818599c2b5c5c4da98af42daea4300bfdb3103c0d420009021bd8af313fec';
+export const compiledObserverSha256 = 'f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d';
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
 const manifestPath = path.join(installationRoot, 'runtime/native/compiled-images.json');
 const brokerSources = ['runtime/prototypes/go-process-broker/go.mod',

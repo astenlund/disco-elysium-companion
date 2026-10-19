@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -123,7 +123,7 @@ func validName(name string) bool {
 	if len(tail) < 34 || tail[32] != '-' || !roles[tail[33:]] {
 		return false
 	}
-	for index := 0; index < 32; index++ {
+	for index := range 32 {
 		value := tail[index]
 		if !((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f')) {
 			return false
@@ -187,7 +187,7 @@ func members(name string) ([]uint32, error) {
 		}
 		resultIDs[index] = uint32(value)
 	}
-	sort.Slice(resultIDs, func(a, b int) bool { return resultIDs[a] < resultIDs[b] })
+	slices.Sort(resultIDs)
 	for index := 1; index < len(resultIDs); index++ {
 		if resultIDs[index] == resultIDs[index-1] {
 			return nil, syscall.EINVAL
@@ -298,15 +298,7 @@ func proveOwned(spec *request, jobs []job) (bool, error) {
 		return false, nil
 	}
 	child, broker := uint32(owned.ProcessID), uint32(owned.BrokerID)
-	contains := func(id uint32) bool {
-		for _, value := range first {
-			if value == id {
-				return true
-			}
-		}
-		return false
-	}
-	if !contains(child) || !contains(broker) {
+	if !slices.Contains(first, child) || !slices.Contains(first, broker) {
 		return false, nil
 	}
 	childHandle, creation, err := openIdentity(child)
@@ -337,15 +329,6 @@ func proveOwned(spec *request, jobs []job) (bool, error) {
 			return false, err
 		}
 		verified = verified && parent == child && strings.EqualFold(image, expected)
-	}
-	if os.Getenv("PRIVATE_JOB_TEST_PAUSE") == "1" {
-		if _, err := os.Stderr.WriteString("first-members-observed\n"); err != nil {
-			return false, err
-		}
-		var signal [1]byte
-		if _, err := os.Stdin.Read(signal[:]); err != nil {
-			return false, err
-		}
 	}
 	second, err := members(owned.Name)
 	if err != nil {

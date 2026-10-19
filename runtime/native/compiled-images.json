@@ -39,12 +39,12 @@
   },
   "observer": {
     "file": "job-observer.exe",
-    "bytes": 3094016,
-    "sha256": "bb3818599c2b5c5c4da98af42daea4300bfdb3103c0d420009021bd8af313fec",
+    "bytes": 3076096,
+    "sha256": "f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d",
     "sources": [
       {
         "path": "runtime/prototypes/job-observer.go",
-        "sha256": "41506467461594bb00aab61047371d546e9c1047a0d47c2f3db15e16c2940d26"
+        "sha256": "c433dbf7209a59f40adc74780f99b2d659e7d951c85b0b3cf37d505f123a168d"
       }
     ]
   }
