@@ -12,8 +12,8 @@
   },
   "broker": {
     "file": "go-broker.exe",
-    "bytes": 3492864,
-    "sha256": "aa52d71f8a2243bdcb83bc394a12fe8193e413eb70b3543130f69df5a99c5d13",
+    "bytes": 3491328,
+    "sha256": "7115c9dabaa41c0c220bfc63d1e0d34e8bbc18fb015742598ccc1811f403cef4",
     "sources": [
       {
         "path": "runtime/prototypes/go-process-broker/go.mod",
@@ -25,11 +25,11 @@
       },
       {
         "path": "runtime/prototypes/go-process-broker/child_windows.go",
-        "sha256": "c1421211a9cee8564c015920a8c9d14a6b2ff5c840b64c1e9f58d728964f46b2"
+        "sha256": "4b2c5176eb60e96854e558548f8c8bfdbfac938b242f2fc8336d32b0c60ecf97"
       },
       {
         "path": "runtime/prototypes/go-process-broker/job_windows.go",
-        "sha256": "f23f76c7c53848fe7b2ef8dbb4b3d75e723a35fc49a407d4a66b674c40817841"
+        "sha256": "4a91c17e3c6f5baeb8191eda94561bd9eafd9c39af00a7332167e4743ff834a2"
       },
       {
         "path": "runtime/prototypes/go-process-broker/cmd/go-broker/main.go",

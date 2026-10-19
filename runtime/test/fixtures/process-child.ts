@@ -8,6 +8,8 @@ if (mode === 'arguments') {
   process.stdin.pipe(process.stdout);
 } else if (mode === 'environment') {
   process.stdout.write(JSON.stringify({ TEMP: process.env.TEMP ?? null, APPDATA: process.env.APPDATA ?? null }));
+} else if (mode === 'exit') {
+  process.exitCode = Number(process.argv[3]);
 } else if (mode === 'overflow') {
   process.stdout.write('x'.repeat(70_000));
 } else if (mode === 'wait') {

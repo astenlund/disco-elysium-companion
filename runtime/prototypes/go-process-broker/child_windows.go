@@ -15,6 +15,9 @@ import (
 
 var isProcessInJob = jobKernel.NewProc("IsProcessInJob")
 
+// retainedJob keeps the claimed job handle reachable for the life of the broker process.
+var retainedJob *ownedJob
+
 type ownedHeader struct {
 	OwnedProcessVersion int    `json:"ownedProcessVersion"`
 	JobName             string `json:"jobName"`
@@ -136,12 +139,9 @@ func run(input io.Reader, output, errorOutput io.Writer) (code int, err error) {
 	if err != nil {
 		return 125, err
 	}
-	defer func() {
-		if closeError := job.Close(); closeError != nil && err == nil {
-			err = closeError
-			code = 125
-		}
-	}()
+	// The broker belongs to its own kill-on-close job, so closing the last job handle would end the broker with exit
+	// code 0 before it reports the child's code. Process exit closes the handle and the job with it.
+	retainedJob = job
 	path, err := executablePath(spec.command)
 	if err != nil {
 		return 125, err

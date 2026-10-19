@@ -61,7 +61,6 @@ type extendedJobLimits struct {
 }
 
 type ownedJob struct {
-	mu     sync.Mutex
 	handle uintptr
 }
 
@@ -87,7 +86,7 @@ func validJobName(name string) bool {
 	if len(tail) < 34 || tail[32] != '-' || !processRoles[tail[33:]] {
 		return false
 	}
-	for index := 0; index < 32; index++ {
+	for index := range 32 {
 		digit := tail[index]
 		if digit < '0' || digit > '9' && (digit < 'a' || digit > 'f') {
 			return false
@@ -132,23 +131,6 @@ func claimCurrentJob(name string) (*ownedJob, error) {
 	}
 	claimed = true
 	return &ownedJob{handle: handle}, nil
-}
-
-func (job *ownedJob) Close() error {
-	if job == nil {
-		return errOwnership
-	}
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	if job.handle == 0 {
-		return nil
-	}
-	ok, _, _ := closeJobHandle.Call(job.handle)
-	if ok == 0 {
-		return errOwnership
-	}
-	job.handle = 0
-	return nil
 }
 
 func processCreation(handle uintptr) (string, error) {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -16,10 +17,15 @@ test('packaged Go images bind one fixed manifest generation and source list', as
   const parsed = parseCompiledImageRelease(bytes);
   assert.deepEqual(readCompiledImageRelease(), parsed);
   assert.equal(parsed.generation, compiledImageGeneration);
-  assert.equal(parsed.broker.sha256, 'aa52d71f8a2243bdcb83bc394a12fe8193e413eb70b3543130f69df5a99c5d13');
+  assert.equal(parsed.broker.sha256, '7115c9dabaa41c0c220bfc63d1e0d34e8bbc18fb015742598ccc1811f403cef4');
   assert.equal(parsed.observer.sha256, 'bb3818599c2b5c5c4da98af42daea4300bfdb3103c0d420009021bd8af313fec');
   assert.equal(parsed.broker.sources.length, 5);
   assert.equal(parsed.observer.sources.length, 1);
+  for (const image of [parsed.broker, parsed.observer]) {
+    const packaged = await fs.readFile(path.join(repository, 'runtime/native', image.file));
+    assert.equal(packaged.length, image.bytes, image.file);
+    assert.equal(createHash('sha256').update(packaged).digest('hex'), image.sha256, image.file);
+  }
   const changed = Buffer.from(bytes);
   changed[changed.length - 1] = 32;
   assert.throws(() => parseCompiledImageRelease(changed), CompiledImageReleaseError);

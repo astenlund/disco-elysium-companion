@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { readBoundedPrivateFile } from './compiled-broker.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type JsonValue } from './json.ts';
 
-export const compiledImageGeneration = '2d3013059b9625f967f3263ea2e196ca59d24da999a9e5bcfc3691527408f44d';
-export const compiledBrokerSha256 = 'aa52d71f8a2243bdcb83bc394a12fe8193e413eb70b3543130f69df5a99c5d13';
+export const compiledImageGeneration = 'f5e420c364e0e61973f48e8e8252b500414ae0fa314c4cf2e4cdf8a3d4f6bb7c';
+export const compiledBrokerSha256 = '7115c9dabaa41c0c220bfc63d1e0d34e8bbc18fb015742598ccc1811f403cef4';
 export const compiledObserverSha256 = 'bb3818599c2b5c5c4da98af42daea4300bfdb3103c0d420009021bd8af313fec';
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
 const manifestPath = path.join(installationRoot, 'runtime/native/compiled-images.json');
