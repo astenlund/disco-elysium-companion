@@ -96,6 +96,25 @@ export async function finalizeAttachmentSafety(host: SessionHost, backend: Runti
   }
 }
 
+/**
+ * @internal Starts the final provider whether or not phase D-H work completed: provider safety, not the startup result, decides
+ * between a bound provider and a status-only client.
+ */
+export async function startChatProvider(host: SessionHost, backend: RuntimeBackend, reportPhase?: (phase: StartupPhase) => void): Promise<ChatRuntime> {
+  reportPhase?.('providerSelection');
+  const providerStarted = await host.start(reportPhase);
+  if (!providerStarted && host.status.provider.state === 'failed') {
+    reportPhase?.('startupWorkerClosure');
+    await backend.closeStartupWorkers();
+    await host.shutdown();
+    return { result: 'providerUnavailable' };
+  }
+  if (providerStarted) { reportPhase?.('attachmentSafety'); await finalizeAttachmentSafety(host, backend); }
+  reportPhase?.('startupWorkerClosure');
+  await backend.closeStartupWorkers();
+  return { result: 'ready', host };
+}
+
 export async function createChatRuntime(companionRoot: string, onStartupPhase?: (phase: StartupPhase) => void,
   privateOptions: PrivateRuntimeStartupOptions = {}): Promise<ChatRuntime> {
   const reportPhase = onStartupPhase === undefined ? undefined : (phase: StartupPhase) => reportStartupPhase(onStartupPhase, phase);
@@ -142,18 +161,8 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
       providerTerminated: instance => fileTools.providerTerminated(instance), verifyTools: () => fileTools.verifyQuiescent(), closeTools: () => fileTools.close() });
     pending = null;
     if (invalidatedBeforeHost !== null) { host.invalidate(invalidatedBeforeHost); }
-    reportPhase?.('providerSelection');
-    const providerStarted = startup.requiredWorkCompleted && await host.start(reportPhase);
-    if (!providerStarted && host.status.provider.state === 'failed') {
-      reportPhase?.('startupWorkerClosure');
-      await backend.closeStartupWorkers();
-      await host.shutdown();
-      return { result: 'providerUnavailable' };
-    }
-    if (providerStarted) { reportPhase?.('attachmentSafety'); await finalizeAttachmentSafety(host, backend); }
-    reportPhase?.('startupWorkerClosure');
-    await backend.closeStartupWorkers();
-    return { result: 'ready', host };
+    // A phase D-H fault cancelled the unbound candidate above; the final start still runs and providerSafety decides.
+    return await startChatProvider(host, backend, reportPhase);
   } catch (error) {
     return cleanupFailedChatRuntime(error, backend, host, files, reportPhase, pending);
   }

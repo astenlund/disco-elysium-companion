@@ -4,7 +4,7 @@ import test from 'node:test';
 import { privateCombinedBootstrap, privateScopeSourceBatch, privateSelectedImageBootstrap,
   privateStartupMetadataPlacement, privateWarmJobObserver } from '../../src/backend/index.ts';
 import { PendingProviderStart, PendingProviderStopError, selectPendingProviderStart } from '../../src/provider-lifecycle.ts';
-import { chatBackendOptions, cleanupFailedChatRuntime, finalizeAttachmentSafety } from '../../src/runtime.ts';
+import { chatBackendOptions, cleanupFailedChatRuntime, finalizeAttachmentSafety, startChatProvider } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { Provider, ProviderSession } from '../../src/provider.ts';
 import { capabilities, deferred, FakeBackend, FakeProvider, FakeSession, generation, instructionHash, timestamp, until } from './support.ts';
@@ -674,6 +674,42 @@ test('a provider that keeps exiting during the final check attaches from its set
   assert.notEqual(host.status.provider.state, 'reconnecting');
   const attached = await host.attachVerified(() => {});
   assert.equal(attached.result, 'attached');
+  await host.shutdown();
+});
+
+test('after a failed startup phase, valid provider safety still starts and attaches the provider', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  Object.assign(backend.status, { journal: { state: 'faulted', fault: 'journalUnavailable', unacknowledgedEvents: 0 },
+    freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalUnavailable' } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  const started = await startChatProvider(host, backend.asRuntime());
+  assert.equal(started.result, 'ready');
+  assert.equal(provider.calls.length, 1);
+  assert.equal(host.status.provider.state, 'ready');
+  assert.equal(backend.events.includes('workers'), true);
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
+test('after a failed startup phase, refused provider safety leaves a status-only client', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); },
+    providerSafety: async () => { throw new Error('Context safety authority is unavailable.'); } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  const started = await startChatProvider(host, backend.asRuntime());
+  assert.equal(started.result, 'ready');
+  assert.equal(provider.calls.length, 0);
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.notEqual(attached.snapshot.status.provider.state, 'ready'); }
+  assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
   await host.shutdown();
 });
 
