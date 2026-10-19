@@ -71,10 +71,11 @@ test('the fixture main refuses unsafe roots before taking the token', async () =
     const adapterPath = path.join(copied, 'adapters', 'disco_elysium', 'adapter.json');
     await fs.writeFile(adapterPath, JSON.stringify({ saveDirectory: 'C:/Users/fixture/SaveGames' }));
     const cases = [
-      ['runtime', root, '0'],
-      [root, root, '0'],
-      [copied, root, '2'],
-      [copied, root, '0'],
+      ['runtime', root, '0', 'no-prestart'],
+      [root, root, '0', 'no-prestart'],
+      [copied, root, '2', 'no-prestart'],
+      [copied, root, '0', 'sometimes'],
+      [copied, root, '0', 'no-prestart'],
     ];
     for (const args of cases) {
       const { code, lines } = await runFixtureMain(args);

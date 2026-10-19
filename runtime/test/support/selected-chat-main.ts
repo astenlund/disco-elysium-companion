@@ -10,7 +10,8 @@ import { prepareStartupHelperScratch } from '../../src/startup-helper-scratch.ts
 import { SyntheticProvider } from './synthetic-provider.ts';
 
 // Private copied-root fixture main for the selected compiled-image path. Usage:
-//   node runtime/test/support/selected-chat-main.ts <copiedCompanionRoot> <imageRoot> <acknowledgedTurns: 0|1>
+//   node runtime/test/support/selected-chat-main.ts <copiedCompanionRoot> <imageRoot> <acknowledgedTurns: 0|1> <prestart|no-prestart>
+// The product CLI does not prestart the provider, so `no-prestart` measures its path and `prestart` the private opt-in.
 // Emits JSON lines on stdout: `pins`, `attached`, then one final `result`.
 
 const installationRoot = path.win32.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -102,8 +103,10 @@ async function probeArtifactWrites(imageRoot: string): Promise<Record<string, st
   return outcomes;
 }
 
-async function run(token: symbol, pins: DirectImagePinObligation, companionRoot: string, imageRoot: string, turns: 0 | 1): Promise<number> {
+async function run(token: symbol, pins: DirectImagePinObligation, companionRoot: string, imageRoot: string, turns: 0 | 1,
+  prestart: boolean): Promise<number> {
   const phases: Array<{ phase: string; processMs: number }> = [];
+  const durations: { turnMs: number | null; shutdownMs: number | null } = { turnMs: null, shutdownMs: null };
   let stage = 'helper-scratch';
   let host: SessionHost | null = null;
   let backend: RuntimeBackend | null = null;
@@ -116,7 +119,7 @@ async function run(token: symbol, pins: DirectImagePinObligation, companionRoot:
     stage = 'chat-startup';
     const opened = await createChatRuntime(companionRoot, phase => { phases.push({ phase, processMs: performance.now() }); }, {
       [privateRuntimeStartup]: {
-        allowUnboundProviderPrestart: true,
+        allowUnboundProviderPrestart: prestart,
         selectedImageBootstrap: { token, imageRoot, scratch: scratch.root, environment: scratch.environment,
           markPossibleTransfer: () => { pins.markPossibleTransfer(); },
           onVerifiedPins: status => { pins.verified(status); emit({ event: 'pins', status, processMs: performance.now() }); } },
@@ -143,22 +146,26 @@ async function run(token: symbol, pins: DirectImagePinObligation, companionRoot:
     if (!attachment.healthy) { throw new Error('Attachment was not healthy.'); }
     if (turns === 1) {
       stage = 'acknowledged-turn';
+      const turnStarted = performance.now();
       await completeOneTurn(readyBackend, host, readyProvider, turnCompleted);
+      durations.turnMs = performance.now() - turnStarted;
     }
     stage = 'shutdown';
+    const shutdownStarted = performance.now();
     await host.shutdown();
+    durations.shutdownMs = performance.now() - shutdownStarted;
     host = null;
     stage = 'pinned-artifact-probe';
     const artifactWrites = pins.status === 'ready' ? await probeArtifactWrites(imageRoot) : null;
-    emit({ event: 'result', status: 'passed', pins: pins.status, attachment, acknowledgedTurns: turns, artifactWrites,
-      providerStarts: readyProvider.calls.length, providerResumed: readyProvider.calls[0] ?? null, helperScratch, phases });
+    emit({ event: 'result', status: 'passed', pins: pins.status, prestart, attachment, acknowledgedTurns: turns, artifactWrites,
+      providerStarts: readyProvider.calls.length, providerResumed: readyProvider.calls[0] ?? null, helperScratch, ...durations, phases });
     return 0;
   } catch (error) {
     if (host !== null) {
       try { await host.shutdown(); }
       catch { /* The caller proves every role stopped after this process exits. */ }
     }
-    emit({ event: 'result', status: 'failed', stage, pins: pins.status, attachment, helperScratch, phases,
+    emit({ event: 'result', status: 'failed', stage, pins: pins.status, prestart, attachment, helperScratch, ...durations, phases,
       message: error instanceof Error ? error.message : String(error) });
     return 1;
   }
@@ -167,12 +174,14 @@ async function run(token: symbol, pins: DirectImagePinObligation, companionRoot:
 const pins = new DirectImagePinObligation();
 let code: number;
 try {
-  const [rootArgument, imageArgument, turnsArgument] = process.argv.slice(2);
+  const [rootArgument, imageArgument, turnsArgument, prestartArgument] = process.argv.slice(2);
   const companionRoot = absoluteArgument(rootArgument, 'The companion root');
   const imageRoot = absoluteArgument(imageArgument, 'The image root');
   if (turnsArgument !== '0' && turnsArgument !== '1') { throw new FixtureRefusal('Acknowledged turns must be 0 or 1.'); }
+  if (prestartArgument !== 'prestart' && prestartArgument !== 'no-prestart') { throw new FixtureRefusal('Choose prestart or no-prestart.'); }
   await admitCopiedRoot(companionRoot);
-  code = await withDirectMainToken(token => run(token, pins, companionRoot, imageRoot, turnsArgument === '1' ? 1 : 0));
+  code = await withDirectMainToken(token => run(token, pins, companionRoot, imageRoot, turnsArgument === '1' ? 1 : 0,
+    prestartArgument === 'prestart'));
 } catch (error) {
   emit({ event: 'result', status: error instanceof FixtureRefusal ? 'refused' : 'failed', pins: pins.status,
     message: error instanceof Error ? error.message : String(error) });
