@@ -105,6 +105,24 @@ test('final lifecycle never starts a second provider after guard loss', async ()
   assert.ok(verified > 0);
 });
 
+test('a prestarted candidate that dies before binding is stopped, then the start falls back to a fresh session', async () => {
+  const backend = new FakeBackend();
+  let verified = 0;
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  const provider = new FakeProvider();
+  provider.configure = session => { if (provider.sessions.length === 0) { session.verifyLive = async () => { throw new Error('Session died.'); }; } };
+  const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
+  assert.ok(pending);
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, pendingStart: pending,
+    delay: async () => {}, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  assert.equal(await host.start(), true);
+  assert.deepEqual(provider.calls, [null, null]);
+  assert.equal(provider.sessions[0]!.closed, true);
+  assert.ok(verified > 0);
+  assert.equal(host.status.provider.state, 'ready');
+  await host.shutdown();
+});
+
 test('invalidation during candidate liveness proof cannot bind or restart in the old generation', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });

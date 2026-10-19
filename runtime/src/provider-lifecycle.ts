@@ -203,7 +203,12 @@ export class ProviderLifecycle {
     reportStartupPhase(onStartupPhase, 'providerStart');
     let candidate: ProviderSession | null | undefined;
     try { candidate = await this.pendingStart?.take(this.options.provider.providerId, resume?.providerSessionId ?? null, safety.generation, this.options.instructionsSha256); }
-    catch (error) { this.requireEpoch(epoch); throw error; }
+    catch (error) {
+      // Any other refusal has positively stopped the candidate, so the existing fallback may start fresh.
+      if (!(error instanceof PendingProviderStopError)) { this.pendingStart = null; }
+      this.requireEpoch(epoch);
+      throw error;
+    }
     this.pendingStart = null;
     if (this.invalidationEpoch !== epoch || !this.options.backend.guardHeld()) {
       if (candidate !== undefined && candidate !== null) { await candidate.close(); await this.options.onTerminated(candidate.providerInstanceId); }
