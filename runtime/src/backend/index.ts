@@ -6,6 +6,7 @@ import { DataRootUnavailableError, PathInspector } from '../admission.ts';
 import { capacityError, firstCapacityRefusal, RuntimeCapacityError } from '../capacity.ts';
 import type { CapacitySource } from '../resource-lifecycle/resources.ts';
 import { loadRuntimeConfig } from '../config.ts';
+import { requireDirectMainToken } from '../direct-main-capability.ts';
 import { compiledBrokerSpawn, type CompiledBrokerArtifact } from '../compiled-broker.ts';
 import { requireControl } from '../control-values.ts';
 import { resolvePrincipal } from '../core-client.ts';
@@ -54,6 +55,7 @@ export const privateGoBrokerSpawn = Symbol('privateGoBrokerSpawn');
 export const privateNativeStartupJobs = Symbol('privateNativeStartupJobs');
 export const privateSelectedImageBootstrap = Symbol('privateSelectedImageBootstrap');
 export interface SelectedImageBootstrap {
+  readonly token: symbol;
   readonly imageRoot: string;
   readonly scratch: string;
   readonly environment: NodeJS.ProcessEnv;
@@ -318,6 +320,7 @@ export class CoordinatorBackend implements RuntimeBackend {
 
 export async function openBackend(options: FixtureBackendOptions): Promise<RuntimeBackend> {
   const selected = options[privateSelectedImageBootstrap];
+  if (selected !== undefined) { requireDirectMainToken(selected.token); }
   if (selected !== undefined && (options[privateCompiledProcessBroker] !== undefined
     || options[privateGoBrokerSpawn] !== undefined || options[privateNativeStartupJobs] !== undefined
     || options[privateRecheckSupervisorIdentity] === true)) {

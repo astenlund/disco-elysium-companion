@@ -45,7 +45,7 @@ function capturedSource(imageRoot: string, relative: string, expectedHash: strin
 
 function base64(bytes: Uint8Array): string { return `'${Buffer.from(bytes).toString('base64')}'`; }
 
-/** @internal Only the direct CLI may call this after it owns a hard-exit pin obligation. */
+/** @internal Reached only through openBackend after its direct-main token check. */
 export async function observeSourceBoundBootstrap(inspector: PathInspector, parent: ProcessIdentity,
   companionRoot: string, game: string, imageRoot: string, environment: NodeJS.ProcessEnv,
   markPossibleTransfer: () => void): Promise<SourceBoundBootstrapResult> {

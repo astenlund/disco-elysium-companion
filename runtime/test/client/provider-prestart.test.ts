@@ -27,7 +27,7 @@ test('copied-root backend selectors route only through the explicit private flag
 });
 
 test('selected image bootstrap is separate from ordinary and copied-root callers', () => {
-  const selection = { imageRoot: 'C:/private/install', scratch: 'C:/private/scratch', environment: {},
+  const selection = { token: Symbol('selection'), imageRoot: 'C:/private/install', scratch: 'C:/private/scratch', environment: {},
     markPossibleTransfer: () => {}, onVerifiedPins: (_status: 'ready' | 'absent') => {} };
   const ordinary = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, false);
   const copied = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, true);

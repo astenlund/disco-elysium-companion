@@ -5,6 +5,7 @@ import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { createChatRuntime, privateRuntimeStartup } from './runtime.ts';
+import { withDirectMainToken } from './direct-main-capability.ts';
 import { prepareStartupHelperScratch } from './startup-helper-scratch.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
 import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
@@ -55,7 +56,6 @@ export function formatCapacityRewind(result: CapacityRewindResult | null): strin
   return `capacity rewind: affectedEvents=${verified ? count(result.affectedEvents) : 'unknown'}; inclusiveRange=${range}; retainedHandoffs=${count(result.retainedHandoffs)}; replayableHandoffs=${count(result.replayableHandoffs)}; presentationRetiredHandoffs=${count(result.presentationRetiredHandoffs)}; survivingCoreRecords=${count(result.survivingCoreRecords)}${certainty}`;
 }
 
-const directMainToken = Symbol('directMainToken');
 const compiledSelectorEnabled = false;
 class DirectImagePinObligation {
   private state: 'idle' | 'unknown' | 'absent' | 'ready' = 'idle';
@@ -86,11 +86,12 @@ async function runCliInternal(args: readonly string[], companionRoot: string,
   if (command.kind === 'chat') {
     const progress = new StartupProgressReporter(progressSink);
     try {
-      if (directToken === directMainToken && pins === undefined) { throw new Error('Direct image pin obligation is unavailable.'); }
-      const scratch = directToken === directMainToken && compiledSelectorEnabled ? await prepareStartupHelperScratch() : null;
+      if (directToken !== undefined && pins === undefined) { throw new Error('Direct image pin obligation is unavailable.'); }
+      const scratch = directToken !== undefined && compiledSelectorEnabled ? await prepareStartupHelperScratch() : null;
       let selectionStartedAt: number | null = null;
       const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase), scratch === null ? {}
         : { [privateRuntimeStartup]: { selectedImageBootstrap: {
+          token: directToken!,
           imageRoot: path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url))),
           scratch: scratch.root, environment: scratch.environment,
           markPossibleTransfer: () => { pins!.markPossibleTransfer(); selectionStartedAt = performance.now(); },
@@ -133,7 +134,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.reso
   const write = (value: string): void => { process.stdout.write(`${value}\n`); };
   const progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); };
   try {
-    const code = await runCliInternal(process.argv.slice(2), companionRoot, write, progressSink, directMainToken, pins);
+    const code = await withDirectMainToken(token => runCliInternal(process.argv.slice(2), companionRoot, write, progressSink, token, pins));
     if (pins.requiresHardExit) { process.exit(code); }
     process.exitCode = code;
   }
