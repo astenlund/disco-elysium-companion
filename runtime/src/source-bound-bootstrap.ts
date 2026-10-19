@@ -22,9 +22,20 @@ const sourceHashes = {
   packageScript: 'b073b787367b6459f7a8eda94f9466db6535e88cc879b4bf7f49a94750f1014a',
 } as const;
 
+export type SourceBoundBootstrapReason = 'invalidInputs' | 'sourceChanged' | 'expressionTooLarge' | 'helperFailed' | 'releaseMismatch';
+
+/** The message is the only player-facing text; reason and detail are bounded diagnostics for private fixtures. */
 export class SourceBoundBootstrapError extends Error {
   override readonly name = 'SourceBoundBootstrapError';
   readonly code = 'sourceBoundBootstrapUnavailable';
+  readonly reason: SourceBoundBootstrapReason;
+  readonly detail: string | null;
+
+  constructor(reason: SourceBoundBootstrapReason, detail: string | null = null) {
+    super('Source-bound bootstrap is unavailable.');
+    this.reason = reason;
+    this.detail = detail;
+  }
 }
 
 export interface SourceBoundBootstrapResult {
@@ -33,13 +44,18 @@ export interface SourceBoundBootstrapResult {
   readonly request: ImagePinRequest;
 }
 
-function unavailable(): SourceBoundBootstrapError {
-  return new SourceBoundBootstrapError('Source-bound bootstrap is unavailable.');
+const detailLimit = 240;
+
+/** Keeps only printable ASCII from helper stderr, collapsed and bounded, so diagnostics cannot carry control bytes. */
+export function helperFailureDetail(exitCode: number | null, stderr: Uint8Array): string {
+  const printable = Buffer.from(stderr).toString('latin1').replace(/[^ -~]+/g, ' ').replace(/ +/g, ' ').trim();
+  const tail = printable.length > detailLimit ? printable.slice(printable.length - detailLimit) : printable;
+  return `exit=${exitCode ?? 'none'}${tail.length > 0 ? `; ${tail}` : ''}`;
 }
 
 function capturedSource(imageRoot: string, relative: string, expectedHash: string): Buffer {
   const bytes = readBoundedPrivateFile(path.win32.join(imageRoot, relative), 1_048_576);
-  if (createHash('sha256').update(bytes).digest('hex') !== expectedHash) { throw unavailable(); }
+  if (createHash('sha256').update(bytes).digest('hex') !== expectedHash) { throw new SourceBoundBootstrapError('sourceChanged', relative); }
   return bytes;
 }
 
@@ -54,7 +70,7 @@ export async function observeSourceBoundBootstrap(inspector: PathInspector, pare
     || relativeImageRoot === '..'
     || relativeImageRoot.startsWith(`..${path.win32.sep}`) || path.win32.isAbsolute(relativeImageRoot)
     || !Number.isSafeInteger(parent.pid) || parent.pid < 1 || parent.pid > 2147483647
-    || !/^[1-9][0-9]{0,18}$/.test(parent.created)) { throw unavailable(); }
+    || !/^[1-9][0-9]{0,18}$/.test(parent.created)) { throw new SourceBoundBootstrapError('invalidInputs'); }
   const bootstrap = capturedSource(imageRoot, 'runtime/scripts/Get-BootstrapScope.ps1', sourceHashes.bootstrap);
   const nativeFiles = capturedSource(imageRoot, 'runtime/scripts/NativeFiles.cs', sourceHashes.nativeFiles);
   const nativePins = capturedSource(imageRoot, 'runtime/scripts/NativeImagePins.cs', sourceHashes.nativePins);
@@ -71,11 +87,13 @@ export async function observeSourceBoundBootstrap(inspector: PathInspector, pare
   const argumentsBase64 = [bootstrap, bundled, pinScript, Buffer.from(JSON.stringify(request), 'utf8'),
     Buffer.from(companionRoot, 'utf8'), Buffer.from(game, 'utf8')].map(base64);
   const expression = Buffer.from(`& ([ScriptBlock]::Create(${decode})) ${argumentsBase64.join(' ')}${String.fromCharCode(10)}`, 'ascii');
-  if (expression.byteLength > 1_048_576) { throw unavailable(); }
+  if (expression.byteLength > 1_048_576) { throw new SourceBoundBootstrapError('expressionTooLarge'); }
 
   markPossibleTransfer();
   const reply = await inspector.metadataStdinExpression(expression, companionRoot, environment);
-  if (reply.exitCode !== 0 || reply.stderr.byteLength !== 0) { throw unavailable(); }
+  if (reply.exitCode !== 0 || reply.stderr.byteLength !== 0) {
+    throw new SourceBoundBootstrapError('helperFailed', helperFailureDetail(reply.exitCode, reply.stderr));
+  }
   const value = parseStrictJson(reply.stdout);
   const combined = parseCombinedScopeReply(value, companionRoot, game, true);
   const imagePins = parseImagePinReceipt(combined.imagePins!, request, combined.candidate.dataRoot);
@@ -84,7 +102,7 @@ export async function observeSourceBoundBootstrap(inspector: PathInspector, pare
     const release = parseCompiledImageRelease(manifest);
     if (release.generation !== request.artifactGeneration
       || release.broker.sha256 !== request.brokerSha256 || release.observer.sha256 !== request.observerSha256) {
-      throw unavailable();
+      throw new SourceBoundBootstrapError('releaseMismatch');
     }
   }
 

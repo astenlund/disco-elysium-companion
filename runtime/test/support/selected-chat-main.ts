@@ -6,6 +6,7 @@ import type { RuntimeBackend } from '../../src/backend/api.ts';
 import { DirectImagePinObligation, withDirectMainToken } from '../../src/direct-main-capability.ts';
 import { createChatRuntime, privateRuntimeStartup } from '../../src/runtime.ts';
 import type { SessionHost } from '../../src/session-host.ts';
+import { SourceBoundBootstrapError } from '../../src/source-bound-bootstrap.ts';
 import { prepareStartupHelperScratch } from '../../src/startup-helper-scratch.ts';
 import { SyntheticProvider } from './synthetic-provider.ts';
 
@@ -21,6 +22,15 @@ const newline = String.fromCharCode(10);
 class FixtureRefusal extends Error {}
 
 function emit(value: Record<string, unknown>): void { process.stdout.write(JSON.stringify(value) + newline); }
+
+/** Finds the bootstrap refusal reason anywhere in a short cause chain, so each negative case can prove its own check. */
+function bootstrapDiagnostic(error: unknown): { reason: string; detail: string | null } | null {
+  let current: unknown = error;
+  for (let depth = 0; current instanceof Error && depth < 4; depth += 1, current = current.cause) {
+    if (current instanceof SourceBoundBootstrapError) { return { reason: current.reason, detail: current.detail }; }
+  }
+  return null;
+}
 
 function strictlyInside(parent: string, candidate: string): boolean {
   const relative = path.win32.relative(parent, candidate);
@@ -166,7 +176,7 @@ async function run(token: symbol, pins: DirectImagePinObligation, companionRoot:
       catch { /* The caller proves every role stopped after this process exits. */ }
     }
     emit({ event: 'result', status: 'failed', stage, pins: pins.status, prestart, attachment, helperScratch, ...durations, phases,
-      message: error instanceof Error ? error.message : String(error) });
+      bootstrap: bootstrapDiagnostic(error), message: error instanceof Error ? error.message : String(error) });
     return 1;
   }
 }

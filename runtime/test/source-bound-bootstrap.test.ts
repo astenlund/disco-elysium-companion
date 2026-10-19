@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { PathInspector } from '../src/admission.ts';
 import { scopeComponents } from '../src/scope.ts';
-import { observeSourceBoundBootstrap } from '../src/source-bound-bootstrap.ts';
+import { helperFailureDetail, observeSourceBoundBootstrap, SourceBoundBootstrapError } from '../src/source-bound-bootstrap.ts';
 
 const companionRoot = path.win32.join('C:', 'private', 'companion');
 const imageRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
@@ -48,6 +48,26 @@ test('selected bootstrap rejects a malformed reply after marking possible remote
   await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot,
     { TEMP: imageRoot }, () => { transferred = true; }));
   assert.equal(transferred, true);
+});
+
+test('a failed helper reports a bounded printable reason without changing the player-facing message', async () => {
+  let transferred = false;
+  const stderr = Buffer.concat([Buffer.from([27, 91, 51, 49, 109]), Buffer.from('Image pin release is incomplete or invalid.'),
+    Buffer.from([13, 10, 0, 200]), Buffer.from('x'.repeat(400))]);
+  const inspector = { metadataStdinExpression: async () => ({ exitCode: 1, stderr, stdout: Buffer.alloc(0) }) } as unknown as PathInspector;
+  await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot, { TEMP: imageRoot },
+    () => { transferred = true; }), (error: unknown) => {
+    assert.ok(error instanceof SourceBoundBootstrapError);
+    assert.equal(error.message, 'Source-bound bootstrap is unavailable.');
+    assert.equal(error.reason, 'helperFailed');
+    assert.ok(error.detail !== null && error.detail.startsWith('exit=1; '));
+    assert.ok(error.detail.length <= 'exit=1; '.length + 240);
+    assert.ok([...error.detail].every(character => character >= ' ' && character <= '~'));
+    return true;
+  });
+  assert.equal(transferred, true);
+  assert.equal(helperFailureDetail(null, Buffer.alloc(0)), 'exit=none');
+  assert.match(helperFailureDetail(1, Buffer.from('Image pin release generation changed.')), /^exit=1; Image pin release generation changed\.$/);
 });
 
 test('selected bootstrap refuses invalid parent identity before possible transfer', async () => {
