@@ -199,6 +199,12 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+### [Per-start helper profiles accumulate](bugs/runtime-helper-profile-accumulation.md)
+
+Every selected chat start leaves a new `.tmp/runtime-startup-*` helper profile behind, and the fresh profile keeps PowerShell from reusing its startup JIT profile; decide on a reused or cleaned-up admitted profile after real-provider timing.
+
+**Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed.
