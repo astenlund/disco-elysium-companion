@@ -24,6 +24,8 @@ test('helper profile destinations are distinct admitted directories under reposi
       assert.equal((await fs.stat(destination)).isDirectory(), true);
     }
     assert.equal(prepared.environment.HOME, undefined);
+    assert.equal(prepared.environment.DOTNET_ADD_GLOBAL_TOOLS_TO_PATH, 'false');
+    assert.equal(prepared.environment.DOTNET_GENERATE_ASPNET_CERTIFICATE, 'false');
   } finally {
     assert.equal(path.win32.isAbsolute(relative), false);
     assert.equal(relative.startsWith(`.tmp${path.win32.sep}runtime-startup-`), true);

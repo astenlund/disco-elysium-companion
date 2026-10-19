@@ -4,6 +4,7 @@ import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } fro
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { dotnetFirstRunOptOuts } from './dotnet-environment.ts';
 import type { BrokerSpawn, OwnedSpawnOptions } from './process.ts';
 
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -144,9 +145,7 @@ export function brokerEnvironment(options: OwnedSpawnOptions, scratch: string): 
   return { ...withoutHome(options.env ?? process.env), TEMP: scratch, TMP: scratch, TMPDIR: scratch, NODE_COMPILE_CACHE: scratch,
     USERPROFILE: scratch, APPDATA: scratch, LOCALAPPDATA: scratch,
     DOTNET_CLI_HOME: scratch, NUGET_PACKAGES: scratch, NUGET_HTTP_CACHE_PATH: scratch, NUGET_PLUGINS_CACHE_PATH: scratch,
-    NUGET_SCRATCH: scratch, DOTNET_BUNDLE_EXTRACT_BASE_DIR: scratch, DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false',
-    DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1',
-    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: 'true' };
+    NUGET_SCRATCH: scratch, DOTNET_BUNDLE_EXTRACT_BASE_DIR: scratch, ...dotnetFirstRunOptOuts };
 }
 
 /** @internal Private guarded broker launch; production continues to use the PowerShell broker. */

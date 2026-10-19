@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { admitPrivateDirectory } from './compiled-broker.ts';
+import { dotnetFirstRunOptOuts } from './dotnet-environment.ts';
 
 const installationRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const defaultScratchParent = path.win32.join(installationRoot, '.tmp');
@@ -40,9 +41,7 @@ export async function prepareStartupHelperScratch(scratchParent = defaultScratch
     DOTNET_CLI_HOME: location('dotnet'), NUGET_PACKAGES: location('nuget-packages'),
     NUGET_HTTP_CACHE_PATH: location('nuget-http'), NUGET_PLUGINS_CACHE_PATH: location('nuget-plugins'),
     NUGET_SCRATCH: location('nuget-scratch'), DOTNET_BUNDLE_EXTRACT_BASE_DIR: location('bundle'),
-    NODE_COMPILE_CACHE: location('node-cache'), DOTNET_CLI_TELEMETRY_OPTOUT: '1',
-    DOTNET_NOLOGO: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1',
-    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: 'true', GOTELEMETRY: 'off',
+    NODE_COMPILE_CACHE: location('node-cache'), GOTELEMETRY: 'off', ...dotnetFirstRunOptOuts,
   };
   return { root, environment: Object.freeze(environment) };
 }

@@ -90,6 +90,8 @@ test('private helper environments omit HOME while the child snapshot preserves i
   assert.equal(Object.hasOwn(nativeObserverEnvironment(scratch, options.env), 'HOME'), false);
   assert.equal(broker.USERPROFILE, scratch);
   assert.equal(broker.APPDATA, scratch);
+  assert.equal(broker.DOTNET_ADD_GLOBAL_TOOLS_TO_PATH, 'false');
+  assert.equal(broker.DOTNET_GENERATE_ASPNET_CERTIFICATE, 'false');
   const absent = brokerEnvironment({ ...options, env: { EMPTY: '' } }, scratch);
   assert.equal(Object.hasOwn(absent, 'HOME'), false);
   assert.equal(Object.hasOwn(childEnvironment({ EMPTY: '' }), 'HOME'), false);
