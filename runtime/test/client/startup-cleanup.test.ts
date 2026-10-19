@@ -30,6 +30,34 @@ test('worker close failure still stops an opened backend without a host', async 
   assert.deepEqual(order, ['worker', 'watcher and core', 'provider', 'tools verified', 'backend', 'tools closed']);
 });
 
+test('an unproved pending provider stop closes workers, then fails closed without shutdown', async () => {
+  const order: string[] = [];
+  const stopFailure = new Error('The pending provider could not be positively stopped.');
+  const pending = { cancel: async () => { order.push('candidate'); throw stopFailure; } };
+  const backend = {
+    closeStartupWorkers: async () => { order.push('worker'); },
+    beginShutdown: async () => { order.push('watcher and core'); },
+    supervisor: { verifyQuiescent: async () => { order.push('provider'); } },
+    shutdown: async () => { order.push('backend'); },
+  } as unknown as RuntimeBackend;
+  await assert.rejects(cleanupFailedChatRuntime(new Error('Startup failed.'), backend, null, null, undefined, pending), error => error === stopFailure);
+  assert.deepEqual(order, ['candidate', 'worker']);
+});
+
+test('a stopped pending provider lets cleanup shut down and keep the original failure', async () => {
+  const order: string[] = [];
+  const startupFailure = new Error('Startup failed.');
+  const pending = { cancel: async () => { order.push('candidate'); } };
+  const backend = {
+    closeStartupWorkers: async () => { order.push('worker'); },
+    beginShutdown: async () => { order.push('watcher and core'); },
+    supervisor: { verifyQuiescent: async () => { order.push('provider'); } },
+    shutdown: async () => { order.push('backend'); },
+  } as unknown as RuntimeBackend;
+  await assert.rejects(cleanupFailedChatRuntime(startupFailure, backend, null, null, undefined, pending), error => error === startupFailure);
+  assert.deepEqual(order, ['candidate', 'worker', 'watcher and core', 'provider', 'backend']);
+});
+
 test('successful cleanup preserves the original startup failure', async () => {
   const startupFailure = new Error('Startup failed.');
   const backend = { closeStartupWorkers: async () => {} } as unknown as RuntimeBackend;

@@ -43,14 +43,21 @@ export function chatBackendOptions(companionRoot: string, onStatus: () => void, 
       ...(selectedImageBootstrap === undefined ? {} : { [privateSelectedImageBootstrap]: selectedImageBootstrap }) } : {}) };
 }
 
-/** @internal Cleanup must continue even when the worker cannot close. */
+/**
+ * @internal Cleanup must continue even when the worker cannot close. A pending provider candidate whose stop is unproved
+ * still lets startup workers close, but then fails closed: no shutdown, so the guard stays held and no clean marker is written.
+ */
 export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeBackend | null, host: SessionHost | null, files: FileToolAdapter | null,
-  onStartupPhase?: (phase: StartupPhase) => void): Promise<never> {
+  onStartupPhase?: (phase: StartupPhase) => void, pending: Pick<PendingProviderStart, 'cancel'> | null = null): Promise<never> {
+  let candidateFailure: { readonly reason: unknown } | null = null;
+  try { await pending?.cancel(); }
+  catch (failure) { candidateFailure = { reason: failure }; }
   let cleanupFailed = false;
   let cleanupFailure: unknown;
   if (backend !== null) { reportStartupPhase(onStartupPhase, 'startupWorkerClosure'); }
   try { await backend?.closeStartupWorkers(); }
   catch (failure) { cleanupFailed = true; cleanupFailure = failure; }
+  if (candidateFailure !== null) { throw candidateFailure.reason; }
   try {
     if (host !== null) { await host.shutdown(); }
     else if (backend !== null) {
@@ -134,7 +141,6 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     await backend.closeStartupWorkers();
     return { result: 'ready', host };
   } catch (error) {
-    await pending?.cancel();
-    return cleanupFailedChatRuntime(error, backend, host, files, reportPhase);
+    return cleanupFailedChatRuntime(error, backend, host, files, reportPhase, pending);
   }
 }
