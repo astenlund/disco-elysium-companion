@@ -75,22 +75,24 @@ export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeB
 const attachmentPreparationAttempts = 3;
 
 /**
- * @internal A final safety refusal leaves only a positively stopped status client. A provider that merely exited gets the
- * reconnect ladder and a fresh full check; if it does not come back, the client attaches status-only as after any failed reconnect.
+ * @internal A final safety refusal, including an invalidation at any point after the provider started, leaves only a positively
+ * stopped status client. A provider that merely exited gets its reconnect ladder settled and a fresh full check; once attempts run
+ * out, attachment proceeds from that settled state, ready with its own cold check or status-only as after any failed reconnect.
  */
 export async function finalizeAttachmentSafety(host: SessionHost, backend: RuntimeBackend): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
+    let failure: unknown;
     try { await host.prepareAttachmentWitness(); return; }
-    catch (error) {
-      if (!backend.guardHeld()) { throw error; }
-      if (error instanceof AttachmentProviderUnavailableError) {
-        if (attempt < attachmentPreparationAttempts && await host.settleProviderRecovery()) { continue; }
-        return;
-      }
-      await host.blockAfterFinalSafety();
-      if (!backend.guardHeld()) { throw error; }
-      return;
+    catch (error) { failure = error; }
+    if (!backend.guardHeld()) { throw failure; }
+    if (failure instanceof AttachmentProviderUnavailableError) {
+      const settled = await host.settleProviderRecovery();
+      if (settled === 'ready' && attempt < attachmentPreparationAttempts) { continue; }
+      if (settled !== 'invalidated') { return; }
     }
+    await host.blockAfterFinalSafety();
+    if (!backend.guardHeld()) { throw failure; }
+    return;
   }
 }
 

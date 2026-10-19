@@ -161,11 +161,16 @@ export class SessionHost implements SessionHostV1 {
       ? new Error(message) : new AttachmentProviderUnavailableError(message);
   }
 
-  /** Waits for queued provider reconnects to finish and reports whether a ready provider came back. */
-  async settleProviderRecovery(): Promise<boolean> {
+  /**
+   * Waits for queued provider reconnects to finish, so attachment sees a settled provider. An invalidation stops the wait at once:
+   * it is a safety refusal, and the final-safety block, not a replacement, owns what follows.
+   */
+  async settleProviderRecovery(): Promise<'ready' | 'unavailable' | 'invalidated'> {
     this.scheduleTransition();
-    while (this.transition !== null) { await this.transition; }
-    return this.ready && this.providerReady && !this.invalidatedAfterStart;
+    while (this.transition !== null && !this.invalidatedAfterStart) { await this.transition; }
+    if (this.invalidatedAfterStart) { return 'invalidated'; }
+
+    return this.ready && this.providerReady ? 'ready' : 'unavailable';
   }
 
   async blockAfterFinalSafety(): Promise<void> {
