@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 
+import { scopedPowerShellBrokerLaunch, scopedPowerShellBrokerSpawn } from '../src/compiled-broker.ts';
 import { dotnetFirstRunOptOuts } from '../src/dotnet-environment.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
 
@@ -37,6 +38,31 @@ describe('owned process transport', () => {
       assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')),
         { TEMP: providerProfile, APPDATA: providerProfile });
       await supervisor.verifyQuiescentMany(['metadata', 'provider']);
+    } finally {
+      assert.equal(path.relative(root, scratch).startsWith('..'), false);
+      await fs.rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the scoped PowerShell broker in its scratch while the provider child keeps its own profile', { timeout: 60000 }, async () => {
+    const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'scoped-broker-'));
+    const brokerScratch = path.join(scratch, 'broker');
+    const providerProfile = path.join(scratch, 'provider');
+    await fs.mkdir(brokerScratch);
+    await fs.mkdir(providerProfile);
+    const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), scopedPowerShellBrokerSpawn(brokerScratch));
+    try {
+      const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
+      const supplied = { ...inherited, TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
+        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile };
+      const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 30000);
+      assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')), { TEMP: providerProfile, APPDATA: providerProfile });
+      await supervisor.verifyQuiescentMany(['provider']);
+      // The broker itself runs in its scratch profile with version-2 control, so its PowerShell writes stay there.
+      const launch = scopedPowerShellBrokerLaunch({ ...options('environment'), env: supplied }, brokerScratch);
+      assert.equal(launch.args.at(-1), '-ChildEnvironment');
+      for (const name of ['TEMP', 'TMP', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'DOTNET_CLI_HOME']) { assert.equal(launch.env[name], brokerScratch, name); }
+      assert.equal(scopedPowerShellBrokerSpawn(brokerScratch).controlVersion, 2);
     } finally {
       assert.equal(path.relative(root, scratch).startsWith('..'), false);
       await fs.rm(scratch, { recursive: true, force: true });

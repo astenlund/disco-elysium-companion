@@ -148,6 +148,27 @@ export function brokerEnvironment(options: OwnedSpawnOptions, scratch: string): 
     NUGET_SCRATCH: scratch, DOTNET_BUNDLE_EXTRACT_BASE_DIR: scratch, ...dotnetFirstRunOptOuts };
 }
 
+const powerShellBroker = path.join(installationRoot, 'runtime', 'scripts', 'Invoke-OwnedProcess.ps1');
+
+/**
+ * @internal The PowerShell broker for the selected path without compiled images. Like the Go broker, it runs in the helper
+ * scratch profile and hands the child its own environment through the version-2 control frame, so no broker, the provider's
+ * included, writes PowerShell profile data outside the repository.
+ */
+export function scopedPowerShellBrokerSpawn(scratch: string): BrokerSpawn {
+  const launch: BrokerSpawn = options => {
+    admitPrivateDirectory(scratch);
+    const { args, env } = scopedPowerShellBrokerLaunch(options, scratch);
+    return spawn('pwsh', [...args], { cwd: options.cwd, env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  };
+  return Object.assign(launch, { controlVersion: 2 as const });
+}
+
+/** @internal The scoped broker's own command line and environment; the child's environment travels in the version-2 frame. */
+export function scopedPowerShellBrokerLaunch(options: OwnedSpawnOptions, scratch: string): { readonly args: readonly string[]; readonly env: NodeJS.ProcessEnv } {
+  return { args: ['-NoProfile', '-File', powerShellBroker, '-ChildEnvironment'], env: brokerEnvironment(options, scratch) };
+}
+
 /** @internal Private guarded broker launch; production continues to use the PowerShell broker. */
 export function compiledBrokerSpawn(artifact: CompiledBrokerArtifact): BrokerSpawn {
   const launch: BrokerSpawn = options => {

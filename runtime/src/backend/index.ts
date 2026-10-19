@@ -7,7 +7,7 @@ import { capacityError, firstCapacityRefusal, RuntimeCapacityError } from '../ca
 import type { CapacitySource } from '../resource-lifecycle/resources.ts';
 import { loadRuntimeConfig } from '../config.ts';
 import { requireDirectMainToken } from '../direct-main-capability.ts';
-import { compiledBrokerSpawn, type CompiledBrokerArtifact } from '../compiled-broker.ts';
+import { compiledBrokerSpawn, scopedPowerShellBrokerSpawn, type CompiledBrokerArtifact } from '../compiled-broker.ts';
 import { requireControl } from '../control-values.ts';
 import { resolvePrincipal } from '../core-client.ts';
 import { Deadline } from '../deadline.ts';
@@ -366,6 +366,7 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
     const broker = selectedPins === 'ready' ? releaseGoBrokerSpawn(selected!.imageRoot, selected!.scratch)
+      : selectedPins === 'absent' ? scopedPowerShellBrokerSpawn(selected!.scratch)
       : options[privateGoBrokerSpawn] ?? (options[privateCompiledProcessBroker] === undefined
         ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]));
     const nativeJobs = selectedPins === 'ready' ? releaseNativeJobObserverArtifact(selected!.imageRoot, selected!.scratch)
