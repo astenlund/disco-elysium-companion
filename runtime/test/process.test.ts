@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 
+import { dotnetFirstRunOptOuts } from '../src/dotnet-environment.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -24,12 +25,12 @@ describe('owned process transport', () => {
     await fs.mkdir(providerProfile);
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
     const helperEnvironment = { ...inherited, TEMP: scratch, TMP: scratch, TMPDIR: scratch,
-      APPDATA: scratch, LOCALAPPDATA: scratch, USERPROFILE: scratch, DOTNET_CLI_HOME: scratch };
+      APPDATA: scratch, LOCALAPPDATA: scratch, USERPROFILE: scratch, DOTNET_CLI_HOME: scratch, ...dotnetFirstRunOptOuts };
     const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), undefined, undefined, helperEnvironment);
     try {
       const supplied = { ...inherited, TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
         APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile,
-        DOTNET_CLI_HOME: providerProfile };
+        DOTNET_CLI_HOME: providerProfile, ...dotnetFirstRunOptOuts };
       const helper = await supervisor.run('metadata', { ...options('environment'), env: supplied }, 15000);
       assert.deepEqual(JSON.parse(helper.stdout.toString('utf8')), { TEMP: scratch, APPDATA: scratch });
       const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 15000);

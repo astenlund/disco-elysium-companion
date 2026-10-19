@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { dotnetFirstRunOptOuts } from '../src/dotnet-environment.ts';
 import { bundleNativeImageSources } from '../src/native-image-source.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -24,7 +25,7 @@ test('captured native image sources form one compilable in-memory unit', { timeo
     for (const name of ['USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR', 'DOTNET_CLI_HOME']) {
       environment[name] = scratch;
     }
-    environment.DOTNET_CLI_TELEMETRY_OPTOUT = '1';
+    Object.assign(environment, dotnetFirstRunOptOuts);
     const encoded = Buffer.from(source).toString('base64');
     const expression = "$ErrorActionPreference='Stop'; Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
       + encoded + "'))); [Console]::Out.Write('compiled')";
