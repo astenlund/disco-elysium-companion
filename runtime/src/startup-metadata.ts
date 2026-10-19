@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, type PathInspector } from './admission.ts';
+import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 import { parseStartupJobStates, SupervisorError, type CommandResult, type OwnedProcess, type ProcessSupervisor } from './process.ts';
 import type { RuntimeScope } from './scope.ts';
@@ -238,7 +239,8 @@ export class StartupMetadataSession {
     let child: OwnedProcess;
     try {
       child = supervisor.spawn('startupMetadata', { command: 'pwsh', args: ['-NoProfile', '-File', script, '-CompanionRoot', scope.companionRoot,
-        '-DataRoot', scope.dataRoot, '-SourceRoot', installationRoot, '-Nonce', nonce], cwd: scope.companionRoot, env: { ...process.env, TEMP: tempRoot, TMP: tempRoot } });
+        '-DataRoot', scope.dataRoot, '-SourceRoot', installationRoot, '-JobScopeToken', guardScopeToken(scope.dataRoot), '-Nonce', nonce],
+      cwd: scope.companionRoot, env: { ...process.env, TEMP: tempRoot, TMP: tempRoot } });
     } catch {
       await supervisor.verifyQuiescent('startupMetadata');
       return null;

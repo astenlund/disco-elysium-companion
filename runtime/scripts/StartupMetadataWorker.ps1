@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)] [string] $CompanionRoot,
     [Parameter(Mandatory)] [string] $DataRoot,
     [Parameter(Mandatory)] [string] $SourceRoot,
+    [Parameter(Mandatory)] [string] $JobScopeToken,
     [Parameter(Mandatory)] [string] $Nonce
 )
 
@@ -107,8 +108,9 @@ try {
         }
         $scopeBytes = Read-BoundFile -Root $CompanionRoot -Target (Join-Path $DataRoot 'scope.json') -MaximumBytes 1048576
         $scopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes))
-        $jobScopeToken = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($DataRoot.ToLowerInvariant()))).Substring(0, 32)
-        $jobPrefix = 'Global' + [char]92 + 'game-companion-process-' + $jobScopeToken + '-'
+        # Node names the jobs, so it supplies the token rather than this worker recomputing it under .NET casing rules.
+        if ($JobScopeToken -cnotmatch '\A[a-f0-9]{32}\z') { throw [IO.InvalidDataException]::new('Job scope token is invalid.') }
+        $jobPrefix = 'Global' + [char]92 + 'game-companion-process-' + $JobScopeToken + '-'
         $sourceSha256 = Get-BundleHash
     }
     finally { foreach ($held in $sourceLocks) { $held.Dispose() } }

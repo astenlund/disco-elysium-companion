@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { openBackend } from '../src/backend/index.ts';
+import { guardScopeToken } from '../src/guard.ts';
 import { isObject, parseStrictJson } from '../src/json.ts';
 import { encodeStartupMetadataFrame, FramedReplies } from '../src/startup-metadata.ts';
 import { companionFixture } from './support/companion.ts';
@@ -24,7 +25,8 @@ test('metadata worker rejects the next request after its source changes', { time
     await fs.cp(path.join(repository, 'runtime', 'scripts'), scripts, { recursive: true });
     const nonce = randomBytes(16).toString('hex');
     const child = backend.supervisor.spawn('startupMetadata', { command: 'pwsh', args: ['-NoProfile', '-File', path.join(scripts, 'StartupMetadataWorker.ps1'),
-      '-CompanionRoot', fixture.root, '-DataRoot', backend.scope.dataRoot, '-SourceRoot', sourceRoot, '-Nonce', nonce],
+      '-CompanionRoot', fixture.root, '-DataRoot', backend.scope.dataRoot, '-SourceRoot', sourceRoot, '-JobScopeToken', guardScopeToken(backend.scope.dataRoot),
+      '-Nonce', nonce],
     cwd: fixture.root, env: { ...process.env, TEMP: path.join(fixture.root, '.tmp'), TMP: path.join(fixture.root, '.tmp') } });
     const replies = new FramedReplies(child);
     try {

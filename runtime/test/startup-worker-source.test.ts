@@ -6,9 +6,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { openBackend } from '../src/backend/index.ts';
+import { guardScopeToken } from '../src/guard.ts';
 import { asInteger, isLowerHex, isObject, parseStrictJson } from '../src/json.ts';
 import type { ProcessRole } from '../src/process.ts';
-import { FramedReplies, StartupMetadataSession } from '../src/startup-metadata.ts';
+import { encodeStartupMetadataFrame, FramedReplies, parseStartupMetadataReply, StartupMetadataSession } from '../src/startup-metadata.ts';
 import { scopeFromAdmittedBinding } from '../src/scope.ts';
 import { observeBootstrapWorkerSources } from '../src/startup-worker-sources.ts';
 import { companionFixture } from './support/companion.ts';
@@ -16,6 +17,7 @@ import { companionFixture } from './support/companion.ts';
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const sourceScript = fileURLToPath(new URL('../scripts/Get-StartupWorkerSource.ps1', import.meta.url));
 const priorSourceScript = fileURLToPath(new URL('../scripts/Get-StartupMetadataSource.ps1', import.meta.url));
+const metadataWorker = fileURLToPath(new URL('../scripts/StartupMetadataWorker.ps1', import.meta.url));
 const coreWorker = fileURLToPath(new URL('../scripts/StartupCoreReplyWorker.ps1', import.meta.url));
 const mutationWorker = fileURLToPath(new URL('../scripts/StartupMutationWorker.ps1', import.meta.url));
 
@@ -102,6 +104,47 @@ test('one source observation matches each private startup worker bundle', { time
     assert.equal(missing.exitCode, 1);
     assert.equal(missing.stdout.length, 0);
     assert.equal(missing.stderr.toString('utf8').trim(), 'Get-StartupWorkerSource: source-evidence-unavailable');
+  } finally {
+    if (backend !== null) { await backend.shutdown(true); }
+    await fixture.close();
+  }
+});
+
+test('the metadata worker proves jobs under the scope token Node supplies, not one it derives', { timeout: 180000 }, async () => {
+  const fixture = await companionFixture('runtime-owned-empty');
+  let backend: Awaited<ReturnType<typeof openBackend>> | null = null;
+  try {
+    await fs.mkdir(path.join(fixture.root, '.tmp'), { recursive: true });
+    backend = await openBackend({ companionRoot: fixture.root });
+    const suppliedToken = randomBytes(16).toString('hex');
+    const nonce = randomBytes(16).toString('hex');
+    const child = backend.supervisor.spawn('startupMetadata', { command: 'pwsh', args: ['-NoProfile', '-File', metadataWorker,
+      '-CompanionRoot', fixture.root, '-DataRoot', backend.scope.dataRoot, '-SourceRoot', repository, '-JobScopeToken', suppliedToken, '-Nonce', nonce],
+    cwd: fixture.root, env: { ...process.env, TEMP: path.join(fixture.root, '.tmp'), TMP: path.join(fixture.root, '.tmp') } });
+    const replies = new FramedReplies(child);
+    try {
+      await child.ready;
+      const hello = parseStrictJson(await replies.next(30000));
+      assert.ok(isObject(hello));
+      assert.equal(hello['nonce'], nonce);
+      const observe = async (token: string) => {
+        const id = randomBytes(16).toString('hex');
+        const name = ['Global', `game-companion-process-${token}-core`].join(path.win32.sep);
+        child.stdin.write(encodeStartupMetadataFrame({ version: 1, id, op: 'jobBatch', root: backend!.scope.dataRoot, remainingMs: 5000,
+          scopeSha256: backend!.scope.bindingSha256, names: [name] }));
+        return parseStartupMetadataReply(await replies.next(30000), id, 'jobBatch');
+      };
+      const supplied = await observe(suppliedToken);
+      assert.equal(supplied.exitCode, 0);
+      assert.deepEqual(JSON.parse(supplied.stdout.toString('utf8')), { jobs: [{ name: ['Global', `game-companion-process-${suppliedToken}-core`].join(path.win32.sep),
+        state: 'absent', processes: null }] });
+      assert.equal((await observe(guardScopeToken(backend.scope.dataRoot))).exitCode, 1);
+    } finally {
+      replies.close();
+      child.stdin.end();
+      await backend.supervisor.stop('startupMetadata', 2000);
+      await backend.supervisor.verifyQuiescent('startupMetadata');
+    }
   } finally {
     if (backend !== null) { await backend.shutdown(true); }
     await fixture.close();
