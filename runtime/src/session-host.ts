@@ -267,7 +267,10 @@ export class SessionHost implements SessionHostV1 {
         if (!usedWarmWitness || attempt !== 0) { throw new Error('Ready client attachment witness expired during final proof.'); }
         witness = await observeColdSafety();
       }
-    } else { await verifyWorkers(); }
+    } else {
+      // A status-only client may exist only beside a provider job proved absent; an unproved stop fails closed instead.
+      await Promise.all([verifyWorkers(), this.options.backend.supervisor.verifyQuiescent('provider')]);
+    }
     if (reservation.cancelled || this.attachmentReservation !== reservation || this.closing || this.sink !== null) { return { result: 'attachCancelled' }; }
     if (!this.options.backend.guardHeld() || this.options.backend.status !== expectedStatus || JSON.stringify(this.options.backend.status) !== expectedStatusBytes
       || this.lifecycle.binding !== expectedBinding || this.lifecycle.session !== expectedSession || this.ready !== expectedReady

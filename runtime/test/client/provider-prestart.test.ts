@@ -208,6 +208,21 @@ test('an invalidation during the initial provider start keeps chat as a status-o
   await host.shutdown();
 });
 
+test('an invalidated initial start with an unproved provider stop cannot attach status-only', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { closeStartupWorkers: async () => { backend.events.push('workers'); }, supervisor: {
+    verifyQuiescent: async (role: string) => { if (role === 'provider') { throw new Error('Provider job absence is unproved.'); } } } });
+  const provider = new FakeProvider();
+  let host: SessionHost | null = null;
+  provider.configure = session => { session.close = async () => { throw new Error('Provider job absence is unproved.'); }; };
+  const start = provider.start.bind(provider);
+  provider.start = async (resume: string | null) => { const session = await start(resume); host!.invalidate('contextUncertain'); return session; };
+  host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  assert.equal((await startChatProvider(host, backend.asRuntime())).result, 'ready');
+  await assert.rejects(host.attachVerified(() => {}), /Provider job absence is unproved/);
+});
+
 test('invalidation before initial host start leaves only status authority', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
