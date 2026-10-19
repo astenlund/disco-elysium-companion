@@ -8,6 +8,8 @@ import { promisify } from 'node:util';
 
 import { openBackend, privateSelectedImageBootstrap } from '../src/backend/index.ts';
 import { DirectImagePinObligation, withDirectMainToken } from '../src/direct-main-capability.ts';
+import { createReadOnlyInspection } from '../src/read-only-inspection.ts';
+import { observeSourceBoundBootstrap } from '../src/source-bound-bootstrap.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const absent = path.join(root, '.tmp', 'selected-image-direct-main-absent');
@@ -35,6 +37,14 @@ test('a selected image bootstrap without the direct-main token fails before any 
   assert.deepEqual(phases, []);
   assert.equal(transferMarked, false);
   await assert.rejects(fs.stat(absent), { code: 'ENOENT' });
+});
+
+test('a direct call into the bootstrap with a real inspector is refused before any helper starts', { timeout: 60000 }, async () => {
+  const inspection = await createReadOnlyInspection(root);
+  try {
+    await assert.rejects(observeSourceBoundBootstrap(Symbol('forged'), inspection.inspector, inspection.parentIdentity, root, 'disco_elysium',
+      root, {}, () => {}), /Compiled image transfer requires direct CLI main/);
+  } finally { await inspection.close(); }
 });
 
 test('the direct-main token is unavailable outside the direct main entries', () => {

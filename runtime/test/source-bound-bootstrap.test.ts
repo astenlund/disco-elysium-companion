@@ -18,18 +18,20 @@ const admitted = (location: string) => ({ path: location, exists: true, kind: 'd
 const reply = (imagePins: unknown) => ({ exitCode: 0, stderr: Buffer.alloc(0),
   stdout: Buffer.from(JSON.stringify({ sid, paths: [admitted(companionRoot), admitted(candidate)], imagePins })) });
 const parent = { pid: 1234, created: '1234567890123456789' };
+const token = Symbol('selected');
 
 test('selected bootstrap captures fixed source and accepts the exact absent reply', async () => {
   let transferred = false;
   const expressions: Buffer[] = [];
-  const inspector = { metadataStdinExpression: async (value: Uint8Array, cwd: string, environment: NodeJS.ProcessEnv) => {
+  const inspector = { metadataStdinExpression: async (received: unknown, value: Uint8Array, cwd: string, environment: NodeJS.ProcessEnv) => {
+    assert.equal(received, token);
     assert.equal(transferred, true);
     assert.equal(cwd, companionRoot);
     assert.equal(environment.TEMP, imageRoot);
     expressions.push(Buffer.from(value));
     return reply({ status: 'absent' });
   } } as unknown as PathInspector;
-  const result = await observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot,
+  const result = await observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, imageRoot,
     { TEMP: imageRoot }, () => { transferred = true; });
   assert.equal(result.candidate.dataRoot, candidate);
   assert.deepEqual(result.imagePins, { status: 'absent' });
@@ -46,7 +48,7 @@ test('selected bootstrap captures fixed source and accepts the exact absent repl
 test('selected bootstrap rejects a malformed reply after marking possible remote transfer', async () => {
   let transferred = false;
   const inspector = { metadataStdinExpression: async () => reply({ status: 'ready' }) } as unknown as PathInspector;
-  await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot,
+  await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, imageRoot,
     { TEMP: imageRoot }, () => { transferred = true; }));
   assert.equal(transferred, true);
 });
@@ -62,7 +64,7 @@ test('helper faults are refused after the possible transfer was marked', async (
   for (const [name, fault] of faults) {
     let transferred = false;
     const inspector = { metadataStdinExpression: fault } as unknown as PathInspector;
-    await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot, { TEMP: imageRoot },
+    await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, imageRoot, { TEMP: imageRoot },
       () => { transferred = true; }), Error, name);
     assert.equal(transferred, true, name);
   }
@@ -73,7 +75,7 @@ test('a failed helper reports a bounded printable reason without changing the pl
   const stderr = Buffer.concat([Buffer.from([27, 91, 51, 49, 109]), Buffer.from('Image pin release is incomplete or invalid.'),
     Buffer.from([13, 10, 0, 200]), Buffer.from('x'.repeat(400))]);
   const inspector = { metadataStdinExpression: async () => ({ exitCode: 1, stderr, stdout: Buffer.alloc(0) }) } as unknown as PathInspector;
-  await assert.rejects(observeSourceBoundBootstrap(inspector, parent, companionRoot, game, imageRoot, { TEMP: imageRoot },
+  await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, imageRoot, { TEMP: imageRoot },
     () => { transferred = true; }), (error: unknown) => {
     assert.ok(error instanceof SourceBoundBootstrapError);
     assert.equal(error.message, 'Source-bound bootstrap is unavailable.');
@@ -91,7 +93,7 @@ test('a failed helper reports a bounded printable reason without changing the pl
 test('selected bootstrap refuses invalid parent identity before possible transfer', async () => {
   let transferred = false;
   const inspector = { metadataStdinExpression: async () => { throw new Error('Helper must not launch.'); } } as unknown as PathInspector;
-  await assert.rejects(observeSourceBoundBootstrap(inspector, { pid: 0, created: parent.created }, companionRoot,
+  await assert.rejects(observeSourceBoundBootstrap(token, inspector, { pid: 0, created: parent.created }, companionRoot,
     game, imageRoot, {}, () => { transferred = true; }));
   assert.equal(transferred, false);
 });
@@ -99,7 +101,7 @@ test('selected bootstrap refuses invalid parent identity before possible transfe
 test('selected bootstrap rejects trailing-separator scope spelling before transfer', async () => {
   let transferred = false;
   const inspector = { metadataStdinExpression: async () => { throw new Error('Helper must not launch.'); } } as unknown as PathInspector;
-  await assert.rejects(observeSourceBoundBootstrap(inspector, parent, `${companionRoot}${path.win32.sep}`,
+  await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, `${companionRoot}${path.win32.sep}`,
     game, imageRoot, {}, () => { transferred = true; }));
   assert.equal(transferred, false);
 });

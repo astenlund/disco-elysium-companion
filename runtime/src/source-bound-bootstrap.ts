@@ -61,8 +61,8 @@ function capturedSource(imageRoot: string, relative: string, expectedHash: strin
 
 function base64(bytes: Uint8Array): string { return `'${Buffer.from(bytes).toString('base64')}'`; }
 
-/** @internal Reached only through openBackend after its direct-main token check. */
-export async function observeSourceBoundBootstrap(inspector: PathInspector, parent: ProcessIdentity,
+/** @internal The token reaches the in-memory transport, which refuses to send the pin-transfer helper without it. */
+export async function observeSourceBoundBootstrap(token: unknown, inspector: PathInspector, parent: ProcessIdentity,
   companionRoot: string, game: string, imageRoot: string, environment: NodeJS.ProcessEnv,
   markPossibleTransfer: () => void): Promise<SourceBoundBootstrapResult> {
   const relativeImageRoot = path.win32.relative(installationRoot, imageRoot);
@@ -90,7 +90,7 @@ export async function observeSourceBoundBootstrap(inspector: PathInspector, pare
   if (expression.byteLength > 1_048_576) { throw new SourceBoundBootstrapError('expressionTooLarge'); }
 
   markPossibleTransfer();
-  const reply = await inspector.metadataStdinExpression(expression, companionRoot, environment);
+  const reply = await inspector.metadataStdinExpression(token, expression, companionRoot, environment);
   if (reply.exitCode !== 0 || reply.stderr.byteLength !== 0) {
     throw new SourceBoundBootstrapError('helperFailed', helperFailureDetail(reply.exitCode, reply.stderr));
   }

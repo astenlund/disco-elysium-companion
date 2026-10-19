@@ -6,7 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
+import { DataRootUnavailableError, frozenStdinExpression, PathInspector, stdinExpressionCommand } from '../src/admission.ts';
 import { parseStrictJson } from '../src/json.ts';
 import type { ProcessSupervisor } from '../src/process.ts';
 import { discoverScopeWithPrincipal, parseCombinedScopeReply, scopeComponents } from '../src/scope.ts';
@@ -87,31 +87,31 @@ test('selected bootstrap adds one pin receipt without changing scope admission',
     root, game, true), DataRootUnavailableError);
 });
 
-test('in-memory bootstrap transport sends one bounded expression through the supervised metadata role', async () => {
-  const calls: unknown[][] = [];
-  const supervisor = { run: async (...args: unknown[]) => {
-    calls.push(args);
-    return reply({ sid, paths: [admission(root), admission(candidate)] });
-  } } as unknown as ProcessSupervisor;
+test('the in-memory transport refuses a forged token before any helper starts', async () => {
+  let runs = 0;
+  const supervisor = { run: async () => { runs += 1; return reply({ sid, paths: [admission(root), admission(candidate)] }); } } as unknown as ProcessSupervisor;
   const inspector = new PathInspector(supervisor);
+  await assert.rejects(inspector.metadataStdinExpression(Symbol('forged'), Buffer.from([38, 32, 49, 10]), root, {}),
+    /Compiled image transfer requires direct CLI main/);
+  await assert.rejects(inspector.metadataStdinExpression(undefined, Buffer.from([38, 32, 49, 10]), root, {}),
+    /Compiled image transfer requires direct CLI main/);
+  assert.equal(runs, 0);
+});
+
+test('the in-memory expression and its command are copied and bounded before any send', () => {
   const expression = Buffer.from([38, 32, 49, 10]);
-  const environment = { TEMP: 'C:/private/temp' };
-  const pending = inspector.metadataStdinExpression(expression, root, environment);
+  const frozen = frozenStdinExpression(expression);
   expression[0] = 65;
-  environment.TEMP = 'C:/private/changed';
-  await pending;
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]![0], 'metadata');
-  const options = calls[0]![1] as { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
-  assert.equal(options.command, 'pwsh');
-  assert.deepEqual(options.args, ['-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-']);
-  assert.equal(options.cwd, root);
-  assert.equal(options.env.TEMP, 'C:/private/temp');
-  assert.ok(typeof calls[0]![2] === 'number' && (calls[0]![2] as number) > 0 && (calls[0]![2] as number) <= 30000);
-  assert.deepEqual(calls[0]![3], Buffer.from([38, 32, 49, 10]));
+  assert.deepEqual(frozen, Buffer.from([38, 32, 49, 10]));
   for (const invalid of [Buffer.alloc(0), Buffer.from([38, 32, 49]), Buffer.from([38, 10, 49, 10]),
     Buffer.from([38, 0, 10]), Buffer.alloc(1_048_577, 65)]) {
-    await assert.rejects(inspector.metadataStdinExpression(invalid, root, environment), DataRootUnavailableError);
+    assert.equal(frozenStdinExpression(invalid), null);
   }
-  assert.equal(calls.length, 1);
+  const environment = { TEMP: 'C:/private/temp' };
+  const command = stdinExpressionCommand(root, environment);
+  environment.TEMP = 'C:/private/changed';
+  assert.equal(command.command, 'pwsh');
+  assert.deepEqual(command.args, ['-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-']);
+  assert.equal(command.cwd, root);
+  assert.equal(command.env?.TEMP, 'C:/private/temp');
 });

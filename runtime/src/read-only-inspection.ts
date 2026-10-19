@@ -12,10 +12,10 @@ class CommandInspector extends PathInspector {
     return super.metadata(script, args, cwd, timeoutMs, input);
   }
 
-  override metadataStdinExpression(expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv,
+  override metadataStdinExpression(token: unknown, expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv,
     timeoutMs = 30000): Promise<CommandResult> {
     if (!this.accepting) { return Promise.reject(new DataRootUnavailableError('Read-only inspection has closed.')); }
-    return super.metadataStdinExpression(expression, cwd, env, timeoutMs);
+    return super.metadataStdinExpression(token, expression, cwd, env, timeoutMs);
   }
 
   stop(): void { this.accepting = false; }

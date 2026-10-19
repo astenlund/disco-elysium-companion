@@ -1,12 +1,28 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { requireDirectMainToken } from './direct-main-capability.ts';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
-import { childEnvironment, ProcessSupervisor, type CommandResult } from './process.ts';
+import { childEnvironment, ProcessSupervisor, type CommandResult, type OwnedSpawnOptions } from './process.ts';
 import { SerialQueue } from './serial.ts';
 import type { RuntimeScope } from './scope.ts';
 import type { StartupMetadataSession } from './startup-metadata.ts';
 import type { StartupCoreReplySession } from './startup-core-reply.ts';
+
+/** @internal Copies one complete printable expression ending in a newline, or returns null when it is not exactly that. */
+export function frozenStdinExpression(expression: Uint8Array): Buffer | null {
+  if (expression.byteLength < 2 || expression.byteLength > 1_048_576 || expression[expression.byteLength - 1] !== 10) { return null; }
+  const frozen = Buffer.from(expression);
+  for (let index = 0; index < frozen.byteLength - 1; index++) {
+    if (frozen[index]! < 32 || frozen[index]! > 126) { return null; }
+  }
+  return frozen;
+}
+
+/** @internal The supervised command that reads one in-memory expression from stdin, with a copied environment. */
+export function stdinExpressionCommand(cwd: string, env: NodeJS.ProcessEnv): OwnedSpawnOptions {
+  return { command: 'pwsh', args: ['-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-'], cwd, env: childEnvironment(env) };
+}
 
 export class DataRootUnavailableError extends Error {
   override readonly name = 'DataRootUnavailableError';
@@ -130,20 +146,19 @@ export class PathInspector {
     return closing === null ? this.queue.run(run) : closing.then(() => this.queue.run(run));
   }
 
-  /** @internal The caller constructs one fixed expression from captured, verified source bytes. */
-  metadataStdinExpression(expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 30000): Promise<CommandResult> {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000 || expression.byteLength < 2
-      || expression.byteLength > 1_048_576 || expression[expression.byteLength - 1] !== 10
+  /**
+   * @internal The caller constructs one fixed expression from captured, verified source bytes. That expression can transfer
+   * image pins into this process, so only a direct main entry may send it.
+   */
+  metadataStdinExpression(token: unknown, expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 30000): Promise<CommandResult> {
+    try { requireDirectMainToken(token); }
+    catch (error) { return Promise.reject(error); }
+    const frozen = frozenStdinExpression(expression);
+    if (frozen === null || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000
       || this.startupSession !== null || this.coreReplySession !== null || this.startupClosing !== null) {
       return Promise.reject(new DataRootUnavailableError('Invalid in-memory metadata request.'));
     }
-    const frozen = Buffer.from(expression);
-    const frozenEnvironment = childEnvironment(env);
-    for (let index = 0; index < frozen.byteLength - 1; index++) {
-      if (frozen[index]! < 32 || frozen[index]! > 126) {
-        return Promise.reject(new DataRootUnavailableError('Invalid in-memory metadata expression.'));
-      }
-    }
+    const command = stdinExpressionCommand(cwd, env);
     const deadline = performance.now() + timeoutMs;
     const run = (): Promise<CommandResult> => {
       if (this.startupSession !== null || this.coreReplySession !== null || this.startupClosing !== null) {
@@ -151,8 +166,7 @@ export class PathInspector {
       }
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
-      return this.supervisor.run('metadata', { command: 'pwsh',
-        args: ['-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-'], cwd, env: frozenEnvironment }, remaining, frozen);
+      return this.supervisor.run('metadata', command, remaining, frozen);
     };
     return this.queue.run(run);
   }

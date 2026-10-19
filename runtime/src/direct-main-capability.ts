@@ -17,7 +17,10 @@ export function withDirectMainToken<T>(action: (token: symbol) => T): T {
   return action(directMainToken);
 }
 
-/** @internal openBackend checks this before any selected-image work, so exported fixture options cannot select it. */
+/**
+ * @internal openBackend checks this before any selected-image work, and the in-memory transport checks it again before it
+ * sends the pin-transfer helper, so neither exported options nor a direct call into the bootstrap can transfer pins.
+ */
 export function requireDirectMainToken(value: unknown): void {
   if (value !== directMainToken || !directMainEntry()) {
     throw new Error('Compiled image transfer requires direct CLI main.');

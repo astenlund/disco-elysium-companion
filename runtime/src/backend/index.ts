@@ -348,7 +348,7 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     let candidate: ScopeCandidate;
     let selectedPins: 'ready' | 'absent' | null = null;
     if (selected !== undefined) {
-      const observed = await observeSourceBoundBootstrap(bootstrap.inspector, bootstrap.parentIdentity,
+      const observed = await observeSourceBoundBootstrap(selected.token, bootstrap.inspector, bootstrap.parentIdentity,
         options.companionRoot, config.game, selected.imageRoot, selected.environment, selected.markPossibleTransfer);
       candidate = observed.candidate;
       selectedPins = observed.imagePins.status;
