@@ -242,6 +242,26 @@ test('a provider exit followed by an initial-start invalidation still attaches s
   await host.shutdown();
 });
 
+test('a replacement starting during a status-only provider proof reports a changed attachment state', async () => {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
+    if (role !== 'provider') { return; }
+    const before = provider.sessions.length;
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    if (provider.sessions.length !== before || provider.sessions.some(session => !session.closed)) { throw new Error('Process ownership changed during verification.'); }
+  } } });
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  assert.equal(await host.start(), true);
+  await host.prepareAttachmentWitness();
+  host.invalidate('contextUncertain');
+  backend.safetyValue = { ...backend.safetyValue, generation: 'f'.repeat(32) };
+  assert.equal((await host.attachVerified(() => {})).result, 'attachStateChanged');
+  await until(() => provider.calls.length === 2);
+  await host.shutdown();
+});
+
 test('invalidation before initial host start leaves only status authority', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });

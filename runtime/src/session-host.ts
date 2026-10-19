@@ -236,6 +236,11 @@ export class SessionHost implements SessionHostV1 {
     const expectedSession = this.lifecycle.session;
     const expectedReady = this.ready;
     const expectedProviderState = this.lifecycle.status.state;
+    const stateChanged = (): boolean => !this.options.backend.guardHeld() || this.options.backend.status !== expectedStatus
+      || JSON.stringify(this.options.backend.status) !== expectedStatusBytes || this.lifecycle.binding !== expectedBinding
+      || this.lifecycle.session !== expectedSession || this.ready !== expectedReady
+      || !expectedReady && (this.transition !== null || this.replacement || this.reconnect !== null || this.lifecycle.status.state !== expectedProviderState)
+      || expectedReady && !this.lifecycle.isCurrent(expectedSession?.providerInstanceId ?? '');
     if (this.ready) {
       const binding = this.lifecycle.binding;
       if (binding === null || !this.options.backend.guardHeld() || !this.providerReady) {
@@ -268,14 +273,13 @@ export class SessionHost implements SessionHostV1 {
         witness = await observeColdSafety();
       }
     } else {
-      // A status-only client may exist only beside a provider job proved absent; an unproved stop fails closed instead.
-      await Promise.all([verifyWorkers(), this.options.backend.supervisor.verifyQuiescent('provider')]);
+      // A status-only client may exist only beside a provider job proved absent; an unproved stop fails closed instead,
+      // unless a state change during the proof, such as a replacement starting its provider, explains the failure.
+      try { await Promise.all([verifyWorkers(), this.options.backend.supervisor.verifyQuiescent('provider')]); }
+      catch (error) { if (stateChanged()) { return { result: 'attachStateChanged' }; } throw error; }
     }
     if (reservation.cancelled || this.attachmentReservation !== reservation || this.closing || this.sink !== null) { return { result: 'attachCancelled' }; }
-    if (!this.options.backend.guardHeld() || this.options.backend.status !== expectedStatus || JSON.stringify(this.options.backend.status) !== expectedStatusBytes
-      || this.lifecycle.binding !== expectedBinding || this.lifecycle.session !== expectedSession || this.ready !== expectedReady
-      || !expectedReady && (this.transition !== null || this.replacement || this.reconnect !== null || this.lifecycle.status.state !== expectedProviderState)
-      || expectedReady && !this.lifecycle.isCurrent(expectedSession?.providerInstanceId ?? '')) { return { result: 'attachStateChanged' }; }
+    if (stateChanged()) { return { result: 'attachStateChanged' }; }
     this.attachWitness = true;
     return this.attach(sink);
   }
