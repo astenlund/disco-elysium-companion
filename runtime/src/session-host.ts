@@ -532,7 +532,7 @@ export class SessionHost implements SessionHostV1 {
 
   async startNewAgentSession(): ReturnType<SessionHostV1['startNewAgentSession']> {
     if (this.active !== null) { return 'turnInProgress'; }
-    if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.lifecycle.status.state === 'failed' || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'providerUnavailable'; }
+    if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'providerUnavailable'; }
     if (this.closing || this.switching || this.transition !== null) { return 'providerUnavailable'; }
     this.switching = true;
     const control = (async () => { await this.maintenance.idle(); this.ready = await this.lifecycle.replace('requested'); return this.ready ? 'started' as const : 'providerUnavailable' as const; })();

@@ -759,6 +759,26 @@ test('an incompatible provider exit before the final check attaches status-only'
   await host.shutdown();
 });
 
+test('a requested new session retries after an exhausted reconnect', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.equal((await host.attachVerified(() => {})).result, 'attached');
+  provider.failAll = true;
+  provider.current.exit('subprocessExited');
+  await until(() => host.status.provider.state === 'failed');
+  const failedStarts = provider.calls.length;
+  provider.failAll = false;
+  assert.equal(await host.startNewAgentSession(), 'started');
+  assert.equal(provider.calls.length, failedStarts + 1);
+  assert.equal(host.status.provider.state, 'ready');
+  await host.shutdown();
+});
+
 test('final safety refusal waits for a queued correction before status-only attachment', async () => {
   const backend = new FakeBackend();
   const provider = new FakeProvider();
