@@ -189,7 +189,7 @@ These findings belong to the private healthy-startup branch. Unless an entry say
 
 ### [Suppressed provider readiness readout](bugs/runtime-suppressed-provider-ready.md)
 
-A correction can leave a status-only snapshot labeled provider ready after input authority has been suppressed; preserve the no-input gate while correcting the readout.
+A correction can leave a status-only snapshot labeled provider ready, or after an invalidated initial start indefinitely starting, once input authority has been suppressed; preserve the no-input gate while correcting the readout.
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
