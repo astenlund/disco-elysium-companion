@@ -67,6 +67,7 @@ export class PathInspector {
   private startupSession: StartupMetadataSession | null = null;
   private coreReplySession: StartupCoreReplySession | null = null;
   private startupClosing: Promise<void> | null = null;
+  private startupSessionStopped = false;
 
   constructor(supervisor: ProcessSupervisor) { this.supervisor = supervisor; }
 
@@ -74,18 +75,18 @@ export class PathInspector {
 
   /** Resolves null once the warm worker has verifiably stopped, so the supervisor takes a fresh one-shot observation. */
   observeStartupJobs(names: readonly string[], timeoutMs = 5000): Promise<readonly boolean[] | null> {
-    if (this.startupClosing === null && this.startupSession?.canFallBack === true) {
+    if (this.startupWorkerStopped) {
       this.dropVerifiedStartupSession();
       return Promise.resolve(null);
     }
     return this.queue.run(async () => {
-      if (this.startupClosing !== null || this.startupSession === null) {
-        throw new DataRootUnavailableError('Startup job observation is unavailable.');
-      }
-      // The request queued ahead of this one may have stopped the worker verifiably.
-      if (this.startupSession.canFallBack) {
+      // A request queued ahead of this one may have stopped the worker verifiably, or another observation already dropped it.
+      if (this.startupWorkerStopped) {
         this.dropVerifiedStartupSession();
         return null;
+      }
+      if (this.startupClosing !== null || this.startupSession === null) {
+        throw new DataRootUnavailableError('Startup job observation is unavailable.');
       }
       return this.startupSession.observeJobStates(names, timeoutMs);
     });
@@ -94,11 +95,17 @@ export class PathInspector {
   attachStartupSession(session: StartupMetadataSession): void {
     if (this.startupSession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup metadata session is already attached.'); }
     this.startupSession = session;
+    this.startupSessionStopped = false;
+  }
+
+  private get startupWorkerStopped(): boolean {
+    return this.startupClosing === null && (this.startupSessionStopped || this.startupSession?.canFallBack === true);
   }
 
   // A verifiably stopped worker supplies no further answers; its warm job observer goes with it.
   private dropVerifiedStartupSession(): void {
     this.startupSession = null;
+    this.startupSessionStopped = true;
     this.supervisor.clearStartupJobObserver();
   }
 

@@ -165,6 +165,17 @@ test('a warm observation queued behind a request that stops the worker falls bac
   assert.equal(cleared, 1);
 });
 
+test('every warm observation queued behind a verified worker stop falls back to one-shot', async () => {
+  const supervisor = { clearStartupJobObserver: () => {} } as unknown as ProcessSupervisor;
+  const inspector = new PathInspector(supervisor);
+  const worker = { canFallBack: false, close: async () => {}, supports: () => true,
+    observeJobStates: async () => { worker.canFallBack = true; throw new Error('Worker request failed.'); } };
+  inspector.attachStartupSession(worker as never);
+  const settle = (observation: Promise<readonly boolean[] | null>) => observation.then(value => value, (error: Error) => error.message);
+  const observations = ['first', 'second', 'third'].map(name => settle(inspector.observeStartupJobs([name])));
+  assert.deepEqual(await Promise.all(observations), ['Worker request failed.', null, null]);
+});
+
 test('admits only the exact live owned startup metadata job', { timeout: 60000 }, async t => {
   const scope = path.join(root, '.tmp', `startup-job-batch-${randomUUID()}`);
   const supervisor = await ProcessSupervisor.create(scope);
