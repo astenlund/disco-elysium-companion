@@ -15,7 +15,7 @@ import { parseCombinedScopeReply, type ScopeCandidate } from './scope.ts';
 
 const installationRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const sourceHashes = {
-  bootstrap: '80bc826bc76f6dae775faada50c39b975d01479030b1b65fc0b003e55c98a22a',
+  bootstrap: 'a78f1e990205827350f7fbc75abdf14757b4e02ce49ba3b3ddd4658669f6eb62',
   nativeFiles: 'e7c93e4f5b12a3cfa5ee9ba5f9b99e6f051ae438d5466894ed669e1d400c7b6f',
   nativePins: '06c4e62f3197ebae505cfe23aedf236d0db9f201581eb9cdd62364804f3546e5',
   pinScript: '1ecc3b3c01e2f5fe03e110f4a28fde65628e0d4f3bd16472991b404e3f22c85a',

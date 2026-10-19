@@ -61,7 +61,10 @@ try {
     exit 0
 }
 catch {
-    [Console]::Error.WriteLine("${scriptName}: bootstrap-unavailable")
+    $cause = $_.Exception.GetBaseException()
+    $reason = [Text.RegularExpressions.Regex]::Replace($cause.GetType().Name + ': ' + $cause.Message, '[^ -~]+', ' ').Trim()
+    if ($reason.Length -gt 160) { $reason = $reason.Substring(0, 160) }
+    [Console]::Error.WriteLine("${scriptName}: bootstrap-unavailable: $reason")
     exit 1
 }
 finally { if ($null -ne $identity) { $identity.Dispose() } }

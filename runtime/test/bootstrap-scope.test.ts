@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
 import { parseStrictJson } from '../src/json.ts';
@@ -14,6 +17,20 @@ const candidate = path.win32.join(root, ...scopeComponents(game, sid));
 const admission = (target: string) => ({ path: target, exists: true, kind: 'directory', links: 1,
   volume: 'a'.repeat(16), identity: 'b'.repeat(32), missing: [] });
 const reply = (value: unknown) => ({ exitCode: 0, stdout: Buffer.from(JSON.stringify(value)), stderr: Buffer.alloc(0) });
+const installation = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
+const execute = promisify(execFile);
+
+test('a refused bootstrap names the innermost cause in one bounded line', async () => {
+  const script = path.win32.join(installation, 'runtime', 'scripts', 'Get-BootstrapScope.ps1');
+  await assert.rejects(execute('pwsh', ['-NoProfile', '-NonInteractive', '-File', script, '-Root', 'relative', '-Game', game],
+    { windowsHide: true, timeout: 120000 }), (error: { code?: unknown; stdout?: string; stderr?: string }) => {
+    assert.equal(error.code, 1);
+    assert.equal(error.stdout, '');
+    assert.equal(error.stderr?.trim(), 'Get-BootstrapScope: bootstrap-unavailable: IOException: A local drive-qualified path is required.');
+    return true;
+  });
+});
+
 
 test('combined bootstrap binds the current principal to exact root and scope admissions', async () => {
   const calls: unknown[][] = [];
