@@ -139,12 +139,12 @@ export class SessionHost implements SessionHostV1 {
   async prepareAttachmentWitness(): Promise<void> {
     this.attachmentSafetyWitness = null;
     const binding = this.lifecycle.binding;
-    if (!this.ready || binding === null || !this.options.backend.guardHeld()) { throw new Error('Healthy attachment safety cannot be prepared without a bound provider and guard.'); }
+    if (!this.ready || binding === null || !this.options.backend.guardHeld()) { throw new Error('Ready attachment safety cannot be prepared without a bound provider and guard.'); }
     const safety = await this.options.backend.providerSafety();
     const observedAt = this.monotonicNow();
     const status = this.options.backend.status;
     if (safety.generation !== binding.stateGeneration || this.lifecycle.binding !== binding || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')
-      || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(status)) { throw new Error('Healthy attachment safety changed during preparation.'); }
+      || !this.options.backend.guardHeld() || !this.providerReady) { throw new Error('Ready attachment safety changed during preparation.'); }
     this.attachmentSafetyWitness = { generation: safety.generation, binding, status, observedAt };
   }
 
@@ -209,20 +209,20 @@ export class SessionHost implements SessionHostV1 {
     const expectedProviderState = this.lifecycle.status.state;
     if (this.ready) {
       const binding = this.lifecycle.binding;
-      if (binding === null || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(this.options.backend.status)) {
-        throw new Error('Healthy client attachment lost its startup authority.');
+      if (binding === null || !this.options.backend.guardHeld() || !this.providerReady) {
+        throw new Error('Ready client attachment lost its startup authority.');
       }
       const status = this.options.backend.status;
       let witness = this.attachmentSafetyWitness;
       this.attachmentSafetyWitness = null;
       if (witness !== null && (witness.binding !== binding || witness.generation !== binding.stateGeneration || witness.status !== status)) {
-        throw new Error('Healthy client attachment changed after safety observation.');
+        throw new Error('Ready client attachment changed after safety observation.');
       }
       const observeColdSafety = async (): Promise<AttachmentSafetyWitness> => {
         const safety = await this.options.backend.providerSafety();
         const observedAt = this.monotonicNow();
         if (safety.generation !== binding.stateGeneration || this.lifecycle.binding !== binding || this.options.backend.status !== status
-          || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(status)) { throw new Error('Provider safety generation changed before attachment.'); }
+          || !this.options.backend.guardHeld() || !this.providerReady) { throw new Error('Provider safety generation changed before attachment.'); }
         return { generation: safety.generation, binding, status, observedAt };
       };
       const usedWarmWitness = witness !== null && this.monotonicNow() - witness.observedAt <= attachmentSafetyLifetimeMs;
@@ -230,12 +230,12 @@ export class SessionHost implements SessionHostV1 {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const [livenessObservedAt] = await Promise.all([this.lifecycle.verifyLive().then(() => this.monotonicNow()), verifyWorkers()]);
         const observedAt = this.monotonicNow();
-        if (this.options.backend.status !== status || this.lifecycle.binding !== binding || !this.options.backend.guardHeld() || !this.healthyAttachmentStatus(status)
+        if (this.options.backend.status !== status || this.lifecycle.binding !== binding || !this.options.backend.guardHeld() || !this.providerReady
           || witness.generation !== binding.stateGeneration || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) {
-          throw new Error('Healthy client attachment changed during final proof.');
+          throw new Error('Ready client attachment changed during final proof.');
         }
         if (observedAt - witness.observedAt <= attachmentSafetyLifetimeMs && observedAt - livenessObservedAt <= attachmentLivenessLifetimeMs) { break; }
-        if (!usedWarmWitness || attempt !== 0) { throw new Error('Healthy client attachment witness expired during final proof.'); }
+        if (!usedWarmWitness || attempt !== 0) { throw new Error('Ready client attachment witness expired during final proof.'); }
         witness = await observeColdSafety();
       }
     } else { await verifyWorkers(); }
@@ -247,10 +247,9 @@ export class SessionHost implements SessionHostV1 {
     this.attachWitness = true;
     return this.attach(sink);
   }
-  private healthyAttachmentStatus(status: RuntimeBackend['status']): boolean {
-    return status.consumer === 'owner' && status.freshness.state === 'fresh' && status.journal.state === 'healthy'
-      && status.stateSafety.state === 'ready' && this.lifecycle.status.state === 'ready';
-  }
+  // Ready attachment needs provider safety authority, not a healthy status: failed freshness or a journal fault without a
+  // safety refusal leaves a bound provider whose turns run disclosure-only.
+  private get providerReady(): boolean { return this.lifecycle.status.state === 'ready'; }
   detach(): void { if (this.attachmentReservation !== null) { this.attachmentReservation.cancelled = true; } this.attachmentSafetyWitness = null; this.sink = null; }
 
   private interaction(turn: Interaction): Interaction { return { interactionId: turn.interactionId, requestReceivedAt: turn.requestReceivedAt, ingressOrder: turn.ingressOrder }; }

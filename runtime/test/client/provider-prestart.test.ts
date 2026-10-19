@@ -574,6 +574,24 @@ test('uncertain provider stop after final safety refusal remains fatal', async (
   assert.equal(backend.events.includes('shutdown'), false);
 });
 
+test('failed startup freshness attaches the bound provider and keeps chat usable for disclosure-only turns', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend.status, { freshness: { ...backend.status.freshness, state: 'failed', class: 'source', reason: 'stale-target' } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  assert.equal(await host.start(), true);
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.equal(provider.current.closed, false);
+  assert.equal(host.status.provider.state, 'ready');
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.equal(attached.snapshot.status.freshness.state, 'failed'); }
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
 test('final safety refusal waits for a queued correction before status-only attachment', async () => {
   const backend = new FakeBackend();
   const provider = new FakeProvider();
