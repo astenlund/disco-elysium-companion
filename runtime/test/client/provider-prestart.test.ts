@@ -592,6 +592,42 @@ test('failed startup freshness attaches the bound provider and keeps chat usable
   await host.shutdown();
 });
 
+test('a provider exit before the final attachment check reconnects instead of latching a safety block', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  provider.current.exit('subprocessExited');
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.equal(provider.calls.length, 2);
+  assert.equal(host.status.provider.state, 'ready');
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.equal(attached.snapshot.status.provider.state, 'ready'); }
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
+test('a provider that exits and cannot reconnect attaches status-only after its reconnect attempts', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  provider.failAll = true;
+  provider.current.exit('subprocessExited');
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.ok(provider.calls.length > 1);
+  assert.equal(host.status.provider.state, 'failed');
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.notEqual(attached.snapshot.status.provider.state, 'ready'); }
+  await host.shutdown();
+});
+
 test('final safety refusal waits for a queued correction before status-only attachment', async () => {
   const backend = new FakeBackend();
   const provider = new FakeProvider();

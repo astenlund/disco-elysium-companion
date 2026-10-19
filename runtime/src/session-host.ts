@@ -28,6 +28,9 @@ interface AttachmentReservation {
 }
 export type VerifiedAttachResult = ReturnType<SessionHostV1['attach']> | { readonly result: 'attachCancelled' | 'attachStateChanged' };
 
+/** The final attachment check failed only because the bound provider exited or changed, not because safety refused. */
+export class AttachmentProviderUnavailableError extends Error { override readonly name = 'AttachmentProviderUnavailableError'; }
+
 export interface SessionHostOptions {
   readonly backend: RuntimeBackend;
   readonly provider: Provider;
@@ -73,6 +76,7 @@ export class SessionHost implements SessionHostV1 {
   private pendingCheckBlocked = false;
   private initialStartCompleted = false;
   private initialStartupInvalidated = false;
+  private invalidatedAfterStart = false;
   private finalSafetyBlocked = false;
   private initialStartPromise: Promise<boolean> | null = null;
   private closing = false;
@@ -139,13 +143,29 @@ export class SessionHost implements SessionHostV1 {
   async prepareAttachmentWitness(): Promise<void> {
     this.attachmentSafetyWitness = null;
     const binding = this.lifecycle.binding;
-    if (!this.ready || binding === null || !this.options.backend.guardHeld()) { throw new Error('Ready attachment safety cannot be prepared without a bound provider and guard.'); }
+    if (!this.options.backend.guardHeld()) { throw new Error('Ready attachment safety cannot be prepared without the guard.'); }
+    if (!this.ready || binding === null) { throw this.attachmentUnavailable('Ready attachment safety cannot be prepared without a bound provider.'); }
     const safety = await this.options.backend.providerSafety();
     const observedAt = this.monotonicNow();
     const status = this.options.backend.status;
-    if (safety.generation !== binding.stateGeneration || this.lifecycle.binding !== binding || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')
-      || !this.options.backend.guardHeld() || !this.providerReady) { throw new Error('Ready attachment safety changed during preparation.'); }
+    if (safety.generation !== binding.stateGeneration || !this.options.backend.guardHeld()) { throw new Error('Ready attachment safety changed during preparation.'); }
+    if (this.lifecycle.binding !== binding || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '') || !this.providerReady) {
+      throw this.attachmentUnavailable('The bound provider changed during attachment preparation.');
+    }
     this.attachmentSafetyWitness = { generation: safety.generation, binding, status, observedAt };
+  }
+
+  // An invalidation also unreadies the provider but remains a safety refusal; only a plain provider exit is recoverable.
+  private attachmentUnavailable(message: string): Error {
+    return this.invalidatedAfterStart || this.initialStartupInvalidated || this.finalSafetyBlocked || this.closing
+      ? new Error(message) : new AttachmentProviderUnavailableError(message);
+  }
+
+  /** Waits for queued provider reconnects to finish and reports whether a ready provider came back. */
+  async settleProviderRecovery(): Promise<boolean> {
+    this.scheduleTransition();
+    while (this.transition !== null) { await this.transition; }
+    return this.ready && this.providerReady && !this.invalidatedAfterStart;
   }
 
   async blockAfterFinalSafety(): Promise<void> {
@@ -317,7 +337,7 @@ export class SessionHost implements SessionHostV1 {
     this.attachmentSafetyWitness = null;
     this.lifecycle.suppress();
     this.ready = false;
-    if (this.initialStartCompleted) { this.replacement = true; }
+    if (this.initialStartCompleted) { this.replacement = true; this.invalidatedAfterStart = true; }
     else { this.initialStartupInvalidated = true; this.replacement = false; }
     this.emit({ type: 'notice', code: 'stateContextInvalidated', reason });
     const turn = this.active;

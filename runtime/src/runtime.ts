@@ -9,7 +9,7 @@ import type { BrokerSpawn, PrivateNativeStartupJobs } from './process.ts';
 import { assembleInstructions } from './instructions.ts';
 import { PendingProviderStart, selectPendingProviderStart } from './provider-lifecycle.ts';
 import type { Provider } from './provider.ts';
-import { SessionHost } from './session-host.ts';
+import { AttachmentProviderUnavailableError, SessionHost } from './session-host.ts';
 import type { Correction } from './session-host-contract.ts';
 import { reportStartupPhase, type StartupPhase } from './startup-progress.ts';
 
@@ -72,13 +72,25 @@ export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeB
   throw error;
 }
 
-/** @internal Final safety refusal leaves only a positively stopped status client. */
+const attachmentPreparationAttempts = 3;
+
+/**
+ * @internal A final safety refusal leaves only a positively stopped status client. A provider that merely exited gets the
+ * reconnect ladder and a fresh full check; if it does not come back, the client attaches status-only as after any failed reconnect.
+ */
 export async function finalizeAttachmentSafety(host: SessionHost, backend: RuntimeBackend): Promise<void> {
-  try { await host.prepareAttachmentWitness(); }
-  catch (error) {
-    if (!backend.guardHeld()) { throw error; }
-    await host.blockAfterFinalSafety();
-    if (!backend.guardHeld()) { throw error; }
+  for (let attempt = 1; ; attempt += 1) {
+    try { await host.prepareAttachmentWitness(); return; }
+    catch (error) {
+      if (!backend.guardHeld()) { throw error; }
+      if (error instanceof AttachmentProviderUnavailableError) {
+        if (attempt < attachmentPreparationAttempts && await host.settleProviderRecovery()) { continue; }
+        return;
+      }
+      await host.blockAfterFinalSafety();
+      if (!backend.guardHeld()) { throw error; }
+      return;
+    }
   }
 }
 
