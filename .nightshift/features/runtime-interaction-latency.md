@@ -14,7 +14,7 @@ Named private steady-state check runtime-steady-state-timing attempt 5d902b95-98
 
 ## Additional evidence, 2026-10-19
 
-The private selected-image fixture recorded in [selected-image fixture evidence](../reports/runtime-selected-image-fixture-evidence-20261019.md) measured the first acknowledged turn after each new save at 122.5, 123.3 and 125.0 seconds, with a synthetic provider whose answer takes effectively no time and with one journal event. The near-constant durations fit, but do not yet confirm, the post-acquisition journal drain in `runtime/src/backend/delivery.ts` running until its 120-second acquisition gate expires. The cause has not been traced; these are copied-root fixture turns, not live play.
+The private selected-image fixture recorded in [selected-image fixture evidence](../reports/runtime-selected-image-fixture-evidence-20261019.md) measured the one acknowledged turn in each of its three no-prestart new-save runs at 122.5, 123.3 and 125.0 seconds, the last under kernel tracing, with a synthetic provider whose answer takes effectively no time and with one journal event. The near-constant durations fit, but do not yet confirm, the post-acquisition journal drain in `runtime/src/backend/delivery.ts` running until its 120-second settlement budget expires. The cause has not been traced; these are copied-root fixture turns, not live play.
 
 ## Direction to investigate
 

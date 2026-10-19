@@ -4,7 +4,7 @@ Deferred from the private selected-image fixture work on 2026-10-19 at the user'
 
 ## Recorded evidence
 
-`prepareStartupHelperScratch` creates a new `runtime-startup-*` folder with thirteen profile, temp and toolchain subfolders under the installation's `.tmp` on every selected chat start, and no code removes it. Thirteen such folders from earlier private runs remained in the private worktree on 2026-10-19. In the traced new-save run recorded in [selected-image fixture evidence](../reports/runtime-selected-image-fixture-evidence-20261019.md), the 196 helper `pwsh` processes rewrote PowerShell's `StartupProfileData-NonInteractive` JIT profile in that start's fresh profile about 7.8 million times. Because every start uses a new profile, no start can reuse a warm JIT profile; whether a warm profile would shorten startup is untested.
+`prepareStartupHelperScratch` creates a new `runtime-startup-*` folder with thirteen profile, temp and toolchain subfolders under the installation's `.tmp` on every selected chat start, and no code removes it. Thirteen such folders from earlier private runs remained in the private worktree on 2026-10-19. In the traced new-save run recorded in [selected-image fixture evidence](../reports/runtime-selected-image-fixture-evidence-20261019.md), the 196 helper `pwsh` processes issued about 7.8 million write operations to PowerShell's `StartupProfileData-NonInteractive` JIT profile in that start's fresh profile. Because every start uses a new profile, no start can reuse a warm JIT profile; whether a warm profile would shorten startup is untested.
 
 ## Follow-up
 
