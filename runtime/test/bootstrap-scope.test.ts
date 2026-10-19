@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,8 @@ const admission = (target: string) => ({ path: target, exists: true, kind: 'dire
 const reply = (value: unknown) => ({ exitCode: 0, stdout: Buffer.from(JSON.stringify(value)), stderr: Buffer.alloc(0) });
 const installation = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const execute = promisify(execFile);
+const capturedSources = ['runtime/scripts/Get-BootstrapScope.ps1', 'runtime/scripts/NativeFiles.cs', 'runtime/scripts/NativeImagePins.cs',
+  'runtime/scripts/BootstrapImagePins.ps1', 'runtime/scripts/BootstrapImagePackage.ps1'];
 
 test('a refused bootstrap names the innermost cause in one bounded line', async () => {
   const script = path.win32.join(installation, 'runtime', 'scripts', 'Get-BootstrapScope.ps1');
@@ -29,6 +32,16 @@ test('a refused bootstrap names the innermost cause in one bounded line', async 
     assert.equal(error.stderr?.trim(), 'Get-BootstrapScope: bootstrap-unavailable: IOException: A local drive-qualified path is required.');
     return true;
   });
+});
+
+test('captured bootstrap sources check out with pinned CRLF endings so their fixed hashes hold on any clone', async () => {
+  const { stdout } = await execute('git', ['-C', installation, 'check-attr', 'eol', '--', ...capturedSources], { windowsHide: true });
+  assert.deepEqual(stdout.trim().split(String.fromCharCode(10)).map(line => line.trim()), capturedSources.map(name => `${name}: eol: crlf`));
+  for (const name of capturedSources) {
+    const bytes = await fs.readFile(path.win32.join(installation, name));
+    assert.ok(bytes.includes(10), `${name} has no line endings.`);
+    assert.equal(bytes.findIndex((byte, index) => byte === 10 && bytes[index - 1] !== 13), -1, `${name} has a line feed without a carriage return.`);
+  }
 });
 
 
