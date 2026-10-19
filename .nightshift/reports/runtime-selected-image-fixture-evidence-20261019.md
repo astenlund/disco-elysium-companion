@@ -6,12 +6,13 @@ These private results exercise the source-bound compiled-image path end to end t
 
 Times are from the harness spawning the fixture process to receiving its healthy `attached` frame. The fixture's `prestart` argument selects the private unbound provider prestart; the product CLI does not prestart, so `no-prestart` is the configuration that matters for the selector.
 
-| Configuration | New save | Acknowledged restart |
+| Configuration and source commit | New save | Acknowledged restart |
 |---|---|---|
-| Prestart | 28.3, 29.0, 29.2, 29.5 s | 20.7, 21.1, 21.5, 21.1, 20.6, 21.2, 20.5 s |
-| No prestart | 27.9, 27.7 s; 28.9 s with kernel tracing active | 20.1, 21.9, 20.6, 20.6 s |
+| Prestart, `3edf6df` (first run) and `8f9d509` | 28.3, 29.0, 29.2, 29.5 s | 20.7, 21.1, 21.5, 21.1, 20.6, 21.2, 20.5 s |
+| No prestart, `658b086` | 27.9, 27.7 s; 28.9 s with kernel tracing active | 20.1, 21.9, 20.6, 20.6 s |
+| No prestart, `dca5a4d` (after the review repairs) | 28.2, 29.5 s | 19.9, 20.1, 21.0, 21.4 s |
 
-All 18 image-backed runs passed. With a synthetic provider, prestart showed no saving. In the two new-save runs whose phase marks were inspected, startup acquisition took 11.7 and 12.5 seconds, against 3.6 seconds in an inspected restart, and untraced new saves attached within 0.5 to 2.3 seconds of the 30-second target. The real SDK's start cost is unmeasured, so these figures do not establish the target. The absent-image fallback was timed by the fixture's own process clock rather than the harness spawn clock: on restart it attached healthy at 28.9, 28.1 and 28.0 seconds, against 19.5 to 21.0 seconds on that same clock with images, suggesting the compiled images save roughly 7 to 9 seconds of restart on this machine.
+The first two rows were measured before the independent review's repairs changed code on this path; the last row re-measured the repaired code, and its run reports record their source commit. All 24 image-backed runs passed. With a synthetic provider, prestart showed no saving. In the two new-save runs whose phase marks were inspected, startup acquisition took 11.7 and 12.5 seconds, against 3.6 seconds in an inspected restart, and untraced new saves attached within 0.5 to 2.3 seconds of the 30-second target. The real SDK's start cost is unmeasured, so these figures do not establish the target. The absent-image fallback was timed by the fixture's own process clock rather than the harness spawn clock: on restart it attached healthy at 28.9, 28.1 and 28.0 seconds on `658b086`, `0b04533` and `6ad4d73`, and at 29.2 seconds on `dca5a4d`, against 19.3 to 21.0 seconds on that same clock with images, suggesting the compiled images save roughly 7 to 10 seconds of restart on this machine.
 
 ## Pins and shutdown
 
@@ -45,7 +46,7 @@ Apart from file-system journaling, tree processes issued no write-class operatio
 
 ## Other observations
 
-The three no-prestart new-save runs recorded their one acknowledged turn at 122.5, 123.3 and 125.0 seconds, the last of them under kernel tracing, with a provider that answers immediately. That fits, though it does not yet confirm, the post-acquisition journal drain in `runtime/src/backend/delivery.ts` running until its 120-second settlement budget expires; this belongs to [Coordinator whole-turn latency](../features/runtime-interaction-latency.md). The helper `pwsh` processes issued about 7.8 million write operations to PowerShell's `StartupProfileData-NonInteractive` JIT profile in the per-start helper profile during the traced run, and because every chat start creates a new `runtime-startup-*` profile, no start can reuse a warm profile and the folders accumulate under the installation's `.tmp`. Earlier private build probes gave each `dotnet` and `go` build a fresh `DOTNET_CLI_HOME`; the SDK treated each as a first run, leaving 62 `toolpath` first-run markers, one for each tools folder it appends to the persistent user PATH, which overflowed it. Every redirected .NET home now also sets `DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false` and `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`.
+The three no-prestart new-save runs on `658b086` recorded their one acknowledged turn at 122.5, 123.3 and 125.0 seconds, the last of them under kernel tracing, and the two on `dca5a4d` at 120.1 and 127.0 seconds, with a provider that answers immediately. That fits, though it does not yet confirm, the post-acquisition journal drain in `runtime/src/backend/delivery.ts` running until its 120-second settlement budget expires; this belongs to [Coordinator whole-turn latency](../features/runtime-interaction-latency.md). The helper `pwsh` processes issued about 7.8 million write operations to PowerShell's `StartupProfileData-NonInteractive` JIT profile in the per-start helper profile during the traced run, and because every chat start creates a new `runtime-startup-*` profile, no start can reuse a warm profile and the folders accumulate under the installation's `.tmp`. Earlier private build probes gave each `dotnet` and `go` build a fresh `DOTNET_CLI_HOME`; the SDK treated each as a first run, leaving 62 `toolpath` first-run markers, one for each tools folder it appends to the persistent user PATH, which overflowed it. Every redirected .NET home now also sets `DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false` and `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`.
 
 ## Injected faults
 
