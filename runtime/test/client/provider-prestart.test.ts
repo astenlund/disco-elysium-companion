@@ -780,6 +780,24 @@ test('a provider exit before the final attachment check reconnects instead of la
   await host.shutdown();
 });
 
+test('a provider that stops being live before its exit is observed still reconnects before the final attachment', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  const first = provider.current;
+  first.closed = true;
+  setTimeout(() => { first.exit('subprocessExited'); }, 50);
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.equal(provider.calls.length, 2);
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.equal(attached.snapshot.status.provider.state, 'ready'); }
+  await host.shutdown();
+});
+
 test('a provider that exits and cannot reconnect attaches status-only after its reconnect attempts', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });

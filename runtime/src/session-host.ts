@@ -15,6 +15,7 @@ import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './windo
 const startupWorkerRoles = ['startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
 const attachmentSafetyLifetimeMs = 3_000;
 const attachmentLivenessLifetimeMs = 1_000;
+const providerExitObservationMs = 5_000;
 interface AttachmentSafetyWitness {
   readonly generation: string;
   readonly binding: NonNullable<ProviderLifecycle['binding']>;
@@ -170,13 +171,20 @@ export class SessionHost implements SessionHostV1 {
 
   /**
    * Waits for queued provider reconnects to finish, so attachment sees a settled provider. An invalidation stops the wait at once:
-   * it is a safety refusal, and the final-safety block, not a replacement, owns what follows.
+   * it is a safety refusal, and the final-safety block, not a replacement, owns what follows. A bound session that stopped being
+   * live before its exit was observed still reads as ready, so the wait also lets that exit arrive, within a bound, and settle.
    */
   async settleProviderRecovery(): Promise<'ready' | 'unavailable' | 'invalidated'> {
-    this.scheduleTransition();
-    while (this.transition !== null && !this.invalidatedAfterStart) { await this.transition; }
-    if (this.invalidatedAfterStart) { return 'invalidated'; }
-    if (this.ready && this.providerReady) { return 'ready'; }
+    const exitObservationEnds = performance.now() + providerExitObservationMs;
+    for (;;) {
+      this.scheduleTransition();
+      while (this.transition !== null && !this.invalidatedAfterStart) { await this.transition; }
+      if (this.invalidatedAfterStart) { return 'invalidated'; }
+      if (!this.ready || !this.providerReady) { break; }
+      if (this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) { return 'ready'; }
+      if (performance.now() >= exitObservationEnds) { break; }
+      await new Promise<void>(resolve => setTimeout(resolve, 25));
+    }
     // A provider that ended without a reconnect, such as an incompatible exit, leaves attachment to the status-only branch.
     this.ready = false;
     this.statusChanged();
