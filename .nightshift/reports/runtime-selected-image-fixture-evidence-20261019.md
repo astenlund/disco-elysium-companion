@@ -83,7 +83,7 @@ These gates remain open, each defined in the governing spec:
 - Launch from a non-canonical spelling of the installation path.
 - The fast backend path's own acceptance matrix, which selection also enables.
 - Release of the ancestor rename restriction after exit.
-- Copied-save runs with ready pins of the remaining post-transfer states the spec lists: not-owner, provider refusal, status-only attachment and failed open. Healthy shutdown and, on the earlier images, guard loss have run.
+- Copied-save runs with ready pins of the remaining post-transfer states the spec lists: not-owner, provider refusal, status-only attachment, normal `/quit` and failed open. Healthy shutdown and, on the earlier images, guard loss have run.
 - Clean fresh code and documentation reviews.
 - Before any live run, the real SDK's default-profile footprint, with no model input and no tool call during initialization.
 - User-coordinated real-provider new-save, acknowledged-restart and recovery runs.
