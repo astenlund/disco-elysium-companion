@@ -32,15 +32,17 @@ test('the packaged broker exits with its child exit code', { timeout: 60000 }, a
   assert.ok(parent);
   const broker = path.join(repository, 'runtime/native/go-broker.exe');
   const child = path.join(repository, 'runtime/test/fixtures/process-child.ts');
-  for (const expected of [0, 1, 7]) {
+  // The last case leaves 1 MiB of input unread, which breaks the input pipe while the child exits.
+  for (const [expected, unreadBytes] of [[0, 0], [1, 0], [7, 0], [1, 1_048_576]] as const) {
     const jobName = ['Global', `game-companion-process-${randomBytes(16).toString('hex')}-core`].join(path.win32.sep);
     const frame = JSON.stringify({ command: process.execPath, args: [child, 'exit', String(expected)], cwd: repository, jobName,
       parentPid: parent.pid, parentCreated: parent.created, brokerProtocolVersion: 2, childEnvironment: childEnvironment(process.env) });
     const spawned = spawn(broker, [], { cwd: repository, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     spawned.stdout.resume();
     spawned.stderr.resume();
-    spawned.stdin.end(frame + String.fromCharCode(10));
-    assert.equal(await new Promise<number | null>(resolve => spawned.once('close', resolve)), expected);
+    spawned.stdin.on('error', () => { /* The broker may exit before it takes all of the unread input. */ });
+    spawned.stdin.end(Buffer.concat([Buffer.from(frame + String.fromCharCode(10)), Buffer.alloc(unreadBytes, 65)]));
+    assert.equal(await new Promise<number | null>(resolve => spawned.once('close', resolve)), expected, `exit ${expected}, unread ${unreadBytes}`);
   }
 });
 

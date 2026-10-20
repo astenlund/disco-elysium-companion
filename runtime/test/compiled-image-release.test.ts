@@ -17,7 +17,7 @@ test('packaged Go images bind one fixed manifest generation and source list', as
   const parsed = parseCompiledImageRelease(bytes);
   assert.deepEqual(readCompiledImageRelease(), parsed);
   assert.equal(parsed.generation, compiledImageGeneration);
-  assert.equal(parsed.broker.sha256, '7baee966f29ffd3315f4568aa4d2b0aec1be54a145e2462a1e56460bf7555be4');
+  assert.equal(parsed.broker.sha256, '3159986b0ed324454000b6b1c7cd21e85d761434823f3053cfe766eea3f2659d');
   assert.equal(parsed.observer.sha256, 'f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d');
   assert.equal(parsed.broker.sources.length, 5);
   assert.equal(parsed.observer.sources.length, 1);

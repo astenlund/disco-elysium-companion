@@ -19,6 +19,9 @@ var getWindowsDirectory = jobKernel.NewProc("GetWindowsDirectoryW")
 
 const createNoWindow = 0x08000000
 
+// brokenInputGraceMilliseconds bounds the wait for an exiting child after its input pipe breaks.
+const brokenInputGraceMilliseconds = 2000
+
 // retainedJob keeps the claimed job handle reachable for the life of the broker process.
 var retainedJob *ownedJob
 
@@ -37,7 +40,9 @@ type childProcess struct {
 	exited bool
 }
 
-func (child *childProcess) Exited() bool {
+// ExitedWithin reports whether the child exits within the given wait. An exiting child closes its pipes before its
+// process handle is signaled, so a broken input pipe alone does not show that the child is still running.
+func (child *childProcess) ExitedWithin(milliseconds uint32) bool {
 	child.mu.Lock()
 	defer child.mu.Unlock()
 	if child.exited {
@@ -46,7 +51,7 @@ func (child *childProcess) Exited() bool {
 	if child.handle == 0 {
 		return false
 	}
-	state, _, _ := waitForProcess.Call(child.handle, 0)
+	state, _, _ := waitForProcess.Call(child.handle, uintptr(milliseconds))
 	return state == 0
 }
 
@@ -268,7 +273,8 @@ func run(input io.Reader, output, errorOutput io.Writer) (code int, err error) {
 	go func() {
 		_, copyError := io.Copy(stdinWrite, reader)
 		closeError := stdinWrite.Close()
-		if (copyError != nil || closeError != nil) && !child.Exited() {
+		// A broken input channel cannot leave a running child accepting later work, but an exiting one keeps its code.
+		if (copyError != nil || closeError != nil) && !child.ExitedWithin(brokenInputGraceMilliseconds) {
 			os.Exit(125)
 		}
 	}()

@@ -37,6 +37,25 @@ func TestMain(m *testing.M) {
 }
 
 func TestBrokerExitsWithTheChildExitCode(t *testing.T) {
+	for _, expected := range []int{0, 1, 7} {
+		if code := runBrokerWithChild(t, expected, nil); code != expected {
+			t.Fatalf("child exit %d reported as broker exit %d", expected, code)
+		}
+	}
+}
+
+// A child that exits without reading its input breaks the stdin pipe before its process handle is signaled.
+func TestBrokerRelaysTheExitCodeOfAChildThatLeavesItsInputUnread(t *testing.T) {
+	unread := bytes.Repeat([]byte{65}, 1<<20)
+	for _, expected := range []int{0, 1} {
+		if code := runBrokerWithChild(t, expected, unread); code != expected {
+			t.Fatalf("child exit %d with unread input reported as broker exit %d", expected, code)
+		}
+	}
+}
+
+func runBrokerWithChild(t *testing.T, childExit int, childInput []byte) int {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -50,39 +69,35 @@ func TestBrokerExitsWithTheChildExitCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []int{0, 1, 7} {
-		token := make([]byte, 16)
-		if _, err := rand.Read(token); err != nil {
-			t.Fatal(err)
-		}
-		frame, err := json.Marshal(map[string]any{
-			"command":               executable,
-			"args":                  []string{},
-			"cwd":                   directory,
-			"jobName":               "Global" + string(rune(92)) + "game-companion-process-" + hex.EncodeToString(token) + "-core",
-			"parentPid":             os.Getpid(),
-			"parentCreated":         created,
-			"brokerProtocolVersion": 2,
-			"childEnvironment":      map[string]string{testRoleVariable: "child", testExitVariable: strconv.Itoa(expected)},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		broker := exec.Command(executable)
-		broker.Env = append(os.Environ(), testRoleVariable+"=broker")
-		broker.Stdin = bytes.NewReader(append(frame, byte(10)))
-		var output bytes.Buffer
-		broker.Stdout = &output
-		err = broker.Run()
-		var exit *exec.ExitError
-		if err != nil && !errors.As(err, &exit) {
-			t.Fatal(err)
-		}
-		if code := broker.ProcessState.ExitCode(); code != expected {
-			t.Fatalf("child exit %d reported as broker exit %d", expected, code)
-		}
-		if !bytes.HasPrefix(output.Bytes(), []byte(`{"ownedProcessVersion":1,`)) {
-			t.Fatalf("broker did not report the owned header for child exit %d", expected)
-		}
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		t.Fatal(err)
 	}
+	frame, err := json.Marshal(map[string]any{
+		"command":               executable,
+		"args":                  []string{},
+		"cwd":                   directory,
+		"jobName":               "Global" + string(rune(92)) + "game-companion-process-" + hex.EncodeToString(token) + "-core",
+		"parentPid":             os.Getpid(),
+		"parentCreated":         created,
+		"brokerProtocolVersion": 2,
+		"childEnvironment":      map[string]string{testRoleVariable: "child", testExitVariable: strconv.Itoa(childExit)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := exec.Command(executable)
+	broker.Env = append(os.Environ(), testRoleVariable+"=broker")
+	broker.Stdin = bytes.NewReader(append(append(frame, byte(10)), childInput...))
+	var output bytes.Buffer
+	broker.Stdout = &output
+	err = broker.Run()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(output.Bytes(), []byte(`{"ownedProcessVersion":1,`)) {
+		t.Fatalf("broker did not report the owned header for child exit %d", childExit)
+	}
+	return broker.ProcessState.ExitCode()
 }
