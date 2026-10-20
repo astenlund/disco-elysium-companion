@@ -5,7 +5,7 @@ import { DataRootUnavailableError } from './admission.ts';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
 import { SupervisorError, type OwnedProcess, type ProcessRole, type ProcessSupervisor } from './process.ts';
 import type { RuntimeScope } from './scope.ts';
-import { encodeStartupMetadataFrame, FramedReplies, validateStartupHello } from './startup-metadata.ts';
+import { encodeStartupMetadataFrame, FramedReplies, maximumNormalOutput, validateStartupHello } from './startup-metadata.ts';
 import { startupWorkerInstallationRoot } from './startup-worker-sources.ts';
 
 type StartupTransportRole = Extract<ProcessRole, 'startupCoreReply' | 'startupMutation'>;
@@ -46,7 +46,7 @@ export class StartupWorkerTransport {
       await supervisor.verifyQuiescent(role);
       return null;
     }
-    const replies = new FramedReplies(child);
+    const replies = new FramedReplies(child, maximumNormalOutput);
     let ownedChildReady = false;
     const startedAt = performance.now();
     let timer: NodeJS.Timeout | undefined;

@@ -18,7 +18,8 @@ const resourceScript = fileURLToPath(new URL('../scripts/resource-lifecycle/Get-
 const eventScript = fileURLToPath(new URL('../scripts/Get-EventMetadata.ps1', import.meta.url));
 const maximumInputFrame = 2_097_152;
 const maximumOutputFrame = 131_072;
-const maximumNormalOutput = 65_536;
+/** Only an `eventBatch` reply may exceed this; every other startup worker frame stays within it. */
+export const maximumNormalOutput = 65_536;
 const maximumHashInput = 1_048_576;
 const frameBudget = { maxBytes: maximumInputFrame, maxTokens: 65_536, maxTextBytes: maximumInputFrame } as const;
 
@@ -35,9 +36,11 @@ export class FramedReplies {
   private error: Error | null = null;
   private closing = false;
   private allowQueuedHandshake = true;
+  private readonly maximumFrame: number;
 
-  constructor(child: WorkerStream) {
+  constructor(child: WorkerStream, maximumFrame = maximumOutputFrame) {
     this.child = child;
+    this.maximumFrame = maximumFrame;
     child.stdout.on('data', (chunk: Buffer) => this.receive(chunk));
     child.stdout.on('error', () => this.fail(unavailable()));
     child.stdout.on('end', () => { if (!this.closing || this.buffer.length > 0) { this.fail(unavailable()); } });
@@ -50,11 +53,11 @@ export class FramedReplies {
 
   private receive(chunk: Buffer): void {
     if (this.error !== null) { return; }
-    if (this.closing || this.buffer.length + chunk.length > maximumOutputFrame + 4) { this.fail(unavailable()); return; }
+    if (this.closing || this.buffer.length + chunk.length > this.maximumFrame + 4) { this.fail(unavailable()); return; }
     this.buffer = Buffer.concat([this.buffer, chunk]);
     if (this.buffer.length < 4) { return; }
     const length = this.buffer.readUInt32BE(0);
-    if (length < 1 || length > maximumOutputFrame) { this.fail(unavailable()); return; }
+    if (length < 1 || length > this.maximumFrame) { this.fail(unavailable()); return; }
     if (this.buffer.length < length + 4) { return; }
     const frame = this.buffer.subarray(4, length + 4);
     this.buffer = this.buffer.subarray(length + 4);
