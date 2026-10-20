@@ -116,7 +116,7 @@ func profileDirectory(t *testing.T) string {
 	return profile
 }
 
-func TestChildGetsItsOwnHiddenConsole(t *testing.T) {
+func TestChildLaunchRequestsItsOwnHiddenConsole(t *testing.T) {
 	attributes := childAttributes()
 	if !attributes.HideWindow || attributes.CreationFlags&createNoWindow == 0 {
 		t.Fatal("child launch shares the broker console")

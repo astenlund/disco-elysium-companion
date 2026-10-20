@@ -44,7 +44,7 @@ describe('owned process transport', () => {
     }
   });
 
-  it('runs the scoped PowerShell broker in its scratch while the provider child keeps its own profile', { timeout: 60000 }, async () => {
+  it('launches the scoped PowerShell broker with its scratch profile while the provider child keeps its own', { timeout: 60000 }, async () => {
     const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'scoped-broker-'));
     const brokerScratch = path.join(scratch, 'broker');
     const providerProfile = path.join(scratch, 'provider');
