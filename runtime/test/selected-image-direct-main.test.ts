@@ -11,6 +11,7 @@ import { DirectImagePinObligation, withDirectMainToken } from '../src/direct-mai
 import { ProcessSupervisor } from '../src/process.ts';
 import { createReadOnlyInspection } from '../src/read-only-inspection.ts';
 import { observeSourceBoundBootstrap } from '../src/source-bound-bootstrap.ts';
+import { containedEnvironment } from './support/contained-environment.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const absent = path.join(root, '.tmp', 'selected-image-direct-main-absent');
@@ -41,18 +42,21 @@ test('a selected image bootstrap without the direct-main token fails before any 
 });
 
 test('a direct call into the bootstrap with a real inspector is refused before any helper starts', { timeout: 60000 }, async () => {
-  const inspection = await createReadOnlyInspection(root);
-  const run = ProcessSupervisor.prototype.run;
-  let helpers = 0;
-  ProcessSupervisor.prototype.run = function (this: ProcessSupervisor, ...args: Parameters<ProcessSupervisor['run']>) { helpers += 1; return run.apply(this, args); };
+  const { environment, remove } = await containedEnvironment(root, 'selected-image-direct-main-');
   try {
-    await assert.rejects(observeSourceBoundBootstrap(Symbol('forged'), inspection.inspector, inspection.parentIdentity, root, 'disco_elysium',
-      root, {}, () => {}), /Compiled image transfer requires direct CLI main/);
-    assert.equal(helpers, 0);
-  } finally {
-    ProcessSupervisor.prototype.run = run;
-    await inspection.close();
-  }
+    const inspection = await createReadOnlyInspection(root, environment);
+    const run = ProcessSupervisor.prototype.run;
+    let helpers = 0;
+    ProcessSupervisor.prototype.run = function (this: ProcessSupervisor, ...args: Parameters<ProcessSupervisor['run']>) { helpers += 1; return run.apply(this, args); };
+    try {
+      await assert.rejects(observeSourceBoundBootstrap(Symbol('forged'), inspection.inspector, inspection.parentIdentity, root, 'disco_elysium',
+        root, {}, () => {}), /Compiled image transfer requires direct CLI main/);
+      assert.equal(helpers, 0);
+    } finally {
+      ProcessSupervisor.prototype.run = run;
+      await inspection.close();
+    }
+  } finally { await remove(); }
 });
 
 test('the direct-main token is unavailable outside the direct main entries', () => {

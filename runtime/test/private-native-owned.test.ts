@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 
 import { hasExactKeys, parseStrictJson } from '../src/json.ts';
 import { ProcessSupervisor, processRoles, type OwnedProcess } from '../src/process.ts';
-import { withoutHome } from '../src/compiled-broker.ts';
+import { containedEnvironment } from './support/contained-environment.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source = path.join(repository, 'runtime', 'prototypes', 'job-observer.go');
@@ -17,11 +17,10 @@ const childScript = fileURLToPath(new URL('./fixtures/process-child.ts', import.
 const execute = promisify(execFile);
 
 test('native owned startup proof binds broker and child creation identities', { timeout: 120000 }, async () => {
-  const scratch = await fs.mkdtemp(path.join(repository, '.tmp', 'native-owned-identity-'));
+  const { scratch, environment, remove } = await containedEnvironment(repository, 'native-owned-identity-');
   const binary = path.join(scratch, 'job-observer.exe');
   const manifest = path.join(scratch, 'job-observer.json');
-  const privateEnvironment = { ...withoutHome(process.env), TEMP: scratch, TMP: scratch, TMPDIR: scratch,
-    USERPROFILE: scratch, APPDATA: scratch, LOCALAPPDATA: scratch, GOCACHE: path.join(scratch, 'go-cache'),
+  const privateEnvironment = { ...environment, GOCACHE: path.join(scratch, 'go-cache'),
     GOPATH: path.join(scratch, 'go-path'), GOMODCACHE: path.join(scratch, 'go-modules'), GOTELEMETRY: 'off' };
   let supervisor: ProcessSupervisor | undefined;
   let child: OwnedProcess | undefined;
@@ -32,7 +31,7 @@ test('native owned startup proof binds broker and child creation identities', { 
     const binarySha256 = await digest(binary);
     await fs.writeFile(manifest, JSON.stringify({ sourceSha256, binarySha256, toolchain: 'go-test', output: binary, provenance: {} }), { flag: 'wx' });
     supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), undefined,
-      { binary, source, manifest, scratch, binarySha256, sourceSha256, manifestSha256: await digest(manifest) });
+      { binary, source, manifest, scratch, binarySha256, sourceSha256, manifestSha256: await digest(manifest) }, privateEnvironment);
     child = supervisor.spawn('startupMetadata', { command: process.execPath, args: [childScript, 'wait'], cwd: repository, env: privateEnvironment });
     child.stdout.resume();
     child.stderr.resume();
@@ -72,7 +71,6 @@ test('native owned startup proof binds broker and child creation identities', { 
     }
   } finally {
     if (supervisor !== undefined && child !== undefined) { await supervisor.stop('startupMetadata'); }
-    assert.equal(path.dirname(scratch), path.join(repository, '.tmp'));
-    await fs.rm(scratch, { recursive: true, force: true });
+    await remove();
   }
 });

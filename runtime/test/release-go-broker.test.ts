@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { readCompiledImageRelease } from '../src/compiled-image-release.ts';
 import { normalizedGoSourceHash } from '../src/go-source.ts';
 import { childEnvironment, readProcessIdentity } from '../src/process.ts';
+import { containedEnvironment } from './support/contained-environment.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -25,7 +26,9 @@ test('broker sources match the fixed release after uniform checkout line-ending 
 });
 
 test('the packaged broker exits with its child exit code', { timeout: 60000 }, async () => {
-  const parent = await readProcessIdentity(process.pid);
+  const { environment, remove } = await containedEnvironment(repository, 'release-go-broker-test-');
+  let parent: Awaited<ReturnType<typeof readProcessIdentity>>;
+  try { parent = await readProcessIdentity(process.pid, environment); } finally { await remove(); }
   assert.ok(parent);
   const broker = path.join(repository, 'runtime/native/go-broker.exe');
   const child = path.join(repository, 'runtime/test/fixtures/process-child.ts');
