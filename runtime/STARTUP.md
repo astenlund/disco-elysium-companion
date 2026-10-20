@@ -18,7 +18,7 @@
 | Checking state safety                        | Checks pending safety obligations and resumes required recovery before provider admission.                                                                        |
 | Finishing storage maintenance                | Applies eligible retention and refreshes capacity and operational observations.                                                                                   |
 | Starting the save watcher                    | Starts or checks the watcher that notices later saves; its status appears in the client.                                                                          |
-| Preparing provider tools and instructions    | Final instruction admission before provider binding. Private opt-in startup rereads and compares the initial source bytes.                                        |
+| Preparing provider tools and instructions    | Final instruction admission before provider binding, and the tool boundary unless private opt-in startup already built it. Private opt-in startup rereads and compares the initial source bytes. |
 | Checking provider safety and session binding | Checks current safety and the stored session binding before deciding whether to resume or start fresh.                                                            |
 | Starting the provider session                | Starts or resumes the provider process and waits for its initialization. No player message is sent here.                                                          |
 | Binding the provider session durably         | Writes and verifies the current session binding before the provider can serve the client.                                                                         |
