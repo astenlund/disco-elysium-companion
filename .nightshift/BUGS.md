@@ -215,7 +215,7 @@ Every selected chat start leaves a new `.tmp/runtime-startup-*` helper profile b
 
 ### [.NET tools folders leak into the User PATH](bugs/user-path-dotnet-tools-leak.md)
 
-Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the persisted User PATH, which has grown past cmd's PATH limit.
+Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the persisted User PATH, which grew past cmd's PATH limit by 2026-10-19.
 
 **Requires:** none.
 
