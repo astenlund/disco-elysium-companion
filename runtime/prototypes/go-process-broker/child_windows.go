@@ -14,6 +14,10 @@ import (
 )
 
 var isProcessInJob = jobKernel.NewProc("IsProcessInJob")
+var getSystemDirectory = jobKernel.NewProc("GetSystemDirectoryW")
+var getWindowsDirectory = jobKernel.NewProc("GetWindowsDirectoryW")
+
+const createNoWindow = 0x08000000
 
 // retainedJob keeps the claimed job handle reachable for the life of the broker process.
 var retainedJob *ownedJob
@@ -84,11 +88,57 @@ func environmentPairs(values map[string]string) []string {
 	return pairs
 }
 
+// executablePath resolves a command like CreateProcess does for the PowerShell broker's Process.Start: a name without an
+// extension gets only ".exe", never another PATHEXT extension such as ".cmd", and a bare name is searched in the system
+// directories before PATH. Unlike CreateProcess it searches neither the application directory nor the current directory.
 func executablePath(command string) (string, error) {
-	if filepath.IsAbs(command) {
-		return command, nil
+	name := command
+	if filepath.Ext(name) == "" {
+		name += ".exe"
 	}
-	return exec.LookPath(command)
+	if filepath.IsAbs(name) || filepath.Base(name) != name {
+		return launchableFile(name)
+	}
+	for _, directory := range append(systemDirectories(), filepath.SplitList(os.Getenv("PATH"))...) {
+		if directory == "" || !filepath.IsAbs(directory) {
+			continue
+		}
+		if path, err := launchableFile(filepath.Join(directory, name)); err == nil {
+			return path, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+// launchableFile refuses only a directory, as exec.LookPath does: app execution aliases are reparse points that os.Stat
+// reports as irregular files, and CreateProcess launches them.
+func launchableFile(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", exec.ErrNotFound
+	}
+	return path, nil
+}
+
+func systemDirectories() []string {
+	var directories []string
+	for _, proc := range []*syscall.LazyProc{getSystemDirectory, getWindowsDirectory} {
+		buffer := make([]uint16, syscall.MAX_PATH)
+		length, _, _ := proc.Call(uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+		if length > 0 && int(length) < len(buffer) {
+			directories = append(directories, syscall.UTF16ToString(buffer[:length]))
+		}
+	}
+	return directories
+}
+
+// childAttributes gives the child its own hidden console, as the PowerShell broker's CreateNoWindow does, so a console
+// control event inside the child's tree cannot reach the broker and end the whole owned job.
+func childAttributes() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 }
 
 func inspectChild(handle uintptr, job uintptr) (string, error) {
@@ -171,7 +221,7 @@ func run(input io.Reader, output, errorOutput io.Writer) (code int, err error) {
 	pid, handle, err := syscall.StartProcess(path, arguments, &syscall.ProcAttr{
 		Dir: spec.cwd, Env: environmentPairs(spec.childEnvironment),
 		Files: []uintptr{stdinRead.Fd(), stdoutWrite.Fd(), stderrWrite.Fd()},
-		Sys:   &syscall.SysProcAttr{HideWindow: true},
+		Sys:   childAttributes(),
 	})
 	if err != nil {
 		return 125, err
