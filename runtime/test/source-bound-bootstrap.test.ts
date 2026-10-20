@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, type PathInspector } from '../src/admission.ts';
+import type { ImagePinRequest } from '../src/bootstrap-image-receipt.ts';
 import { SupervisorError } from '../src/process.ts';
 import { scopeComponents } from '../src/scope.ts';
 import { helperFailureDetail, observeSourceBoundBootstrap, SourceBoundBootstrapError } from '../src/source-bound-bootstrap.ts';
+import { capturedBootstrapSources, readyImagePinReceipt } from './support/bootstrap-fixtures.ts';
 
 const companionRoot = path.win32.join('C:', 'private', 'companion');
 const imageRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
@@ -19,6 +22,28 @@ const reply = (imagePins: unknown) => ({ exitCode: 0, stderr: Buffer.alloc(0),
   stdout: Buffer.from(JSON.stringify({ sid, paths: [admitted(companionRoot), admitted(candidate)], imagePins })) });
 const parent = { pid: 1234, created: '1234567890123456789' };
 const token = Symbol('selected');
+
+// A damaged image root must sit inside the installation, so copies go to its own scratch.
+async function imageRootCopy(): Promise<string> {
+  const copy = await fs.mkdtemp(path.win32.join(imageRoot, '.tmp', 'source-bound-bootstrap-'));
+  await fs.mkdir(path.win32.join(copy, 'runtime/scripts'), { recursive: true });
+  for (const relative of capturedBootstrapSources) { await fs.copyFile(path.win32.join(imageRoot, relative), path.win32.join(copy, relative)); }
+
+  return copy;
+}
+
+async function removeImageRootCopy(copy: string): Promise<void> {
+  assert.equal(path.win32.dirname(copy), path.win32.join(imageRoot, '.tmp'));
+  await fs.rm(copy, { recursive: true, force: true });
+}
+
+// The request is the fourth base64 argument after the decoded package script.
+function requestArgument(expression: Uint8Array): string {
+  const argument = Buffer.from(expression).toString('ascii').trim().split(' ').slice(2)[3];
+  assert.ok(argument !== undefined);
+
+  return argument.slice(1, -1);
+}
 
 test('selected bootstrap captures fixed source and accepts the exact absent reply', async () => {
   let transferred = false;
@@ -102,6 +127,58 @@ test('selected bootstrap refuses invalid parent identity before possible transfe
   await assert.rejects(observeSourceBoundBootstrap(token, inspector, { pid: 0, created: parent.created }, companionRoot,
     game, imageRoot, {}, () => { transferred = true; }));
   assert.equal(transferred, false);
+});
+
+test('selected bootstrap refuses an image root outside the installation before transfer', async () => {
+  let transferred = false;
+  const inspector = { metadataStdinExpression: async () => { throw new Error('Helper must not launch.'); } } as unknown as PathInspector;
+  await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, path.win32.join('C:', 'private', 'foreign'),
+    {}, () => { transferred = true; }), (error: unknown) => error instanceof SourceBoundBootstrapError && error.reason === 'invalidInputs');
+  assert.equal(transferred, false);
+});
+
+test('a changed or missing captured source is refused before transfer', async () => {
+  const copy = await imageRootCopy();
+  try {
+    let transferred = false;
+    const inspector = { metadataStdinExpression: async () => { throw new Error('Helper must not launch.'); } } as unknown as PathInspector;
+    const refusal = (relative: string) => (error: unknown) => error instanceof SourceBoundBootstrapError && error.reason === 'sourceChanged'
+      && error.detail === relative;
+    await fs.appendFile(path.win32.join(copy, capturedBootstrapSources[0]), '# changed');
+    await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, copy, {}, () => { transferred = true; }),
+      refusal(capturedBootstrapSources[0]));
+    await fs.copyFile(path.win32.join(imageRoot, capturedBootstrapSources[0]), path.win32.join(copy, capturedBootstrapSources[0]));
+    await fs.rm(path.win32.join(copy, capturedBootstrapSources[1]));
+    await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, copy, {}, () => { transferred = true; }),
+      refusal(capturedBootstrapSources[1]));
+    assert.equal(transferred, false);
+  } finally { await removeImageRootCopy(copy); }
+});
+
+test('an oversized bootstrap expression is refused before transfer', async () => {
+  let transferred = false;
+  const inspector = { metadataStdinExpression: async () => { throw new Error('Helper must not launch.'); } } as unknown as PathInspector;
+  await assert.rejects(observeSourceBoundBootstrap(token, inspector, parent, companionRoot, 'x'.repeat(800_000), imageRoot, {},
+    () => { transferred = true; }), (error: unknown) => error instanceof SourceBoundBootstrapError && error.reason === 'expressionTooLarge');
+  assert.equal(transferred, false);
+});
+
+test('a ready receipt is refused when the packaged release is missing or does not match the pinned images', async () => {
+  const copy = await imageRootCopy();
+  try {
+    const inspector = { metadataStdinExpression: async (_token: unknown, expression: Uint8Array) => {
+      const request = JSON.parse(Buffer.from(requestArgument(expression), 'base64').toString('utf8')) as ImagePinRequest;
+      return reply(readyImagePinReceipt(request, candidate));
+    } } as unknown as PathInspector;
+    const observe = () => observeSourceBoundBootstrap(token, inspector, parent, companionRoot, game, copy, {}, () => {});
+    const refusal = (error: unknown) => error instanceof SourceBoundBootstrapError && error.reason === 'releaseMismatch' && error.detail !== null;
+    await assert.rejects(observe(), refusal);
+    const release = JSON.parse(await fs.readFile(path.win32.join(imageRoot, 'runtime/native/compiled-images.json'), 'utf8'));
+    release.broker.sha256 = 'f'.repeat(64);
+    await fs.mkdir(path.win32.join(copy, 'runtime/native'));
+    await fs.writeFile(path.win32.join(copy, 'runtime/native/compiled-images.json'), JSON.stringify(release, null, 2) + String.fromCharCode(10));
+    await assert.rejects(observe(), refusal);
+  } finally { await removeImageRootCopy(copy); }
 });
 
 test('selected bootstrap rejects trailing-separator scope spelling before transfer', async () => {
