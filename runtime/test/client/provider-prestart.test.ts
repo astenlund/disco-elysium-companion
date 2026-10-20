@@ -848,32 +848,34 @@ test('an invalidation while an unobserved provider is being ended latches the fi
   await host.shutdown();
 });
 
-test('an invalidation before an unobserved provider fails to stop still latches the block before startup fails', async () => {
-  const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
-  const provider = new FakeProvider();
-  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
-    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
-  assert.equal(await host.start(), true);
-  const first = provider.current;
-  const close = first.close.bind(first);
-  let failedOnce = false;
-  first.close = async () => {
-    if (!failedOnce) {
-      failedOnce = true;
-      host.invalidate('contextUncertain');
-      backend.safetyValue = { ...backend.safetyValue, generation: 'f'.repeat(32) };
-      throw new Error('Provider stop is unproved.');
-    }
-    await close();
-  };
-  first.closed = true;
-  await assert.rejects(finalizeAttachmentSafety(host, backend.asRuntime()), /Provider stop is unproved/);
-  host.invalidate('contextUncertain');
-  await new Promise<void>(resolve => setTimeout(resolve, 200));
-  assert.equal(provider.calls.length, 1);
-  assert.equal(await host.startNewAgentSession(), 'providerUnavailable');
-  await host.shutdown();
+test('an unobserved provider that fails to stop latches the block, whenever an invalidation arrives', async () => {
+  for (const invalidateDuringClose of [true, false]) {
+    const backend = new FakeBackend();
+    Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+    const provider = new FakeProvider();
+    const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+      providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
+    assert.equal(await host.start(), true);
+    const first = provider.current;
+    const close = first.close.bind(first);
+    let failedOnce = false;
+    first.close = async () => {
+      if (!failedOnce) {
+        failedOnce = true;
+        if (invalidateDuringClose) { host.invalidate('contextUncertain'); }
+        throw new Error('Provider stop is unproved.');
+      }
+      await close();
+    };
+    first.closed = true;
+    await assert.rejects(finalizeAttachmentSafety(host, backend.asRuntime()), /Provider stop is unproved/);
+    backend.safetyValue = { ...backend.safetyValue, generation: 'f'.repeat(32) };
+    host.invalidate('contextUncertain');
+    await new Promise<void>(resolve => setTimeout(resolve, 200));
+    assert.equal(provider.calls.length, 1, `invalidation during close: ${invalidateDuringClose}`);
+    assert.equal(await host.startNewAgentSession(), 'providerUnavailable');
+    await host.shutdown();
+  }
 });
 
 test('a provider that exits and cannot reconnect attaches status-only after its reconnect attempts', async () => {

@@ -190,8 +190,9 @@ export class SessionHost implements SessionHostV1 {
         this.failingUnobservedProvider = true;
         try { await this.lifecycle.failCurrent(); }
         catch (error) {
-          // An unproved stop stays fatal, but an invalidation that arrived meanwhile still latches its refusal first.
-          if (this.invalidatedAfterStart) { this.latchFinalSafetyBlock(); }
+          // An unproved stop is fatal; latching first keeps any invalidation, during the close or later in cleanup, from
+          // starting a replacement before this unpassed final check.
+          this.latchFinalSafetyBlock();
           throw error;
         }
         finally { this.failingUnobservedProvider = false; }
