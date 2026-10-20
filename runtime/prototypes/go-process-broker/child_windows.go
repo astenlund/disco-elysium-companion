@@ -89,8 +89,8 @@ func environmentPairs(values map[string]string) []string {
 }
 
 // executablePath resolves a command like CreateProcess does for the PowerShell broker's Process.Start: a name without an
-// extension gets only ".exe", never another PATHEXT extension such as ".cmd", and a bare name is searched in the system
-// directories before PATH. Unlike CreateProcess it skips the application, current and 16-bit system directories.
+// extension gets only ".exe", never another PATHEXT extension such as ".cmd", and a bare name is searched in the 32-bit
+// system and Windows directories, then PATH; it skips CreateProcess's application, current and 16-bit system directories.
 func executablePath(command string) (string, error) {
 	name := command
 	if filepath.Ext(name) == "" {
