@@ -342,7 +342,8 @@ export class ProviderLifecycle {
     if (!this.isCurrent(session.providerInstanceId)) { throw new Error('The provider changed during liveness verification.'); }
   }
 
-  async finishFinalSafetyBlock(): Promise<void> {
+  /** Ends the current session and leaves the provider failed, as an exhausted reconnect does, so no later exit reconnects it. */
+  async failCurrent(): Promise<void> {
     this.state('failed');
     await this.endCurrent();
   }

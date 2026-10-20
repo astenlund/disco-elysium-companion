@@ -15,7 +15,7 @@ import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './windo
 const startupWorkerRoles = ['startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
 const attachmentSafetyLifetimeMs = 3_000;
 const attachmentLivenessLifetimeMs = 1_000;
-const providerExitObservationMs = 5_000;
+const defaultProviderExitObservationMs = 5_000;
 interface AttachmentSafetyWitness {
   readonly generation: string;
   readonly binding: NonNullable<ProviderLifecycle['binding']>;
@@ -50,6 +50,7 @@ export interface SessionHostOptions {
   readonly closeTools: () => Promise<void>;
   readonly monotonicNow?: () => number;
   readonly delay?: (milliseconds: number) => Promise<void>;
+  readonly providerExitObservationMs?: number;
 }
 interface Turn extends Interaction {
   readonly text: string;
@@ -175,14 +176,18 @@ export class SessionHost implements SessionHostV1 {
    * live before its exit was observed still reads as ready, so the wait also lets that exit arrive, within a bound, and settle.
    */
   async settleProviderRecovery(): Promise<'ready' | 'unavailable' | 'invalidated'> {
-    const exitObservationEnds = performance.now() + providerExitObservationMs;
+    const exitObservationEnds = performance.now() + (this.options.providerExitObservationMs ?? defaultProviderExitObservationMs);
     for (;;) {
       this.scheduleTransition();
       while (this.transition !== null && !this.invalidatedAfterStart) { await this.transition; }
       if (this.invalidatedAfterStart) { return 'invalidated'; }
       if (!this.ready || !this.providerReady) { break; }
       if (this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) { return 'ready'; }
-      if (performance.now() >= exitObservationEnds) { break; }
+      if (performance.now() >= exitObservationEnds) {
+        // A session whose exit never surfaced ends as failed, so a later exit cannot reconnect behind a status-only client.
+        await this.lifecycle.failCurrent();
+        break;
+      }
       await new Promise<void>(resolve => setTimeout(resolve, 25));
     }
     // A provider that ended without a reconnect, such as an incompatible exit, leaves attachment to the status-only branch.
@@ -200,7 +205,7 @@ export class SessionHost implements SessionHostV1 {
     this.reconnect = null;
     this.lifecycle.suppress();
     await this.transition;
-    await this.lifecycle.finishFinalSafetyBlock();
+    await this.lifecycle.failCurrent();
     this.statusChanged();
   }
 

@@ -798,6 +798,27 @@ test('a provider that stops being live before its exit is observed still reconne
   await host.shutdown();
 });
 
+test('a provider whose exit never surfaces within the bound ends failed, so a later exit cannot reconnect it', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
+  assert.equal(await host.start(), true);
+  const first = provider.current;
+  first.closed = true;
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.equal(host.status.provider.state, 'failed');
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.equal(attached.snapshot.status.provider.state, 'failed'); }
+  first.exit('subprocessExited');
+  await new Promise<void>(resolve => setTimeout(resolve, 50));
+  assert.equal(provider.calls.length, 1);
+  assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
 test('a provider that exits and cannot reconnect attaches status-only after its reconnect attempts', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
