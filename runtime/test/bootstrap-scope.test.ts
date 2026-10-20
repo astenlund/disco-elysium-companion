@@ -10,6 +10,7 @@ import { DataRootUnavailableError, frozenStdinExpression, PathInspector, stdinEx
 import { parseStrictJson } from '../src/json.ts';
 import type { ProcessSupervisor } from '../src/process.ts';
 import { discoverScopeWithPrincipal, parseCombinedScopeReply, scopeComponents } from '../src/scope.ts';
+import { containedEnvironment } from './support/contained-environment.ts';
 
 const root = path.win32.join('C:', 'private', 'companion');
 const game = 'disco_elysium';
@@ -25,13 +26,18 @@ const capturedSources = ['runtime/scripts/Get-BootstrapScope.ps1', 'runtime/scri
 
 test('a refused bootstrap names the innermost cause in one bounded line', async () => {
   const script = path.win32.join(installation, 'runtime', 'scripts', 'Get-BootstrapScope.ps1');
-  await assert.rejects(execute('pwsh', ['-NoProfile', '-NonInteractive', '-File', script, '-Root', 'relative', '-Game', game],
-    { windowsHide: true, timeout: 120000 }), (error: { code?: unknown; stdout?: string; stderr?: string }) => {
-    assert.equal(error.code, 1);
-    assert.equal(error.stdout, '');
-    assert.equal(error.stderr?.trim(), 'Get-BootstrapScope: bootstrap-unavailable: IOException: A local drive-qualified path is required.');
-    return true;
-  });
+  const { environment, remove } = await containedEnvironment(installation, 'bootstrap-scope-test-');
+  try {
+    await assert.rejects(execute('pwsh', ['-NoProfile', '-NonInteractive', '-File', script, '-Root', 'relative', '-Game', game],
+      { env: environment, windowsHide: true, timeout: 120000 }), (error: { code?: unknown; stdout?: string; stderr?: string }) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, '');
+      assert.equal(error.stderr?.trim(), 'Get-BootstrapScope: bootstrap-unavailable: IOException: A local drive-qualified path is required.');
+      return true;
+    });
+  } finally {
+    await remove();
+  }
 });
 
 test('captured bootstrap sources check out with pinned CRLF endings so their fixed hashes hold on any clone', async () => {

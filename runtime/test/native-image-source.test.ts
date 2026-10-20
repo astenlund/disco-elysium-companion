@@ -5,8 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { dotnetFirstRunOptOuts } from '../src/dotnet-environment.ts';
 import { bundleNativeImageSources } from '../src/native-image-source.ts';
+import { containedEnvironment } from './support/contained-environment.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const nativeFiles = path.join(repository, 'runtime/scripts/NativeFiles.cs');
@@ -18,14 +18,8 @@ test('captured native image sources form one compilable in-memory unit', { timeo
   assert.equal(source.split('namespace Companion.Runtime;').length, 2);
   assert.equal(source.split('public static class NativeFiles').length, 2);
   assert.equal(source.split('public static class NativeImagePins').length, 2);
-  const scratchParent = path.join(repository, '.tmp');
-  const scratch = await fs.mkdtemp(path.join(scratchParent, 'native-image-source-test-'));
+  const { environment, remove } = await containedEnvironment(repository, 'native-image-source-test-');
   try {
-    const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
-    for (const name of ['USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR', 'DOTNET_CLI_HOME']) {
-      environment[name] = scratch;
-    }
-    Object.assign(environment, dotnetFirstRunOptOuts);
     const encoded = Buffer.from(source).toString('base64');
     const expression = "$ErrorActionPreference='Stop'; Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
       + encoded + "'))); [Console]::Out.Write('compiled')";
@@ -37,9 +31,7 @@ test('captured native image sources form one compilable in-memory unit', { timeo
     assert.equal(child.stdout.toString('utf8'), 'compiled');
     assert.equal(child.stderr.length, 0);
   } finally {
-    assert.equal(path.dirname(scratch), scratchParent);
-    assert.ok((await fs.realpath(scratch)).startsWith((await fs.realpath(repository)) + path.sep));
-    await fs.rm(scratch, { recursive: true, force: true });
+    await remove();
   }
 });
 
