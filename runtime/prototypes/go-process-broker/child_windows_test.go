@@ -52,8 +52,26 @@ func TestOwnedHeaderHasExactFieldSet(t *testing.T) {
 	}
 }
 
+// repositoryTempDir keeps test files under the repository's .tmp rather than the user's temporary folder.
+func repositoryTempDir(t *testing.T) string {
+	t.Helper()
+	parent, err := filepath.Abs(filepath.Join("..", "..", "..", ".tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.MkdirTemp(parent, "go-broker-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	return directory
+}
+
 func TestExecutablePathAppendsOnlyExeToBareNames(t *testing.T) {
-	directory := t.TempDir()
+	directory := repositoryTempDir(t)
 	t.Setenv("PATH", directory)
 	if err := os.WriteFile(filepath.Join(directory, "probe.cmd"), []byte("@exit 1"), 0o600); err != nil {
 		t.Fatal(err)
@@ -72,7 +90,7 @@ func TestExecutablePathAppendsOnlyExeToBareNames(t *testing.T) {
 }
 
 func TestExecutablePathRefusesDirectories(t *testing.T) {
-	directory := t.TempDir()
+	directory := repositoryTempDir(t)
 	t.Setenv("PATH", directory)
 	if err := os.Mkdir(filepath.Join(directory, "probe.exe"), 0o700); err != nil {
 		t.Fatal(err)
