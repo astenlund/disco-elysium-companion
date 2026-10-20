@@ -819,6 +819,33 @@ test('a provider whose exit never surfaces within the bound ends failed, so a la
   await host.shutdown();
 });
 
+test('the bound for an unobserved exit starts once a slower reconnect has settled', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 100 });
+  assert.equal(await host.start(), true);
+  const start = provider.start.bind(provider);
+  provider.start = async resume => {
+    if (provider.calls.length !== 1) { return start(resume); }
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
+    const session = await start(resume) as FakeSession;
+    // The reconnected session dies once bound, and its exit surfaces inside the bound but after a deadline set before the wait.
+    const live = session.isLive.bind(session);
+    session.isLive = () => live() && host.status.provider.state !== 'ready';
+    setTimeout(() => { session.exit('subprocessExited'); }, 60);
+    return session;
+  };
+  provider.current.exit('subprocessExited');
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  assert.equal(provider.calls.length, 3);
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  if (attached.result === 'attached') { assert.equal(attached.snapshot.status.provider.state, 'ready'); }
+  await host.shutdown();
+});
+
 test('an invalidation while an unobserved provider is being ended latches the final safety block without a replacement', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });

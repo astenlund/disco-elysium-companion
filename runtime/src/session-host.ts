@@ -177,13 +177,16 @@ export class SessionHost implements SessionHostV1 {
    * live before its exit was observed still reads as ready, so the wait also lets that exit arrive, within a bound, and settle.
    */
   async settleProviderRecovery(): Promise<'ready' | 'unavailable' | 'invalidated'> {
-    const exitObservationEnds = performance.now() + (this.options.providerExitObservationMs ?? defaultProviderExitObservationMs);
+    let exitObservationEnds: number | null = null;
     for (;;) {
       this.scheduleTransition();
+      // The bound covers only the wait for an exit to surface, so it restarts after every settled reconnect.
+      if (this.transition !== null) { exitObservationEnds = null; }
       while (this.transition !== null && !this.invalidatedAfterStart) { await this.transition; }
       if (this.invalidatedAfterStart) { return 'invalidated'; }
       if (!this.ready || !this.providerReady) { break; }
       if (this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) { return 'ready'; }
+      exitObservationEnds ??= performance.now() + (this.options.providerExitObservationMs ?? defaultProviderExitObservationMs);
       if (performance.now() >= exitObservationEnds) {
         // A session whose exit never surfaced ends as failed, so a later exit cannot reconnect behind a status-only client. No
         // transition starts during that bounded close, because an invalidation arriving meanwhile is still this check's refusal.
