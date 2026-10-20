@@ -48,3 +48,33 @@ test('selected pin receipt binds exact paths and handles to the frozen request',
     assert.throws(() => parseImagePinReceipt(wire(changed), request, candidateScopePath), ImagePinReceiptError);
   }
 });
+
+test('selected pin receipt refuses malformed handles, an oversized chain, swapped images and a non-ready status', () => {
+  const valid = ready();
+  const changeEntry = (index: number, change: Record<string, string>) =>
+    ({ ...valid, handles: valid.handles.map((entry, at) => at === index ? { ...entry, ...change } : entry) });
+  const broker = valid.handles.length - 2;
+  const swapped = [...valid.handles.slice(0, broker), valid.handles[broker + 1]!, valid.handles[broker]!];
+  for (const changed of [
+    changeEntry(0, { handle: '0'.repeat(16) }),
+    changeEntry(0, { handle: 'B'.repeat(16) }),
+    changeEntry(0, { identity: 'A'.repeat(32) }),
+    changeEntry(0, { volume: 'F'.repeat(16) }),
+    { ...valid, handles: swapped },
+    { ...valid, status: 'absent' },
+    { ...valid, status: 'failed' },
+  ]) {
+    assert.throws(() => parseImagePinReceipt(wire(changed), request, candidateScopePath), ImagePinReceiptError);
+  }
+  const deepRequest = (depth: number): ImagePinRequest => {
+    const root = path.win32.join('C:' + separator, ...Array.from({ length: depth }, (_, index) => `d${index}`));
+    return { ...request, installationRoot: root, brokerPath: path.win32.join(root, 'runtime', 'native', 'go-broker.exe'),
+      observerPath: path.win32.join(root, 'runtime', 'native', 'job-observer.exe') };
+  };
+  // The volume root, the installation folders and runtime/native count toward the 62-directory bound, so 64 handles at most.
+  const atLimit = deepRequest(59);
+  assert.equal(parseImagePinReceipt(wire(readyImagePinReceipt(atLimit, candidateScopePath)), atLimit, candidateScopePath).status, 'ready');
+  const beyond = deepRequest(60);
+  assert.throws(() => parseImagePinReceipt(wire(readyImagePinReceipt(beyond, candidateScopePath)), beyond, candidateScopePath),
+    ImagePinReceiptError);
+});
