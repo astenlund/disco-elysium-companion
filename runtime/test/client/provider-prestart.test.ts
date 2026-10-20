@@ -7,6 +7,7 @@ import { PendingProviderStart, PendingProviderStopError, selectPendingProviderSt
 import { chatBackendOptions, cleanupFailedChatRuntime, finalizeAttachmentSafety, startChatProvider } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { Provider, ProviderSession } from '../../src/provider.ts';
+import type { StateSafety } from '../../src/safety-records.ts';
 import { capabilities, deferred, FakeBackend, FakeProvider, FakeSession, generation, instructionHash, timestamp, until } from './support.ts';
 
 function binding(sessionId = 'saved-session') {
@@ -65,14 +66,21 @@ test('a known binding mismatch selects one fresh unbound start', async () => {
   await session.close();
 });
 
-test('guarded selector refuses unresolved safety and invalid binding', async () => {
-  const backend = new FakeBackend();
+test('guarded selector refuses unresolved safety and an unreadable or invalid binding', async () => {
   const provider = new FakeProvider();
-  backend.safetyValue = { ...backend.safetyValue, pendingCheck: 'e'.repeat(32) };
-  assert.equal(await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash), null);
-  backend.safetyValue = { ...backend.safetyValue, pendingCheck: null };
-  backend.sessions.readBinding = async () => ({ status: 'invalid', sha256: null });
-  assert.equal(await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash), null);
+  const refusals: ReadonlyArray<readonly [string, (backend: FakeBackend) => void]> = [
+    ['pending check', backend => { backend.safetyValue = { ...backend.safetyValue, pendingCheck: 'e'.repeat(32) }; }],
+    ['correction', backend => { backend.safetyValue = { ...backend.safetyValue, correction: {} as StateSafety['correction'] }; }],
+    ['recovery witness', backend => { backend.safetyValue = { ...backend.safetyValue, recoveryWitness: {} as StateSafety['recoveryWitness'] }; }],
+    ['unreadable safety', backend => { backend.unavailable = true; }],
+    ['invalid binding', backend => { backend.sessions.readBinding = async () => ({ status: 'invalid', sha256: null }); }],
+    ['unreadable binding', backend => { backend.sessions.readBinding = async () => { throw new Error('Binding unreadable.'); }; }],
+  ];
+  for (const [name, refuse] of refusals) {
+    const backend = new FakeBackend();
+    refuse(backend);
+    assert.equal(await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash), null, name);
+  }
   assert.equal(provider.calls.length, 0);
 });
 
