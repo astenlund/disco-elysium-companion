@@ -4,7 +4,7 @@ These private results exercise the source-bound compiled-image path end to end t
 
 ## Timing
 
-Times are from the harness spawning the fixture process to receiving its healthy `attached` frame. The fixture's `prestart` argument selects the private unbound provider prestart; the product CLI does not prestart, so `no-prestart` is the configuration that matters for the selector.
+Times are from the harness spawning the fixture process to receiving its healthy `attached` frame. That span also covers the harness's own owned-process broker launch and the fixture's extra provider liveness check and attachment observation before it sends the frame, so each figure is an upper bound on the startup it times. The fixture's `prestart` argument selects the private unbound provider prestart; the product CLI does not prestart, so `no-prestart` is the configuration that matters for the selector.
 
 | Configuration and source commit | New save | Acknowledged restart |
 |---|---|---|
