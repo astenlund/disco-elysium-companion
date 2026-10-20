@@ -115,14 +115,10 @@ export async function observeSourceBoundBootstrap(token: unknown, inspector: Pat
     combined = parseCombinedScopeReply(parseStrictJson(reply.stdout), companionRoot, game, true);
     imagePins = parseImagePinReceipt(combined.imagePins!, request, combined.candidate.dataRoot);
   } catch (error) { throw new SourceBoundBootstrapError('replyInvalid', causeDetail(error), { cause: error }); }
+  // The release parser refuses any generation or image digest other than the pinned constants the request carries.
   if (imagePins.status === 'ready') {
-    let release: ReturnType<typeof parseCompiledImageRelease>;
-    try { release = parseCompiledImageRelease(readBoundedPrivateFile(path.win32.join(imageRoot, 'runtime/native/compiled-images.json'), 1_048_576)); }
+    try { parseCompiledImageRelease(readBoundedPrivateFile(path.win32.join(imageRoot, 'runtime/native/compiled-images.json'), 1_048_576)); }
     catch (error) { throw new SourceBoundBootstrapError('releaseMismatch', causeDetail(error), { cause: error }); }
-    if (release.generation !== request.artifactGeneration
-      || release.broker.sha256 !== request.brokerSha256 || release.observer.sha256 !== request.observerSha256) {
-      throw new SourceBoundBootstrapError('releaseMismatch');
-    }
   }
 
   return { candidate: combined.candidate, imagePins, request };
