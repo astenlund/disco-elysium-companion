@@ -26,7 +26,7 @@ These user-tracked cleanups came from Nightshift run cffcf94d-49be-4cab-afcb-3fa
 - **Bridge-consumed history notice.** Disclose missing intermediate bridge-consumed history when a provider session resumes at a later runtime snapshot.
 - **Reconnect summary exceptions.** Qualify the generic reattachment summary when an unresolved pending check forbids provider reconnect.
 - **Known-unavailable hosted cache.** Tell hosted guidance when research-cache file tools are refused so it need not attempt known-unavailable access.
-- **Startup quiescence code summary.** Document the code-less termination-unverified startup failure and its runtimeUnavailable CLI rendering.
+- **Startup quiescence code summary.** Document the code-less termination-unverified startup failure and its runtimeUnavailable CLI rendering. Since the startup execution branch, phases A through C map it to `dataRootUnavailable` through `phaseFatalError` in `runtime/src/backend/index.ts`, keeping the original as its cause; it still reaches the CLI code-less from failed chat startup cleanup in `cleanupFailedChatRuntime`, for example when the provider quiescence proof fails.
 - **Hand-over history recovery row.** Distinguish a persisted validated bridge hand-over result from a crash before result persistence in the recovery table.
 - **Unbound recovery matrix preconditions.** Make unbound crash-matrix rows seed a null recovery pointer and assert their preconditions.
 - **Coordinator documentation accuracy sweep.** Recheck recorded minor documentation gaps against current code and correct only the claims that remain stale.
