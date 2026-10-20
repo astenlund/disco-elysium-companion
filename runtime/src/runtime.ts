@@ -145,7 +145,8 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     if (earlyInstructions !== null && invalidatedBeforeHost === null) {
       files = await makeTools();
       reportPhase?.('providerPrestart');
-      pending = await selectPendingProviderStart(backend, makeProvider(earlyInstructions.text, files), earlyInstructions.sha256);
+      pending = await selectPendingProviderStart(backend, makeProvider(earlyInstructions.text, files), earlyInstructions.sha256,
+        () => invalidatedBeforeHost !== null);
     }
     const startup = await backend.startup({ kind: 'chat' });
     if (startup.notOwner) { await pending?.cancel(); pending = null; reportPhase?.('startupWorkerClosure'); await backend.closeStartupWorkers(); await files?.close(); await backend.shutdown(true); return { result: 'notOwner' }; }

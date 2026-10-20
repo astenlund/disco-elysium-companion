@@ -99,12 +99,13 @@ export class ProviderStartInvalidatedError extends Error {
   constructor() { super('Provider startup was invalidated before durable binding.'); }
 }
 
-export async function selectPendingProviderStart(backend: RuntimeBackend, provider: Provider, instructionsSha256: string): Promise<PendingProviderStart | null> {
+export async function selectPendingProviderStart(backend: RuntimeBackend, provider: Provider, instructionsSha256: string,
+  invalidated: () => boolean = () => false): Promise<PendingProviderStart | null> {
   try {
-    if (!backend.guardHeld()) { return null; }
+    if (invalidated() || !backend.guardHeld()) { return null; }
     const stored = await backend.sessions.readBinding();
     const safety = await backend.safety();
-    if (!backend.guardHeld() || stored.status === 'invalid' || safety.pendingCheck !== null || safety.correction !== null || safety.recoveryWitness !== null) { return null; }
+    if (invalidated() || !backend.guardHeld() || stored.status === 'invalid' || safety.pendingCheck !== null || safety.correction !== null || safety.recoveryWitness !== null) { return null; }
     const resume = stored.status === 'valid' && stored.value.stateGeneration === safety.generation && stored.value.instructionsSha256 === instructionsSha256
       && stored.value.providerId === provider.providerId && provider.capabilities.resume ? stored.value.providerSessionId : null;
     return new PendingProviderStart(backend, provider, resume, safety.generation, instructionsSha256);

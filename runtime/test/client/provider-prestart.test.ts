@@ -84,6 +84,16 @@ test('guarded selector refuses unresolved safety and an unreadable or invalid bi
   assert.equal(provider.calls.length, 0);
 });
 
+test('an invalidation while the candidate is being selected starts no provider', async () => {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  let invalidated = false;
+  const safety = backend.safety.bind(backend);
+  Object.assign(backend, { safety: async () => { invalidated = true; return safety(); } });
+  assert.equal(await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash, () => invalidated), null);
+  assert.equal(provider.calls.length, 0);
+});
+
 test('guard loss before transfer cancels and stops the unbound candidate', async () => {
   const backend = new FakeBackend();
   let verified = 0;
