@@ -14,8 +14,10 @@ use Nightshift's native Claude tools, environment, hooks, and model pins instead
 - `CLAUDE.md` is only the `@AGENTS.md` bridge for Claude Code.
 - Backlog indexes are consulted on demand. Do not create project session hooks solely
   to preload them.
-- Do not run `nightshift:init-backlog` unadapted. Route its `CLAUDE.md` guidance merge
-  to canonical `AGENTS.md`; keep `CLAUDE.md` as the bridge.
+- Do not merge Nightshift backlog guidance into `AGENTS.md`; it was removed on
+  2026-10-19, and the index headers carry their own rules. `nightshift:init-backlog`
+  proposes root instruction changes for user approval instead of making them; route
+  any approved proposal to canonical `AGENTS.md` and keep `CLAUDE.md` as the bridge.
 
 ## Tool translation
 
