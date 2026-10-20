@@ -25,7 +25,7 @@
       },
       {
         "path": "runtime/prototypes/go-process-broker/child_windows.go",
-        "sha256": "9996ded22200999123695f0b7f735d5554fd80295deb383e94c5a8798d2aca7f"
+        "sha256": "5fc7e079ccfce464f9b66aa5d8dc631457f60c68d62b121b67469649425aa30f"
       },
       {
         "path": "runtime/prototypes/go-process-broker/job_windows.go",

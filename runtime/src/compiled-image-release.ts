@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readBoundedPrivateFile } from './compiled-broker.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type JsonValue } from './json.ts';
 
-export const compiledImageGeneration = 'f9b244fd1d61d1cb449b52a58f02adaf52a89ada98b20db6bb8267c4a0647091';
+export const compiledImageGeneration = '02c62f914cdf4feff316fbb64d251059b092f02b5559bef57a17dcdd3cdbd762';
 export const compiledBrokerSha256 = '7baee966f29ffd3315f4568aa4d2b0aec1be54a145e2462a1e56460bf7555be4';
 export const compiledObserverSha256 = 'f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d';
 const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
