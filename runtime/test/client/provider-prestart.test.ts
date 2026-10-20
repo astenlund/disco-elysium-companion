@@ -208,6 +208,26 @@ test('an invalidation during the initial provider start keeps chat as a status-o
   await host.shutdown();
 });
 
+test('an invalidation during the last provider retry keeps chat as a status-only client', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  const provider = new FakeProvider();
+  let host: SessionHost | null = null;
+  provider.start = async (resume: string | null) => {
+    provider.calls.push(resume);
+    if (provider.calls.length === 4) { host!.invalidate('contextUncertain'); }
+    throw new Error('Provider start failed.');
+  };
+  host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal((await startChatProvider(host, backend.asRuntime())).result, 'ready');
+  assert.equal(provider.calls.length, 4);
+  assert.equal(backend.events.includes('shutdown'), false);
+  assert.notEqual(host.status.provider.state, 'failed');
+  assert.equal((await host.attachVerified(() => {})).result, 'attached');
+  await host.shutdown();
+});
+
 test('an invalidated initial start with an unproved provider stop cannot attach status-only', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { closeStartupWorkers: async () => { backend.events.push('workers'); }, supervisor: {

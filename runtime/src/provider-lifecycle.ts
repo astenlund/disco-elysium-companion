@@ -169,6 +169,11 @@ export class ProviderLifecycle {
     }
   }
 
+  /** Classifies a failed start by epoch as well as type: a start that fails after an invalidation is that invalidation's refusal, whatever the provider raised. */
+  private refusedByInvalidation(error: unknown, epoch: number): boolean {
+    return error instanceof ProviderStartInvalidatedError || this.invalidationEpoch !== epoch;
+  }
+
   private async awaitNewSafetyGeneration(epoch: number): Promise<void> {
     if (this.invalidatedGeneration === null) { return; }
     const until = performance.now() + 30_000;
@@ -269,8 +274,9 @@ export class ProviderLifecycle {
       await (this.options.delay ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))))(delay);
       this.requireEpoch(epoch);
       try { await this.establish(resume, onStartupPhase, epoch); return true; }
-      catch (error) { if (error instanceof PendingProviderStopError || error instanceof ProviderStartInvalidatedError) { throw error; } await this.endCurrent(); }
+      catch (error) { if (error instanceof PendingProviderStopError || this.refusedByInvalidation(error, epoch)) { throw error; } await this.endCurrent(); }
     }
+    if (this.invalidationEpoch !== epoch) { throw new ProviderStartInvalidatedError(); }
     this.state('failed');
     return false;
   }
@@ -300,12 +306,12 @@ export class ProviderLifecycle {
           else if (stored.value.providerId !== this.options.provider.providerId || !this.options.provider.capabilities.resume) { reason = 'resumeUnavailable'; }
           else {
             try { await this.establish(stored.value, onStartupPhase, epoch); return true; }
-            catch (error) { if (error instanceof PendingProviderStopError || error instanceof ProviderStartInvalidatedError) { throw error; } reason = 'resumeFailed'; reportStartupPhase(onStartupPhase, 'providerFallback'); }
+            catch (error) { if (error instanceof PendingProviderStopError || this.refusedByInvalidation(error, epoch)) { throw error; } reason = 'resumeFailed'; reportStartupPhase(onStartupPhase, 'providerFallback'); }
           }
         } else if (stored.status === 'invalid') { reason = 'stateInvalidated'; }
         try { await this.establish(null, onStartupPhase, epoch); }
         catch (error) {
-          if (error instanceof PendingProviderStopError || error instanceof ProviderStartInvalidatedError) { throw error; }
+          if (error instanceof PendingProviderStopError || this.refusedByInvalidation(error, epoch)) { throw error; }
           if (!await this.attempts(null, onStartupPhase, epoch)) { await this.discardPending(); this.state('failed'); return false; }
         }
         this.options.emit({ type: 'notice', code: 'agentSessionStarted', reason });
@@ -313,7 +319,7 @@ export class ProviderLifecycle {
       } catch (error) {
         await this.discardPending();
         // An invalidation is a safety refusal, not a provider failure: the host keeps a status-only client instead of exiting.
-        if (!(error instanceof ProviderStartInvalidatedError)) { this.state('failed'); }
+        if (!this.refusedByInvalidation(error, epoch)) { this.state('failed'); }
         return false;
       }
     } finally { this.initialStartActive = false; }
