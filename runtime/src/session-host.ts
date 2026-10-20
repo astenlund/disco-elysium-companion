@@ -189,6 +189,11 @@ export class SessionHost implements SessionHostV1 {
         // transition starts during that bounded close, because an invalidation arriving meanwhile is still this check's refusal.
         this.failingUnobservedProvider = true;
         try { await this.lifecycle.failCurrent(); }
+        catch (error) {
+          // An unproved stop stays fatal, but an invalidation that arrived meanwhile still latches its refusal first.
+          if (this.invalidatedAfterStart) { this.latchFinalSafetyBlock(); }
+          throw error;
+        }
         finally { this.failingUnobservedProvider = false; }
         if (this.invalidatedAfterStart) { return 'invalidated'; }
         break;
@@ -202,13 +207,17 @@ export class SessionHost implements SessionHostV1 {
     return 'unavailable';
   }
 
-  async blockAfterFinalSafety(): Promise<void> {
+  private latchFinalSafetyBlock(): void {
     this.ready = false;
     this.finalSafetyBlocked = true;
     this.attachmentSafetyWitness = null;
     this.replacement = false;
     this.reconnect = null;
     this.lifecycle.suppress();
+  }
+
+  async blockAfterFinalSafety(): Promise<void> {
+    this.latchFinalSafetyBlock();
     await this.transition;
     await this.lifecycle.failCurrent();
     this.statusChanged();
