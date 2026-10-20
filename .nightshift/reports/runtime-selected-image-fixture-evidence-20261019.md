@@ -55,7 +55,7 @@ The three no-prestart new-save runs on `658b086` recorded their one acknowledged
 
 ## Injected faults
 
-The user chose to cover the fault cases without adding fault hooks to the hash-pinned helper. `runtime/test/Test-NativeImagePins.ps1` drives the native pin primitives against real processes and passed three consecutive runs; a later set of three consecutive passes on the tree of `021b959` kept its logs under `.tmp/cc-eefa8669/native-pins-r5/`. It covers the following:
+The user chose to cover the fault cases without adding fault hooks to the hash-pinned helper. `runtime/test/Test-NativeImagePins.ps1` drives the native pin primitives against real processes and passed three consecutive runs whose logs were not kept; later sets of three consecutive passes, on the tree of `021b959` and on 2026-10-20 at `c2eef80`, kept their logs under `.tmp/cc-eefa8669/native-pins-r5/` and `.tmp/cc-eefa8669/native-pins-r13/`. It covers the following:
 
 - A target whose creation identity differs by one tick is refused before any duplication.
 - A partial transfer into a live target rolls back, and both files are writable again.
