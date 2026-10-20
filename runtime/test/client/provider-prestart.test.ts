@@ -146,6 +146,29 @@ test('a failed candidate stop is reported again without a second stop attempt', 
   assert.equal(closes, 1);
 });
 
+test('an aborted candidate whose late stop fails leaves no unhandled rejection', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const release = deferred<void>();
+  const provider: Provider = { providerId: 'fake', capabilities, start: async () => {
+    await release.promise;
+    const session = new FakeSession(1, 'late', capabilities);
+    session.close = async () => { throw new Error('Close failed after abort.'); };
+    return session;
+  } };
+  const unhandled: unknown[] = [];
+  const record = (reason: unknown) => { unhandled.push(reason); };
+  process.on('unhandledRejection', record);
+  try {
+    const pending = new PendingProviderStart(backend.asRuntime(), provider, null, generation, instructionHash);
+    pending.abort();
+    release.resolve();
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(pending.cancel(), PendingProviderStopError);
+  } finally { process.off('unhandledRejection', record); }
+});
+
 test('a candidate cancelled while it is being taken reports a failed close as an unproved stop', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });

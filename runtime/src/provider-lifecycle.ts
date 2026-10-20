@@ -33,6 +33,8 @@ export class PendingProviderStart {
         if (this.cancelled) { await session.close(); await this.backend.supervisor.verifyQuiescent('provider'); this.stopped = true; }
         return { session };
       }, error => ({ error }));
+    // A cancelled candidate's failed stop rejects before take() or cancel() may await it; they still report it.
+    this.result.catch(() => {});
   }
 
   async take(providerId: string, resumeSessionId: string | null, generation: string, instructionsSha256: string): Promise<ProviderSession | null> {
