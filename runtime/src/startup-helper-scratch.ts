@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory } from './compiled-broker.ts';
+import { admitPrivateDirectory, withoutHome } from './compiled-broker.ts';
 import { dotnetFirstRunOptOuts } from './dotnet-environment.ts';
 
 const installationRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
@@ -33,9 +33,8 @@ export async function prepareStartupHelperScratch(scratchParent = defaultScratch
     locations.set(name, location);
   }
   const location = (name: typeof writableNames[number]): string => locations.get(name)!;
-  const ambient = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
   const environment: NodeJS.ProcessEnv = {
-    ...ambient,
+    ...withoutHome(process.env),
     TEMP: location('temp'), TMP: location('tmp'), TMPDIR: location('tmpdir'),
     USERPROFILE: location('userprofile'), APPDATA: location('appdata'), LOCALAPPDATA: location('localappdata'),
     DOTNET_CLI_HOME: location('dotnet'), NUGET_PACKAGES: location('nuget-packages'),

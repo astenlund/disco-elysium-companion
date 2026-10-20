@@ -586,7 +586,7 @@ export class ProcessSupervisor {
     try {
       let child: OwnedProcess;
       const launch = this.helperEnvironment === undefined || role === 'provider' ? options
-        : { ...options, env: { ...(options.env ?? process.env), ...this.helperEnvironment } };
+        : { ...options, env: { ...withoutHome(options.env ?? process.env), ...this.helperEnvironment } };
       child = new OwnedProcess(this.jobName(role), this.parent, launch, () => this.verifyOwner(role, child), this.createBroker);
       this.active.set(role, child);
       return child;

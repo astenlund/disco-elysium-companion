@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 
-import { scopedPowerShellBrokerLaunch, scopedPowerShellBrokerSpawn } from '../src/compiled-broker.ts';
+import { scopedPowerShellBrokerLaunch, scopedPowerShellBrokerSpawn, withoutHome } from '../src/compiled-broker.ts';
 import { dotnetFirstRunOptOuts } from '../src/dotnet-environment.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
 
@@ -24,19 +24,19 @@ describe('owned process transport', () => {
     const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'helper-environment-'));
     const providerProfile = path.join(scratch, 'provider');
     await fs.mkdir(providerProfile);
-    const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
+    const inherited = withoutHome(process.env);
     const helperEnvironment = { ...inherited, TEMP: scratch, TMP: scratch, TMPDIR: scratch,
       APPDATA: scratch, LOCALAPPDATA: scratch, USERPROFILE: scratch, DOTNET_CLI_HOME: scratch, ...dotnetFirstRunOptOuts };
     const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), undefined, undefined, helperEnvironment);
     try {
       const supplied = { ...inherited, TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
-        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile,
+        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile, HOME: providerProfile,
         DOTNET_CLI_HOME: providerProfile, ...dotnetFirstRunOptOuts };
       const helper = await supervisor.run('metadata', { ...options('environment'), env: supplied }, 15000);
-      assert.deepEqual(JSON.parse(helper.stdout.toString('utf8')), { TEMP: scratch, APPDATA: scratch });
+      assert.deepEqual(JSON.parse(helper.stdout.toString('utf8')), { TEMP: scratch, APPDATA: scratch, HOME: null });
       const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 15000);
       assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')),
-        { TEMP: providerProfile, APPDATA: providerProfile });
+        { TEMP: providerProfile, APPDATA: providerProfile, HOME: providerProfile });
       await supervisor.verifyQuiescentMany(['metadata', 'provider']);
     } finally {
       assert.equal(path.relative(root, scratch).startsWith('..'), false);
@@ -52,11 +52,10 @@ describe('owned process transport', () => {
     await fs.mkdir(providerProfile);
     const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), scopedPowerShellBrokerSpawn(brokerScratch));
     try {
-      const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'HOME'));
-      const supplied = { ...inherited, TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
-        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile };
+      const supplied = { ...withoutHome(process.env), TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
+        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile, HOME: providerProfile };
       const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 30000);
-      assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')), { TEMP: providerProfile, APPDATA: providerProfile });
+      assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')), { TEMP: providerProfile, APPDATA: providerProfile, HOME: providerProfile });
       await supervisor.verifyQuiescentMany(['provider']);
       // The broker itself runs in its scratch profile with version-2 control, so its PowerShell writes stay there.
       const launch = scopedPowerShellBrokerLaunch({ ...options('environment'), env: supplied }, brokerScratch);

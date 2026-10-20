@@ -7,7 +7,7 @@ if (mode === 'arguments') {
 } else if (mode === 'echo') {
   process.stdin.pipe(process.stdout);
 } else if (mode === 'environment') {
-  process.stdout.write(JSON.stringify({ TEMP: process.env.TEMP ?? null, APPDATA: process.env.APPDATA ?? null }));
+  process.stdout.write(JSON.stringify({ TEMP: process.env.TEMP ?? null, APPDATA: process.env.APPDATA ?? null, HOME: process.env.HOME ?? null }));
 } else if (mode === 'exit') {
   process.exitCode = Number(process.argv[3]);
 } else if (mode === 'overflow') {
