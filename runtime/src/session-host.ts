@@ -87,6 +87,7 @@ export class SessionHost implements SessionHostV1 {
   private initialStartupInvalidated = false;
   private invalidatedAfterStart = false;
   private finalSafetyBlocked = false;
+  private failingUnobservedProvider = false;
   private initialStartPromise: Promise<boolean> | null = null;
   private closing = false;
   private switching = false;
@@ -184,8 +185,12 @@ export class SessionHost implements SessionHostV1 {
       if (!this.ready || !this.providerReady) { break; }
       if (this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) { return 'ready'; }
       if (performance.now() >= exitObservationEnds) {
-        // A session whose exit never surfaced ends as failed, so a later exit cannot reconnect behind a status-only client.
-        await this.lifecycle.failCurrent();
+        // A session whose exit never surfaced ends as failed, so a later exit cannot reconnect behind a status-only client. No
+        // transition starts during that bounded close, because an invalidation arriving meanwhile is still this check's refusal.
+        this.failingUnobservedProvider = true;
+        try { await this.lifecycle.failCurrent(); }
+        finally { this.failingUnobservedProvider = false; }
+        if (this.invalidatedAfterStart) { return 'invalidated'; }
         break;
       }
       await new Promise<void>(resolve => setTimeout(resolve, 25));
@@ -549,7 +554,7 @@ export class SessionHost implements SessionHostV1 {
 
   private scheduleTransition(): void {
     if (this.closing || this.initialStartupInvalidated || this.finalSafetyBlocked || !this.initialStartCompleted || this.active !== null || this.transition !== null
-      || this.switching || this.sessionControl !== null || this.initialStartPromise !== null || !this.replacement && this.reconnect === null) { return; }
+      || this.switching || this.failingUnobservedProvider || this.sessionControl !== null || this.initialStartPromise !== null || !this.replacement && this.reconnect === null) { return; }
     this.transition = Promise.resolve().then(async () => {
       await this.maintenance.idle();
       if (this.closing || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted || this.active !== null

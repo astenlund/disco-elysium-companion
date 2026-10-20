@@ -819,6 +819,35 @@ test('a provider whose exit never surfaces within the bound ends failed, so a la
   await host.shutdown();
 });
 
+test('an invalidation while an unobserved provider is being ended latches the final safety block without a replacement', async () => {
+  const backend = new FakeBackend();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
+  assert.equal(await host.start(), true);
+  const first = provider.current;
+  const close = first.close.bind(first);
+  first.close = async () => {
+    setTimeout(() => {
+      host.invalidate('contextUncertain');
+      backend.safetyValue = { ...backend.safetyValue, generation: 'f'.repeat(32) };
+    }, 20);
+    await new Promise<void>(resolve => setTimeout(resolve, 200));
+    await close();
+  };
+  first.closed = true;
+  await finalizeAttachmentSafety(host, backend.asRuntime());
+  await new Promise<void>(resolve => setTimeout(resolve, 200));
+  assert.equal(provider.calls.length, 1);
+  assert.equal(host.status.provider.state, 'failed');
+  assert.equal(await host.startNewAgentSession(), 'providerUnavailable');
+  const attached = await host.attachVerified(() => {});
+  assert.equal(attached.result, 'attached');
+  assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
 test('a provider that exits and cannot reconnect attaches status-only after its reconnect attempts', async () => {
   const backend = new FakeBackend();
   Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
