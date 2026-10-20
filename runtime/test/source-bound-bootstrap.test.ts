@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { DataRootUnavailableError, type PathInspector } from '../src/admission.ts';
+import { DataRootUnavailableError, stdinExpressionCommand, type PathInspector } from '../src/admission.ts';
 import type { ImagePinRequest } from '../src/bootstrap-image-receipt.ts';
-import { SupervisorError } from '../src/process.ts';
+import { readProcessIdentity, SupervisorError } from '../src/process.ts';
 import { scopeComponents } from '../src/scope.ts';
 import { helperFailureDetail, observeSourceBoundBootstrap, SourceBoundBootstrapError } from '../src/source-bound-bootstrap.ts';
 import { capturedBootstrapSources, readyImagePinReceipt } from './support/bootstrap-fixtures.ts';
+import { containedEnvironment } from './support/contained-environment.ts';
 
 const companionRoot = path.win32.join('C:', 'private', 'companion');
 const imageRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
@@ -21,6 +23,7 @@ const admitted = (location: string) => ({ path: location, exists: true, kind: 'd
 const reply = (imagePins: unknown) => ({ exitCode: 0, stderr: Buffer.alloc(0),
   stdout: Buffer.from(JSON.stringify({ sid, paths: [admitted(companionRoot), admitted(candidate)], imagePins })) });
 const parent = { pid: 1234, created: '1234567890123456789' };
+const childFixture = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
 const token = Symbol('selected');
 
 // A damaged image root must sit inside the installation, so copies go to its own scratch.
@@ -179,6 +182,54 @@ test('a ready receipt is refused when the packaged release is missing or does no
     await fs.writeFile(path.win32.join(copy, 'runtime/native/compiled-images.json'), JSON.stringify(release, null, 2) + String.fromCharCode(10));
     await assert.rejects(observe(), refusal);
   } finally { await removeImageRootCopy(copy); }
+});
+
+// Runs the expression the bootstrap built exactly as the in-memory metadata transport launches it, without the supervisor.
+async function runExpression(expression: Uint8Array, cwd: string, environment: NodeJS.ProcessEnv) {
+  const command = stdinExpressionCommand(cwd, environment);
+  const child = spawn(command.command, [...command.args], { cwd: command.cwd, env: command.env, windowsHide: true });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => { stdout.push(chunk); });
+  child.stderr.on('data', (chunk: Buffer) => { stderr.push(chunk); });
+  child.stdin.end(Buffer.from(expression));
+  const exitCode = await new Promise<number | null>(resolve => child.once('close', resolve));
+
+  return { exitCode, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) };
+}
+
+test('the real pin helper returns a ready receipt the parser accepts and pins both images in its target', { timeout: 120000 }, async () => {
+  const copy = await imageRootCopy();
+  const companion = await fs.mkdtemp(path.win32.join(imageRoot, '.tmp', 'source-bound-companion-'));
+  const { environment, remove } = await containedEnvironment(imageRoot, 'source-bound-pins-');
+  const target = spawn(process.execPath, [childFixture, 'wait'], { stdio: 'ignore', windowsHide: true });
+  const exited = new Promise<void>(resolve => target.once('exit', () => resolve()));
+  try {
+    await fs.mkdir(path.win32.join(copy, 'runtime/native'));
+    for (const name of ['go-broker.exe', 'job-observer.exe', 'compiled-images.json']) {
+      await fs.copyFile(path.win32.join(imageRoot, 'runtime/native', name), path.win32.join(copy, 'runtime/native', name));
+    }
+    const identity = await readProcessIdentity(target.pid!, environment);
+    assert.ok(identity !== null);
+    const inspector = { metadataStdinExpression: async (_received: unknown, expression: Uint8Array, cwd: string, received: NodeJS.ProcessEnv) =>
+      runExpression(expression, cwd, received) } as unknown as PathInspector;
+    const result = await observeSourceBoundBootstrap(token, inspector, identity, companion, game, copy, environment, () => {});
+    assert.equal(result.imagePins.status, 'ready');
+    if (result.imagePins.status === 'ready') {
+      assert.deepEqual(result.imagePins.handles.slice(-2).map(entry => entry.path),
+        ['go-broker.exe', 'job-observer.exe'].map(name => path.win32.join(copy, 'runtime', 'native', name)));
+    }
+    for (const name of ['go-broker.exe', 'job-observer.exe']) {
+      await assert.rejects(fs.open(path.win32.join(copy, 'runtime', 'native', name), 'r+'), { code: 'EBUSY' }, name);
+    }
+  } finally {
+    target.kill();
+    await exited;
+    await removeImageRootCopy(copy);
+    assert.equal(path.win32.dirname(companion), path.win32.join(imageRoot, '.tmp'));
+    await fs.rm(companion, { recursive: true, force: true });
+    await remove();
+  }
 });
 
 test('selected bootstrap rejects trailing-separator scope spelling before transfer', async () => {
