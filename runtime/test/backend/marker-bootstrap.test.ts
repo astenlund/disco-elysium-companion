@@ -103,17 +103,26 @@ test('recorded watcher reconciliation refusal leaves the old marker intact', asy
 test('chat worker opens alongside marker publication but is returned only after both complete', async () => {
   const f = fixture();
   const opening = Promise.withResolvers<{ close(): Promise<void> }>();
+  const writing = Promise.withResolvers<void>();
+  const write = f.dependencies.storage.write.bind(f.dependencies.storage);
+  Object.assign(f.dependencies.storage, { write: async (...args: Parameters<typeof write>) => { const sha256 = await write(...args); await writing.promise; return sha256; } });
   const worker = { async close() {} };
+  let settled = false;
   const pending = initializeRuntimeMarker(f.dependencies, f.cleanup, async () => {
     f.calls.push('prepare');
     return async () => { f.calls.push('open'); return opening.promise; };
-  });
+  }).finally(() => { settled = true; });
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(f.calls.includes('write'));
   assert.ok(f.calls.includes('open'));
   assert.ok(f.calls.indexOf('prepare') < f.calls.indexOf('write'));
   opening.resolve(worker);
-  assert.equal((await pending).startupWorker, worker);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'The worker was returned before marker publication completed.');
+  writing.resolve();
+  const result = await pending;
+  assert.equal(result.startupWorker, worker);
+  assert.equal(result.sha256, 'b'.repeat(64));
 });
 
 test('marker refusal closes a worker that finished opening', async () => {
