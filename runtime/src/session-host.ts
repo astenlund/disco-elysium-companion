@@ -28,6 +28,13 @@ interface AttachmentReservation {
 }
 export type VerifiedAttachResult = ReturnType<SessionHostV1['attach']> | { readonly result: 'attachCancelled' | 'attachStateChanged' };
 
+/** Settles every proof before reporting the first failure, so the attachment reservation stays occupied until each bounded proof settles. */
+async function allProofs(proofs: readonly Promise<unknown>[]): Promise<void> {
+  for (const result of await Promise.allSettled(proofs)) {
+    if (result.status === 'rejected') { throw result.reason; }
+  }
+}
+
 /** The final attachment check failed only because the bound provider exited or changed, not because safety refused. */
 export class AttachmentProviderUnavailableError extends Error { override readonly name = 'AttachmentProviderUnavailableError'; }
 
@@ -229,7 +236,7 @@ export class SessionHost implements SessionHostV1 {
 
   private async attachVerifiedReserved(sink: ClientSink, reservation: AttachmentReservation): Promise<VerifiedAttachResult> {
     if (!this.options.backend.guardHeld()) { throw new Error('Client attachment lost the runtime guard.'); }
-    const verifyWorkers = () => Promise.all(startupWorkerRoles.map(role => this.options.backend.supervisor.verifyQuiescent(role)));
+    const verifyWorkers = () => allProofs(startupWorkerRoles.map(role => this.options.backend.supervisor.verifyQuiescent(role)));
     const expectedStatus = this.options.backend.status;
     const expectedStatusBytes = JSON.stringify(expectedStatus);
     const expectedBinding = this.lifecycle.binding;
@@ -263,7 +270,8 @@ export class SessionHost implements SessionHostV1 {
       const usedWarmWitness = witness !== null && this.monotonicNow() - witness.observedAt <= attachmentSafetyLifetimeMs;
       if (witness === null || !usedWarmWitness) { witness = await observeColdSafety(); }
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const [livenessObservedAt] = await Promise.all([this.lifecycle.verifyLive().then(() => this.monotonicNow()), verifyWorkers()]);
+        let livenessObservedAt = Number.NEGATIVE_INFINITY;
+        await allProofs([this.lifecycle.verifyLive().then(() => { livenessObservedAt = this.monotonicNow(); }), verifyWorkers()]);
         const observedAt = this.monotonicNow();
         if (this.options.backend.status !== status || this.lifecycle.binding !== binding || !this.options.backend.guardHeld() || !this.providerReady
           || witness.generation !== binding.stateGeneration || !this.lifecycle.isCurrent(this.lifecycle.session?.providerInstanceId ?? '')) {
@@ -276,7 +284,7 @@ export class SessionHost implements SessionHostV1 {
     } else {
       // A status-only client may exist only beside a provider job proved absent; an unproved stop fails closed instead,
       // unless a state change during the proof, such as a replacement starting its provider, explains the failure.
-      try { await Promise.all([verifyWorkers(), this.options.backend.supervisor.verifyQuiescent('provider')]); }
+      try { await allProofs([verifyWorkers(), this.options.backend.supervisor.verifyQuiescent('provider')]); }
       catch (error) {
         if (cancelled()) { return { result: 'attachCancelled' }; }
         if (stateChanged()) { return { result: 'attachStateChanged' }; }

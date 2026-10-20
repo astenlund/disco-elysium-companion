@@ -595,6 +595,30 @@ test('shutdown waits for a cancelled attachment proof before guard release', asy
   assert.equal(backend.events.includes('shutdown'), true);
 });
 
+test('shutdown waits for every attachment proof after one proof fails', async () => {
+  const backend = new FakeBackend();
+  const workerEntered = deferred<void>();
+  const releaseWorker = deferred<void>();
+  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
+    if (role === 'startupMetadata') { workerEntered.resolve(); await releaseWorker.promise; }
+  } } });
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  assert.equal(await host.start(), true);
+  await host.prepareAttachmentWitness();
+  provider.current.verifyLive = async () => { throw new Error('Provider liveness failed.'); };
+  const attaching = host.attachVerified(() => {}).then(() => null, (error: unknown) => error);
+  await workerEntered.promise;
+  const stopping = host.shutdown();
+  await new Promise<void>(resolve => setTimeout(resolve, 20));
+  assert.equal(backend.events.includes('shutdown'), false);
+  releaseWorker.resolve();
+  await attaching;
+  await stopping;
+  assert.equal(backend.events.includes('shutdown'), true);
+});
+
 test('status-only proof cannot install a provider that becomes ready while workers are checked', async () => {
   const backend = new FakeBackend();
   const workerEntered = deferred<void>();
