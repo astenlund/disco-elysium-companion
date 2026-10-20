@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import { ImagePinReceiptError, parseImagePinReceipt, type ImagePinRequest } from '../src/bootstrap-image-receipt.ts';
 import { parseStrictJson, type JsonValue } from '../src/json.ts';
+import { readyImagePinReceipt } from './support/bootstrap-fixtures.ts';
 
 const separator = String.fromCharCode(92);
 const installationRoot = 'C:' + separator + ['Git', 'companion'].join(separator);
@@ -25,17 +26,7 @@ const directoryPaths = [
   path.win32.join(installationRoot, 'runtime'),
   path.win32.join(installationRoot, 'runtime', 'native'),
 ];
-function ready() {
-  const paths = [...directoryPaths.map(location => ({ kind: 'directory', path: location })),
-    { kind: 'broker', path: brokerPath }, { kind: 'observer', path: observerPath }];
-  return { status: 'ready', version: 1, nonce: request.nonce, targetProcessId: request.targetProcessId,
-    targetCreated: request.targetCreated, artifactGeneration: request.artifactGeneration,
-    installationRootSha256: sha(installationRoot), candidateScopePathSha256: sha(candidateScopePath),
-    brokerSha256: request.brokerSha256, observerSha256: request.observerSha256,
-    handles: paths.map((entry, index) => ({ ...entry, volume: '1'.repeat(16),
-      identity: (index + 1).toString(16).padStart(32, '0'),
-      handle: (index + 1).toString(16).padStart(16, '0') })) };
-}
+const ready = () => readyImagePinReceipt(request, candidateScopePath);
 
 test('selected pin receipt binds exact paths and handles to the frozen request', () => {
   assert.deepEqual(parseImagePinReceipt({ status: 'absent' }, request, candidateScopePath), { status: 'absent' });

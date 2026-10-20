@@ -10,6 +10,7 @@ import { DataRootUnavailableError, frozenStdinExpression, PathInspector, stdinEx
 import { parseStrictJson } from '../src/json.ts';
 import type { ProcessSupervisor } from '../src/process.ts';
 import { discoverScopeWithPrincipal, parseCombinedScopeReply, scopeComponents } from '../src/scope.ts';
+import { capturedBootstrapSources } from './support/bootstrap-fixtures.ts';
 import { containedEnvironment } from './support/contained-environment.ts';
 
 const root = path.win32.join('C:', 'private', 'companion');
@@ -21,8 +22,6 @@ const admission = (target: string) => ({ path: target, exists: true, kind: 'dire
 const reply = (value: unknown) => ({ exitCode: 0, stdout: Buffer.from(JSON.stringify(value)), stderr: Buffer.alloc(0) });
 const installation = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const execute = promisify(execFile);
-const capturedSources = ['runtime/scripts/Get-BootstrapScope.ps1', 'runtime/scripts/NativeFiles.cs', 'runtime/scripts/NativeImagePins.cs',
-  'runtime/scripts/BootstrapImagePins.ps1', 'runtime/scripts/BootstrapImagePackage.ps1'];
 
 test('a refused bootstrap names the innermost cause in one bounded line', async () => {
   const script = path.win32.join(installation, 'runtime', 'scripts', 'Get-BootstrapScope.ps1');
@@ -41,15 +40,14 @@ test('a refused bootstrap names the innermost cause in one bounded line', async 
 });
 
 test('captured bootstrap sources check out with pinned CRLF endings so their fixed hashes hold on any clone', async () => {
-  const { stdout } = await execute('git', ['-C', installation, 'check-attr', 'eol', '--', ...capturedSources], { windowsHide: true });
-  assert.deepEqual(stdout.trim().split(String.fromCharCode(10)).map(line => line.trim()), capturedSources.map(name => `${name}: eol: crlf`));
-  for (const name of capturedSources) {
+  const { stdout } = await execute('git', ['-C', installation, 'check-attr', 'eol', '--', ...capturedBootstrapSources], { windowsHide: true });
+  assert.deepEqual(stdout.trim().split(String.fromCharCode(10)).map(line => line.trim()), capturedBootstrapSources.map(name => `${name}: eol: crlf`));
+  for (const name of capturedBootstrapSources) {
     const bytes = await fs.readFile(path.win32.join(installation, name));
     assert.ok(bytes.includes(10), `${name} has no line endings.`);
     assert.equal(bytes.findIndex((byte, index) => byte === 10 && bytes[index - 1] !== 13), -1, `${name} has a line feed without a carriage return.`);
   }
 });
-
 
 test('combined bootstrap binds the current principal to exact root and scope admissions', async () => {
   const calls: unknown[][] = [];
