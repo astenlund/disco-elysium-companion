@@ -2,7 +2,7 @@
 
 ## Recorded observation
 
-On 2026-10-19, in a session working on another project (FeatherPod), a repository pre-commit hook's `npx eslint` failed with "not recognized" because the inherited PATH was longer than cmd's 8191-character limit, beyond which cmd treats PATH as empty. The persisted User-scope PATH was 10,267 characters over 109 entries. 71 of those entries (about 8,715 characters) were `.dotnet\tools` folders under this repository's `.tmp`, such as `C:\Git\disco-elysium-companion\.tmp\startup-target-30\dotnet-home\.dotnet\tools` and `C:\Git\disco-elysium-companion\.tmp\pv17-6d82\.tmp\proof-6d82\run-first-20261018-6d82\a\dotnet-home\.dotnet\tools`, and none of those folders existed any more. Some folder names carry the date 20261018, so the entries are still accumulating, and every new session on the machine inherits the bloated PATH.
+On 2026-10-19, in a session working on another project (FeatherPod), a repository pre-commit hook's `npx eslint` failed with "not recognized" because the inherited PATH was longer than cmd's 8191-character limit, beyond which cmd treats PATH as empty. The persisted User-scope PATH was 10,267 characters over 109 entries. 71 of those entries (about 8,715 characters) were `.dotnet\tools` folders under this repository's `.tmp`, such as `C:\Git\disco-elysium-companion\.tmp\startup-target-30\dotnet-home\.dotnet\tools` and `C:\Git\disco-elysium-companion\.tmp\pv17-6d82\.tmp\proof-6d82\run-first-20261018-6d82\a\dotnet-home\.dotnet\tools`, and none of those folders existed any more. Some folder names carry the date 20261018, so the entries were still accumulating then, and every new session on the machine inherited the bloated PATH.
 
 ## Cause (attributed, not confirmed)
 
