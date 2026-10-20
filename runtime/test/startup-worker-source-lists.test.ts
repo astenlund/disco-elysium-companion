@@ -16,6 +16,9 @@ function capture(match: RegExpMatchArray, index: number): string {
   return value;
 }
 
+/** A dot-source that does not start its line, such as one inside a block, which the whole-line forms below cannot read. */
+const embeddedDotSource = /[\s{;(]\.\s+[$(]/;
+
 /** Returns the names in a PowerShell `$name = @('a', 'b')` array literal, which may span lines. */
 function arrayNames(text: string, variable: string): string[] {
   const match = new RegExp(`\\$${variable} = @\\(([^)]*)\\)`).exec(text);
@@ -38,6 +41,7 @@ function workerLoads(text: string): { runtime: string[]; importsCore: boolean; u
   const coreVariables = new Set([...text.matchAll(/\$(\w+) = Join-Path \$CompanionRoot 'core\/DigestDiff\.psm1'/g)].map(item => capture(item, 1)));
   for (const line of text.split(/\r?\n/)) {
     const statement = line.trim();
+    if (!/^\.\s/.test(statement) && embeddedDotSource.test(statement)) { unrecognized.push(statement); continue; }
     const dotSource = /^\.\s+(.*)$/.exec(statement);
     if (dotSource !== null) {
       const target = capture(dotSource, 1);
@@ -72,7 +76,10 @@ function coreLoads(moduleText: string, readPrivate: (name: string) => string): {
     for (const line of text.split(/\r?\n/)) {
       const statement = line.trim();
       if (/^\.\s/.test(statement) && owner === 'DigestDiff.psm1' && /^\. \(Join-Path \$PSScriptRoot '[^']+'\)$/.test(statement)) { continue; }
-      if (/^\.\s/.test(statement) || /\busing module\b/i.test(statement)) { unrecognized.push(`${owner}: ${statement}`); continue; }
+      if (/^\.\s/.test(statement) || embeddedDotSource.test(statement) || /\busing module\b/i.test(statement)) {
+        unrecognized.push(`${owner}: ${statement}`);
+        continue;
+      }
       // Inline type definitions are part of the hashed file itself.
       if (/\bAdd-Type\b/.test(statement) && !/^Add-Type -TypeDefinition @'$/.test(statement)) { unrecognized.push(`${owner}: ${statement}`); continue; }
       // The adapter module is admitted and attested through the adapter release, not the worker source bundle.
@@ -129,6 +136,8 @@ test('the source analysis catches an unhashed dot-source, type source or core im
   const typed = coreReply.replace("$sources = @('NativeFiles.cs',", "$sources = @('Extra.cs', 'NativeFiles.cs',");
   assert.ok(workerLoads(typed).runtime.includes('Extra.cs'));
   assert.deepEqual(workerLoads(coreReply.replace('. $validationPath', '. $somewhereElse')).unrecognized, ['. $somewhereElse']);
+  const embedded = "if ($true) { . (Join-Path $PSScriptRoot 'Extra.ps1') }";
+  assert.deepEqual(workerLoads(coreReply.replace('. $validationPath', `. $validationPath\n        ${embedded}`)).unrecognized, [embedded]);
   assert.equal(workerLoads(coreReply.replace("'core/DigestDiff.psm1'", "'core/Other.psm1'")).unrecognized.length, 1);
   const moduleText = read(path.join(core, 'DigestDiff.psm1'));
   const extended = moduleText.replace(". (Join-Path $PSScriptRoot 'private/WalkProtocol.ps1')",
