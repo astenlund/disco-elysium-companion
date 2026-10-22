@@ -102,6 +102,20 @@ Reduce `chat` startup latency through the agreed [three-worker execution slice](
 
 **Requires:** none.
 
+### [Go native helper](features/runtime-powershell-dependency.md)
+
+Replace the per-call PowerShell helpers and their Add-Type C# under `runtime/scripts` with one Go image, `companion-helper.exe`, that runs as a long-lived helper service for the whole runtime process (path admission, hashes, inventory, event metadata, publication, codec, process and job queries) and as the per-child broker, built on first launch from `runtime/native/helper/` sources against pinned source and output digests rather than committed as a binary. Go becomes the default language for native code and a local Go toolchain at the manifest version becomes a host requirement; the state core stays PowerShell behind its entry scripts until the last slice. Scope agreed on 2026-10-23.
+
+**Slices:**
+
+- **Go helper and first-launch build (MVP).** The service and broker image, manifest and pins, the build step and its refusals, every helper request except core-reply validation, removal of the PowerShell and C# helpers, the compiled selector and the committed images, with acceptance fixtures for publication, codec, broker exit relay, service restart, build refusals and a copied-root chat.
+- **Core-reply validation in Go.** Port `Convert-CoreReply` into a service request so a core call costs only its own PowerShell process.
+  **Requires:** [Go native helper](features/runtime-powershell-dependency.md).
+- **State core in Go.** Replace the PowerShell state core and adapter glue under a revision of the state extraction design.
+  **Requires:** [Go native helper: Core-reply validation in Go](features/runtime-powershell-dependency.md).
+
+**Requires:** none.
+
 ## Guidance
 
 ### [Session focus](features/session-focus.md)
@@ -143,10 +157,6 @@ Investigate whether confirmed deletion-only cleanup failures can be distinguishe
 ### [Coordinator whole-turn latency](features/runtime-interaction-latency.md)
 
 Measure whole-turn phases separately from the settlement gate and choose a player-facing latency target.
-
-### [Reduce PowerShell runtime dependency](features/runtime-powershell-dependency.md)
-
-If the compiled Go startup path ships, investigate replacing PowerShell execution across the runtime in a later slice to reduce host dependencies, without expanding the current 30-second startup delivery.
 
 ### [TUI companion app](features/tui-companion-app.md)
 
