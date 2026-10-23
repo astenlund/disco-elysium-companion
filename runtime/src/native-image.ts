@@ -318,6 +318,29 @@ export async function compileHelper(root: string, directory: string, go = resolv
   return output;
 }
 
+/**
+ * With the image already pinned, no build runs and so no build sweep would: a runtime killed after publishing its image
+ * but before removing its build directory would leave that directory indefinitely. When claims remain, the guard is
+ * tried without waiting and the claimed directories are swept; a held guard or a failed sweep is only reported, since
+ * the image is already usable.
+ */
+async function sweepLeftoverBuilds(root: string, report: (message: string) => void): Promise<void> {
+  const buildRoot = path.join(root, buildFolder);
+  let names: readonly string[];
+  try { names = lstatOrNull(buildRoot) === null ? [] : readdirSync(buildRoot); }
+  catch { return; }
+  if (!names.some(name => claimName.test(name))) { return; }
+  let releaseGuard: () => Promise<void>;
+  try { releaseGuard = await takeBuildGuard(root); }
+  catch { return; }
+  try {
+    admitDirectory(path.join(root, '.tmp'));
+    admitDirectory(buildRoot);
+    sweepBuildDirectories(buildRoot, report);
+  } catch (error) { report(`Left build residue in .tmp/native-build: ${error instanceof Error ? error.message : String(error)}`); }
+  finally { await releaseGuard(); }
+}
+
 /** Removes a present image that failed its pin, only when it is still the file that was hashed. */
 function removeFailedImage(location: string, hashed: { readonly volume: string; readonly fileId: string }): void {
   const current = lstatOrNull(location);
@@ -342,7 +365,10 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
   verifyHelperSources(root, release);
   const image = path.join(root, helperImageFile);
   const ready = pinnedImage(image, release);
-  if (ready !== null) { return ready; }
+  if (ready !== null) {
+    if (options.build) { await sweepLeftoverBuilds(root, options.onDiagnostic ?? (() => {})); }
+    return ready;
+  }
   if (!options.build) { throw refuse(observeImageFile(image) === null ? 'imageAbsent' : 'imagePinMismatch'); }
   const releaseGuard = await takeBuildGuard(root);
   try {

@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { NativeHelperUnavailableError } from '../src/native-helper-error.ts';
-import { HelperRequestFailedError, NativeHelper, type ServiceSpawn } from '../src/native-helper.ts';
+import { boundServiceOwner, HelperRequestFailedError, NativeHelper, type ServiceSpawn } from '../src/native-helper.ts';
 import { observeImageFile, type HelperImage } from '../src/native-image.ts';
 import type { FakeAction, FakeScenario } from './support/fake-helper-service.ts';
 import { testHelperImage } from './support/native-helper.ts';
@@ -17,7 +17,7 @@ const fakeService = fileURLToPath(new URL('./support/fake-helper-service.ts', im
 const binding = { token: '1'.repeat(32), companionRoot: 'C:\\companion', dataRoot: 'C:\\companion\\data' };
 
 type Launch = Partial<Pick<FakeScenario, 'hello'>> & { readonly ops?: Readonly<Record<string, readonly FakeAction[]>> };
-interface LoggedRequest { readonly pid: number; readonly op: string; readonly seq: number; readonly deadlineMs: number }
+interface LoggedRequest { readonly pid: number; readonly op: string; readonly seq: number; readonly deadlineMs: number; readonly owner: { readonly pid: number } | null }
 
 /** A fake image file and a launcher that starts one scripted service per launch, in the order given. */
 async function fakeHelper(launches: readonly Launch[]) {
@@ -345,6 +345,28 @@ describe('native helper service client', () => {
       await assert.rejects(NativeHelper.start({ ...fake.image, path: `${fake.image.path}.absent` }, undefined, fake.launcher),
         error => error instanceof NativeHelperUnavailableError && error.reason === 'imageAbsent');
       assert.equal(fake.children.length, 0);
+    } finally { await fake.close(); }
+  });
+
+  it('serves an owned job observation during the restart window, naming the replacement that serves it', { timeout: 60000 }, async () => {
+    // Arrange: a bound service fails, and its replacement's handshake is delayed so the observation arrives in the window.
+    const fake = await fakeHelper([{ ops: { hash: [{ kind: 'exit' }] } }, { hello: { delayMs: 1500 } }]);
+    try {
+      const helper = await fake.start();
+      await helper.bind(binding);
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      await until(() => fake.children.length === 2);
+
+      // Act
+      const observed = await helper.request('jobStates', { names: ['job'], owner: boundServiceOwner }, 10000);
+
+      // Assert: the observation waited for the rebound replacement and named it as the owner.
+      assert.equal(observed.status, 'ok');
+      const owned = (await fake.requests()).filter(request => request.op === 'jobStates' && request.owner !== null);
+      assert.equal(owned.length, 1);
+      assert.equal(owned[0]!.pid, fake.children[1]!.pid);
+      assert.equal(owned[0]!.owner!.pid, fake.children[1]!.pid);
+      await helper.close();
     } finally { await fake.close(); }
   });
 

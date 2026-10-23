@@ -5,7 +5,7 @@ import { PassThrough, type Writable } from 'node:stream';
 
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
-import { withoutHome, type NativeHelper } from './native-helper.ts';
+import { boundServiceOwner, withoutHome, type NativeHelper } from './native-helper.ts';
 
 /** Roles the supervisor launches through a broker. */
 export const processRoles = ['core', 'provider', 'watcher', 'metadata', 'startupCoreReply'] as const;
@@ -271,7 +271,7 @@ export class ProcessSupervisor {
   jobName(role: JobRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
 
   private async observeJobs(names: readonly string[], timeoutMs: number,
-    owner: { readonly name: string; readonly pid: number; readonly created: string } | null = null): Promise<{ absent: readonly boolean[]; owned: boolean | null }> {
+    owner: typeof boundServiceOwner | null = null): Promise<{ absent: readonly boolean[]; owned: boolean | null }> {
     const value = await helperResult(this.helper, 'jobStates', { names, owner }, timeoutMs);
     const absent = parseJobStates(value, names);
     if (owner === null) {
@@ -305,11 +305,10 @@ export class ProcessSupervisor {
    * pass names only the publication writers.
    */
   async proveNoForeignWriters(retired: readonly RetiredJobRole[] = retiredJobRoles): Promise<void> {
-    const owner = this.helper.owner();
     const names = [this.jobName('helper'), ...retired.map(role => this.jobName(role))];
     const until = performance.now() + predecessorPollMs;
     for (;;) {
-      const { absent, owned } = await this.observeJobs(names, 30000, owner);
+      const { absent, owned } = await this.observeJobs(names, 30000, boundServiceOwner);
       if (absent[0] || owned !== true) { throw new SupervisorError('termination-unverified', 'The helper job holds a member other than this runtime\'s service.'); }
       if (absent.slice(1).every(value => value)) { return; }
       if (performance.now() >= until) { throw new SupervisorError('termination-unverified', 'A retired predecessor job is still present.'); }

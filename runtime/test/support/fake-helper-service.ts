@@ -47,7 +47,7 @@ function later(delayMs: number | undefined, action: () => void): void {
 function answer(request: Record<string, unknown>): void {
   const op = String(request['op']);
   const seq = request['seq'];
-  appendFileSync(scenario.log, JSON.stringify({ pid: process.pid, op, seq, deadlineMs: request['deadlineMs'] }) + '\n');
+  appendFileSync(scenario.log, JSON.stringify({ pid: process.pid, op, seq, deadlineMs: request['deadlineMs'], owner: request['owner'] ?? null }) + '\n');
   const action: FakeAction = queues.get(op)?.shift() ?? { kind: 'ok' };
   switch (action.kind) {
     case 'ok': later(action.delayMs, () => process.stdout.write(frame({ version: 1, seq, op, status: 'ok', result: action.result ?? defaultResult(op, request) }))); break;

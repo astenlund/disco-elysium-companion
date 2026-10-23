@@ -223,6 +223,25 @@ describe('native helper first-launch build', () => {
     assert.ok(!existsSync(path.join(buildRoot(root), name)));
   });
 
+  it('sweeps a build directory left beside a published image without building again', { timeout: 120000 }, async () => {
+    // Arrange: a pinned image, and the claimed directory of a build killed after publishing it.
+    const real = await testHelperImage();
+    const root = await installation();
+    await fs.copyFile(real.path, path.join(root, helperImageFile));
+    const name = `build-${'f'.repeat(32)}`;
+    await fs.mkdir(path.join(buildRoot(root), name, 'cache'), { recursive: true });
+    await fs.writeFile(path.join(buildRoot(root), `${name}.claim`), '');
+    const progress: StartupProgress[] = [];
+
+    // Act
+    const image = await prepareNativeImage(event => progress.push(event), () => {}, { root });
+
+    // Assert
+    assert.equal(image.sha256, nativeHelperSha256);
+    assert.deepEqual(progress, []);
+    assert.deepEqual(await fs.readdir(buildRoot(root)), []);
+  });
+
   it('refuses with toolchainMissing when go.exe is not on the PATH', { timeout: 120000 }, async () => {
     // Arrange
     const root = await installation();

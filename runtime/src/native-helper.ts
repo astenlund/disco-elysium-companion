@@ -39,6 +39,9 @@ const mutatingOperations: ReadonlySet<string> = new Set(['publish', 'codec', 'co
 
 const deadlineExceeded: HelperReply = Object.freeze({ status: 'error', code: 'deadlineExceeded' });
 
+/** The owner field value that asks the helper to name the bound service serving an owned jobStates observation. */
+export const boundServiceOwner = 'boundService';
+
 /** Private helper processes omit HOME; a child receives its own environment through the broker's control frame. */
 export function withoutHome(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(source).filter(([name]) => name.toUpperCase() !== 'HOME'));
@@ -410,8 +413,12 @@ export class NativeHelper {
       const service = await this.acquire(proof, deadline);
       if (service === null) { return deadlineExceeded; }
       let released = false;
-      try { return await this.exchange(service, op, fields, deadline); }
-      catch (error) {
+      try {
+        // An owned observation names the bound service that serves it, so a retry on the replacement names the replacement.
+        const sent = fields['owner'] === boundServiceOwner ? { ...fields, owner: this.ownerOf(service) } : fields;
+        return await this.exchange(service, op, sent, deadline);
+      } catch (error) {
+        if (error instanceof NativeHelperUnavailableError) { throw error; }
         const failure = error instanceof HelperRequestFailedError ? error : new HelperRequestFailedError('fault', 'The native helper request failed.');
         // A failed mutation reports only after the service has been retired and its exit observed. It gives up its active
         // slot first, since the drain that retires the service waits for every active slot.
@@ -450,10 +457,15 @@ export class NativeHelper {
 
   /** The bound service as the owner of its scope's helper job, for owned job observations. */
   owner(): HelperOwner {
-    const identity = this.current?.identity;
-    if (identity === null || identity === undefined || this.binding === null || this.phase !== 'ready') {
-      throw new NativeHelperUnavailableError('unavailable');
-    }
+    if (this.current === null || this.phase !== 'ready') { throw new NativeHelperUnavailableError('unavailable'); }
+
+    return this.ownerOf(this.current);
+  }
+
+  private ownerOf(service: ServiceProcess): HelperOwner {
+    const identity = service.identity;
+    if (identity === null || this.binding === null) { throw new NativeHelperUnavailableError('unavailable'); }
+
     return { name: this.helperJobName(this.binding.token), pid: identity.pid, created: identity.created };
   }
 
