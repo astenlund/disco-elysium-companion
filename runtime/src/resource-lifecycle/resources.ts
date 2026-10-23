@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -260,7 +261,7 @@ export class ResourceAuthority {
     let value: JsonValue;
     try {
       value = await this.inspector.native('inventory', { root: this.scope.dataRoot, scopeSha256: this.scope.bindingSha256, companionRoot: this.scope.companionRoot,
-        mode, inputBase64: null }, deadline?.remaining());
+        mode, inputBase64: null, inputFile: null, inputSha256: null }, deadline?.remaining());
     } catch { return unavailable('inventory'); }
     if (!hasExactKeys(value, ['uncompactedEvents', 'retainedHandoffs', 'retainedHandoffIdentitySha256', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox', 'uncertainWorkspace', 'freeBytes'])) { unavailable('inventory'); }
     const counts = ['uncompactedEvents', 'retainedHandoffs', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox'].map(name => asInteger(value[name]));
@@ -399,12 +400,7 @@ export class ResourceAuthority {
         if (!record.compacted) { validateOperationExpansion(record, reservation.additions.uncompactedEvents + reservation.remainingControlReserve.uncompactedEvents); }
       } else if (event || relative === 'journal/recovery-event.json') {
         requireControl(profile === 'state-event');
-        let admitted: JsonValue = null;
-        try {
-          admitted = await this.inspector.native('inventory', { root: this.scope.dataRoot, scopeSha256: this.scope.bindingSha256, companionRoot: null,
-            mode: 'Event', inputBase64: Buffer.from(bytes).toString('base64') }, deadline?.remaining());
-        } catch { unavailable('eventFinalization'); }
-        if (!hasExactKeys(admitted, ['admitted']) || admitted['admitted'] !== true) { unavailable('eventFinalization'); }
+        if (!await this.admitEventExpansion(target, bytes, deadline)) { unavailable('eventFinalization'); }
       } else { unavailable('publicationScope'); }
       if (event || operation) {
         let exists = true;
@@ -421,6 +417,35 @@ export class ResourceAuthority {
     } catch (error) {
       if (error instanceof PublicationPathAdmissionError) { throw error; }
       this.refuse(error, this.valid(lease) ? kind : null, 'publicationScope');
+    }
+  }
+
+  /**
+   * Checks an event document's expansion through the helper. The document travels as a staged input file beside its target,
+   * in the publication staging grammar, so the state-event budget rather than the request frame bounds it. The file is
+   * removed after the check; one a crash leaves behind is publication residue like any other staging sibling.
+   */
+  private async admitEventExpansion(target: string, bytes: Readonly<Uint8Array>, deadline?: Deadline): Promise<boolean> {
+    const input = `${target}.${randomBytes(16).toString('hex')}.tmp`;
+    let created = false;
+    try {
+      const admitted = await this.inspector.inspect(this.scope.dataRoot, input, true, deadline?.remaining());
+      if (admitted.exists || admitted.kind === 'directory' || admitted.missing.length > 1) { return false; }
+      const handle = await fs.open(input, 'wx');
+      created = true;
+      try { await handle.writeFile(bytes); await handle.sync(); }
+      finally { await handle.close(); }
+      const reply = await this.inspector.native('inventory', { root: this.scope.dataRoot, scopeSha256: this.scope.bindingSha256, companionRoot: null,
+        mode: 'Event', inputBase64: null, inputFile: input, inputSha256: bytesHash(bytes) }, deadline?.remaining());
+
+      return hasExactKeys(reply, ['admitted']) && reply['admitted'] === true;
+    } catch {
+      return false;
+    } finally {
+      if (created) {
+        try { await fs.rm(input, { force: true }); }
+        catch { /* A staging file left behind is publication residue, which the residue sweep removes. */ }
+      }
     }
   }
 

@@ -151,7 +151,7 @@ describe('native helper service faults against the real service', () => {
     const { fixture, helper, supervisor } = harness;
     try {
       let settled = false;
-      const inventory = helper.request('inventory', { root: fixture.root, scopeSha256: '0'.repeat(64), companionRoot: fixture.root, mode: 'Inventory', inputBase64: '' }, 30000)
+      const inventory = helper.request('inventory', { root: fixture.root, scopeSha256: '0'.repeat(64), companionRoot: fixture.root, mode: 'Inventory', inputBase64: '', inputFile: null, inputSha256: null }, 30000)
         .finally(() => { settled = true; });
       await until(async () => (await harness.recordsOf(0)).some(record => record.op === 'inventory'));
       await pause(5200);
@@ -178,7 +178,7 @@ describe('native helper service faults against the real service', () => {
       child.stdout.resume();
       child.stderr.resume();
       await child.ready;
-      const slow = helper.request('inventory', { root: fixture.root, scopeSha256: '0'.repeat(64), companionRoot: fixture.root, mode: 'Inventory', inputBase64: '' }, 30000);
+      const slow = helper.request('inventory', { root: fixture.root, scopeSha256: '0'.repeat(64), companionRoot: fixture.root, mode: 'Inventory', inputBase64: '', inputFile: null, inputSha256: null }, 30000);
       await assert.rejects(helper.request('principal', {}, 300), error => error instanceof HelperRequestFailedError && error.kind === 'missed');
       const drainStarted = (await harness.recordsOf(0)).length;
 

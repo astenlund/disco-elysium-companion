@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4661760,
-    "sha256": "26ed4436fc62f7579a8d44a0f1b0178848e56159f2e01e7383930fe41003850d",
+    "bytes": 4668928,
+    "sha256": "59cb7fe61c201d9962ef5933a63d47f66b54f4e303c663169618846bde53acf5",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -181,7 +181,7 @@
       },
       {
         "path": "runtime/native/helper/internal/nativefs/publish.go",
-        "sha256": "ccea6b7e63bc48c6944e2fdc3d17826a832e565d9df25573a67055eec9e0845b"
+        "sha256": "76d870920db6f6c88b30e3cf988f469c95f75d0d3b7a2de1fda80155c3d6e385"
       },
       {
         "path": "runtime/native/helper/internal/nativefs/read.go",
@@ -200,12 +200,16 @@
         "sha256": "cf05543c0bad0571452c126a860b0846ebe94bd58de533fec499c7b8e174635f"
       },
       {
+        "path": "runtime/native/helper/internal/service/event_staging_test.go",
+        "sha256": "3b34dd38c57b3179762b6574a2b52587844f88e3c713292f4b052b39ad16d838"
+      },
+      {
         "path": "runtime/native/helper/internal/service/frames.go",
         "sha256": "fb7dbf6a5598b8d9a788160bc32c15568ae83e0a98fecf50d147dfe292e0f21f"
       },
       {
         "path": "runtime/native/helper/internal/service/handlers.go",
-        "sha256": "82d2d1c95881ffdefec5b465e3d52c1d355d55f54490389f554f533b04c51861"
+        "sha256": "4edb6376343c4c396dddc2292845d42f4fb2283242488999f03e1bccdc4357cd"
       },
       {
         "path": "runtime/native/helper/internal/service/service.go",
@@ -213,7 +217,7 @@
       },
       {
         "path": "runtime/native/helper/internal/service/service_test.go",
-        "sha256": "58559a2171d391543c696099eca7d7c0a7ad651787b8c5b5d65e59fb5f963665"
+        "sha256": "98b41da5161fa0e83221065e4b55e2570e6860d810145e71155011bf365deb2b"
       },
       {
         "path": "runtime/native/helper/internal/sources/sources.go",

@@ -375,7 +375,7 @@ async function trimQuarantine(deps: MaintenanceDependencies, protectedPaths: Rea
   let reply: JsonValue = null;
   try {
     reply = await deps.inspector.native('inventory', { root: deps.scope.dataRoot, scopeSha256: deps.scope.bindingSha256, companionRoot: null,
-      mode: 'Quarantine', inputBase64: control.toString('base64') }, deadline?.remaining());
+      mode: 'Quarantine', inputBase64: control.toString('base64'), inputFile: null, inputSha256: null }, deadline?.remaining());
   } catch { requireControl(false); }
   requireControl(hasExactKeys(reply, ['removed', 'remaining']));
   const removed = asInteger(reply['removed']);

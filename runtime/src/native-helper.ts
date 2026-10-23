@@ -38,6 +38,20 @@ const proofOperations: ReadonlySet<string> = new Set(['jobStates', 'processIdent
 const mutatingOperations: ReadonlySet<string> = new Set(['publish', 'codec', 'contextPreparation', 'fileAction', 'stopOrphanWatcher']);
 
 const deadlineExceeded: HelperReply = Object.freeze({ status: 'error', code: 'deadlineExceeded' });
+/** The local refusal of a request whose frame would exceed the bound; the service never sees it. */
+export const requestTooLarge: HelperReply = Object.freeze({ status: 'error', code: 'requestTooLarge' });
+
+/** Encodes one request frame, or returns null when its body would be empty or exceed the frame bound. */
+function encodeFrame(value: unknown): Buffer | null {
+  let body: Buffer;
+  try { body = Buffer.from(stringifyJson(value, frameBudget), 'utf8'); }
+  catch { return null; }
+  if (body.length < 1 || body.length > maximumFrame) { return null; }
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length);
+
+  return Buffer.concat([header, body]);
+}
 
 /** The owner field value that asks the helper to name the bound service serving an owned jobStates observation. */
 export const boundServiceOwner = 'boundService';
@@ -186,12 +200,8 @@ class ServiceProcess {
     this.onChange();
   }
 
-  write(value: unknown): void {
-    const body = Buffer.from(stringifyJson(value, frameBudget), 'utf8');
-    if (body.length < 1 || body.length > maximumFrame) { throw new HelperRequestFailedError('fault', 'A native helper request exceeds its bound.'); }
-    const header = Buffer.alloc(4);
-    header.writeUInt32BE(body.length);
-    this.child.stdin.write(Buffer.concat([header, body]));
+  write(frame: Buffer): void {
+    this.child.stdin.write(frame);
   }
 
   /** Closes the input and observes the exit, stopping the process when it lingers; false when no exit was observed. */
@@ -422,17 +432,21 @@ export class NativeHelper {
     if (deadlineMs < sendFloorMs) { return Promise.resolve(deadlineExceeded); }
     if (service.nextSeq > this.sequenceLimit) { return Promise.resolve(null); }
     const seq = service.nextSeq;
+    // A request too large to frame is refused before it takes a sequence, so the service, its slots and its restart are untouched.
+    const frame = encodeFrame({ version: 1, seq, op, deadlineMs, ...fields });
+    if (frame === null) { return Promise.resolve(requestTooLarge); }
     service.nextSeq += 1;
     return new Promise<HelperReply>((resolve, reject) => {
       const timer = setTimeout(() => service.miss(seq), deadlineMs + replyGraceMs);
       service.pending.set(seq, { op, resolve: reply => { clearTimeout(timer); resolve(reply); }, reject: error => { clearTimeout(timer); reject(error); } });
-      try { service.write({ version: 1, seq, op, deadlineMs, ...fields }); }
+      try { service.write(frame); }
       catch { service.failChannel('The native helper request could not be written.'); }
     });
   }
 
   /**
-   * Sends one request within the caller's budget. A request below the send floor is refused locally with deadlineExceeded.
+   * Sends one request within the caller's budget. A request below the send floor is refused locally with deadlineExceeded,
+   * and one too large to frame with requestTooLarge.
    * A proof failed only because its service failed is sent once more to the replacement; a failed mutating request
    * rejects only after the service's exit has been observed, so no caller inspects a target the service may still change.
    */

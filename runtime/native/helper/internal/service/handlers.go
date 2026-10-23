@@ -22,7 +22,7 @@ type handler struct {
 var handlers = map[string]handler{
 	"admit":              {[]string{"root", "targets", "allowMissing"}, false, admit},
 	"hash":               {[]string{"root", "inputBase64", "scopeSha256"}, false, hash},
-	"inventory":          {[]string{"root", "scopeSha256", "companionRoot", "mode", "inputBase64"}, false, resourceInventory},
+	"inventory":          {[]string{"root", "scopeSha256", "companionRoot", "mode", "inputBase64", "inputFile", "inputSha256"}, false, resourceInventory},
 	"eventMetadata":      {[]string{"root", "requestsJson", "source"}, false, eventMetadata},
 	"eventBatch":         {[]string{"root", "inputBase64"}, false, eventBatch},
 	"publish":            {[]string{"root", "target", "inputFile", "inputSha256", "profile", "createOnly"}, true, publish},
@@ -52,6 +52,32 @@ func nullableText(request *j.Value, name string) (*string, bool) {
 		return nil, false
 	}
 	return &value.Str, true
+}
+
+func nullFields(request *j.Value, names ...string) bool {
+	for _, name := range names {
+		if request.Get(name).Kind != j.Null {
+			return false
+		}
+	}
+	return true
+}
+
+// stagedEvent reads Event-mode input from a runtime staging file inside root, bounded by the state-event budget and
+// required to match its SHA-256, so the budget is not limited by the request frame.
+func stagedEvent(root, inputFile, inputSha256 string) ([]byte, bool) {
+	if !j.IsHex(inputSha256, 64) || !nativefs.IsStagingFile(inputFile) {
+		return nil, false
+	}
+	source, err := nativefs.AdmitWithin(root, inputFile, false)
+	if err != nil || !source.Exists || source.IsDirectory {
+		return nil, false
+	}
+	data, err := nativefs.ReadBounded(source.Path, j.StateEvent.Bytes)
+	if err != nil || events.Sha256Hex(data) != inputSha256 {
+		return nil, false
+	}
+	return data, true
 }
 
 func flag(request *j.Value, name string) (bool, bool) {
@@ -152,7 +178,7 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 	var err error
 	switch mode {
 	case "Inventory", "Marker":
-		if request.Get("inputBase64").Kind != j.Null {
+		if !nullFields(request, "inputBase64", "inputFile", "inputSha256") {
 			return nil, code
 		}
 		companionRoot := ""
@@ -161,7 +187,12 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 		}
 		result, err = inventory.Read(root, scope, mode == "Marker", companionRoot, c.gate())
 	case "Event":
-		input, okInput := decoded(request, "inputBase64", j.StateEvent.Bytes)
+		inputFile, okFile := text(request, "inputFile")
+		inputSha256, okHash := text(request, "inputSha256")
+		if !okFile || !okHash || !nullFields(request, "inputBase64") {
+			return nil, code
+		}
+		input, okInput := stagedEvent(root, inputFile, inputSha256)
 		if !okInput {
 			return nil, code
 		}
@@ -171,7 +202,7 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 			return nil, "scopeUnbound"
 		}
 		input, okInput := decoded(request, "inputBase64", j.Config.Bytes)
-		if !okInput {
+		if !okInput || !nullFields(request, "inputFile", "inputSha256") {
 			return nil, code
 		}
 		result, err = inventory.TrimQuarantine(root, scope, input, c.gate())

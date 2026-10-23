@@ -318,6 +318,34 @@ describe('native helper service client', () => {
     } finally { await fake.close(); }
   });
 
+  it('refuses a request too large to frame locally while a peer in flight completes and the restart stays available', { timeout: 60000 }, async () => {
+    // Arrange: a slow peer request, and a request whose inline payload exceeds the 2 MiB frame.
+    const fake = await fakeHelper([{ ops: { eventBatch: [{ kind: 'ok', result: { documents: [] }, delayMs: 1000 }], hash: [{ kind: 'exit' }] } }]);
+    try {
+      const helper = await fake.start();
+      const peer = helper.request('eventBatch', {}, 10_000);
+      await until(async () => (await fake.requests()).some(request => request.op === 'eventBatch'));
+
+      // Act
+      const oversized = await helper.request('inventory', { mode: 'Event', inputBase64: 'A'.repeat(2_200_000) }, 5000);
+      const peerReply = await peer;
+
+      // Assert: the oversized request never reached the service, which kept serving its peer and never restarted.
+      assert.deepEqual(oversized, { status: 'error', code: 'requestTooLarge' });
+      assert.equal(peerReply.status, 'ok');
+      assert.deepEqual((await fake.requests()).map(request => request.op), ['eventBatch']);
+      assert.equal(fake.children.length, 1);
+      assert.ok(!exited(fake.children[0]!));
+
+      // Act and assert: the next request takes the following sequence, and the single restart is still available.
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      assert.deepEqual((await fake.requests()).map(request => request.seq), [1, 2]);
+      assert.equal((await helper.request('hash', {}, 5000)).status, 'ok');
+      assert.equal(fake.children.length, 2);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
   it('keeps four slots for proofs while twelve ordinary requests are in flight', { timeout: 60000 }, async () => {
     // Arrange
     const fake = await fakeHelper([{ ops: { hash: Array.from({ length: 12 }, () => ({ kind: 'ok', delayMs: 2000 }) as const) } }]);

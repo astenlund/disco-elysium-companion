@@ -40,6 +40,13 @@ func IsOwnedSibling(target, input string) bool {
 	return pattern.MatchString(filepath.Base(input))
 }
 
+var stagingName = regexp.MustCompile(`^.+[.][a-f0-9]{32}[.]tmp$`)
+
+// IsStagingFile reports whether a file has a runtime staging name, <name>.<32 lowercase hex>.tmp.
+func IsStagingFile(path string) bool {
+	return stagingName.MatchString(filepath.Base(path))
+}
+
 // PublishValidated writes bytes to a fresh owned sibling and publishes it atomically: a create-only or absent target
 // is moved into place without replacement, and an existing target is replaced with a separate owned backup.
 // gate is consulted immediately before the move or replacement, the publication's commit point.

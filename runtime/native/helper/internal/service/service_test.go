@@ -166,7 +166,7 @@ func TestFramesRejectOversizeAndTruncation(t *testing.T) {
 func TestQuarantineTrimIsAMutatingRequest(t *testing.T) {
 	// Arrange
 	s := start(t)
-	fields := `"root":"C:/x","scopeSha256":"` + strings.Repeat("0", 64) + `","companionRoot":"C:/x","inputBase64":null`
+	fields := `"root":"C:/x","scopeSha256":"` + strings.Repeat("0", 64) + `","companionRoot":"C:/x","inputBase64":null,"inputFile":null,"inputSha256":null`
 	inventory, inventoryErr := j.Parse([]byte(`{"op":"inventory","mode":"Inventory",`+fields+`}`), frameBudget)
 	trim, trimErr := j.Parse([]byte(`{"op":"inventory","mode":"Quarantine",`+fields+`}`), frameBudget)
 
