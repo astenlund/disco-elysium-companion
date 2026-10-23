@@ -55,8 +55,8 @@ func TestInventoryMatchesCSharpOutputs(t *testing.T) {
 	scope := expected(t, "scope-sha256.txt")
 
 	// Act
-	inventory, inventoryErr := Read(root, scope, false, "")
-	marker, markerErr := Read(root, scope, true, "")
+	inventory, inventoryErr := Read(root, scope, false, "", nativefs.NoDeadline)
+	marker, markerErr := Read(root, scope, true, "", nativefs.NoDeadline)
 
 	// Assert
 	if inventoryErr != nil || markerErr != nil {
@@ -76,11 +76,11 @@ func TestInventoryRefusesChangedScopeAndUnexpectedEntries(t *testing.T) {
 	scope := expected(t, "scope-sha256.txt")
 
 	// Act
-	_, changedErr := Read(root, strings.Repeat("0", 64), false, "")
+	_, changedErr := Read(root, strings.Repeat("0", 64), false, "", nativefs.NoDeadline)
 	if err := os.WriteFile(filepath.Join(root, "unexpected.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, unexpectedErr := Read(root, scope, false, "")
+	_, unexpectedErr := Read(root, scope, false, "", nativefs.NoDeadline)
 
 	// Assert
 	if changedErr == nil || unexpectedErr == nil {

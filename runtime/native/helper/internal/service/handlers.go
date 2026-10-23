@@ -159,7 +159,7 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 		if companion != nil {
 			companionRoot = *companion
 		}
-		result, err = inventory.Read(root, scope, mode == "Marker", companionRoot)
+		result, err = inventory.Read(root, scope, mode == "Marker", companionRoot, c.gate())
 	case "Event":
 		input, okInput := decoded(request, "inputBase64", j.StateEvent.Bytes)
 		if !okInput {

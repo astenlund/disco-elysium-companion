@@ -7,8 +7,8 @@ import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type
 import { NativeHelperUnavailableError } from './native-helper-error.ts';
 
 /** The reviewed pins: the release manifest's digest and the helper image's digest. The pin tool rewrites both together. */
-export const compiledImageGeneration = '46dd62ed1b85bbb718fad3310c5735833ba5ebde1de949f2bc0ee64a402db9d8';
-export const nativeHelperSha256 = '9456de6e44c2a921d5c4ad7f2fb098c9bb588b4c8317ed992673ef6720fcd1c0';
+export const compiledImageGeneration = '4a548b961e6109cd294875c3c4c31a3982f7ea19544504672b5355e9ce1d2ff5';
+export const nativeHelperSha256 = '7498615b30261ddb80315397bfa16f26c341ea1c8ae09db9d13aded37ed89fee';
 
 export const manifestFile = 'runtime/native/compiled-images.json';
 export const helperModule = 'runtime/native/helper';

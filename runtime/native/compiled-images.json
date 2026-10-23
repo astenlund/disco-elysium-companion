@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4653568,
-    "sha256": "9456de6e44c2a921d5c4ad7f2fb098c9bb588b4c8317ed992673ef6720fcd1c0",
+    "bytes": 4655104,
+    "sha256": "7498615b30261ddb80315397bfa16f26c341ea1c8ae09db9d13aded37ed89fee",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -104,16 +104,20 @@
         "sha256": "f5b2d656283e1e01f44e062205c417056d90e57e5418c0f546c2209320eb93ab"
       },
       {
+        "path": "runtime/native/helper/internal/inventory/bounds_test.go",
+        "sha256": "f79c8e2ca9fdbd611dcdd4870a4ec178fe1d995c4b009ea75f2a9b4d44400fd1"
+      },
+      {
         "path": "runtime/native/helper/internal/inventory/inventory.go",
-        "sha256": "a07b651e4ec5a37d66211815498437f46e23dd02d7fea56c26fd98b0abbc1877"
+        "sha256": "29518f5d92408551d1b9da09b0a4b334394755f5df8a8e172be95c09d3e7bde3"
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory_test.go",
-        "sha256": "3f98232a682276a145c5698f4d66a176e205e008524947f22ca963fc52026e38"
+        "sha256": "e0a835f404d943d2fc8ad593417121cb612338ec8ad55d2beef62a25e757ad04"
       },
       {
         "path": "runtime/native/helper/internal/inventory/resources_test.go",
-        "sha256": "840af7e80053db37c6a60e18769205ffef118a8c75ee29ff6c3cabab3acf0c76"
+        "sha256": "53134e7a12c64d0a88131c7aba4315d0a1f23c94248fdd0aa3fe590493e342cc"
       },
       {
         "path": "runtime/native/helper/internal/jsondoc/jsondoc.go",
@@ -141,7 +145,7 @@
       },
       {
         "path": "runtime/native/helper/internal/nativefs/directory.go",
-        "sha256": "5bea5e40223f507db2a39c33b06bbda5146fbe31bdd398a4450460a96a32d5bb"
+        "sha256": "a67d971782447c6938964cd4caf12f244cab6cd421faaa343285ab86e0c135f7"
       },
       {
         "path": "runtime/native/helper/internal/nativefs/directory_test.go",
@@ -189,7 +193,7 @@
       },
       {
         "path": "runtime/native/helper/internal/service/handlers.go",
-        "sha256": "c17e6d60b1c3fe1043b7d511e18d5e17fedab0cdb19bb964fefc30404ec24bf2"
+        "sha256": "82d2d1c95881ffdefec5b465e3d52c1d355d55f54490389f554f533b04c51861"
       },
       {
         "path": "runtime/native/helper/internal/service/service.go",

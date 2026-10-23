@@ -40,8 +40,9 @@ var (
 
 type entry struct{ path, relative string }
 
-// Read returns the Inventory or Marker reply for one scope.
-func Read(root, scopeSha256 string, markerOnly bool, companionRoot string) ([]byte, error) {
+// Read returns the Inventory or Marker reply for one scope. It streams the scope's entries, checking gate before each, so
+// a request past its deadline stops before reading further, and an incomplete scan is unavailable, never partial capacity.
+func Read(root, scopeSha256 string, markerOnly bool, companionRoot string, gate nativefs.Gate) ([]byte, error) {
 	if err := verifyScope(root, scopeSha256); err != nil {
 		return nil, err
 	}
@@ -50,34 +51,30 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string) ([]by
 	journalSources := map[string]bool{}
 	uncompacted, invalidEvents, invalidOperations, terminal, unfinished := 0, 0, 0, 0, 0
 	residue := false
-	files, err := enumerate(root, root, "", markerOnly)
-	if err != nil {
-		return nil, err
-	}
-	for _, file := range files {
+	scan := func(file entry) error {
 		relative := file.relative
 		if temporaryName.MatchString(relative) || relative == "codec.json" || relative == "prepared-context.txt" {
 			residue = true
-			continue
+			return nil
 		}
 		if markerOnly || strings.HasPrefix(relative, "quarantine/") {
-			continue
+			return nil
 		}
 		if strings.HasPrefix(relative, "journal/events/") || relative == "journal/recovery-event.json" {
 			eventFile := relative != "journal/recovery-event.json"
 			valid, err := inspectEvent(file.path, eventFile)
 			if err != nil {
-				return nil, ErrUnavailable
+				return ErrUnavailable
 			}
 			if valid == nil {
 				if _, err := nativefs.ObserveRaw(file.path, 30*time.Second); err != nil {
-					return nil, ErrUnavailable
+					return ErrUnavailable
 				}
 				invalidEvents++
 				if eventFile {
 					uncompacted++
 				}
-				continue
+				return nil
 			}
 			if eventFile {
 				if valid.Get("compacted").Kind != j.True {
@@ -85,25 +82,25 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string) ([]by
 				}
 				identity, err := identityOf(valid)
 				if err != nil {
-					return nil, ErrUnavailable
+					return ErrUnavailable
 				}
 				potential[identity] = true
 				record, _ := j.Hex(valid.Get("recordSha256"), 64)
 				sequence, err := j.LogicalSequence(valid.Get("logicalOutboxId"))
 				if err != nil {
-					return nil, ErrUnavailable
+					return ErrUnavailable
 				}
 				journalSources[record+":"+strconv.FormatInt(sequence, 10)] = true
 			}
-			continue
+			return nil
 		}
 		if strings.HasPrefix(relative, "operations/") {
 			if !operationName.MatchString(filepath.Base(file.path)) {
-				return nil, ErrUnavailable
+				return ErrUnavailable
 			}
 			result, err := inspectOperation(file.path)
 			if err != nil {
-				return nil, ErrUnavailable
+				return ErrUnavailable
 			}
 			switch result.state {
 			case operationUnfinished:
@@ -113,7 +110,7 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string) ([]by
 			}
 			if result.invalid {
 				if _, err := nativefs.ObserveRaw(file.path, 30*time.Second); err != nil {
-					return nil, ErrUnavailable
+					return ErrUnavailable
 				}
 				invalidOperations++
 			}
@@ -123,6 +120,10 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string) ([]by
 				potential[identity] = true
 			}
 		}
+		return nil
+	}
+	if err := walk(root, root, "", markerOnly, gate, scan); err != nil {
+		return nil, err
 	}
 	if err := verifyScope(root, scopeSha256); err != nil {
 		return nil, err
@@ -133,7 +134,7 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string) ([]by
 	}
 	pending := 0
 	if !markerOnly && companionRoot != "" {
-		if pending, err = countOutbox(companionRoot, journalSources); err != nil {
+		if pending, err = countOutbox(companionRoot, journalSources, gate); err != nil {
 			return nil, err
 		}
 	}
@@ -293,51 +294,55 @@ func verifyScope(root, expected string) error {
 	return nil
 }
 
-// enumerate walks one admitted directory, admitting every entry, and returns the files the mode cares about.
-func enumerate(root, directory, prefix string, markerOnly bool) ([]entry, error) {
-	names, err := listDirectory(directory)
+// walk streams one admitted directory, admitting every entry as it is read and handing each file the mode cares about to
+// visit, so no directory is held in memory whole. gate is checked before each entry. A failure of visit, a nested walk or
+// gate is returned unchanged; any other enumeration failure is unavailable.
+func walk(root, directory, prefix string, markerOnly bool, gate nativefs.Gate, visit func(entry) error) error {
+	var stopped error
+	err := nativefs.WalkDirectory(directory, func(name string) error {
+		stopped = visitEntry(root, directory, prefix, name, markerOnly, gate, visit)
+		return stopped
+	})
+	if stopped != nil {
+		return stopped
+	}
 	if err != nil {
-		return nil, ErrUnavailable
+		return ErrUnavailable
 	}
-	var result []entry
-	for _, name := range names {
-		path := filepath.Join(directory, name)
-		relative := prefix + name
-		admitted, err := nativefs.AdmitWithin(root, path, false)
-		if err != nil {
-			return nil, ErrUnavailable
-		}
-		switch {
-		case admitted.IsDirectory:
-			if markerOnly {
-				continue
-			}
-			if !allowedDirectories[relative] {
-				return nil, ErrUnavailable
-			}
-			children, err := enumerate(root, path, relative+"/", false)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, children...)
-		case markerOnly:
-			if relative == "runtime.json" || strings.HasPrefix(relative, "runtime.json.") {
-				result = append(result, entry{path, relative})
-			}
-		default:
-			if !fixedFiles[relative] && !temporaryName.MatchString(relative) && !strings.HasPrefix(relative, "journal/events/") &&
-				!strings.HasPrefix(relative, "operations/") && !strings.HasPrefix(relative, "quarantine/") {
-				return nil, ErrUnavailable
-			}
-			result = append(result, entry{path, relative})
-		}
-	}
-	return result, nil
+	return nil
 }
 
-// listDirectory returns entry names without following or filtering anything.
-func listDirectory(directory string) ([]string, error) {
-	return nativefs.ListDirectory(directory)
+func visitEntry(root, directory, prefix, name string, markerOnly bool, gate nativefs.Gate, visit func(entry) error) error {
+	if err := gate(); err != nil {
+		return err
+	}
+	path := filepath.Join(directory, name)
+	relative := prefix + name
+	admitted, err := nativefs.AdmitWithin(root, path, false)
+	if err != nil {
+		return ErrUnavailable
+	}
+	switch {
+	case admitted.IsDirectory:
+		if markerOnly {
+			return nil
+		}
+		if !allowedDirectories[relative] {
+			return ErrUnavailable
+		}
+		return walk(root, path, relative+"/", false, gate, visit)
+	case markerOnly:
+		if relative == "runtime.json" || strings.HasPrefix(relative, "runtime.json.") {
+			return visit(entry{path, relative})
+		}
+		return nil
+	default:
+		if !fixedFiles[relative] && !temporaryName.MatchString(relative) && !strings.HasPrefix(relative, "journal/events/") &&
+			!strings.HasPrefix(relative, "operations/") && !strings.HasPrefix(relative, "quarantine/") {
+			return ErrUnavailable
+		}
+		return visit(entry{path, relative})
+	}
 }
 
 func freeBytes(root string) (uint64, error) {
@@ -352,7 +357,11 @@ func freeBytes(root string) (uint64, error) {
 	return available, nil
 }
 
-func countOutbox(companionRoot string, journalSources map[string]bool) (int, error) {
+// outboxEntryLimit bounds the outbox entries one inventory inspects, as the C# reference did; the walk stops at the first
+// entry past it instead of reading the rest of the directory.
+const outboxEntryLimit = 1032
+
+func countOutbox(companionRoot string, journalSources map[string]bool, gate nativefs.Gate) (int, error) {
 	directory, err := nativefs.AdmitWithin(companionRoot, filepath.Join(companionRoot, "state", "outbox"), true)
 	if err != nil {
 		return 0, ErrUnavailable
@@ -363,46 +372,59 @@ func countOutbox(companionRoot string, journalSources map[string]bool) (int, err
 	if !directory.IsDirectory {
 		return 0, ErrUnavailable
 	}
-	names, err := listDirectory(directory.Path)
-	if err != nil {
+	count, inspected := 0, 0
+	var stopped error
+	walkErr := nativefs.WalkDirectory(directory.Path, func(name string) error {
+		inspected++
+		stopped = countOutboxEntry(companionRoot, directory.Path, name, inspected, journalSources, gate, &count)
+		return stopped
+	})
+	if stopped != nil {
+		return 0, stopped
+	}
+	if walkErr != nil {
 		return 0, ErrUnavailable
 	}
-	count := 0
-	for inspected, name := range names {
-		if inspected+1 > 1032 {
-			return 0, ErrUnavailable
+	return count, nil
+}
+
+func countOutboxEntry(companionRoot, directory, name string, inspected int, journalSources map[string]bool, gate nativefs.Gate, count *int) error {
+	if err := gate(); err != nil {
+		return err
+	}
+	if inspected > outboxEntryLimit {
+		return ErrUnavailable
+	}
+	if !strings.HasPrefix(name, "event-") || !eventName.MatchString(name[6:]) {
+		return nil
+	}
+	path := filepath.Join(directory, name)
+	record, err := nativefs.AdmitWithin(companionRoot, path, false)
+	if err != nil || record.IsDirectory {
+		return ErrUnavailable
+	}
+	sequence, _ := strconv.ParseInt(name[6:22], 10, 64)
+	if sequence < 1 || sequence > j.MaximumSequence {
+		return nil
+	}
+	duplicate := false
+	if len(journalSources) > 0 {
+		size, err := fileSize(record.Path)
+		if err != nil {
+			return ErrUnavailable
 		}
-		if !strings.HasPrefix(name, "event-") || !eventName.MatchString(name[6:]) {
-			continue
-		}
-		path := filepath.Join(directory.Path, name)
-		record, err := nativefs.AdmitWithin(companionRoot, path, false)
-		if err != nil || record.IsDirectory {
-			return 0, ErrUnavailable
-		}
-		sequence, _ := strconv.ParseInt(name[6:22], 10, 64)
-		if sequence < 1 || sequence > j.MaximumSequence {
-			continue
-		}
-		duplicate := false
-		if len(journalSources) > 0 {
-			size, err := fileSize(record.Path)
+		if size <= int64(j.StateEvent.Bytes) {
+			raw, err := nativefs.ObserveRaw(record.Path, 30*time.Second)
 			if err != nil {
-				return 0, ErrUnavailable
+				return ErrUnavailable
 			}
-			if size <= int64(j.StateEvent.Bytes) {
-				raw, err := nativefs.ObserveRaw(record.Path, 30*time.Second)
-				if err != nil {
-					return 0, ErrUnavailable
-				}
-				duplicate = journalSources[raw.Sha256+":"+strconv.FormatInt(sequence, 10)]
-			}
-		}
-		if !duplicate {
-			count++
+			duplicate = journalSources[raw.Sha256+":"+strconv.FormatInt(sequence, 10)]
 		}
 	}
-	return count, nil
+	if !duplicate {
+		*count++
+	}
+	return nil
 }
 
 func fileSize(path string) (int64, error) {
@@ -449,7 +471,9 @@ func TrimQuarantine(root, scopeSha256 string, protectedBytes []byte, gate native
 	if !directory.IsDirectory {
 		return nil, ErrUnavailable
 	}
-	names, err := listDirectory(directory.Path)
+	// Retention orders every quarantined file by age, so the whole listing is read; gate is checked per entry, before the
+	// first deletion commits anything.
+	names, err := nativefs.ListDirectory(directory.Path)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -459,6 +483,9 @@ func TrimQuarantine(root, scopeSha256 string, protectedBytes []byte, gate native
 	}
 	files := make([]quarantined, 0, len(names))
 	for _, name := range names {
+		if err := gate(); err != nil {
+			return nil, err
+		}
 		path := filepath.Join(directory.Path, name)
 		admitted, err := nativefs.AdmitWithin(root, path, false)
 		if err != nil || admitted.IsDirectory || !quarantineName.MatchString(name) {

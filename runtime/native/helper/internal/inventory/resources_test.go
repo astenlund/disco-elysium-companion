@@ -94,7 +94,7 @@ func removeTestFile(t *testing.T, path string) {
 
 func (f *resourceScopeFixture) read(t *testing.T, markerOnly bool) inventoryResult {
 	t.Helper()
-	data, err := Read(f.scope, f.hash, markerOnly, f.companion)
+	data, err := Read(f.scope, f.hash, markerOnly, f.companion, nativefs.NoDeadline)
 	if err != nil {
 		t.Fatalf("inventory failed: %v", err)
 	}
