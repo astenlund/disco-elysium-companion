@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 import { DataRootUnavailableError, PathInspector } from '../../src/admission.ts';
@@ -19,7 +17,8 @@ import { readAdmittedRuntimeStatus, readRuntimeStatus } from '../../src/platform
 import { reconcileWatcherOrphan } from '../../src/platform/watcher-supervisor.ts';
 import { companionFixture } from '../support/companion.ts';
 import { deferredRepair, repair } from '../backend/authority-fixtures.ts';
-import { createTestNative, testHelperImage } from '../support/native-helper.ts';
+import { createTestNative } from '../support/native-helper.ts';
+import { startOrphanWatcher } from '../support/orphan-watcher.ts';
 
 const idlePublisher = { quiesce: async () => true };
 
@@ -198,34 +197,22 @@ describe('native runtime platform', () => {
     const fixture = await companionFixture();
     const native = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
     const supervisor = native.supervisor;
-    const ownerScript = fileURLToPath(new URL('../fixtures/job-owner.ps1', import.meta.url));
-    const owner = spawn('pwsh', ['-NoProfile', '-File', ownerScript, '-JobName', supervisor.jobName('watcher'), '-BrokerImage', (await testHelperImage()).path,
-      '-FixtureRoot', fixture.root], { windowsHide: true, shell: false, cwd: fixture.root, stdio: 'ignore' });
-    const closed = new Promise<void>((resolve, reject) => { owner.once('close', () => resolve()); owner.once('error', reject); });
+    const orphan = await startOrphanWatcher(fixture.root, supervisor.jobName('watcher'), native.helper);
     try {
-      let descendant: { pid: number; created: string } | null = null;
-      const deadline = performance.now() + 15000;
-      while (performance.now() < deadline) {
-        try { descendant = JSON.parse(await fs.readFile(path.join(fixture.root, 'descendant.json'), 'utf8')) as { pid: number; created: string }; break; }
-        catch (error) { if (!['ENOENT', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) { throw error; } }
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-      assert.notEqual(descendant, null);
-      const identity = await readProcessIdentity(native.helper, descendant!.pid);
-      assert.deepEqual(identity, descendant);
-      const previous = { runtimeInstanceId: 'a'.repeat(32), startedAt: now, cleanShutdown: false, watcher: identity! };
+      const identity = orphan.identity;
+      const previous = { runtimeInstanceId: 'a'.repeat(32), startedAt: now, cleanShutdown: false, watcher: identity };
 
       // Act
-      const reused = reconcileWatcherOrphan({ ...previous, watcher: { ...identity!, created: (BigInt(identity!.created) + 1n).toString() } }, supervisor);
+      const reused = reconcileWatcherOrphan({ ...previous, watcher: { ...identity, created: (BigInt(identity.created) + 1n).toString() } }, supervisor);
       await assert.rejects(reused, SupervisorError);
-      const untouched = await readProcessIdentity(native.helper, descendant!.pid);
+      const untouched = await readProcessIdentity(native.helper, identity.pid);
       await reconcileWatcherOrphan(previous, supervisor);
-      await closed;
+      await orphan.closed;
 
       // Assert
       assert.deepEqual(untouched, identity);
-      assert.equal(await readProcessIdentity(native.helper, descendant!.pid), null);
+      assert.equal(await readProcessIdentity(native.helper, identity.pid), null);
       await reconcileWatcherOrphan(previous, supervisor);
-    } finally { owner.kill(); await closed; await native.close(); await fixture.close(); }
+    } finally { orphan.kill(); await orphan.closed; await native.close(); await fixture.close(); }
   });
 });
