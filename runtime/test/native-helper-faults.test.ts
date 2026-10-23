@@ -6,6 +6,8 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { PathInspector } from '../src/admission.ts';
+import { EventReader } from '../src/event-reader.ts';
+import { eventFileName } from '../src/journal-records.ts';
 import type { PayloadCodec } from '../src/codec.ts';
 import { FilePublisher } from '../src/files.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
@@ -18,7 +20,7 @@ import type { RuntimeScope } from '../src/scope.ts';
 import { bytesHash } from '../src/storage.ts';
 import type { ProxyLaunch } from './support/helper-proxy.ts';
 import { companionFixture } from './support/companion.ts';
-import { helperProxies, testHelperImage, type HelperProxies } from './support/native-helper.ts';
+import { createTestNative, helperProxies, testHelperImage, type HelperProxies } from './support/native-helper.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const childScript = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
@@ -191,6 +193,36 @@ describe('native helper service faults against the real service', () => {
       // The slow peer's reply, whatever its status, was accepted after the drain began rather than failing with the service.
       assert.ok(['ok', 'error'].includes((await slow).status));
     } finally { await harness.close(); }
+  });
+
+  it('serves eventBatch reads from a second service while the bound service replaces the same event file', { timeout: 180000 }, async () => {
+    // Arrange: chat's bound service publishes, and a second, unbound service reads through its own inspector.
+    const fixture = await companionFixture('context-event');
+    const chat = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
+    const reader = await createTestNative(fixture.root);
+    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+    const inspector = new PathInspector(chat.supervisor);
+    const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor: chat.supervisor, preflight: async () => {}, invalidate: () => {} });
+    const relative = `journal/events/${eventFileName(1)}`;
+    const bytes = await fs.readFile(path.join(fixture.root, relative));
+    try {
+      // Act: every round replaces the event file while reads of it run on the other service.
+      for (let round = 0; round < 12; round++) {
+        const reads = Array.from({ length: 4 }, () => new EventReader(fixture.root, new PathInspector(reader.supervisor)).read([{ path: relative, sequence: 1 }]));
+        const [published, ...results] = await Promise.all([publisher.publish(relative, bytes, 'state-event'), ...reads]);
+
+        // Assert: the replacement completes cleanly and every concurrent read sees a valid document.
+        assert.equal(published.cleanupComplete, true);
+        assert.ok(results.every(result => result.length === 1 && result[0]!.status === 'valid'));
+      }
+      assert.deepEqual(await fs.readFile(path.join(fixture.root, relative)), bytes);
+    } finally {
+      await publisher.idle();
+      await reader.close();
+      await chat.close();
+      await guard.release();
+      await fixture.close();
+    }
   });
 
   it('verifies a broker that closes inside the restart window and attests broker launches there only for an unchanged image', { timeout: 120000 }, async () => {

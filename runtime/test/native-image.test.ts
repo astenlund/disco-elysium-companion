@@ -196,6 +196,33 @@ describe('native helper first-launch build', () => {
     await fs.rm(native);
   });
 
+  it('refuses with buildFailed naming a claimed build directory that a leftover process still holds', { timeout: 120000 }, async () => {
+    // Arrange: a claimed build directory whose leftover toolchain process is still running from inside it.
+    const real = await testHelperImage();
+    const root = await installation();
+    const name = `build-${'e'.repeat(32)}`;
+    await fs.mkdir(path.join(buildRoot(root), name), { recursive: true });
+    await fs.writeFile(path.join(buildRoot(root), `${name}.claim`), '');
+    const leftover = path.join(buildRoot(root), name, 'go.exe');
+    await fs.copyFile(fakeGoBinary, leftover);
+    const running = spawn(leftover, [], { shell: false, windowsHide: true, stdio: 'ignore' });
+    await new Promise(resolve => { running.once('spawn', resolve); });
+    try {
+      // Act and assert
+      await assert.rejects(ensureNativeHelperImage({ build: true, root, ...withToolchain(await fakeToolchain({ build: 'copy', copyFrom: real.path })) }),
+        error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed' && error.message.includes(name));
+      assert.ok(existsSync(path.join(buildRoot(root), `${name}.claim`)));
+    } finally {
+      running.kill();
+      await new Promise(resolve => { running.once('exit', resolve); });
+    }
+
+    // Act and assert: once the process has ended, the next build sweeps the directory and succeeds.
+    const image = await ensureNativeHelperImage({ build: true, root, ...withToolchain(await fakeToolchain({ build: 'copy', copyFrom: real.path })) });
+    assert.equal(image.sha256, nativeHelperSha256);
+    assert.ok(!existsSync(path.join(buildRoot(root), name)));
+  });
+
   it('refuses with toolchainMissing when go.exe is not on the PATH', { timeout: 120000 }, async () => {
     // Arrange
     const root = await installation();

@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	j "companion-helper/internal/jsondoc"
 )
 
 const nonce = "0123456789abcdef0123456789abcdef"
@@ -141,5 +143,28 @@ func TestFramesRejectOversizeAndTruncation(t *testing.T) {
 	// Assert
 	if oversizeErr == nil || truncatedErr == nil || emptyErr != io.EOF {
 		t.Fatalf("frame errors: %v %v %v", oversizeErr, truncatedErr, emptyErr)
+	}
+}
+
+func TestQuarantineTrimIsAMutatingRequest(t *testing.T) {
+	// Arrange
+	s := start(t)
+	fields := `"root":"C:/x","scopeSha256":"` + strings.Repeat("0", 64) + `","companionRoot":"C:/x","inputBase64":null`
+	inventory, inventoryErr := j.Parse([]byte(`{"op":"inventory","mode":"Inventory",`+fields+`}`), frameBudget)
+	trim, trimErr := j.Parse([]byte(`{"op":"inventory","mode":"Quarantine",`+fields+`}`), frameBudget)
+
+	// Act
+	s.send(`{"version":1,"seq":1,"op":"inventory","deadlineMs":1000,"mode":"Quarantine",` + fields + `}`)
+	reply := s.read()
+
+	// Assert: a trim deletes files, so it needs a bound scope and keeps its result past its commit point.
+	if inventoryErr != nil || trimErr != nil || mutating(handlers["inventory"], "inventory", inventory) || !mutating(handlers["inventory"], "inventory", trim) {
+		t.Fatalf("inventory mode classification is wrong: %v %v", inventoryErr, trimErr)
+	}
+	if reply["status"] != "error" || reply["code"] != "scopeUnbound" {
+		t.Fatalf("unbound trim answered %v", reply)
+	}
+	if code := s.exitCode(); code != exitClean {
+		t.Fatalf("exit %d", code)
 	}
 }

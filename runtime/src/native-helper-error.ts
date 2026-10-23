@@ -14,7 +14,7 @@ export const nativeHelperReasons = {
   serviceStart: 'The native helper service did not start or verify. Rerun chat, which rebuilds the image when it fails its pin.',
   imageIdentityMismatch: 'The running native helper image differs from the one verified before launch. Rerun chat, which rebuilds the image when it fails its pin.',
   bindFailed: 'The native helper could not bind this scope. End any other runtime of this scope and retry.',
-  unavailable: 'The native helper service is unavailable after its single restart. Restart chat.',
+  unavailable: 'The native helper service can no longer serve: its single restart is spent, its replacement failed, or it was closed. Restart the runtime.',
 } as const;
 
 export type NativeHelperReason = keyof typeof nativeHelperReasons;
@@ -25,8 +25,9 @@ export class NativeHelperUnavailableError extends Error {
   readonly code = 'nativeHelperUnavailable';
   readonly reason: NativeHelperReason;
 
-  constructor(reason: NativeHelperReason) {
-    super(nativeHelperReasons[reason]);
+  /** A detail, such as the build directory a leftover process holds, follows the reason's remedy in the message. */
+  constructor(reason: NativeHelperReason, detail?: string) {
+    super(detail === undefined ? nativeHelperReasons[reason] : `${nativeHelperReasons[reason]} ${detail}`);
     this.reason = reason;
   }
 }

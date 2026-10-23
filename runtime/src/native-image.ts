@@ -44,7 +44,7 @@ export interface NativeImageOptions {
   readonly buildDeadlineMs?: number;
 }
 
-function refuse(reason: NativeHelperReason): NativeHelperUnavailableError { return new NativeHelperUnavailableError(reason); }
+function refuse(reason: NativeHelperReason, detail?: string): NativeHelperUnavailableError { return new NativeHelperUnavailableError(reason, detail); }
 
 function lstatOrNull(location: string): BigIntStats | null {
   try { return lstatSync(location, { bigint: true }); }
@@ -172,10 +172,16 @@ function takeBuildGuard(root: string): Promise<() => Promise<void>> {
 /**
  * Removes the build directories earlier builds provably created and their claims. A claimed directory whose owner record
  * is absent, as a kill before the record's move leaves it, or matches its identity is removed without following reparse
- * points; every other entry is left untouched and reported.
+ * points; every other entry is left untouched and reported. The guard proves only that no other build step holds it, so a
+ * toolchain process a killed build left running can still hold an entry: a sweep that cannot read the build folder or
+ * remove a claimed entry refuses with the build-failure reason and leaves that entry for the next build.
  */
 export function sweepBuildDirectories(buildRoot: string, report: (message: string) => void): void {
-  const entries = readdirSync(buildRoot, { withFileTypes: true });
+  let entries;
+  try { entries = readdirSync(buildRoot, { withFileTypes: true }); }
+  catch { throw refuse('buildFailed', 'The build folder .tmp/native-build cannot be read.'); }
+  const held = (name: string): NativeHelperUnavailableError =>
+    refuse('buildFailed', `End the toolchain process that still holds .tmp/native-build/${name} and retry.`);
   const claims = new Set(entries.filter(entry => entry.isFile()).map(entry => claimName.exec(entry.name)?.[1]).filter(name => name !== undefined));
   for (const entry of entries) {
     if (claimName.test(entry.name) && entry.isFile()) { continue; }
@@ -184,7 +190,9 @@ export function sweepBuildDirectories(buildRoot: string, report: (message: strin
       continue;
     }
     const directory = path.join(buildRoot, entry.name);
-    const identity = lstatSync(directory, { bigint: true });
+    let identity: BigIntStats;
+    try { identity = lstatSync(directory, { bigint: true }); }
+    catch { throw held(entry.name); }
     let recorded: { volume: string; fileId: string } | null = null;
     try {
       const value = parseStrictJson(readFileSync(path.join(directory, ownerRecord)));
@@ -203,12 +211,16 @@ export function sweepBuildDirectories(buildRoot: string, report: (message: strin
       report(`Left ${entry.name} in .tmp/native-build: its owner record names another directory.`);
       continue;
     }
-    rmSync(directory, { recursive: true, force: true });
+    try {
+      rmSync(directory, { recursive: true, force: true });
+      unlinkSync(path.join(buildRoot, `${entry.name}.claim`));
+    } catch { throw held(entry.name); }
     claims.delete(entry.name);
-    unlinkSync(path.join(buildRoot, `${entry.name}.claim`));
   }
   for (const name of claims) {
-    if (!entries.some(entry => entry.name === name)) { unlinkSync(path.join(buildRoot, `${name}.claim`)); }
+    if (entries.some(entry => entry.name === name)) { continue; }
+    try { unlinkSync(path.join(buildRoot, `${name}.claim`)); }
+    catch { throw held(`${name}.claim`); }
   }
 }
 

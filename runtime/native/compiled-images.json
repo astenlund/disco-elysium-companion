@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4671488,
-    "sha256": "0b88d88886b9615946c438906f71608798eb2638ad7567526f9a4e801cbf00ed",
+    "bytes": 4672000,
+    "sha256": "76a6f9675abb37888d22a15cb7ecae7ccd6b27f112e5253eba35dcb8683ce703",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -161,11 +161,11 @@
       },
       {
         "path": "runtime/native/helper/internal/service/service.go",
-        "sha256": "b3a97984b2b274e202c94b2747b97ec01192c24e3cee315a2d018476dac3a0e8"
+        "sha256": "93a5a0c1cab832b2fc0fb5a11bd87cdca5bc5575f667251ad52e98b5d07add96"
       },
       {
         "path": "runtime/native/helper/internal/service/service_test.go",
-        "sha256": "7851e171919962674f012c224cda6f9e869ac1c017ca26bdb8ea063dc123fd2d"
+        "sha256": "e38cfc4f506da47148a6e1134ba31e69aa5fb5940791822809c502378cbc3dbe"
       },
       {
         "path": "runtime/native/helper/internal/sources/sources.go",

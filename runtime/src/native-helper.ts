@@ -65,7 +65,10 @@ class ServiceProcess {
   readonly child: ChildProcessWithoutNullStreams;
   readonly exited: Promise<void>;
   readonly pending = new Map<number, PendingReply>();
+  /** Missed requests still running inside the service: each holds one of its slots until its late reply or the exit. */
   readonly missed = new Set<number>();
+  /** Whether any request of this service missed its deadline, which makes its retirement a failure, not a renewal. */
+  hadMiss = false;
   identity: HelperIdentity | null = null;
   fault: Error | null = null;
   draining = false;
@@ -133,7 +136,7 @@ class ServiceProcess {
     const pending = this.pending.get(seq);
     if (pending === undefined) {
       // The late reply of a request already failed for its deadline is a valid frame and is discarded.
-      if (this.missed.delete(seq)) { return; }
+      if (this.missed.delete(seq)) { this.onChange(); return; }
       this.failChannel('A native helper reply names no request in flight.');
       return;
     }
@@ -164,6 +167,7 @@ class ServiceProcess {
     if (pending === undefined) { return; }
     this.pending.delete(seq);
     this.missed.add(seq);
+    this.hadMiss = true;
     pending.reject(new HelperRequestFailedError('missed', 'The native helper reply missed its deadline.'));
     this.onChange();
   }
@@ -210,6 +214,7 @@ export class NativeHelper {
   private restartsLeft = 1;
   private binding: HelperBinding | null = null;
   private exclusive = false;
+  private retiring: Promise<void> | null = null;
   private waiters: (() => void)[] = [];
 
   private constructor(image: HelperImage, sequenceLimit: number, launcher: ServiceSpawn) { this.image = image; this.sequenceLimit = sequenceLimit; this.spawnService = launcher; }
@@ -254,7 +259,8 @@ export class NativeHelper {
   private async launch(): Promise<ServiceProcess> {
     // The prelaunch observation: hash and identity through one descriptor, compared to the pin and later to the handshake.
     const observed = observeImageFile(this.image.path);
-    if (observed === null || observed.sha256 !== this.image.sha256) { throw new NativeHelperUnavailableError('serviceStart'); }
+    if (observed === null) { throw new NativeHelperUnavailableError('imageAbsent'); }
+    if (observed.sha256 !== this.image.sha256) { throw new NativeHelperUnavailableError('imagePinMismatch'); }
     const nonce = randomBytes(16).toString('hex');
     const service = new ServiceProcess(this.spawnService(this.image, nonce), () => this.change());
     try {
@@ -286,10 +292,17 @@ export class NativeHelper {
    * Stops a service, observes its exit and, unless the helper is closing, starts and binds a replacement. A failure uses
    * the single restart; a renewal does not. When an exit cannot be observed or no restart is left, the helper is exhausted.
    */
-  private async retire(service: ServiceProcess, cause: 'failure' | 'renewal'): Promise<void> {
-    if (this.current !== service || this.phase !== 'ready') { return; }
+  private retire(service: ServiceProcess, cause: 'failure' | 'renewal'): Promise<void> {
+    if (this.current !== service || this.phase !== 'ready') { return Promise.resolve(); }
     this.phase = 'replacing';
     this.notify();
+    const replacing = this.replace(service, cause);
+    this.retiring = replacing;
+    return replacing;
+  }
+
+  /** The replacement loop of retire; close waits for it, so no service it starts outlives close. */
+  private async replace(service: ServiceProcess, cause: 'failure' | 'renewal'): Promise<void> {
     let stopping = service;
     let renewal = cause === 'renewal';
     for (;;) {
@@ -347,10 +360,12 @@ export class NativeHelper {
       if (this.phase === 'exhausted' || this.phase === 'closed') { throw new NativeHelperUnavailableError('unavailable'); }
       const service = this.current;
       const usable = service !== null && service.alive && service.identity !== null && !this.exclusive && this.phase === 'ready';
+      // A missed request still running inside the service keeps its slot there, so it counts against both limits.
+      const occupied = service === null ? maximumInFlight : service.inFlight + service.missed.size;
       if (usable && service.nextSeq > this.sequenceLimit && !service.draining) {
         service.draining = true;
         if (service.inFlight === 0) { void this.retire(service, 'renewal'); }
-      } else if (usable && (!service.draining || proof) && service.inFlight < maximumInFlight && (proof || service.ordinaryInFlight < ordinarySlots)) {
+      } else if (usable && (!service.draining || proof) && occupied < maximumInFlight && (proof || service.ordinaryInFlight + service.missed.size < ordinarySlots)) {
         if (proof) { service.proofsInFlight += 1; } else { service.ordinaryInFlight += 1; }
         return service;
       }
@@ -361,7 +376,7 @@ export class NativeHelper {
   private release(service: ServiceProcess, proof: boolean): void {
     if (proof) { service.proofsInFlight -= 1; } else { service.ordinaryInFlight -= 1; }
     if (service.draining && service.inFlight === 0 && this.current === service) {
-      void this.retire(service, service.nextSeq > this.sequenceLimit && service.fault === null && service.missed.size === 0 ? 'renewal' : 'failure');
+      void this.retire(service, service.nextSeq > this.sequenceLimit && service.fault === null && !service.hadMiss ? 'renewal' : 'failure');
     }
     this.notify();
   }
@@ -394,14 +409,20 @@ export class NativeHelper {
       if (deadline - performance.now() < sendFloorMs) { return deadlineExceeded; }
       const service = await this.acquire(proof, deadline);
       if (service === null) { return deadlineExceeded; }
+      let released = false;
       try { return await this.exchange(service, op, fields, deadline); }
       catch (error) {
         const failure = error instanceof HelperRequestFailedError ? error : new HelperRequestFailedError('fault', 'The native helper request failed.');
-        // A failed mutation reports only after the service has been retired and its exit observed.
-        if (isMutating(op, fields)) { failure.exitObserved = await service.retired; }
+        // A failed mutation reports only after the service has been retired and its exit observed. It gives up its active
+        // slot first, since the drain that retires the service waits for every active slot.
+        if (isMutating(op, fields)) {
+          this.release(service, proof);
+          released = true;
+          failure.exitObserved = await service.retired;
+        }
         if (proof && !retried && failure.kind === 'fault') { retried = true; continue; }
         throw failure;
-      } finally { this.release(service, proof); }
+      } finally { if (!released) { this.release(service, proof); } }
     }
   }
 
@@ -465,11 +486,15 @@ export class NativeHelper {
     }
   }
 
-  /** Stops the service and observes its exit; the caller releases its guard only after this resolves. */
+  /**
+   * Stops the service and observes its exit; the caller releases its guard only after this resolves. A replacement in
+   * progress finishes first, so the service stopped here is the last one this helper started.
+   */
   async close(): Promise<void> {
-    const service = this.current;
     this.phase = 'closed';
     this.notify();
+    await this.retiring;
+    const service = this.current;
     if (service !== null && !await service.stop()) { throw new NativeHelperUnavailableError('unavailable'); }
   }
 }

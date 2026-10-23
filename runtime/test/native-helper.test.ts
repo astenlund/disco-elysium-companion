@@ -279,6 +279,75 @@ describe('native helper service client', () => {
     } finally { await fake.close(); }
   });
 
+  it('retires a live service after a mutation misses its deadline, reporting the failure only after the observed exit', { timeout: 60000 }, async () => {
+    // Arrange: the publish reply comes after its deadline plus grace while the service stays alive.
+    const fake = await fakeHelper([{ ops: { publish: [{ kind: 'ok', delayMs: 6000 }] } }, {}]);
+    try {
+      const helper = await fake.start();
+
+      // Act
+      const missed = helper.request('publish', {}, 300);
+
+      // Assert: the request fails alone, the drain completes, the exit is observed and the replacement serves.
+      await assert.rejects(missed, error => error instanceof HelperRequestFailedError && error.kind === 'missed' && error.exitObserved === true);
+      assert.ok(exited(fake.children[0]!));
+      assert.equal((await helper.request('publish', {}, 5000)).status, 'ok');
+      assert.equal(fake.children.length, 2);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('keeps a missed request in the service slot count while proofs use the draining service', { timeout: 60000 }, async () => {
+    // Arrange: a slow peer holds the drain open, a read that never replies holds one service slot, and proofs answer slowly.
+    const fake = await fakeHelper([{ ops: { codec: [{ kind: 'ok', delayMs: 9000 }], hash: [{ kind: 'hang' }], processIdentity: Array.from({ length: 16 }, () => ({ kind: 'ok', delayMs: 2500 }) as const) } }, {}]);
+    try {
+      const helper = await fake.start();
+      const peer = helper.request('codec', {}, 30000);
+      await assert.rejects(helper.request('hash', {}, 300), error => error instanceof HelperRequestFailedError && error.kind === 'missed');
+
+      // Act: sixteen proofs arrive at the draining service.
+      const proofs = Array.from({ length: 16 }, () => helper.request('processIdentity', { pid: 1 }, 4000));
+      await pause(800);
+
+      // Assert: only fourteen were sent while the peer and the missed request held their slots.
+      const firstService = fake.children[0]!.pid;
+      assert.equal((await fake.requests()).filter(request => request.op === 'processIdentity' && request.pid === firstService).length, 14);
+      const replies = await Promise.all(proofs);
+      assert.equal(replies.filter(reply => reply.status === 'ok').length + replies.filter(reply => reply.status === 'error').length, 16);
+      assert.equal((await peer).status, 'ok');
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('stops a replacement that finishes launching after close began, before close resolves', { timeout: 60000 }, async () => {
+    // Arrange: the replacement handshake is delayed so close lands inside the restart window.
+    const fake = await fakeHelper([{ ops: { hash: [{ kind: 'exit' }] } }, { hello: { delayMs: 1500 } }]);
+    try {
+      const helper = await fake.start();
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      await until(() => fake.children.length === 2);
+
+      // Act
+      await helper.close();
+
+      // Assert: no service this helper started is still running.
+      assert.ok(fake.children.every(child => exited(child)));
+    } finally { await fake.close(); }
+  });
+
+  it('refuses a prelaunch image that is absent or fails its pin with the image reasons', { timeout: 60000 }, async () => {
+    // Arrange
+    const fake = await fakeHelper([{}]);
+    try {
+      // Act and assert
+      await assert.rejects(NativeHelper.start({ ...fake.image, sha256: '0'.repeat(64) }, undefined, fake.launcher),
+        error => error instanceof NativeHelperUnavailableError && error.reason === 'imagePinMismatch');
+      await assert.rejects(NativeHelper.start({ ...fake.image, path: `${fake.image.path}.absent` }, undefined, fake.launcher),
+        error => error instanceof NativeHelperUnavailableError && error.reason === 'imageAbsent');
+      assert.equal(fake.children.length, 0);
+    } finally { await fake.close(); }
+  });
+
   it('checks liveness against the handshake identity and observes the exit on close', { timeout: 60000 }, async () => {
     // Arrange
     const fake = await fakeHelper([{ ops: { processIdentity: [{ kind: 'ok' }, { kind: 'ok', result: { exists: true, pid: 1, created: '7654321' } }] } }]);

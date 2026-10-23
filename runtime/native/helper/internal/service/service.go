@@ -161,14 +161,15 @@ func serve(work *call, handler handler, request *j.Value, seq int64, op string) 
 	reply := j.NewObject().Int("version", 1).Int("seq", seq).String("op", op)
 	var result []byte
 	code := ""
+	changes := mutating(handler, op, request)
 	switch {
-	case handler.mutating && !work.state.isBound():
+	case changes && !work.state.isBound():
 		code = "scopeUnbound"
 	case work.expired():
 		code = "deadlineExceeded"
 	default:
 		result, code = handler.run(work, request)
-		if code == "" && !handler.mutating && work.expired() {
+		if code == "" && !changes && work.expired() {
 			code = "deadlineExceeded"
 		}
 	}
@@ -176,6 +177,17 @@ func serve(work *call, handler handler, request *j.Value, seq int64, op string) 
 		return reply.String("status", "error").String("code", code).Bytes()
 	}
 	return reply.String("status", "ok").Raw("result", result).Bytes()
+}
+
+// mutating reports whether a request may change files: a mutating operation, or the Quarantine trim mode of inventory.
+// Such a request needs a bound scope and, once past its commit point, completes and replies normally after its deadline.
+func mutating(handler handler, op string, request *j.Value) bool {
+	if handler.mutating {
+		return true
+	}
+	mode, err := j.Text(request.Get("mode"))
+
+	return op == "inventory" && err == nil && mode == "Quarantine"
 }
 
 // handshake opens the running executable with read sharing only, hashes that held handle and describes its identity.
