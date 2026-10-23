@@ -128,7 +128,7 @@ func reservedName(component string) bool {
 	runes := []rune(upper)
 	if len(runes) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) {
 		last := runes[3]
-		return last >= '1' && last <= '9' || last == '¹' || last == '²' || last == '³'
+		return last >= '1' && last <= '9' || last == '\u00b9' || last == '\u00b2' || last == '\u00b3'
 	}
 	return false
 }
