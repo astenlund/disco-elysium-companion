@@ -363,12 +363,15 @@ export class NativeHelper {
 
   private helperJobName(token: string): string { return `Global\\game-companion-process-${token}-helper`; }
 
-  /** Binds a replacement once a fresh observation, polled briefly, proves the old service's helper job absent. */
-  private async rebind(service: ServiceProcess, binding: HelperBinding): Promise<void> {
+  /**
+   * Binds a replacement once a fresh observation, polled briefly, proves the old service's helper job absent, within the
+   * caller's deadline when it gives one.
+   */
+  private async rebind(service: ServiceProcess, binding: HelperBinding, deadline = Number.POSITIVE_INFINITY): Promise<void> {
     const name = this.helperJobName(binding.token);
-    const until = performance.now() + helperJobPollMs;
+    const until = Math.min(performance.now() + helperJobPollMs, deadline);
     for (;;) {
-      const reply = await this.exchange(service, 'jobStates', { names: [name], owner: null }, until + 30_000);
+      const reply = await this.exchange(service, 'jobStates', { names: [name], owner: null }, Math.min(until + 30_000, deadline));
       const jobs = reply !== null && reply.status === 'ok' && hasExactKeys(reply.result, ['jobs']) ? reply.result['jobs'] : null;
       const entry = Array.isArray(jobs) && jobs.length === 1 ? jobs[0] : null;
       if (!hasExactKeys(entry, ['name', 'state', 'processes'])) { throw new NativeHelperUnavailableError('bindFailed'); }
@@ -377,7 +380,7 @@ export class NativeHelper {
       await new Promise(resolve => { setTimeout(resolve, 50); });
     }
     const bound = await this.exchange(service, 'bindScope', { token: binding.token, companionRoot: binding.companionRoot, dataRoot: binding.dataRoot },
-      performance.now() + 30_000);
+      Math.min(performance.now() + 30_000, deadline));
     if (bound === null || bound.status !== 'ok' || !hasExactKeys(bound.result, ['bound']) || bound.result['bound'] !== true) {
       throw new NativeHelperUnavailableError('bindFailed');
     }
@@ -467,25 +470,39 @@ export class NativeHelper {
     }
   }
 
-  /** Binds the service to one scope, while no other request is in flight, after the caller has proven the helper job absent. */
+  /**
+   * Binds the service to one scope, while no other request is in flight, after the caller has proven the helper job absent.
+   * A service that fails before or while binding is replaced like any other: bind waits within its budget for the
+   * replacement and binds it once a fresh observation proves the failed service's helper job absent. It refuses as
+   * unavailable once the single restart is spent, and when the budget passes while the replacement is still starting.
+   */
   async bind(binding: HelperBinding, budgetMs = 30_000): Promise<void> {
     if (this.binding !== null) { throw new NativeHelperUnavailableError('bindFailed'); }
     const deadline = performance.now() + budgetMs;
+    const proven = this.current;
     for (;;) {
-      if (this.phase !== 'ready') { throw new NativeHelperUnavailableError(this.phase === 'replacing' ? 'bindFailed' : 'unavailable'); }
+      if (this.phase === 'exhausted' || this.phase === 'closed') { throw new NativeHelperUnavailableError('unavailable'); }
       const service = this.current;
-      if (service !== null && service.alive && !this.exclusive && service.inFlight === 0) {
+      if (this.phase === 'ready' && service !== null && service.alive && !this.exclusive && service.inFlight === 0) {
         this.exclusive = true;
         try {
-          const reply = await this.exchange(service, 'bindScope', { token: binding.token, companionRoot: binding.companionRoot, dataRoot: binding.dataRoot }, deadline);
-          if (reply === null || reply.status !== 'ok' || !hasExactKeys(reply.result, ['bound']) || reply.result['bound'] !== true) { throw new NativeHelperUnavailableError('bindFailed'); }
+          if (service === proven) {
+            const reply = await this.exchange(service, 'bindScope', { token: binding.token, companionRoot: binding.companionRoot, dataRoot: binding.dataRoot }, deadline);
+            if (reply === null || reply.status !== 'ok' || !hasExactKeys(reply.result, ['bound']) || reply.result['bound'] !== true) { throw new NativeHelperUnavailableError('bindFailed'); }
+          } else {
+            await this.rebind(service, binding, deadline);
+          }
           this.binding = binding;
           return;
         } catch (error) {
-          throw error instanceof NativeHelperUnavailableError ? error : new NativeHelperUnavailableError('bindFailed');
+          // A service failure is answered by its replacement; every other refusal of the binding stands.
+          if (!(error instanceof HelperRequestFailedError && error.kind === 'fault')) {
+            throw error instanceof NativeHelperUnavailableError ? error : new NativeHelperUnavailableError('bindFailed');
+          }
         } finally { this.exclusive = false; this.notify(); }
+        continue;
       }
-      if (!await this.waitChange(deadline)) { throw new NativeHelperUnavailableError('bindFailed'); }
+      if (!await this.waitChange(deadline)) { throw new NativeHelperUnavailableError(this.phase === 'ready' ? 'bindFailed' : 'unavailable'); }
     }
   }
 

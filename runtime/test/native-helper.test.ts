@@ -131,6 +131,52 @@ describe('native helper service client', () => {
     } finally { await fake.close(); }
   });
 
+  it('binds the replacement of a service that fails just before binding, after proving its helper job absent', { timeout: 60000 }, async () => {
+    // Arrange: the first service crashes on its first read, which the start sends just before it binds.
+    const fake = await fakeHelper([{ ops: { hash: [{ kind: 'exit' }] } }, {}]);
+    try {
+      const helper = await fake.start();
+      const failed = helper.request('hash', {}, 5000);
+
+      // Act: bind while the crashed service is being replaced.
+      await assert.rejects(failed, HelperRequestFailedError);
+      await helper.bind(binding);
+
+      // Assert: the replacement proved the helper job absent and was bound, and it serves a mutation.
+      assert.equal(helper.bound, true);
+      assert.equal(fake.children.length, 2);
+      assert.equal((await helper.request('publish', {}, 5000)).status, 'ok');
+      const replacement = (await fake.requests()).filter(request => request.pid === fake.children[1]!.pid).map(request => request.op);
+      assert.deepEqual(replacement, ['jobStates', 'bindScope', 'publish']);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('binds the replacement of a service that fails while binding, and refuses as unavailable once the restart is spent', { timeout: 60000 }, async () => {
+    // Arrange: the first service crashes on bindScope; in the second fixture both services do.
+    const recovering = await fakeHelper([{ ops: { bindScope: [{ kind: 'exit' }] } }, {}]);
+    const exhausting = await fakeHelper([{ ops: { bindScope: [{ kind: 'exit' }] } }, { ops: { bindScope: [{ kind: 'exit' }] } }]);
+    try {
+      const helper = await recovering.start();
+      const exhausted = await exhausting.start();
+
+      // Act
+      await helper.bind(binding);
+      const refused = exhausted.bind(binding);
+
+      // Assert
+      assert.equal(helper.bound, true);
+      assert.deepEqual((await recovering.requests()).filter(request => request.pid === recovering.children[1]!.pid).map(request => request.op), ['jobStates', 'bindScope']);
+      await assert.rejects(refused, error => error instanceof NativeHelperUnavailableError && error.reason === 'unavailable');
+      assert.equal(exhausted.bound, false);
+      await helper.close();
+      await exhausted.close();
+    } finally {
+      await recovering.close();
+      await exhausting.close();
+    }
+  });
+
   it('drives one real service through more than 8,192 requests, whose sequence it checks, without renewal', { timeout: 300000 }, async () => {
     // Arrange
     const helper = await NativeHelper.start(await testHelperImage(), repository);
