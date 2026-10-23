@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -71,5 +72,18 @@ describe('fixed retained identity digest vectors', () => {
       const record = parseOperation(parseStrictJson(Buffer.from(stringifyJson(operation, 'state-event')), 'state-event'), scopeSha256);
       assert.equal(record.scopeSha256, scopeSha256); assert.equal(record.compacted, false); assert.equal(record.kind, 'repair');
     }
+  });
+
+  it('reproduces the operations the native inventory test reads for its scope', async () => {
+    // Arrange: the committed Go fixture records the scope hash its builder run used.
+    const committed = await fs.readFile(new URL('../../native/helper/internal/inventory/testdata/handoff-operations.json', import.meta.url));
+    const scopeSha256 = (JSON.parse(committed.toString('utf8')) as { operations: { scopeSha256: string }[] }).operations[0]!.scopeSha256;
+    const builder = fileURLToPath(new URL('../support/handoff-digest-fixture.ts', import.meta.url));
+
+    // Act
+    const result = await promisify(execFile)(process.execPath, [builder, scopeSha256], { windowsHide: true, timeout: 10000, maxBuffer: 1048576, encoding: 'buffer' });
+
+    // Assert
+    assert.ok(Buffer.compare(result.stdout, committed) === 0, 'The builder no longer reproduces the native inventory fixture; regenerate it.');
   });
 });

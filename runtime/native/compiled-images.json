@@ -52,8 +52,16 @@
         "sha256": "f536df758d36349036e82e9bc2ad5ca758510b885f306c2bed4e56b875fbbe84"
       },
       {
+        "path": "runtime/native/helper/internal/context/codec_test.go",
+        "sha256": "e9fc82becedcc5a71108bca600071cd38353f0c4e5207d4edac8e0778bfc6328"
+      },
+      {
         "path": "runtime/native/helper/internal/context/fingerprint.go",
         "sha256": "c323014b3975b1d3f113efca1d89aeddd97f2e9309f2db8bb317d122cd0ab4db"
+      },
+      {
+        "path": "runtime/native/helper/internal/context/fingerprint_test.go",
+        "sha256": "b25a48c59f80457510a2b497cb9a1f98628675e3efe34194621c46b32b17210c"
       },
       {
         "path": "runtime/native/helper/internal/context/golden_test.go",
@@ -102,6 +110,10 @@
       {
         "path": "runtime/native/helper/internal/inventory/inventory_test.go",
         "sha256": "3f98232a682276a145c5698f4d66a176e205e008524947f22ca963fc52026e38"
+      },
+      {
+        "path": "runtime/native/helper/internal/inventory/resources_test.go",
+        "sha256": "840af7e80053db37c6a60e18769205ffef118a8c75ee29ff6c3cabab3acf0c76"
       },
       {
         "path": "runtime/native/helper/internal/jsondoc/jsondoc.go",
