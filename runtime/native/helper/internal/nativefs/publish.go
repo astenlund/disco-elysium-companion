@@ -172,9 +172,11 @@ func writeNew(path string, data []byte) error {
 	return nil
 }
 
-// createStaging creates path exclusively for writing. The handle shares read, write and delete like every open except the
-// held helper image, so it never blocks a concurrent rename or deletion; create-new keeps its creation exclusive, and
-// publication still verifies the staged bytes before replacing the target.
+// createStaging creates path exclusively for writing: CREATE_NEW fails when any file already has the name. The handle
+// deliberately shares read, write and delete like every open except the held helper image, so it never blocks a
+// concurrent rename or deletion. Nothing checks the staged bytes before the target is moved or replaced; the only
+// content check is the runtime's readback of the published target in runtime/src/files.ts, which holds because every
+// writer of the data root runs as the same user.
 func createStaging(path string) (syscall.Handle, error) {
 	name, err := extended(path)
 	if err != nil {
