@@ -19,6 +19,8 @@ export interface FakeScenario {
   readonly created: string;
   readonly log: string;
   readonly hello?: { readonly nonce?: string; readonly pidOffset?: number; readonly created?: string; readonly fileId?: string; readonly delayMs?: number; readonly stderr?: boolean };
+  /** The highest sequence served; a later one is logged and fails closed with exit 125, as the real service does. */
+  readonly maxSeq?: number;
   /** Actions per operation, consumed in order; an operation without a remaining action is answered ok. */
   readonly ops?: Readonly<Record<string, readonly FakeAction[]>>;
 }
@@ -49,6 +51,7 @@ function answer(request: Record<string, unknown>): void {
   const op = String(request['op']);
   const seq = request['seq'];
   appendFileSync(scenario.log, JSON.stringify({ pid: process.pid, op, seq, deadlineMs: request['deadlineMs'], owner: request['owner'] ?? null }) + '\n');
+  if (scenario.maxSeq !== undefined && Number(seq) > scenario.maxSeq) { process.exit(125); }
   const action: FakeAction = queues.get(op)?.shift() ?? { kind: 'ok' };
   switch (action.kind) {
     case 'ok': later(action.delayMs, () => process.stdout.write(frame({ version: 1, seq, op, status: 'ok', result: action.result ?? defaultResult(op, request) }))); break;

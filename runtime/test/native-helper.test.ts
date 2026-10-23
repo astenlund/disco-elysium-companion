@@ -16,7 +16,7 @@ const repository = fileURLToPath(new URL('../../', import.meta.url));
 const fakeService = fileURLToPath(new URL('./support/fake-helper-service.ts', import.meta.url));
 const binding = { token: '1'.repeat(32), companionRoot: 'C:\\companion', dataRoot: 'C:\\companion\\data' };
 
-type Launch = Partial<Pick<FakeScenario, 'hello'>> & { readonly ops?: Readonly<Record<string, readonly FakeAction[]>> };
+type Launch = Partial<Pick<FakeScenario, 'hello' | 'maxSeq'>> & { readonly ops?: Readonly<Record<string, readonly FakeAction[]>> };
 interface LoggedRequest { readonly pid: number; readonly op: string; readonly seq: number; readonly deadlineMs: number; readonly owner: { readonly pid: number } | null }
 
 /** A fake image file and a launcher that starts one scripted service per launch, in the order given. */
@@ -91,6 +91,41 @@ describe('native helper service client', () => {
       await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
       await rejectsUnavailable(helper.request('hash', {}, 5000));
       assert.throws(() => helper.brokerImage(), NativeHelperUnavailableError);
+      assert.equal(fake.children.length, 3);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('holds proofs that overlap a request in flight at the sequence bound and renews without spending the restart', { timeout: 60000 }, async () => {
+    // Arrange: each service fails closed past sequence 4, as the real service does past its bound, and the first answers
+    // its fourth request slowly, so proofs and an ordinary request arrive while that request is in flight at the bound.
+    const fake = await fakeHelper([
+      { maxSeq: 4, ops: { hash: [{ kind: 'ok' }, { kind: 'ok' }, { kind: 'ok' }, { kind: 'ok', delayMs: 500 }] } },
+      { maxSeq: 4, ops: { eventBatch: [{ kind: 'exit' }] } },
+      {},
+    ]);
+    try {
+      const helper = await fake.start(4);
+      for (let index = 0; index < 3; index++) { assert.equal((await helper.request('hash', {}, 5000)).status, 'ok'); }
+      const slow = helper.request('hash', {}, 5000);
+      await until(async () => (await fake.requests()).length === 4);
+
+      // Act
+      const replies = await Promise.all([slow, helper.request('processIdentity', { pid: process.pid }, 5000),
+        helper.request('jobStates', { names: ['proof'], owner: null }, 5000), helper.request('hash', {}, 5000)]);
+
+      // Assert: every request succeeded, the first service never saw a sequence past the bound and exited cleanly on
+      // renewal, and the overlapping requests ran on the renewed service.
+      assert.ok(replies.every(reply => reply.status === 'ok'));
+      const logged = await fake.requests();
+      assert.ok(logged.filter(request => request.pid === fake.children[0]!.pid).every(request => request.seq <= 4));
+      assert.equal(fake.children[0]!.exitCode, 0);
+      assert.equal(fake.children.length, 2);
+      assert.equal(logged.filter(request => request.pid === fake.children[1]!.pid).length, 3);
+
+      // Act and assert: the renewal left the single failure restart, so a crash of the renewed service is replaced once.
+      await assert.rejects(helper.request('eventBatch', {}, 5000), HelperRequestFailedError);
+      assert.equal((await helper.request('hash', {}, 5000)).status, 'ok');
       assert.equal(fake.children.length, 3);
       await helper.close();
     } finally { await fake.close(); }

@@ -261,7 +261,7 @@ export class NativeHelper {
     if (current !== null && this.phase === 'ready') {
       if (current.fault !== null) { void this.retire(current, 'failure'); }
       else if (current.missed.size > 0 && !current.draining) { this.drain(current); }
-      else if (current.draining && current.inFlight === 0) { void this.retire(current, 'failure'); }
+      else if (current.draining && current.inFlight === 0) { void this.retire(current, this.retireCause(current)); }
     }
     this.notify();
   }
@@ -301,6 +301,14 @@ export class NativeHelper {
       await service.stop();
       throw error instanceof NativeHelperUnavailableError ? error : new NativeHelperUnavailableError('serviceStart');
     }
+  }
+
+  /**
+   * A drained service whose next sequence exceeds the bound, with no fault or missed request, is renewed without using the
+   * failure restart; any other drained service has failed.
+   */
+  private retireCause(service: ServiceProcess): 'failure' | 'renewal' {
+    return service.nextSeq > this.sequenceLimit && service.fault === null && !service.hadMiss ? 'renewal' : 'failure';
   }
 
   /** Stops sending ordinary requests to a service with a missed request; it retires once the others have settled. */
@@ -361,7 +369,7 @@ export class NativeHelper {
     const until = performance.now() + helperJobPollMs;
     for (;;) {
       const reply = await this.exchange(service, 'jobStates', { names: [name], owner: null }, until + 30_000);
-      const jobs = reply.status === 'ok' && hasExactKeys(reply.result, ['jobs']) ? reply.result['jobs'] : null;
+      const jobs = reply !== null && reply.status === 'ok' && hasExactKeys(reply.result, ['jobs']) ? reply.result['jobs'] : null;
       const entry = Array.isArray(jobs) && jobs.length === 1 ? jobs[0] : null;
       if (!hasExactKeys(entry, ['name', 'state', 'processes'])) { throw new NativeHelperUnavailableError('bindFailed'); }
       if (entry['state'] === 'absent') { break; }
@@ -370,7 +378,7 @@ export class NativeHelper {
     }
     const bound = await this.exchange(service, 'bindScope', { token: binding.token, companionRoot: binding.companionRoot, dataRoot: binding.dataRoot },
       performance.now() + 30_000);
-    if (bound.status !== 'ok' || !hasExactKeys(bound.result, ['bound']) || bound.result['bound'] !== true) {
+    if (bound === null || bound.status !== 'ok' || !hasExactKeys(bound.result, ['bound']) || bound.result['bound'] !== true) {
       throw new NativeHelperUnavailableError('bindFailed');
     }
   }
@@ -381,12 +389,13 @@ export class NativeHelper {
       if (this.phase === 'exhausted' || this.phase === 'closed') { throw new NativeHelperUnavailableError('unavailable'); }
       const service = this.current;
       const usable = service !== null && service.alive && service.identity !== null && !this.exclusive && this.phase === 'ready';
-      // A missed request still running inside the service keeps its slot there, so it counts against both limits.
+      // A missed request still running inside the service keeps its slot there, so it counts against both limits. Proofs
+      // keep using a service drained for a missed request, but no request reaches one past its sequence bound.
       const occupied = service === null ? maximumInFlight : service.inFlight + service.missed.size;
       if (usable && service.nextSeq > this.sequenceLimit && !service.draining) {
         service.draining = true;
         if (service.inFlight === 0) { void this.retire(service, 'renewal'); }
-      } else if (usable && (!service.draining || proof) && occupied < maximumInFlight && (proof || service.ordinaryInFlight + service.missed.size < ordinarySlots)) {
+      } else if (usable && (!service.draining || proof && service.nextSeq <= this.sequenceLimit) && occupied < maximumInFlight && (proof || service.ordinaryInFlight + service.missed.size < ordinarySlots)) {
         if (proof) { service.proofsInFlight += 1; } else { service.ordinaryInFlight += 1; }
         return service;
       }
@@ -396,16 +405,19 @@ export class NativeHelper {
 
   private release(service: ServiceProcess, proof: boolean): void {
     if (proof) { service.proofsInFlight -= 1; } else { service.ordinaryInFlight -= 1; }
-    if (service.draining && service.inFlight === 0 && this.current === service) {
-      void this.retire(service, service.nextSeq > this.sequenceLimit && service.fault === null && !service.hadMiss ? 'renewal' : 'failure');
-    }
+    if (service.draining && service.inFlight === 0 && this.current === service) { void this.retire(service, this.retireCause(service)); }
     this.notify();
   }
 
-  /** Sends one request on a service whose slot the caller already holds, or one this module owns outright. */
-  private exchange(service: ServiceProcess, op: string, fields: Record<string, unknown>, deadline: number): Promise<HelperReply> {
+  /**
+   * Sends one request on a service whose slot the caller already holds, or one this module owns outright. Requests that
+   * acquired their slots together still take their sequences one at a time here, so a request whose sequence would exceed
+   * the bound is not sent: it resolves null, and the caller waits for the renewal.
+   */
+  private exchange(service: ServiceProcess, op: string, fields: Record<string, unknown>, deadline: number): Promise<HelperReply | null> {
     const deadlineMs = Math.floor(deadline - performance.now());
     if (deadlineMs < sendFloorMs) { return Promise.resolve(deadlineExceeded); }
+    if (service.nextSeq > this.sequenceLimit) { return Promise.resolve(null); }
     const seq = service.nextSeq;
     service.nextSeq += 1;
     return new Promise<HelperReply>((resolve, reject) => {
@@ -434,7 +446,11 @@ export class NativeHelper {
       try {
         // An owned observation names the bound service that serves it, so a retry on the replacement names the replacement.
         const sent = fields['owner'] === boundServiceOwner ? { ...fields, owner: this.ownerOf(service) } : fields;
-        return await this.exchange(service, op, sent, deadline);
+        const reply = await this.exchange(service, op, sent, deadline);
+        if (reply !== null) { return reply; }
+        // The sequence bound was reached after this slot was taken: the service drains for renewal and this request waits.
+        service.draining = true;
+        continue;
       } catch (error) {
         if (error instanceof NativeHelperUnavailableError) { throw error; }
         const failure = error instanceof HelperRequestFailedError ? error : new HelperRequestFailedError('fault', 'The native helper request failed.');
@@ -462,7 +478,7 @@ export class NativeHelper {
         this.exclusive = true;
         try {
           const reply = await this.exchange(service, 'bindScope', { token: binding.token, companionRoot: binding.companionRoot, dataRoot: binding.dataRoot }, deadline);
-          if (reply.status !== 'ok' || !hasExactKeys(reply.result, ['bound']) || reply.result['bound'] !== true) { throw new NativeHelperUnavailableError('bindFailed'); }
+          if (reply === null || reply.status !== 'ok' || !hasExactKeys(reply.result, ['bound']) || reply.result['bound'] !== true) { throw new NativeHelperUnavailableError('bindFailed'); }
           this.binding = binding;
           return;
         } catch (error) {
