@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4655104,
-    "sha256": "7498615b30261ddb80315397bfa16f26c341ea1c8ae09db9d13aded37ed89fee",
+    "bytes": 4655616,
+    "sha256": "0e78c42c350a097c7d1161f795a044fc31269a37fac293ba5b7c9c968e262a99",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -173,11 +173,15 @@
       },
       {
         "path": "runtime/native/helper/internal/nativefs/publish.go",
-        "sha256": "f43fcc8855c2dbcac2407e7122236616c7280485ebf63f29f46af30372b7b009"
+        "sha256": "993acfd92815184907e023ae65f81bc110684820414c58b9d0bdce22462b936f"
       },
       {
         "path": "runtime/native/helper/internal/nativefs/read.go",
         "sha256": "fb92bd4b2de4ff71d2c74e0ebd8bd40a0fee82df5044a559cc6bc541d2d1623c"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/staging_test.go",
+        "sha256": "6b2591871408cf5127c7076745f1adbfe6611e66b4813aa6e75fd40fe70af996"
       },
       {
         "path": "runtime/native/helper/internal/paritytest/paritytest.go",

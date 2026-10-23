@@ -148,14 +148,9 @@ var errCreated error = createdError{}
 // writeNew creates path exclusively, writes data, flushes it to disk and closes it. errCreated means the file exists
 // and is owned by this call even though the write did not complete.
 func writeNew(path string, data []byte) error {
-	name, err := syscall.UTF16PtrFromString(`\\?\` + path)
-	if err != nil {
-		return err
-	}
-	raw, _, callError := procCreateFileW.Call(uintptr(unsafe.Pointer(name)), genericWrite, 0, 0, createNew, normalAttribute, 0)
-	handle := syscall.Handle(raw)
+	handle, err := createStaging(path)
 	if handle == syscall.InvalidHandle {
-		return callError
+		return err
 	}
 	written := 0
 	for written < len(data) {
@@ -175,6 +170,21 @@ func writeNew(path string, data []byte) error {
 		return errCreated
 	}
 	return nil
+}
+
+// createStaging creates path exclusively for writing. The handle shares read, write and delete like every open except the
+// held helper image, so it never blocks a concurrent rename or deletion; create-new keeps its creation exclusive, and
+// publication still verifies the staged bytes before replacing the target.
+func createStaging(path string) (syscall.Handle, error) {
+	name, err := extended(path)
+	if err != nil {
+		return syscall.InvalidHandle, err
+	}
+	raw, _, callError := procCreateFileW.Call(uintptr(unsafe.Pointer(name)), genericWrite, shareReadWriteDelete, 0, createNew, normalAttribute, 0)
+	if syscall.Handle(raw) == syscall.InvalidHandle {
+		return syscall.InvalidHandle, callError
+	}
+	return syscall.Handle(raw), nil
 }
 
 func extended(path string) (*uint16, error) { return syscall.UTF16PtrFromString(`\\?\` + path) }
