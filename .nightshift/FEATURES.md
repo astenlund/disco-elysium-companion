@@ -108,9 +108,8 @@ Replace the per-call PowerShell helpers and their Add-Type C# under `runtime/scr
 
 **Slices:**
 
-- **Go helper and first-launch build (MVP).** The service and broker image, manifest and pins, the build step and its refusals, every helper request except core-reply validation, removal of the PowerShell and C# helpers, the compiled selector and the committed images, with acceptance fixtures for publication, codec, broker exit relay, service restart, build refusals and a copied-root chat.
+- ~~Go helper and first-launch build (MVP).~~ (Shipped; see FEATURES_HISTORY.md.)
 - **Core-reply validation in Go.** Port `Convert-CoreReply` into a service request so a core call costs only its own PowerShell process.
-  **Requires:** [Go native helper](features/runtime-powershell-dependency.md).
 - **State core in Go.** Replace the PowerShell state core and adapter glue under a revision of the state extraction design.
   **Requires:** [Go native helper: Core-reply validation in Go](features/runtime-powershell-dependency.md).
 

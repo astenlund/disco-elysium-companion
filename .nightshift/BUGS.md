@@ -185,7 +185,7 @@ Investigate why a fresh status brief urged spending all available skill points w
 
 ## Startup prototype deferred bugs
 
-These findings belong to the private healthy-startup branch. Unless an entry says otherwise, they remain separate from its safety and timing acceptance gates; the canonical launch spelling entry is a selector acceptance gate.
+These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
 
 ### [Suppressed provider readiness readout](bugs/runtime-suppressed-provider-ready.md)
 
@@ -199,23 +199,11 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
-### [Selected path requires canonical launch spelling](bugs/runtime-selected-path-spelling.md)
-
-Launching the direct CLI through a differently cased path would make the selected bootstrap refuse after its transfer mark and exit 1 instead of canonicalizing the roots; latent while the compiled selector is off.
-
-**Requires:** none.
-
-### [Per-start helper profiles accumulate](bugs/runtime-helper-profile-accumulation.md)
-
-Every selected chat start leaves a new `.tmp/runtime-startup-*` helper profile behind, and the fresh profile keeps PowerShell from reusing its startup JIT profile; decide on a reused or cleaned-up admitted profile after real-provider timing.
-
-**Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
-
 ## Host environment findings
 
 ### [.NET tools folders leak into the User PATH](bugs/user-path-dotnet-tools-leak.md)
 
-Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the persisted User PATH, which grew past cmd's PATH limit by 2026-10-19.
+Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the persisted User PATH, which grew past cmd's PATH limit by 2026-10-19. The runtime no longer redirects `DOTNET_CLI_HOME` since the Go native helper MVP; untracked probe and harness scripts still can, and the PATH confirmation check remains open.
 
 **Requires:** none.
 
