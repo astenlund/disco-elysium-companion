@@ -359,6 +359,44 @@ describe('native helper first-launch build', () => {
     assert.ok(!existsSync(path.join(root, '.tmp')));
   });
 
+  it('refuses a file under the helper module that could be an unlisted build input', { timeout: 120000 }, async () => {
+    // Arrange: an assembly file the go command would build, and ignored files that it would not.
+    const real = await testHelperImage();
+    const root = await installation();
+    await fs.copyFile(real.path, path.join(root, helperImageFile));
+    for (const ignored of ['testdata/notes.txt', '_scratch/notes.txt', '.cache/notes.txt']) {
+      await fs.mkdir(path.dirname(path.join(root, helperModule, ignored)), { recursive: true });
+      await fs.writeFile(path.join(root, helperModule, ignored), 'synthetic');
+    }
+    assert.equal((await ensureNativeHelperImage({ build: false, root })).sha256, nativeHelperSha256);
+    await fs.writeFile(path.join(root, helperModule, 'stub_amd64.s'), '// synthetic');
+
+    // Act and assert
+    await refuses(ensureNativeHelperImage({ build: true, root }), 'sourceMismatch');
+    await refuses(ensureNativeHelperImage({ build: false, root }), 'sourceMismatch');
+  });
+
+  it('reports a build guard held by another build when a pinned image leaves claims to sweep', { timeout: 120000 }, async () => {
+    // Arrange: a build that sleeps until its deadline holds the guard and its claim, while another start publishes the image.
+    const real = await testHelperImage();
+    const root = await installation();
+    const marker = path.join(scratch, `marker-${randomUUID()}`);
+    const holding = ensureNativeHelperImage({ build: true, root, buildDeadlineMs: 8000, ...withToolchain(await fakeToolchain({ build: 'sleep', marker })) });
+    await waitFor(marker);
+    await fs.copyFile(real.path, path.join(root, helperImageFile));
+    const diagnostics: string[] = [];
+
+    // Act
+    const image = await ensureNativeHelperImage({ build: true, root, onDiagnostic: text => diagnostics.push(text) });
+
+    // Assert: the image is usable, the held guard is reported and the holder's claimed directory is left in place.
+    assert.equal(image.sha256, nativeHelperSha256);
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0]!, /Another start is building the native helper/);
+    assert.equal((await fs.readdir(buildRoot(root))).filter(name => name.endsWith('.claim')).length, 1);
+    await refuses(holding, 'buildFailed');
+  });
+
   it('sweeps interrupted builds it provably created and leaves foreign entries untouched', { timeout: 300000 }, async () => {
     // Arrange: a build process killed while its toolchain runs leaves a claimed directory with its owner record.
     const real = await testHelperImage();

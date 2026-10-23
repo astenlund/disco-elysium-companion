@@ -88,22 +88,30 @@ function admitOrCreateDirectory(location: string): void {
   admitDirectory(location);
 }
 
-/** Every .go file and go.mod under the helper module, as forward-slash paths in ordinal order. */
+/**
+ * Every .go file and go.mod under the helper module, as forward-slash paths in ordinal order. Any other file outside the
+ * directories the go command ignores could be a build input the manifest does not list, so it refuses.
+ */
 export function helperSourcePaths(root: string): readonly string[] {
   const found: string[] = [];
-  const walk = (relative: string): void => {
+  const walk = (relative: string, ignored: boolean): void => {
     let entries;
     try { entries = readdirSync(path.join(root, relative), { withFileTypes: true }); }
     catch { throw refuse('sourceMismatch'); }
     for (const entry of entries) {
       const child = `${relative}/${entry.name}`;
       if (entry.isSymbolicLink()) { throw refuse('sourceMismatch'); }
-      if (entry.isDirectory()) { walk(child); }
+      if (entry.isDirectory()) { walk(child, ignored || goIgnoredDirectory(entry.name)); }
       else if (entry.isFile() && (entry.name.endsWith('.go') || child === `${helperModule}/go.mod`)) { found.push(child); }
+      else if (!ignored) { throw refuse('sourceMismatch'); }
     }
   };
-  walk(helperModule);
+  walk(helperModule, false);
   return found.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+}
+
+function goIgnoredDirectory(name: string): boolean {
+  return name === 'testdata' || name.startsWith('_') || name.startsWith('.');
 }
 
 /** The LF-normalized digest of one helper source, as the manifest records it. */
@@ -354,17 +362,18 @@ export async function compileHelper(root: string, directory: string, go = resolv
 async function sweepLeftoverBuilds(root: string, report: (message: string) => void): Promise<void> {
   const buildRoot = path.join(root, buildFolder);
   let names: readonly string[];
+  const leftResidue = (error: unknown): void => { report(`Left build residue in .tmp/native-build: ${error instanceof Error ? error.message : String(error)}`); };
   try { names = lstatOrNull(buildRoot) === null ? [] : readdirSync(buildRoot); }
-  catch { return; }
+  catch (error) { leftResidue(error); return; }
   if (!names.some(name => claimName.test(name))) { return; }
   let releaseGuard: () => Promise<void>;
   try { releaseGuard = await takeBuildGuard(root); }
-  catch { return; }
+  catch (error) { leftResidue(error); return; }
   try {
     admitDirectory(path.join(root, '.tmp'));
     admitDirectory(buildRoot);
     sweepBuildDirectories(buildRoot, report);
-  } catch (error) { report(`Left build residue in .tmp/native-build: ${error instanceof Error ? error.message : String(error)}`); }
+  } catch (error) { leftResidue(error); }
   finally { await releaseGuard(); }
 }
 
