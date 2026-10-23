@@ -9,7 +9,8 @@ export type FakeAction =
   | { readonly kind: 'exit'; readonly delayMs?: number }
   | { readonly kind: 'stderr' }
   | { readonly kind: 'oversize' }
-  | { readonly kind: 'malformed' };
+  | { readonly kind: 'malformed' }
+  | { readonly kind: 'badStatus' };
 
 export interface FakeScenario {
   readonly sha256: string;
@@ -57,6 +58,7 @@ function answer(request: Record<string, unknown>): void {
     case 'stderr': process.stderr.write('x'); break;
     case 'oversize': { const header = Buffer.alloc(4); header.writeUInt32BE(0x7fffffff); process.stdout.write(header); break; }
     case 'malformed': process.stdout.write(frame({ version: 1, seq, op, status: 'ok' })); break;
+    case 'badStatus': process.stdout.write(frame({ version: 1, seq, op, status: 'pending', code: 'later' })); break;
   }
 }
 

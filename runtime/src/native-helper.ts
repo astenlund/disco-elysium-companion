@@ -144,9 +144,12 @@ class ServiceProcess {
       return;
     }
     if (reply['op'] !== pending.op) { this.failChannel('A native helper reply names another operation.'); return; }
-    this.pending.delete(seq);
-    if (reply['status'] === 'ok' && 'result' in reply) { pending.resolve({ status: 'ok', result: reply['result']! }); }
-    else if (reply['status'] === 'error' && typeof reply['code'] === 'string' && /^[a-zA-Z]{1,64}$/.test(reply['code'])) {
+    // The entry stays pending until its reply validates, so a channel fault raised for an invalid reply rejects it too.
+    if (reply['status'] === 'ok' && 'result' in reply) {
+      this.pending.delete(seq);
+      pending.resolve({ status: 'ok', result: reply['result']! });
+    } else if (reply['status'] === 'error' && typeof reply['code'] === 'string' && /^[a-zA-Z]{1,64}$/.test(reply['code'])) {
+      this.pending.delete(seq);
       pending.resolve({ status: 'error', code: reply['code'] });
     } else { this.failChannel('A native helper reply status is invalid.'); }
   }

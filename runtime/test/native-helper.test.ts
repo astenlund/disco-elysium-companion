@@ -113,7 +113,7 @@ describe('native helper service client', () => {
     } finally { await helper.close(); }
   });
 
-  for (const fault of ['oversize', 'malformed', 'stderr'] as const) {
+  for (const fault of ['oversize', 'malformed', 'badStatus', 'stderr'] as const) {
     it(`stops the service on a ${fault} reply, uses the restart and exhausts on the next fault`, { timeout: 60000 }, async () => {
       // Arrange
       const fake = await fakeHelper([{ ops: { hash: [{ kind: fault }] } }, { ops: { hash: [{ kind: 'ok' }, { kind: fault }] } }]);

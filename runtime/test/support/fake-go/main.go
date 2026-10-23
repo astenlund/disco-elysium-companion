@@ -54,6 +54,11 @@ func main() {
 		_ = os.WriteFile(output, []byte("not the pinned image"), 0o600)
 	case "sleep":
 		time.Sleep(10 * time.Minute)
+	case "late":
+		time.Sleep(3 * time.Second)
+		if copyFile(settings.CopyFrom, output) != nil {
+			os.Exit(1)
+		}
 	case "copy":
 		if settings.JunkAt != "" {
 			_ = os.WriteFile(settings.JunkAt, []byte("published meanwhile"), 0o600)

@@ -20,6 +20,8 @@ const buildName = /^build-[0-9a-f]{32}$/;
 const claimName = /^(build-[0-9a-f]{32})\.claim$/;
 const maximumSourceBytes = 1_048_576;
 const buildDeadlineMs = 600_000;
+/** How long a toolchain command may take to exit after the deadline's taskkill before it is abandoned. */
+const killWaitMs = 30_000;
 const ownerRecord = 'owner.json';
 
 /** The verified image: its canonical path, pinned digest and the file identity hashed through one descriptor. */
@@ -279,10 +281,22 @@ function disableTelemetry(environment: NodeJS.ProcessEnv): void {
   writeFileSync(path.join(directory, 'mode'), 'off');
 }
 
-/** Runs one toolchain command; at the deadline the system taskkill ends go and every descendant still in its tree. */
+/**
+ * Runs one toolchain command; at the deadline the system taskkill ends go and every descendant still in its tree. Expiry
+ * is final: the result reports it whatever the exit code, and when no exit follows the kill within its bounded wait, the
+ * command is abandoned and reported expired, leaving whatever it still holds for a later sweep.
+ */
 function runToolchain(go: string, args: readonly string[], cwd: string, environment: NodeJS.ProcessEnv,
   deadlineMs: number): Promise<{ readonly code: number | null; readonly stdout: string; readonly expired: boolean }> {
-  return new Promise(resolve => {
+  return new Promise(result => {
+    let settled = false;
+    let abandon: NodeJS.Timeout | undefined;
+    const resolve = (value: { readonly code: number | null; readonly stdout: string; readonly expired: boolean }): void => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(abandon);
+      result(value);
+    };
     const child = spawn(go, args, { cwd, env: environment, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const output: Buffer[] = [];
     let size = 0;
@@ -295,6 +309,7 @@ function runToolchain(go: string, args: readonly string[], cwd: string, environm
         const taskkill = path.join(environment['SystemRoot']!, 'System32', 'taskkill.exe');
         spawn(taskkill, ['/T', '/F', '/PID', String(child.pid)], { shell: false, windowsHide: true, stdio: 'ignore' }).on('error', () => {});
       }
+      abandon = setTimeout(() => { resolve({ code: null, stdout: '', expired: true }); }, killWaitMs);
     }, deadlineMs);
     child.once('error', () => { clearTimeout(timer); resolve({ code: null, stdout: '', expired }); });
     child.once('close', code => { clearTimeout(timer); resolve({ code, stdout: Buffer.concat(output).toString('utf8'), expired }); });
@@ -305,16 +320,18 @@ function runToolchain(go: string, args: readonly string[], cwd: string, environm
  * Compiles the helper into a build directory with the closed environment and the manifest's toolchain and flags, after
  * checking the toolchain version; returns the output path. The pin tool and the build step share this one recipe.
  */
-export async function compileHelper(root: string, directory: string, go = resolveGo(), deadlineMs = buildDeadlineMs): Promise<string> {
-  const environment = goEnvironment(directory, go);
+export async function compileHelper(root: string, directory: string, go = resolveGo(), deadlineMs = buildDeadlineMs,
+  source: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const environment = goEnvironment(directory, go, source);
   disableTelemetry(environment);
   const moduleDirectory = path.join(root, helperModule);
   const version = await runToolchain(go, ['version'], moduleDirectory, environment, 60_000);
   if (version.code === null && !version.expired) { throw refuse('toolchainMissing'); }
+  if (version.expired) { throw refuse('buildFailed'); }
   if (version.code !== 0 || version.stdout.trim() !== `go version ${goToolchain.version} ${goToolchain.target}`) { throw refuse('toolchainVersion'); }
   const output = path.join(directory, path.basename(helperImageFile));
   const compiled = await runToolchain(go, ['build', ...goToolchain.flags, '-o', output, '.'], moduleDirectory, environment, deadlineMs);
-  if (compiled.code !== 0) { throw refuse('buildFailed'); }
+  if (compiled.expired || compiled.code !== 0) { throw refuse('buildFailed'); }
   return output;
 }
 
@@ -385,7 +402,7 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
     const go = resolveGo(options.toolchainEnvironment);
     const { directory, claim } = createBuildDirectory(buildRoot);
     try {
-      const output = await compileHelper(root, directory, go, options.buildDeadlineMs);
+      const output = await compileHelper(root, directory, go, options.buildDeadlineMs, options.toolchainEnvironment);
       const observed = observeImageFile(output);
       if (observed === null || observed.sha256 !== release.helper.sha256 || observed.bytes !== release.helper.bytes) { throw refuse('outputMismatch'); }
       // A hard link publishes create-only: it never replaces an image another start published meanwhile.

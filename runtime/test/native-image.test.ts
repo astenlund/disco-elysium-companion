@@ -19,7 +19,7 @@ const buildChild = fileURLToPath(new URL('./support/native-build-child.ts', impo
 const scratch = path.join(repository, '.tmp', `native-image-${randomUUID()}`);
 const goVersion = 'go version go1.26.0 windows/amd64';
 
-interface FakeGo { readonly version?: string; readonly build: 'fail' | 'junk' | 'sleep' | 'copy'; readonly copyFrom?: string; readonly junkAt?: string; readonly marker?: string }
+interface FakeGo { readonly version?: string; readonly build: 'fail' | 'junk' | 'sleep' | 'late' | 'copy'; readonly copyFrom?: string; readonly junkAt?: string; readonly marker?: string }
 
 let fakeGoBinary = '';
 
@@ -47,6 +47,16 @@ async function fakeToolchain(settings: FakeGo): Promise<string> {
   await fs.copyFile(fakeGoBinary, path.join(directory, 'go.exe'));
   await fs.writeFile(path.join(directory, 'fake-go.json'), JSON.stringify({ version: goVersion, ...settings }));
   return directory;
+}
+
+/** A system root whose System32 taskkill.exe exits with failure at once, standing in for a kill that cannot end a build. */
+async function failingTaskkill(): Promise<string> {
+  const systemRoot = path.join(scratch, `system-${randomUUID()}`);
+  const system32 = path.join(systemRoot, 'System32');
+  await fs.mkdir(system32, { recursive: true });
+  await fs.copyFile(fakeGoBinary, path.join(system32, 'taskkill.exe'));
+  await fs.writeFile(path.join(system32, 'fake-go.json'), JSON.stringify({ version: goVersion, build: 'fail' }));
+  return systemRoot;
 }
 
 const withToolchain = (directory: string): Pick<NativeImageOptions, 'toolchainEnvironment'> => ({ toolchainEnvironment: { ...process.env, PATH: directory } });
@@ -240,6 +250,37 @@ describe('native helper first-launch build', () => {
     assert.equal(image.sha256, nativeHelperSha256);
     assert.deepEqual(progress, []);
     assert.deepEqual(await fs.readdir(buildRoot(root)), []);
+  });
+
+  it('refuses a build that exits successfully after its deadline when taskkill could not end it', { timeout: 120000 }, async () => {
+    // Arrange: a taskkill that fails, and a toolchain that finishes a valid image three seconds after a one-second deadline.
+    const real = await testHelperImage();
+    const root = await installation();
+    const systemRoot = await failingTaskkill();
+    const toolchain = await fakeToolchain({ build: 'late', copyFrom: real.path });
+
+    // Act and assert: expiry is final, so the late image is never admitted.
+    await refuses(ensureNativeHelperImage({ build: true, root, buildDeadlineMs: 1000, toolchainEnvironment: { ...process.env, PATH: toolchain, SystemRoot: systemRoot } }), 'buildFailed');
+    assert.ok(!existsSync(path.join(root, helperImageFile)));
+  });
+
+  it('abandons a build that outlives a failed taskkill after a bounded wait and refuses it', { timeout: 120000 }, async () => {
+    // Arrange: a taskkill that fails, and a toolchain that never finishes.
+    const root = await installation();
+    const systemRoot = await failingTaskkill();
+    const marker = path.join(scratch, `marker-${randomUUID()}`);
+    const toolchain = await fakeToolchain({ build: 'sleep', marker });
+    try {
+      // Act and assert
+      const started = performance.now();
+      await refuses(ensureNativeHelperImage({ build: true, root, buildDeadlineMs: 1000, toolchainEnvironment: { ...process.env, PATH: toolchain, SystemRoot: systemRoot } }), 'buildFailed');
+      assert.ok(performance.now() - started < 60_000);
+      assert.ok(!existsSync(path.join(root, helperImageFile)));
+    } finally {
+      const pid = Number(await fs.readFile(marker, 'utf8').catch(() => '0'));
+      if (pid > 0) { try { process.kill(pid); } catch { /* Already ended. */ } }
+      await processGone(pid);
+    }
   });
 
   it('refuses with toolchainMissing when go.exe is not on the PATH', { timeout: 120000 }, async () => {
