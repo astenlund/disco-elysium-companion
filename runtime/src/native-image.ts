@@ -48,6 +48,15 @@ export interface NativeImageOptions {
 
 function refuse(reason: NativeHelperReason, detail?: string): NativeHelperUnavailableError { return new NativeHelperUnavailableError(reason, detail); }
 
+/** Runs one build-step file operation, refusing an I/O failure with the build-failure reason and the failure as detail. */
+function buildIo<T>(action: () => T): T {
+  try { return action(); }
+  catch (error) {
+    if (error instanceof NativeHelperUnavailableError) { throw error; }
+    throw refuse('buildFailed', error instanceof Error ? error.message : String(error));
+  }
+}
+
 function lstatOrNull(location: string): BigIntStats | null {
   try { return lstatSync(location, { bigint: true }); }
   catch (error) {
@@ -338,8 +347,8 @@ function runToolchain(go: string, args: readonly string[], cwd: string, environm
  */
 export async function compileHelper(root: string, directory: string, go = resolveGo(), deadlineMs = buildDeadlineMs,
   source: NodeJS.ProcessEnv = process.env, onAbandoned: () => void = () => {}): Promise<string> {
-  const environment = goEnvironment(directory, go, source);
-  disableTelemetry(environment);
+  const environment = buildIo(() => goEnvironment(directory, go, source));
+  buildIo(() => disableTelemetry(environment));
   const moduleDirectory = path.join(root, helperModule);
   const version = await runToolchain(go, ['version'], moduleDirectory, environment, 60_000);
   if (version.code === null && !version.expired) { throw refuse('toolchainMissing'); }
@@ -419,7 +428,7 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
     if (failed !== null) { removeFailedImage(image, failed); }
     options.onBuildStart?.();
     const go = resolveGo(options.toolchainEnvironment);
-    const { directory, claim } = createBuildDirectory(buildRoot);
+    const { directory, claim } = buildIo(() => createBuildDirectory(buildRoot));
     let abandoned = false;
     try {
       const output = await compileHelper(root, directory, go, options.buildDeadlineMs, options.toolchainEnvironment, () => { abandoned = true; });

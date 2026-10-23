@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 import { prepareNativeImage } from '../src/cli.ts';
 import { goToolchain, helperImageFile, helperModule, manifestFile, nativeHelperSha256 } from '../src/compiled-image-release.ts';
-import { NativeHelperUnavailableError, type NativeHelperReason } from '../src/native-helper-error.ts';
-import { ensureNativeHelperImage, type NativeImageOptions } from '../src/native-image.ts';
+import { nativeHelperReasons, NativeHelperUnavailableError, type NativeHelperReason } from '../src/native-helper-error.ts';
+import { compileHelper, ensureNativeHelperImage, type NativeImageOptions } from '../src/native-image.ts';
 import type { StartupProgress } from '../src/startup-progress.ts';
 import { compileTestProgram, testHelperImage } from './support/native-helper.ts';
 
@@ -190,6 +190,18 @@ describe('native helper first-launch build', () => {
       assert.ok(!existsSync(path.join(root, helperImageFile)));
     });
   }
+
+  it('refuses a build-step I/O failure with buildFailed and the failure as detail', { timeout: 120000 }, async () => {
+    // Arrange: a build directory beneath a regular file, so creating the toolchain environment folders fails.
+    const root = await installation();
+    const toolchain = await fakeToolchain({ build: 'fail' });
+    const blocker = path.join(scratch, `blocker-${randomUUID()}`);
+    await fs.writeFile(blocker, 'synthetic');
+
+    // Act and assert
+    await assert.rejects(compileHelper(root, path.join(blocker, 'build'), path.join(toolchain, 'go.exe')),
+      error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed' && error.message.length > nativeHelperReasons.buildFailed.length);
+  });
 
   it('names the pinned toolchain version in every toolchain remedy', () => {
     // Arrange
