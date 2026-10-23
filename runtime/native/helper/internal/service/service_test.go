@@ -255,11 +255,21 @@ func TestReadsAndBindingAreConfinedToTheCompanionRoot(t *testing.T) {
 		s.send(fmt.Sprintf(`{"version":1,"seq":%d,"op":"bindScope","deadlineMs":5000,"token":"%s","companionRoot":%s,"dataRoot":%s}`, seq, strings.Repeat("a", 32), encoded, data))
 		return s.read()
 	}
+	source := func(seq int, root, data string) map[string]any {
+		encoded, _ := json.Marshal(root)
+		dataRoot, _ := json.Marshal(data)
+		sourceRoot, _ := json.Marshal(outside)
+		s.send(fmt.Sprintf(`{"version":1,"seq":%d,"op":"coreReplySource","deadlineMs":5000,"companionRoot":%s,"dataRoot":%s,"sourceRoot":%s}`, seq, encoded, dataRoot, sourceRoot))
+		return s.read()
+	}
 
 	// Act
 	inside := admit(1, companion)
 	refused := admit(2, outside)
 	foreignBinding := bind(3, outside)
+	insideSource := source(4, companion, companion+`/data`)
+	foreignSource := source(5, outside, outside+`/data`)
+	foreignData := source(6, companion, outside+`/data`)
 
 	// Assert
 	if inside["status"] != "ok" {
@@ -270,6 +280,14 @@ func TestReadsAndBindingAreConfinedToTheCompanionRoot(t *testing.T) {
 	}
 	if foreignBinding["status"] != "error" || foreignBinding["code"] != "jobUnavailable" {
 		t.Fatalf("a binding of another companion root answered %v", foreignBinding)
+	}
+	if insideSource["status"] != "ok" {
+		t.Fatalf("a core-reply source inside the companion root answered %v", insideSource)
+	}
+	for _, reply := range []map[string]any{foreignSource, foreignData} {
+		if reply["status"] != "error" || reply["code"] != "sourceUnavailable" {
+			t.Fatalf("a core-reply source outside the companion root answered %v", reply)
+		}
 	}
 	if code := s.exitCode(); code != exitClean {
 		t.Fatalf("exit %d", code)

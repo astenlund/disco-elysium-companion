@@ -427,12 +427,14 @@ func stopOrphanWatcher(c *call, request *j.Value) ([]byte, string) {
 	return j.NewObject().String("state", result).Int("pid", int64(processID)).String("created", created).Bytes(), ""
 }
 
-func coreReplySource(_ *call, request *j.Value) ([]byte, string) {
+// coreReplySource reads its companion and data roots only inside the service's companion root; its installation-root
+// bundle under sourceRoot is the one exemption from the admitted-root rule.
+func coreReplySource(c *call, request *j.Value) ([]byte, string) {
 	const code = "sourceUnavailable"
 	companionRoot, ok := text(request, "companionRoot")
 	dataRoot, okData := text(request, "dataRoot")
 	sourceRoot, okSource := text(request, "sourceRoot")
-	if !ok || !okData || !okSource {
+	if !ok || !okData || !okSource || !c.state.withinCompanion(companionRoot) || !c.state.withinCompanion(dataRoot) {
 		return nil, code
 	}
 	result, err := sources.CoreReplySource(companionRoot, dataRoot, sourceRoot)
