@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { goToolchain } from './go-toolchain.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type JsonValue } from './json.ts';
 import { NativeHelperUnavailableError } from './native-helper-error.ts';
 
@@ -12,8 +13,7 @@ export const nativeHelperSha256 = '67348eac3eb5450d21ff6a9f013ee21f216509160915c
 export const manifestFile = 'runtime/native/compiled-images.json';
 export const helperModule = 'runtime/native/helper';
 export const helperImageFile = 'runtime/native/companion-helper.exe';
-export const goToolchain = { name: 'go', version: 'go1.26.0', target: 'windows/amd64', amd64: 'v1',
-  flags: ['-buildvcs=false', '-trimpath', '-ldflags=-buildid='] } as const;
+export { goToolchain };
 const maximumImageBytes = 33_554_432;
 
 export interface NativeSource { readonly path: string; readonly sha256: string }

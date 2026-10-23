@@ -7,7 +7,7 @@ import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { prepareNativeImage } from '../src/cli.ts';
-import { helperImageFile, helperModule, manifestFile, nativeHelperSha256 } from '../src/compiled-image-release.ts';
+import { goToolchain, helperImageFile, helperModule, manifestFile, nativeHelperSha256 } from '../src/compiled-image-release.ts';
 import { NativeHelperUnavailableError, type NativeHelperReason } from '../src/native-helper-error.ts';
 import { ensureNativeHelperImage, type NativeImageOptions } from '../src/native-image.ts';
 import type { StartupProgress } from '../src/startup-progress.ts';
@@ -17,7 +17,7 @@ const repository = fileURLToPath(new URL('../../', import.meta.url));
 const fakeGoSource = fileURLToPath(new URL('./support/fake-go/', import.meta.url));
 const buildChild = fileURLToPath(new URL('./support/native-build-child.ts', import.meta.url));
 const scratch = path.join(repository, '.tmp', `native-image-${randomUUID()}`);
-const goVersion = 'go version go1.26.0 windows/amd64';
+const goVersion = `go version ${goToolchain.version} ${goToolchain.target}`;
 
 interface FakeGo { readonly version?: string; readonly build: 'fail' | 'junk' | 'sleep' | 'late' | 'copy'; readonly copyFrom?: string; readonly junkAt?: string; readonly marker?: string }
 
@@ -190,6 +190,17 @@ describe('native helper first-launch build', () => {
       assert.ok(!existsSync(path.join(root, helperImageFile)));
     });
   }
+
+  it('names the pinned toolchain version in every toolchain remedy', () => {
+    // Arrange
+    const reasons = ['toolchainMissing', 'toolchainVersion', 'outputMismatch', 'buildFailed'] as const;
+
+    // Act
+    const remedies = reasons.map(reason => new NativeHelperUnavailableError(reason).message);
+
+    // Assert
+    for (const remedy of remedies) { assert.ok(remedy.includes(goToolchain.version), remedy); }
+  });
 
   it('refuses with admission when the installation or its native folder is not an ordinary directory', { timeout: 120000 }, async () => {
     // Arrange

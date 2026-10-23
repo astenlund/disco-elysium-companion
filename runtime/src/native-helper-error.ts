@@ -1,11 +1,13 @@
-/** Every reason a native helper refusal can carry, each with its own remedy. */
+import { goToolchain } from './go-toolchain.ts';
+
+/** Every reason a native helper refusal can carry, each with its own remedy; the toolchain remedies name the pinned version. */
 export const nativeHelperReasons = {
   admission: 'The installation folder, its .tmp folder or runtime/native is not an ordinary directory. Run the companion from an ordinary directory.',
-  toolchainMissing: 'Go is not on PATH. Install Go go1.26.0 and retry.',
-  toolchainVersion: 'The Go on PATH is not go1.26.0. Install Go go1.26.0 and retry.',
+  toolchainMissing: `Go is not on PATH. Install Go ${goToolchain.version} and retry.`,
+  toolchainVersion: `The Go on PATH is not ${goToolchain.version}. Install Go ${goToolchain.version} and retry.`,
   sourceMismatch: 'The native helper sources do not match the reviewed manifest. Restore a committed checkout and retry.',
-  outputMismatch: 'The native helper built with Go go1.26.0 does not match the reviewed pin. Report this; the build is not reproducible here.',
-  buildFailed: 'The native helper build failed or timed out with Go go1.26.0. Check the toolchain and retry.',
+  outputMismatch: `The native helper built with Go ${goToolchain.version} does not match the reviewed pin. Report this; the build is not reproducible here.`,
+  buildFailed: `The native helper build failed or timed out with Go ${goToolchain.version}. Check the toolchain and retry.`,
   buildGuardHeld: 'Another start is building the native helper. Retry when that build finishes.',
   publicationFailed: 'The built native helper could not be published. Close any running chat and retry.',
   imageInUse: 'A running chat holds the native helper image. Close that chat and retry.',
