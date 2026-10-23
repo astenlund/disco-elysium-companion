@@ -23,11 +23,11 @@ export interface ProxyLaunch {
 
 export interface ProxyScenario { readonly log: string; readonly dieFile: string; readonly launch: ProxyLaunch }
 
-const [image, nonce] = process.argv.slice(2);
+const [image, nonce, companionRoot] = process.argv.slice(2);
 const scenario = JSON.parse(process.env['PROXY_SCENARIO'] ?? '{}') as ProxyScenario;
 const queues = new Map(Object.entries(scenario.launch.rules ?? {}).map(([op, rules]) => [op, [...rules]]));
 await new Promise(resolve => { setTimeout(resolve, scenario.launch.spawnDelayMs ?? 0); });
-const service = spawn(image!, ['service', nonce!], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+const service = spawn(image!, ['service', nonce!, companionRoot!], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 const pending = new Map<number, { readonly op: string; readonly rule: ProxyRule }>();
 let helloSeen = false;
 let dying = false;

@@ -30,7 +30,7 @@ async function fakeHelper(launches: readonly Launch[]) {
   const log = path.join(scratch, 'requests.log');
   await fs.writeFile(log, '');
   const children: ChildProcessWithoutNullStreams[] = [];
-  const launcher: ServiceSpawn = (_image, nonce) => {
+  const launcher: ServiceSpawn = (_image, nonce, _companionRoot) => {
     const launch = launches[children.length] ?? {};
     const scenario: FakeScenario = { sha256: observed.sha256, volume: observed.volume, fileId: observed.fileId, created: '1234567', log, ...launch };
     const child = spawn(process.execPath, [fakeService, nonce], { env: { ...process.env, FAKE_HELPER_SCENARIO: JSON.stringify(scenario) }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -39,7 +39,7 @@ async function fakeHelper(launches: readonly Launch[]) {
   };
   return {
     image, launcher, children,
-    start: (sequenceLimit?: number) => NativeHelper.start(image, sequenceLimit, launcher),
+    start: (sequenceLimit?: number) => NativeHelper.start(image, repository, sequenceLimit, launcher),
     requests: async (): Promise<LoggedRequest[]> => (await fs.readFile(log, 'utf8')).split('\n').filter(line => line !== '').map(line => JSON.parse(line) as LoggedRequest),
     close: async () => {
       for (const child of children) { if (child.exitCode === null && child.signalCode === null) { child.kill(); } }
@@ -98,7 +98,7 @@ describe('native helper service client', () => {
 
   it('drives one real service through more than 8,192 requests, whose sequence it checks, without renewal', { timeout: 300000 }, async () => {
     // Arrange
-    const helper = await NativeHelper.start(await testHelperImage());
+    const helper = await NativeHelper.start(await testHelperImage(), repository);
     try {
       await helper.verifyLive();
 
@@ -340,9 +340,9 @@ describe('native helper service client', () => {
     const fake = await fakeHelper([{}]);
     try {
       // Act and assert
-      await assert.rejects(NativeHelper.start({ ...fake.image, sha256: '0'.repeat(64) }, undefined, fake.launcher),
+      await assert.rejects(NativeHelper.start({ ...fake.image, sha256: '0'.repeat(64) }, repository, undefined, fake.launcher),
         error => error instanceof NativeHelperUnavailableError && error.reason === 'imagePinMismatch');
-      await assert.rejects(NativeHelper.start({ ...fake.image, path: `${fake.image.path}.absent` }, undefined, fake.launcher),
+      await assert.rejects(NativeHelper.start({ ...fake.image, path: `${fake.image.path}.absent` }, repository, undefined, fake.launcher),
         error => error instanceof NativeHelperUnavailableError && error.reason === 'imageAbsent');
       assert.equal(fake.children.length, 0);
     } finally { await fake.close(); }

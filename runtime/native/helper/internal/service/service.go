@@ -44,8 +44,9 @@ var (
 // heldImage keeps the service's own executable open, denying writes, replacement and deletion while the service runs.
 var heldImage syscall.Handle
 
-// state is the only mutable state requests share: the scope binding.
+// state is the only mutable state requests share: the scope binding. Its companion root is fixed at start.
 type state struct {
+	companion     string
 	mutex         sync.RWMutex
 	bound         bool
 	companionRoot string
@@ -86,10 +87,16 @@ func (w *writer) stop() {
 	w.stopped = true
 }
 
-// Run serves requests until its input ends. nonce is the runtime's fresh handshake challenge. Each request runs on its
+// Run serves requests until its input ends. nonce is the runtime's fresh handshake challenge and companionRoot the
+// canonical companion root that confines every path-bearing request; a root that is not an ordinary directory under its
+// own final path ends the service before its handshake. Each request runs on its
 // own goroutine, so a slow or hung request never delays another; replies carry their request's seq.
-func Run(nonce string, input io.Reader, output io.Writer) int {
+func Run(nonce, companionRoot string, input io.Reader, output io.Writer) int {
 	if !j.IsHex(nonce, 32) {
+		return exitProtocol
+	}
+	companion, err := nativefs.Admit(companionRoot, false)
+	if err != nil || !companion.IsDirectory {
 		return exitProtocol
 	}
 	hello, err := handshake(nonce)
@@ -104,7 +111,7 @@ func Run(nonce string, input io.Reader, output io.Writer) int {
 	if replies.write(hello) != nil {
 		return exitProtocol
 	}
-	current := &state{}
+	current := &state{companion: companion.Path}
 	slots := make(chan struct{}, MaximumInFlight)
 	var running sync.WaitGroup
 	var expected int64 = 1
@@ -283,9 +290,17 @@ func (s *state) withinBound(path string) bool {
 	s.mutex.RLock()
 	bound, root := s.bound, s.dataRoot
 	s.mutex.RUnlock()
-	if !bound {
-		return false
-	}
+	return bound && within(root, path)
+}
+
+// withinCompanion reports whether path lies inside the companion root the service was started for: every path-bearing
+// read-only request is confined to it, so no request can observe a root outside the companion, such as SaveGames.
+func (s *state) withinCompanion(path string) bool {
+	return s.companion != "" && within(s.companion, path)
+}
+
+// within reports whether path, once normalized, equals root or lies beneath it.
+func within(root, path string) bool {
 	normalized, err := nativefs.NormalizePath(path)
 	if err != nil {
 		return false

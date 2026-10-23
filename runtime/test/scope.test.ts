@@ -33,7 +33,7 @@ async function openScopeFixture() {
     finally { await fixture.close(); }
   };
   try {
-    const supervisor = (await createTestNative(fixture.root)).supervisor;
+    const supervisor = (await createTestNative(fixture.root, undefined, fixture.root)).supervisor;
     const inspector = new PathInspector(supervisor);
     const candidate = await discoverScope(inspector, fixture.root, 'game/opaque', 'principal:opaque');
     await supervisor.proveBindable();

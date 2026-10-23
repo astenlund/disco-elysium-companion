@@ -35,7 +35,7 @@ async function scope(): Promise<string> {
 }
 
 async function startHelper(root: string): Promise<{ readonly helper: NativeHelper; readonly supervisor: ProcessSupervisor }> {
-  const helper = await NativeHelper.start(await testHelperImage());
+  const helper = await NativeHelper.start(await testHelperImage(), root);
   return { helper, supervisor: await ProcessSupervisor.create(root, helper) };
 }
 

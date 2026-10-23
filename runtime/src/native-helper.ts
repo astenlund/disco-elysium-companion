@@ -48,10 +48,10 @@ export function withoutHome(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /** @internal Starts one service process from the image; tests substitute a scripted service. */
-export type ServiceSpawn = (image: HelperImage, nonce: string) => ChildProcessWithoutNullStreams;
+export type ServiceSpawn = (image: HelperImage, nonce: string, companionRoot: string) => ChildProcessWithoutNullStreams;
 
-const spawnService: ServiceSpawn = (image, nonce) =>
-  spawn(image.path, ['service', nonce], { env: withoutHome(process.env), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+const spawnService: ServiceSpawn = (image, nonce, companionRoot) =>
+  spawn(image.path, ['service', nonce, companionRoot], { env: withoutHome(process.env), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
 function isMutating(op: string, fields: Record<string, unknown>): boolean {
   return mutatingOperations.has(op) || op === 'inventory' && fields['mode'] === 'Quarantine';
@@ -223,6 +223,8 @@ export class NativeHelper {
   private readonly image: HelperImage;
   private readonly sequenceLimit: number;
   private readonly spawnService: ServiceSpawn;
+  /** The canonical companion root every service of this helper is started for; it confines their path-bearing requests. */
+  private readonly companionRoot: string;
   private current: ServiceProcess | null = null;
   private phase: Phase = 'ready';
   private restartsLeft = 1;
@@ -231,14 +233,19 @@ export class NativeHelper {
   private retiring: Promise<void> | null = null;
   private waiters: (() => void)[] = [];
 
-  private constructor(image: HelperImage, sequenceLimit: number, launcher: ServiceSpawn) { this.image = image; this.sequenceLimit = sequenceLimit; this.spawnService = launcher; }
+  private constructor(image: HelperImage, companionRoot: string, sequenceLimit: number, launcher: ServiceSpawn) {
+    this.image = image;
+    this.companionRoot = companionRoot;
+    this.sequenceLimit = sequenceLimit;
+    this.spawnService = launcher;
+  }
 
   /**
    * Starts and verifies the service from an image whose pin the caller has already checked. The sequence limit and the
    * launcher exist for tests: a low limit drives renewal, and a launcher substitutes a scripted service.
    */
-  static async start(image: HelperImage, sequenceLimit = Number.MAX_SAFE_INTEGER, launcher: ServiceSpawn = spawnService): Promise<NativeHelper> {
-    const helper = new NativeHelper(image, sequenceLimit, launcher);
+  static async start(image: HelperImage, companionRoot: string, sequenceLimit = Number.MAX_SAFE_INTEGER, launcher: ServiceSpawn = spawnService): Promise<NativeHelper> {
+    const helper = new NativeHelper(image, companionRoot, sequenceLimit, launcher);
     helper.current = await helper.launch();
     return helper;
   }
@@ -276,7 +283,7 @@ export class NativeHelper {
     if (observed === null) { throw new NativeHelperUnavailableError('imageAbsent'); }
     if (observed.sha256 !== this.image.sha256) { throw new NativeHelperUnavailableError('imagePinMismatch'); }
     const nonce = randomBytes(16).toString('hex');
-    const service = new ServiceProcess(this.spawnService(this.image, nonce), () => this.change());
+    const service = new ServiceProcess(this.spawnService(this.image, nonce, this.companionRoot), () => this.change());
     try {
       const hello = parseStrictJson(await service.awaitHello(handshakeTimeoutMs), frameBudget);
       if (!hasExactKeys(hello, ['version', 'nonce', 'pid', 'created', 'imageSha256', 'imageVolume', 'imageFileId'])

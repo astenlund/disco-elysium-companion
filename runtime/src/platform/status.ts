@@ -297,7 +297,7 @@ export async function readAdmittedRuntimeStatus(scope: RuntimeScope, inspector: 
  */
 export async function readRuntimeStatus(companionRoot: string): Promise<StandaloneRuntimeStatus> {
   const config = await loadRuntimeConfig(path.join(companionRoot, 'runtime', 'companion.config.json'));
-  const helper = await NativeHelper.start(await ensureNativeHelperImage({ build: false }));
+  const helper = await NativeHelper.start(await ensureNativeHelperImage({ build: false }), companionRoot);
   try { return await readStatusWithHelper(companionRoot, config, helper); }
   finally { await helper.close(); }
 }

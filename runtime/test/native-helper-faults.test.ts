@@ -33,7 +33,7 @@ async function faultHarness(launches: readonly ProxyLaunch[], image?: HelperImag
   const scratch = path.join(repository, '.tmp', `native-faults-${randomUUID()}`);
   await fs.mkdir(scratch, { recursive: true });
   const proxies: HelperProxies = await helperProxies(path.join(scratch, 'proxy.log'), launches);
-  const helper = await NativeHelper.start(image ?? await testHelperImage(), undefined, proxies.launcher);
+  const helper = await NativeHelper.start(image ?? await testHelperImage(), fixture.root, undefined, proxies.launcher);
   const supervisor = await ProcessSupervisor.create(fixture.root, helper);
   await supervisor.proveBindable();
   await helper.bind({ token: supervisor.scopeToken, companionRoot: fixture.root, dataRoot: fixture.root });

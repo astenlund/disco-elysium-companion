@@ -10,6 +10,7 @@ import (
 	"time"
 
 	j "companion-helper/internal/jsondoc"
+	"companion-helper/internal/nativefs"
 )
 
 const nonce = "0123456789abcdef0123456789abcdef"
@@ -23,11 +24,26 @@ type session struct {
 
 func start(t *testing.T) *session {
 	t.Helper()
+	return startIn(t, companionFor(t))
+}
+
+// companionFor gives a test its own companion root under its canonical temporary folder.
+func companionFor(t *testing.T) string {
+	t.Helper()
+	admitted, err := nativefs.Admit(t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("temporary companion root is not admitted: %v", err)
+	}
+	return admitted.Path
+}
+
+func startIn(t *testing.T, companionRoot string) *session {
+	t.Helper()
 	inputReader, inputWriter := io.Pipe()
 	outputReader, outputWriter := io.Pipe()
 	done := make(chan int, 1)
 	go func() {
-		code := Run(nonce, inputReader, outputWriter)
+		code := Run(nonce, companionRoot, inputReader, outputWriter)
 		outputWriter.Close()
 		done <- code
 	}()
@@ -220,5 +236,55 @@ func TestBindingThatExpiresBeforeItsJobStaysUnbound(t *testing.T) {
 	// Assert
 	if reply["status"] != "error" || reply["code"] != "deadlineExceeded" || shared.isBound() {
 		t.Fatalf("an expired binding answered %v, bound %v", reply, shared.isBound())
+	}
+}
+
+func TestReadsAndBindingAreConfinedToTheCompanionRoot(t *testing.T) {
+	// Arrange: a companion root, and an ordinary directory outside it standing in for SaveGames.
+	companion := companionFor(t)
+	outside := companionFor(t)
+	s := startIn(t, companion)
+	admit := func(seq int, root string) map[string]any {
+		encoded, _ := json.Marshal(root)
+		s.send(fmt.Sprintf(`{"version":1,"seq":%d,"op":"admit","deadlineMs":5000,"root":%s,"targets":[%s],"allowMissing":true}`, seq, encoded, encoded))
+		return s.read()
+	}
+	bind := func(seq int, root string) map[string]any {
+		encoded, _ := json.Marshal(root)
+		data, _ := json.Marshal(root + `/data`)
+		s.send(fmt.Sprintf(`{"version":1,"seq":%d,"op":"bindScope","deadlineMs":5000,"token":"%s","companionRoot":%s,"dataRoot":%s}`, seq, strings.Repeat("a", 32), encoded, data))
+		return s.read()
+	}
+
+	// Act
+	inside := admit(1, companion)
+	refused := admit(2, outside)
+	foreignBinding := bind(3, outside)
+
+	// Assert
+	if inside["status"] != "ok" {
+		t.Fatalf("a read inside the companion root answered %v", inside)
+	}
+	if refused["status"] != "error" || refused["code"] != "admissionUnavailable" {
+		t.Fatalf("a read outside the companion root answered %v", refused)
+	}
+	if foreignBinding["status"] != "error" || foreignBinding["code"] != "jobUnavailable" {
+		t.Fatalf("a binding of another companion root answered %v", foreignBinding)
+	}
+	if code := s.exitCode(); code != exitClean {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestServiceRefusesToStartForAnInvalidCompanionRoot(t *testing.T) {
+	// Arrange
+	missing := companionFor(t) + `/absent`
+
+	// Act
+	code := Run(nonce, missing, strings.NewReader(""), io.Discard)
+
+	// Assert
+	if code != exitProtocol {
+		t.Fatalf("exit %d", code)
 	}
 }

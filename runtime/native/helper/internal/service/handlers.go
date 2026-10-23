@@ -84,12 +84,12 @@ func pid(request *j.Value, name string) (int, bool) {
 	return int(value), err == nil
 }
 
-func admit(_ *call, request *j.Value) ([]byte, string) {
+func admit(c *call, request *j.Value) ([]byte, string) {
 	const code = "admissionUnavailable"
 	root, ok := text(request, "root")
 	allowMissing, okMissing := flag(request, "allowMissing")
 	targets := request.Get("targets")
-	if !ok || !okMissing || targets.Kind != j.Array || len(targets.Items) < 1 || len(targets.Items) > 64 || len(targets.Raw) > 65536 {
+	if !ok || !okMissing || !c.state.withinCompanion(root) || targets.Kind != j.Array || len(targets.Items) < 1 || len(targets.Items) > 64 || len(targets.Raw) > 65536 {
 		return nil, code
 	}
 	list := j.NewArray()
@@ -124,12 +124,12 @@ func describeAdmission(admission nativefs.Admission) []byte {
 	return out.Raw("missing", missing.Bytes()).Bytes()
 }
 
-func hash(_ *call, request *j.Value) ([]byte, string) {
+func hash(c *call, request *j.Value) ([]byte, string) {
 	const code = "observationUnavailable"
 	root, ok := text(request, "root")
 	input, okInput := decoded(request, "inputBase64", j.Config.Bytes)
 	scope, okScope := nullableText(request, "scopeSha256")
-	if !ok || !okInput || !okScope {
+	if !ok || !okInput || !okScope || !c.state.withinCompanion(root) {
 		return nil, code
 	}
 	result, err := nativefs.ReadHashes(root, input, scope)
@@ -145,7 +145,7 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 	scope, okScope := text(request, "scopeSha256")
 	companion, okCompanion := nullableText(request, "companionRoot")
 	mode, okMode := text(request, "mode")
-	if !ok || !okScope || !okCompanion || !okMode {
+	if !ok || !okScope || !okCompanion || !okMode || !c.state.withinCompanion(root) || companion != nil && !c.state.withinCompanion(*companion) {
 		return nil, code
 	}
 	var result []byte
@@ -184,12 +184,12 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 	return result, ""
 }
 
-func eventMetadata(_ *call, request *j.Value) ([]byte, string) {
+func eventMetadata(c *call, request *j.Value) ([]byte, string) {
 	const code = "inspectionUnavailable"
 	root, ok := text(request, "root")
 	requests, okRequests := text(request, "requestsJson")
 	source, okSource := flag(request, "source")
-	if !ok || !okRequests || !okSource {
+	if !ok || !okRequests || !okSource || !c.state.withinCompanion(root) {
 		return nil, code
 	}
 	result, err := events.ReadRequests(root, []byte(requests), source)
@@ -199,11 +199,11 @@ func eventMetadata(_ *call, request *j.Value) ([]byte, string) {
 	return result, ""
 }
 
-func eventBatch(_ *call, request *j.Value) ([]byte, string) {
+func eventBatch(c *call, request *j.Value) ([]byte, string) {
 	const code = "inspectionUnavailable"
 	root, ok := text(request, "root")
 	input, okInput := decoded(request, "inputBase64", j.Config.Bytes)
-	if !ok || !okInput {
+	if !ok || !okInput || !c.state.withinCompanion(root) {
 		return nil, code
 	}
 	result, err := events.ReadBatch(root, input)
@@ -456,7 +456,7 @@ func bindScope(c *call, request *j.Value) ([]byte, string) {
 		return nil, code
 	}
 	companion, err := nativefs.Admit(companionRoot, false)
-	if err != nil || !companion.IsDirectory {
+	if err != nil || !companion.IsDirectory || !nativefs.EqualOrdinalIgnoreCase(companion.Path, s.companion) {
 		return nil, code
 	}
 	// A first start binds before scope initialization creates the data root, so only its location is admitted here;

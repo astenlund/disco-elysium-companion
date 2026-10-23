@@ -9,6 +9,8 @@ import { ProcessSupervisor } from '../../src/process.ts';
 import type { ProxyLaunch, ProxyScenario } from './helper-proxy.ts';
 
 const proxyScript = fileURLToPath(new URL('./helper-proxy.ts', import.meta.url));
+/** The repository root, which holds every test fixture under .tmp; helpers confine their reads to it by default. */
+const repository = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 
 let image: Promise<HelperImage> | null = null;
 
@@ -37,9 +39,9 @@ export async function compileTestProgram(source: string, scratch: string, name: 
   return output;
 }
 
-/** A started, unbound helper service from the verified image; the caller closes it. */
-export async function startTestHelper(): Promise<NativeHelper> {
-  return NativeHelper.start(await testHelperImage());
+/** A started, unbound helper service from the verified image, confined to the repository by default; the caller closes it. */
+export async function startTestHelper(companionRoot = repository): Promise<NativeHelper> {
+  return NativeHelper.start(await testHelperImage(), companionRoot);
 }
 
 export interface ProxyRecord { readonly pid: number; readonly event: 'request' | 'reply' | 'dropped'; readonly op: string; readonly seq: number }
@@ -64,11 +66,11 @@ export async function helperProxies(log: string, launches: readonly ProxyLaunch[
   const pids: number[] = [];
   let launched = 0;
   const dieFile = (launch: number): string => `${log}.die-${launch}`;
-  const launcher: ServiceSpawn = (image, nonce) => {
+  const launcher: ServiceSpawn = (image, nonce, companionRoot) => {
     const index = launched;
     launched += 1;
     const scenario: ProxyScenario = { log, dieFile: dieFile(index), launch: launches[index] ?? {} };
-    const child = spawn(process.execPath, [proxyScript, image.path, nonce], { env: { ...process.env, PROXY_SCENARIO: JSON.stringify(scenario) }, shell: false,
+    const child = spawn(process.execPath, [proxyScript, image.path, nonce, companionRoot], { env: { ...process.env, PROXY_SCENARIO: JSON.stringify(scenario) }, shell: false,
       windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     // The proxy forwards the handshake unchanged; this listener runs before the runtime's own, so the runtime compares the
     // handshake against the real service pid.
@@ -102,9 +104,11 @@ export interface TestNative {
 /**
  * Starts a helper service and a supervisor for one scope root. With a binding, the scope's helper and retired jobs are
  * proven absent and the service is bound, as openBackend does right after its guard, so mutating requests are admitted.
+ * The service is confined to the binding's companion root, or the repository, unless a test that binds later names one.
  */
-export async function createTestNative(scopeRoot: string, binding?: { readonly companionRoot: string; readonly dataRoot: string }): Promise<TestNative> {
-  const helper = await NativeHelper.start(await testHelperImage());
+export async function createTestNative(scopeRoot: string, binding?: { readonly companionRoot: string; readonly dataRoot: string },
+  companionRoot = binding?.companionRoot ?? repository): Promise<TestNative> {
+  const helper = await NativeHelper.start(await testHelperImage(), companionRoot);
   try {
     const supervisor = await ProcessSupervisor.create(scopeRoot, helper);
     if (binding !== undefined) {

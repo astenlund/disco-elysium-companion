@@ -294,7 +294,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
   let helper: NativeHelper;
-  try { helper = await NativeHelper.start(options.nativeImage ?? await ensureNativeHelperImage({ build: false }), undefined, options.nativeLauncher); }
+  try { helper = await NativeHelper.start(options.nativeImage ?? await ensureNativeHelperImage({ build: false }), options.companionRoot, undefined, options.nativeLauncher); }
   catch (error) { throw phaseFatalError(error); }
   let bootstrap: Awaited<ReturnType<typeof createReadOnlyInspection>>;
   try { bootstrap = await createReadOnlyInspection(options.companionRoot, helper); }
