@@ -36,6 +36,7 @@ Some directories exist locally but are not tracked, by design:
 - `state/` holds the live playthrough digests, baseline, locks and outbox. It is personal data and changes on every autosave.
 - `adapters/disco_elysium/releases/` holds the installed, immutable adapter package that the pipeline actually runs. See "Setting up a fresh clone" below.
 - `adapters/disco_elysium/dump-tool/dedump.exe` is a build output. `build.ps1` in that directory rebuilds it with `go build`.
+- `runtime/native/companion-helper.exe`, the runtime's native helper, is a build output that the runtime builds on first launch and checks against a reviewed pin; `runtime/README.md` describes it.
 - `.tmp/` is the scratch area for save copies and pipeline work files.
 - `runtime-data/` holds runtime-owned journals and session bindings, partitioned by game and Windows user.
 
@@ -71,6 +72,7 @@ Only one of the two may consume state at a time. A marker in `state/` records th
 - Windows. The runtime and the core scripts use Windows-specific process and file primitives.
 - PowerShell 7.5 or later (`pwsh`).
 - Go 1.21 or later to build the dump tool.
+- For the runtime, exactly Go `go1.26.0` on `PATH` whenever it must build its native helper: on the first `chat`, `consumer` or `repair` after a clone, when the built image fails its pin, and for the runtime tests. A launch that finds the pinned image already built runs no Go.
 - Node 22.23 or later for the runtime.
 - A Disco Elysium installation. `adapters/disco_elysium/adapter.json` currently carries the author's absolute save path; the setup section above says how to change it.
 - For the agent CLI route, a Claude Code or Codex login. For the runtime, a Claude Code login or API credentials; it uses the default Claude Code profile.
@@ -90,7 +92,7 @@ npm --prefix runtime run typecheck
 npm --prefix runtime test
 ```
 
-The runtime's integration tests build private companion roots under a scratch directory and drive the coordinator with a fake provider, so they need no real save and no credentials, but the native checks can take a long time.
+The runtime's integration tests build private companion roots under a scratch directory and drive the coordinator with a fake provider, so they need no real save and no credentials, but the native checks can take a long time. They need the runtime's Go toolchain, and when the native helper image is absent they build it into the checkout.
 
 ## Design principles
 
