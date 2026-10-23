@@ -10,16 +10,16 @@ The harness runs the fixture main four times on the same root with a synthetic p
 
 ## Results
 
-The runs below measured commit `fae8233` on 2026-10-23, with the helper image already built and pinned.
+The runs below measured commit `f2f5e3f` on 2026-10-23, the head of the delivered branch, with the helper image already built and pinned.
 
 | Run | Attached healthy | Turn | Shutdown |
 |---|---|---|---|
-| New save | 13.8 s | 5.1 s | 0.5 s |
-| Acknowledged restart | 6.2 s | 4.7 s | 0.1 s |
-| Killed at attachment | 6.2 s | none | killed |
-| Restart after the kill | 6.1 s | 4.8 s | 0.1 s |
+| New save | 18.9 s | 7.0 s | 0.3 s |
+| Acknowledged restart | 7.7 s | 6.7 s | 0.3 s |
+| Killed at attachment | 7.6 s | none | killed |
+| Restart after the kill | 7.8 s | 6.6 s | 0.3 s |
 
-Every completed run attached healthy, with the runtime as consumer, fresh state, ready safety, a healthy journal, a running watcher and a ready provider. While the service held the image, the fixture's write open of `companion-helper.exe` failed with `EBUSY` in every completed run. The marker the killed run left recorded `cleanShutdown: false` and its watcher's identity, and the restart started from that marker and reached attachment; the harness did not record whether that watcher was still running when the restart checked it. The staged save copy kept its hash and write time. An earlier run of the same harness on the same runtime sources, before the commit, attached in 18.6, 7.5, 7.6 and 8.0 seconds in the same order and also passed.
+Every completed run attached healthy, with the runtime as consumer, fresh state, ready safety, a healthy journal, a running watcher and a ready provider. While the service held the image, the fixture's write open of `companion-helper.exe` failed with `EBUSY` in every completed run. The marker the killed run left recorded `cleanShutdown: false` and its watcher's identity, and the restart started from that marker and reached attachment; the harness did not record whether that watcher was still running when the restart checked it. The staged save copy kept its hash and write time. Two earlier runs of the same harness also passed: one at commit `fae8233`, before later fixes changed the service's start arguments and request handling, attached in 13.8, 6.2, 6.2 and 6.1 seconds in the same order, and one on the same sources before that commit attached in 18.6, 7.5, 7.6 and 8.0 seconds. Attach times on this machine therefore vary between runs by several seconds, so these runs show that each path attaches healthy rather than a latency difference between commits.
 
 The runtime started PowerShell only for core entry scripts, the adapter's digest builder, the save watcher and retained core reply validation:
 
@@ -32,7 +32,7 @@ The runtime started PowerShell only for core entry scripts, the adapter's digest
 | Runtime `StartupCoreReplyWorker.ps1` | 4 |
 | Runtime `Read-CoreReply.ps1` | 3 |
 
-The sampler watches the whole machine. During this run other tools on the machine also started PowerShell: temporary scripts of an updater under the user's temp folder, encoded commands, and a few processes whose command lines the sampler could not read. None of them named the copied root or a runtime script, and they are left out of this list; the sampler did not record process ancestry beyond the parent identifier, so this attribution rests on command lines.
+The sampler watches the whole machine without filtering, and during this run no other PowerShell process started on it, so the list above is every PowerShell process the machine started while the runs were sampled. During the earlier run at `fae8233`, other tools on the machine also started PowerShell, none of them naming the copied root or a runtime script, and the runtime's own processes were the same as above.
 
 ## Coverage of the remaining acceptance fixtures
 
