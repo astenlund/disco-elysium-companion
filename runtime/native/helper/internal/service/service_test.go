@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	j "companion-helper/internal/jsondoc"
 )
@@ -166,5 +167,58 @@ func TestQuarantineTrimIsAMutatingRequest(t *testing.T) {
 	}
 	if code := s.exitCode(); code != exitClean {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestBindingPastItsCommitPointKeepsItsResult(t *testing.T) {
+	// Arrange: a handler that succeeds only after its request's deadline has passed.
+	slow := handler{run: func(*call, *j.Value) ([]byte, string) {
+		time.Sleep(80 * time.Millisecond)
+		return []byte(`{"bound":true}`), ""
+	}}
+	request, err := j.Parse([]byte(`{"op":"x"}`), frameBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := func(op string) map[string]any {
+		work := &call{state: &state{}, deadline: time.Now().Add(20 * time.Millisecond)}
+		var value map[string]any
+		if json.Unmarshal(serve(work, slow, request, 1, op), &value) != nil {
+			t.Fatalf("%s reply is not JSON", op)
+		}
+		return value
+	}
+
+	// Act
+	bound := reply("bindScope")
+	read := reply("admit")
+
+	// Assert: a binding that created and joined its job replies normally; a read that ran out replies deadlineExceeded.
+	if bound["status"] != "ok" {
+		t.Fatalf("a binding past its commit point answered %v", bound)
+	}
+	if read["status"] != "error" || read["code"] != "deadlineExceeded" {
+		t.Fatalf("an expired read answered %v", read)
+	}
+}
+
+func TestBindingThatExpiresBeforeItsJobStaysUnbound(t *testing.T) {
+	// Arrange: a binding whose deadline passed before it could create its job.
+	shared := &state{}
+	work := &call{state: shared, deadline: time.Now().Add(-time.Second)}
+	request, err := j.Parse([]byte(`{"op":"bindScope","token":"`+strings.Repeat("0", 32)+`","companionRoot":"C:/x","dataRoot":"C:/x/data"}`), frameBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Act
+	var reply map[string]any
+	if json.Unmarshal(serve(work, handlers["bindScope"], request, 1, "bindScope"), &reply) != nil {
+		t.Fatal("the reply is not JSON")
+	}
+
+	// Assert
+	if reply["status"] != "error" || reply["code"] != "deadlineExceeded" || shared.isBound() {
+		t.Fatalf("an expired binding answered %v, bound %v", reply, shared.isBound())
 	}
 }

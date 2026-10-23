@@ -169,7 +169,8 @@ func serve(work *call, handler handler, request *j.Value, seq int64, op string) 
 		code = "deadlineExceeded"
 	default:
 		result, code = handler.run(work, request)
-		if code == "" && !changes && work.expired() {
+		// bindScope commits when it creates and joins the scope job, so once it succeeds it is past its commit point too.
+		if code == "" && !changes && op != "bindScope" && work.expired() {
 			code = "deadlineExceeded"
 		}
 	}

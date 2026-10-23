@@ -57,6 +57,15 @@ function isMutating(op: string, fields: Record<string, unknown>): boolean {
   return mutatingOperations.has(op) || op === 'inventory' && fields['mode'] === 'Quarantine';
 }
 
+/** A reply's settlement when its operation and status are valid for the request it names, otherwise null. */
+function validReply(reply: { readonly [key: string]: JsonValue }, op: string): HelperReply | null {
+  if (reply['op'] !== op) { return null; }
+  if (reply['status'] === 'ok' && 'result' in reply) { return { status: 'ok', result: reply['result']! }; }
+  if (reply['status'] === 'error' && typeof reply['code'] === 'string' && /^[a-zA-Z]{1,64}$/.test(reply['code'])) { return { status: 'error', code: reply['code'] }; }
+
+  return null;
+}
+
 interface PendingReply {
   readonly op: string;
   readonly resolve: (reply: HelperReply) => void;
@@ -69,7 +78,7 @@ class ServiceProcess {
   readonly exited: Promise<void>;
   readonly pending = new Map<number, PendingReply>();
   /** Missed requests still running inside the service: each holds one of its slots until its late reply or the exit. */
-  readonly missed = new Set<number>();
+  readonly missed = new Map<number, string>();
   /** Whether any request of this service missed its deadline, which makes its retirement a failure, not a renewal. */
   hadMiss = false;
   identity: HelperIdentity | null = null;
@@ -137,21 +146,20 @@ class ServiceProcess {
     const seq = reply === null ? undefined : asInteger(reply['seq']);
     if (reply === null || seq === undefined || asInteger(reply['version']) !== 1) { this.failChannel('A native helper reply is malformed.'); return; }
     const pending = this.pending.get(seq);
+    const missedOp = this.missed.get(seq);
+    if (pending === undefined && missedOp === undefined) { this.failChannel('A native helper reply names no request in flight.'); return; }
+    // Every reply, a missed request's late one included, is validated before it settles anything; an invalid one faults
+    // the channel while its entry is still recorded, so the fault reaches its caller and every peer.
+    const settled = validReply(reply, pending?.op ?? missedOp!);
+    if (settled === null) { this.failChannel('A native helper reply names another operation or carries an invalid status.'); return; }
     if (pending === undefined) {
-      // The late reply of a request already failed for its deadline is a valid frame and is discarded.
-      if (this.missed.delete(seq)) { this.onChange(); return; }
-      this.failChannel('A native helper reply names no request in flight.');
+      // The valid late reply of a request already failed for its deadline is discarded, freeing its service slot.
+      this.missed.delete(seq);
+      this.onChange();
       return;
     }
-    if (reply['op'] !== pending.op) { this.failChannel('A native helper reply names another operation.'); return; }
-    // The entry stays pending until its reply validates, so a channel fault raised for an invalid reply rejects it too.
-    if (reply['status'] === 'ok' && 'result' in reply) {
-      this.pending.delete(seq);
-      pending.resolve({ status: 'ok', result: reply['result']! });
-    } else if (reply['status'] === 'error' && typeof reply['code'] === 'string' && /^[a-zA-Z]{1,64}$/.test(reply['code'])) {
-      this.pending.delete(seq);
-      pending.resolve({ status: 'error', code: reply['code'] });
-    } else { this.failChannel('A native helper reply status is invalid.'); }
+    this.pending.delete(seq);
+    pending.resolve(settled);
   }
 
   /** A fault of the whole process: every request in flight fails and the process is stopped. */
@@ -172,7 +180,7 @@ class ServiceProcess {
     const pending = this.pending.get(seq);
     if (pending === undefined) { return; }
     this.pending.delete(seq);
-    this.missed.add(seq);
+    this.missed.set(seq, pending.op);
     this.hadMiss = true;
     pending.reject(new HelperRequestFailedError('missed', 'The native helper reply missed its deadline.'));
     this.onChange();

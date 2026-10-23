@@ -370,6 +370,21 @@ describe('native helper service client', () => {
     } finally { await fake.close(); }
   });
 
+  it('faults the service on a malformed late reply, failing a peer still in flight', { timeout: 60000 }, async () => {
+    // Arrange: a read misses its deadline, its late reply carries an invalid status, and a slow peer is still in flight.
+    const fake = await fakeHelper([{ ops: { hash: [{ kind: 'badStatus', delayMs: 6000 }], codec: [{ kind: 'ok', delayMs: 9000 }] } }, {}]);
+    try {
+      const helper = await fake.start();
+      const peer = helper.request('codec', {}, 30000);
+      await assert.rejects(helper.request('hash', {}, 300), error => error instanceof HelperRequestFailedError && error.kind === 'missed');
+
+      // Act and assert: the invalid late reply is validated, not discarded, so the service faults and the peer fails.
+      await assert.rejects(peer, error => error instanceof HelperRequestFailedError && error.kind === 'fault' && error.exitObserved === true);
+      assert.ok(exited(fake.children[0]!));
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
   it('checks liveness against the handshake identity and observes the exit on close', { timeout: 60000 }, async () => {
     // Arrange
     const fake = await fakeHelper([{ ops: { processIdentity: [{ kind: 'ok' }, { kind: 'ok', result: { exists: true, pid: 1, created: '7654321' } }] } }]);
