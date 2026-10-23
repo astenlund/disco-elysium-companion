@@ -25,9 +25,9 @@ test('worker close failure still stops an opened backend without a host', async 
     shutdown: async () => { order.push('backend'); },
   } as unknown as RuntimeBackend;
   const files = { verifyQuiescent: async () => { order.push('tools verified'); },
-    close: async () => { order.push('tools closed'); } } as unknown as FileToolAdapter;
+    release: async () => { order.push('tools released'); } } as unknown as FileToolAdapter;
   await assert.rejects(cleanupFailedChatRuntime(new Error('Startup failed.'), backend, null, files), error => error === closeFailure);
-  assert.deepEqual(order, ['worker', 'watcher and core', 'provider', 'tools verified', 'backend', 'tools closed']);
+  assert.deepEqual(order, ['worker', 'watcher and core', 'provider', 'tools verified', 'backend', 'tools released']);
 });
 
 test('an unproved pending provider stop closes workers, then fails closed without shutdown', async () => {

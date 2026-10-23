@@ -30,6 +30,8 @@ export function chatBackendOptions(companionRoot: string, onStatus: () => void, 
 /**
  * @internal Cleanup must continue even when the worker cannot close. A pending provider candidate whose stop is unproved
  * still lets startup workers close, but then fails closed: no shutdown, so the guard stays held and no clean marker is written.
+ * Without a host, the tool proof runs before the backend shutdown closes the helper, so the file-tool namespace is then released
+ * without a second proof; a failed proof skips the shutdown and keeps both guards.
  */
 export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeBackend | null, host: SessionHost | null, files: FileToolAdapter | null,
   onStartupPhase?: (phase: StartupPhase) => void, pending: Pick<PendingProviderStart, 'cancel'> | null = null): Promise<never> {
@@ -49,7 +51,7 @@ export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeB
       await backend.supervisor.verifyQuiescent('provider');
       await files?.verifyQuiescent();
       await backend.shutdown(true);
-      await files?.close();
+      await files?.release();
     }
   } catch (failure) { cleanupFailed = true; cleanupFailure = failure; }
   if (cleanupFailed) { throw cleanupFailure; }
