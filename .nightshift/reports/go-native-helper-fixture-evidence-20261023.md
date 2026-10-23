@@ -10,16 +10,16 @@ The harness runs the fixture main four times on the same root with a synthetic p
 
 ## Results
 
-The runs below measured commit `bc2b929` on 2026-10-23, the branch's last change to runtime code, with the helper image already built and pinned.
+The runs below measured commit `180acf3` on 2026-10-23, the branch's last change to runtime code, with the helper image already built and pinned.
 
 | Run | Attached healthy | Turn | Shutdown |
 |---|---|---|---|
-| New save | 13.9 s | 4.8 s | 0.1 s |
-| Acknowledged restart | 5.6 s | 4.5 s | 0.1 s |
-| Killed at attachment | 5.4 s | none | killed |
-| Restart after the kill | 5.5 s | 5.3 s | 0.1 s |
+| New save | 13.8 s | 4.6 s | 0.2 s |
+| Acknowledged restart | 5.5 s | 4.8 s | 0.1 s |
+| Killed at attachment | 5.5 s | none | killed |
+| Restart after the kill | 5.4 s | 4.7 s | 0.1 s |
 
-Every completed run attached healthy, with the runtime as consumer, fresh state, ready safety, a healthy journal, a running watcher and a ready provider. While the service held the image, the fixture's write open of `companion-helper.exe` failed with `EBUSY` in every completed run. The marker the killed run left recorded `cleanShutdown: false` and its watcher's identity, and the restart started from that marker and reached attachment; the harness did not record whether that watcher was still running when the restart checked it. The staged save copy kept its hash and write time. Four earlier batches of the same four runs also passed, each before later fixes changed the runtime: at commit `d7d5f99` they attached in 15.0, 6.2, 6.2 and 6.0 seconds in the same order, at commit `f2f5e3f` in 18.9, 7.7, 7.6 and 7.8 seconds in the same order, at commit `fae8233` in 13.8, 6.2, 6.2 and 6.1 seconds, and on the same sources before `fae8233` was committed in 18.6, 7.5, 7.6 and 8.0 seconds. Attach times on this machine therefore vary between runs by several seconds, so these runs show that each path attaches healthy rather than a latency difference between commits.
+Every completed run attached healthy, with the runtime as consumer, fresh state, ready safety, a healthy journal, a running watcher and a ready provider. While the service held the image, the fixture's write open of `companion-helper.exe` failed with `EBUSY` in every completed run. The marker the killed run left recorded `cleanShutdown: false` and its watcher's identity, and the restart started from that marker and reached attachment; the harness did not record whether that watcher was still running when the restart checked it. The staged save copy kept its hash and write time. Five earlier batches of the same four runs also passed, each before later fixes changed the runtime: at commit `bc2b929` they attached in 13.9, 5.6, 5.4 and 5.5 seconds in the same order, at commit `d7d5f99` in 15.0, 6.2, 6.2 and 6.0 seconds, at commit `f2f5e3f` in 18.9, 7.7, 7.6 and 7.8 seconds in the same order, at commit `fae8233` in 13.8, 6.2, 6.2 and 6.1 seconds, and on the same sources before `fae8233` was committed in 18.6, 7.5, 7.6 and 8.0 seconds. Attach times on this machine therefore vary between runs by several seconds, so these runs show that each path attaches healthy rather than a latency difference between commits.
 
 The sampler observed the runtime starting PowerShell only for core entry scripts, the adapter's digest builder, the save watcher and retained core reply validation:
 
@@ -32,7 +32,7 @@ The sampler observed the runtime starting PowerShell only for core entry scripts
 | Runtime `StartupCoreReplyWorker.ps1` | 4 |
 | Runtime `Read-CoreReply.ps1` | 3 |
 
-The sampler watches the whole machine without filtering, and during this batch it observed no other PowerShell process, so the list above is every PowerShell process it observed. It polls every 100 milliseconds, so a process that started and exited between two samples would not appear; the list therefore does not prove that no other PowerShell process ran. The earlier batches at `d7d5f99`, `f2f5e3f` and `fae8233` observed the same runtime processes as above. During the `d7d5f99` batch it observed one other PowerShell process, the Nightshift plugin's `windows-job-runner.ps1` from its clone under `C:/Git/nightshift`, and during the `fae8233` batch it observed other tools on the machine starting PowerShell; none of them named the copied root or a runtime script.
+The sampler watches the whole machine without filtering. During this batch it also observed three PowerShell processes outside the runtime, left out of the list above: two runs of the Nightshift plugin's `windows-job-runner.ps1` from its clone under `C:/Git/nightshift`, and a user-level gateway watcher script outside the repository; none of them named the copied root or a runtime script. It polls every 100 milliseconds, so a process that started and exited between two samples would not appear; the list therefore does not prove that no other PowerShell process ran. The earlier batches at `bc2b929`, `d7d5f99`, `f2f5e3f` and `fae8233` observed the same runtime processes as above. During the `bc2b929` batch it observed no PowerShell process outside the runtime, during the `d7d5f99` batch one, the Nightshift plugin's `windows-job-runner.ps1` from its clone under `C:/Git/nightshift`, and during the `fae8233` batch it observed other tools on the machine starting PowerShell; none of them named the copied root or a runtime script.
 
 ## Coverage of the remaining acceptance fixtures
 
