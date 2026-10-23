@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { ProcessSupervisor } from '../../src/process.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { companionFixture, type CompanionFixture } from '../support/companion.ts';
+import { createTestNative } from '../support/native-helper.ts';
 
 export const repository = fileURLToPath(new URL('../../../', import.meta.url));
 // The native supervisor admits only zero and one. Abrupt zero exits still skip
@@ -94,7 +95,7 @@ export class CrashFixture {
     await fs.writeFile(path.join(evidence, 'run-context.json'), JSON.stringify({ node: process.version, argv: process.argv, filter: process.env['COMPANION_CRASH_CASES'] ?? null,
       selectedCases: selected, skippedCases: allCases.filter(value => !selected.includes(value)) }, null, 2) + '\n');
     try {
-      const supervisor = await ProcessSupervisor.create(inside(root, path.join(root, 'crash-driver')));
+      const supervisor = (await createTestNative(inside(root, path.join(root, 'crash-driver')))).supervisor;
       return new CrashFixture(fixture, supervisor, manifest, evidence);
     } catch (error) { await fixture.close(); throw error; }
   }

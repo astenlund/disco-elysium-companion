@@ -53,7 +53,6 @@ export interface CoreClientOptions {
 }
 
 const replyScript = fileURLToPath(new URL('../scripts/Read-CoreReply.ps1', import.meta.url));
-const principalScript = fileURLToPath(new URL('../scripts/Get-Principal.ps1', import.meta.url));
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const invalid = (): never => { throw new SupervisorError('result-invalid', 'Core result could not be admitted.'); };
 
@@ -74,10 +73,11 @@ function parseFailure(reply: ValidatedReply): CoreFailure {
   return { success: false, class: reply.class, reason: reply.reason, consumptionState: consumption as CoreFailure['consumptionState'], generationTimestamp: generated, warnings: warnings(data['warnings']) };
 }
 
-export async function resolvePrincipal(inspector: PathInspector, companionRoot: string): Promise<string> {
-  const reply = await inspector.metadata(principalScript, [], companionRoot);
-  if (reply.exitCode !== 0) { throw new Error('identityUnavailable'); }
-  const value = parseStrictJson(reply.stdout);
+/** Every command resolves the principal through the helper; any failure is identityUnavailable. */
+export async function resolvePrincipal(inspector: PathInspector): Promise<string> {
+  let value: JsonValue;
+  try { value = await inspector.native('principal', {}); }
+  catch { throw new Error('identityUnavailable'); }
   if (!hasExactKeys(value, ['sid']) || !isOpaqueToken(value['sid'])) { throw new Error('identityUnavailable'); }
   return value['sid'];
 }

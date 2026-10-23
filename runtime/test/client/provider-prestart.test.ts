@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { privateCombinedBootstrap, privateScopeSourceBatch, privateSelectedImageBootstrap,
-  privateStartupMetadataPlacement, privateWarmJobObserver } from '../../src/backend/index.ts';
 import { PendingProviderStart, PendingProviderStopError, selectPendingProviderStart } from '../../src/provider-lifecycle.ts';
 import { chatBackendOptions, cleanupFailedChatRuntime, finalizeAttachmentSafety, startChatProvider } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
@@ -15,30 +13,19 @@ function binding(sessionId = 'saved-session') {
     needsState: false, instructionsSha256: instructionHash, stateGeneration: generation };
 }
 
-test('copied-root backend selectors route only through the explicit private flag', () => {
-  const ordinary = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, false);
-  const privateFixture = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, true);
-  assert.equal(ordinary.startupMetadata, true);
-  assert.equal(Object.getOwnPropertySymbols(ordinary).length, 0);
-  assert.equal(privateFixture[privateCombinedBootstrap], true);
-  assert.equal(privateFixture[privateScopeSourceBatch], true);
-  assert.equal(privateFixture[privateWarmJobObserver], true);
-  assert.equal(privateFixture[privateStartupMetadataPlacement], 'postGuard');
-  assert.equal(Object.getOwnPropertySymbols(privateFixture).length, 4);
-});
+test('chat backend options open the core reply worker and carry only a supplied verified image', () => {
+  // Arrange
+  const image = { path: 'C:/fixture/runtime/native/companion-helper.exe', sha256: 'a'.repeat(64), volume: '1', fileId: '2' };
 
-test('selected image bootstrap is separate from ordinary and copied-root callers', () => {
-  const selection = { token: Symbol('selection'), imageRoot: 'C:/private/install', scratch: 'C:/private/scratch', environment: {},
-    markPossibleTransfer: () => {}, onVerifiedPins: (_status: 'ready' | 'absent') => {} };
-  const ordinary = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, false);
-  const copied = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, true);
-  const selected = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, false,
-    undefined, undefined, undefined, selection);
-  assert.equal(ordinary[privateSelectedImageBootstrap], undefined);
-  assert.equal(copied[privateSelectedImageBootstrap], undefined);
-  assert.equal(selected[privateSelectedImageBootstrap], selection);
-  assert.equal(selected[privateScopeSourceBatch], true);
-  assert.equal(selected[privateStartupMetadataPlacement], 'postGuard');
+  // Act
+  const ordinary = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined);
+  const built = chatBackendOptions('C:/fixture', () => {}, () => {}, undefined, image);
+
+  // Assert
+  assert.equal(ordinary.startupCoreReply, true);
+  assert.equal(ordinary.nativeImage, undefined);
+  assert.equal(built.nativeImage, image);
+  assert.equal(Object.getOwnPropertySymbols(ordinary).length + Object.getOwnPropertySymbols(built).length, 0);
 });
 
 test('guarded selector resumes an exact binding without marking it current', async () => {
@@ -97,7 +84,7 @@ test('an invalidation while the candidate is being selected starts no provider',
 test('guard loss before transfer cancels and stops the unbound candidate', async () => {
   const backend = new FakeBackend();
   let verified = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { verified += 1; } } });
   const provider = new FakeProvider();
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
   assert.ok(pending);
@@ -110,7 +97,7 @@ test('guard loss before transfer cancels and stops the unbound candidate', async
 test('final lifecycle never starts a second provider after guard loss', async () => {
   const backend = new FakeBackend();
   let verified = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { verified += 1; } } });
   const provider = new FakeProvider();
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
   assert.ok(pending);
@@ -126,7 +113,7 @@ test('final lifecycle never starts a second provider after guard loss', async ()
 test('a prestarted candidate that dies before binding is stopped, then the start falls back to a fresh session', async () => {
   const backend = new FakeBackend();
   let verified = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { verified += 1; } } });
   const provider = new FakeProvider();
   provider.configure = session => { if (provider.sessions.length === 0) { session.verifyLive = async () => { throw new Error('Session died.'); }; } };
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
@@ -143,7 +130,7 @@ test('a prestarted candidate that dies before binding is stopped, then the start
 
 test('a failed candidate stop is reported again without a second stop attempt', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   let closes = 0;
   provider.configure = session => { session.close = async () => { closes += 1; throw new Error('Close failed.'); }; };
@@ -158,7 +145,7 @@ test('a failed candidate stop is reported again without a second stop attempt', 
 
 test('an aborted candidate whose late stop fails leaves no unhandled rejection', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const release = deferred<void>();
   const provider: Provider = { providerId: 'fake', capabilities, start: async () => {
     await release.promise;
@@ -181,7 +168,7 @@ test('an aborted candidate whose late stop fails leaves no unhandled rejection',
 
 test('a candidate cancelled while it is being taken reports a failed close as an unproved stop', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const release = deferred<void>();
   const provider: Provider = { providerId: 'fake', capabilities, start: async () => {
     await release.promise;
@@ -199,7 +186,7 @@ test('a candidate cancelled while it is being taken reports a failed close as an
 
 test('invalidation during candidate liveness proof cannot bind or restart in the old generation', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const entered = deferred<void>();
   const release = deferred<void>();
   let starts = 0;
@@ -233,7 +220,7 @@ test('invalidation during candidate liveness proof cannot bind or restart in the
 
 test('an invalidation during the initial provider start keeps chat as a status-only client', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
@@ -251,7 +238,7 @@ test('an invalidation during the initial provider start keeps chat as a status-o
 
 test('an invalidation during the last provider retry keeps chat as a status-only client', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
   const provider = new FakeProvider();
   let host: SessionHost | null = null;
   provider.start = async (resume: string | null) => {
@@ -271,7 +258,7 @@ test('an invalidation during the last provider retry keeps chat as a status-only
 
 test('an invalidated initial start with an unproved provider stop cannot attach status-only', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { closeStartupWorkers: async () => { backend.events.push('workers'); }, supervisor: {
+  Object.assign(backend, { closeStartupWorkers: async () => { backend.events.push('workers'); }, supervisor: { nativeHelper: { verifyLive: async () => {} },
     verifyQuiescent: async (role: string) => { if (role === 'provider') { throw new Error('Provider job absence is unproved.'); } } } });
   const provider = new FakeProvider();
   let host: SessionHost | null = null;
@@ -286,7 +273,7 @@ test('an invalidated initial start with an unproved provider stop cannot attach 
 
 test('a provider exit followed by an initial-start invalidation still attaches status-only', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
   const provider = new FakeProvider();
   let host: SessionHost | null = null;
   const bind = backend.sessions.bind.bind(backend.sessions);
@@ -306,7 +293,7 @@ test('a provider exit followed by an initial-start invalidation still attaches s
 test('a replacement starting during a status-only provider proof reports a changed attachment state', async () => {
   const backend = new FakeBackend();
   const provider = new FakeProvider();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async (role: string) => {
     if (role !== 'provider') { return; }
     const before = provider.sessions.length;
     await new Promise<void>(resolve => setTimeout(resolve, 20));
@@ -326,7 +313,7 @@ test('a replacement starting during a status-only provider proof reports a chang
 test('a detach during a raced status-only provider proof still reports cancellation', async () => {
   const backend = new FakeBackend();
   const provider = new FakeProvider();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async (role: string) => {
     if (role !== 'provider') { return; }
     const before = provider.sessions.length;
     await new Promise<void>(resolve => setTimeout(resolve, 20));
@@ -347,7 +334,7 @@ test('a detach during a raced status-only provider proof still reports cancellat
 
 test('invalidation before initial host start leaves only status authority', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
   assert.ok(pending);
@@ -365,7 +352,7 @@ test('invalidation before initial host start leaves only status authority', asyn
 for (const trigger of ['invalidation', 'safety refusal'] as const) {
   test(`an unproved candidate stop after ${trigger} keeps the guard through host cleanup`, async () => {
     const backend = new FakeBackend();
-    Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+    Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
     const provider = new FakeProvider();
     provider.configure = session => { session.close = async () => { throw new Error('Close failed.'); }; };
     const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
@@ -436,7 +423,7 @@ for (const controlKind of ['requested', 'namedResume'] as const) {
 test('changed final instruction identity discards candidate and proves absence', async () => {
   const backend = new FakeBackend();
   let verified = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { verified += 1; } } });
   const provider = new FakeProvider();
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
   assert.ok(pending);
@@ -448,7 +435,7 @@ test('changed final instruction identity discards candidate and proves absence',
 test('a different final provider identity cannot inherit the candidate', async () => {
   const backend = new FakeBackend();
   let verified = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { verified += 1; } } });
   const provider = new FakeProvider();
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
   assert.ok(pending);
@@ -478,7 +465,7 @@ test('the pending provider permits only one in-flight claim', async () => {
 test('cancellation closes a late successful start before it can transfer', async () => {
   const backend = new FakeBackend();
   let verified = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { verified += 1; } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { verified += 1; } } });
   const start = deferred<ProviderSession>();
   let aborted = false;
   const provider: Provider = { providerId: 'fake', capabilities, start: (_resume, signal) => {
@@ -498,7 +485,7 @@ test('cancellation closes a late successful start before it can transfer', async
 
 test('unproved provider job absence rejects candidate cancellation', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { throw new Error('unknown job state'); } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { throw new Error('unknown job state'); } } });
   const provider = new FakeProvider();
   const pending = await selectPendingProviderStart(backend.asRuntime(), provider, instructionHash);
   assert.ok(pending);
@@ -524,7 +511,7 @@ test('production attachment requires final safety and live proof', async () => {
     if (expireFreshProof) { proofClockAdvance = 3_100; }
     return providerSafety();
   } });
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {
     workerProofs += 1;
     clock += proofClockAdvance;
     proofClockAdvance = 0;
@@ -541,7 +528,7 @@ test('production attachment requires final safety and live proof', async () => {
   assert.equal((await host.attachVerified(() => {})).result, 'attached');
   assert.equal(safetyCalls, warmSafetyCalls);
   assert.equal(directSafetyCalls, warmDirectSafetyCalls);
-  assert.equal(workerProofs, 3);
+  assert.equal(workerProofs, 1);
   host.detach();
   await host.prepareAttachmentWitness();
   clock = 4_000;
@@ -554,7 +541,7 @@ test('production attachment requires final safety and live proof', async () => {
   proofClockAdvance = 3_100;
   assert.equal((await host.attachVerified(() => {})).result, 'attached');
   assert.equal(safetyCalls, callsBeforeLateExpiry + 1);
-  assert.equal(workerProofs, proofsBeforeLateExpiry + 6);
+  assert.equal(workerProofs, proofsBeforeLateExpiry + 2);
   host.detach();
   expireFreshProof = true;
   await host.prepareAttachmentWitness();
@@ -562,7 +549,7 @@ test('production attachment requires final safety and live proof', async () => {
   const proofsBeforeFreshExpiry = workerProofs;
   await assert.rejects(host.attachVerified(() => {}));
   assert.equal(safetyCalls, callsBeforeFreshExpiry + 1);
-  assert.equal(workerProofs, proofsBeforeFreshExpiry + 6);
+  assert.equal(workerProofs, proofsBeforeFreshExpiry + 2);
   expireFreshProof = false;
   await host.prepareAttachmentWitness();
   const healthyStatus = backend.status;
@@ -591,7 +578,7 @@ test('production attachment requires final safety and live proof', async () => {
 
 test('attachment reservation refuses overlap and detach cancels pending sink installation', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
@@ -616,7 +603,7 @@ test('attachment reservation refuses overlap and detach cancels pending sink ins
 
 test('shutdown waits for a cancelled attachment proof before guard release', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
@@ -640,8 +627,8 @@ test('shutdown waits for every attachment proof after one proof fails', async ()
   const backend = new FakeBackend();
   const workerEntered = deferred<void>();
   const releaseWorker = deferred<void>();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
-    if (role === 'startupMetadata') { workerEntered.resolve(); await releaseWorker.promise; }
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async (role: string) => {
+    if (role === 'startupCoreReply') { workerEntered.resolve(); await releaseWorker.promise; }
   } } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
@@ -667,8 +654,8 @@ test('status-only proof cannot install a provider that becomes ready while worke
   let safetyCalls = 0;
   const providerSafety = backend.providerSafety.bind(backend);
   Object.assign(backend, { providerSafety: async () => { safetyCalls += 1; return providerSafety(); } });
-  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
-    if (role === 'startupMetadata') { workerEntered.resolve(); await releaseWorker.promise; }
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async (role: string) => {
+    if (role === 'startupCoreReply') { workerEntered.resolve(); await releaseWorker.promise; }
   } } });
   const provider = new FakeProvider();
   let liveCalls = 0;
@@ -703,7 +690,7 @@ for (const refusal of ['rejected', 'changedGeneration'] as const) {
   test(`final ${refusal} safety stops the bound provider and attaches status only`, async () => {
     const backend = new FakeBackend();
     let absenceProofs = 0;
-    Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => { if (role === 'provider') { absenceProofs += 1; } } } });
+    Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async (role: string) => { if (role === 'provider') { absenceProofs += 1; } } } });
     let safetyCalls = 0;
     const providerSafety = backend.providerSafety.bind(backend);
     Object.assign(backend, { providerSafety: async () => {
@@ -740,7 +727,7 @@ for (const refusal of ['rejected', 'changedGeneration'] as const) {
 
 test('uncertain provider stop after final safety refusal remains fatal', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => { throw new Error('Provider job absence unknown.'); } } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { throw new Error('Provider job absence unknown.'); } } });
   let safetyCalls = 0;
   const providerSafety = backend.providerSafety.bind(backend);
   Object.assign(backend, { providerSafety: async () => { safetyCalls += 1; if (safetyCalls === 3) { throw new Error('Final safety unavailable.'); } return providerSafety(); } });
@@ -756,7 +743,7 @@ test('uncertain provider stop after final safety refusal remains fatal', async (
 
 test('failed startup freshness attaches the bound provider and keeps chat usable for disclosure-only turns', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   Object.assign(backend.status, { freshness: { ...backend.status.freshness, state: 'failed', class: 'source', reason: 'stale-target' } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
@@ -774,7 +761,7 @@ test('failed startup freshness attaches the bound provider and keeps chat usable
 
 test('a provider exit before the final attachment check reconnects instead of latching a safety block', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -792,7 +779,7 @@ test('a provider exit before the final attachment check reconnects instead of la
 
 test('a provider that stops being live before its exit is observed still reconnects before the final attachment', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -810,7 +797,7 @@ test('a provider that stops being live before its exit is observed still reconne
 
 test('a provider whose exit never surfaces within the bound ends failed, so a later exit cannot reconnect it', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
@@ -831,7 +818,7 @@ test('a provider whose exit never surfaces within the bound ends failed, so a la
 
 test('the bound for an unobserved exit starts once a slower reconnect has settled', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 100 });
@@ -858,7 +845,7 @@ test('the bound for an unobserved exit starts once a slower reconnect has settle
 
 test('an invalidation while an unobserved provider is being ended latches the final safety block without a replacement', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
@@ -888,7 +875,7 @@ test('an invalidation while an unobserved provider is being ended latches the fi
 test('an unobserved provider that fails to stop latches the block, whenever an invalidation arrives', async () => {
   for (const invalidateDuringClose of [true, false]) {
     const backend = new FakeBackend();
-    Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+    Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
     const provider = new FakeProvider();
     const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
       providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {}, providerExitObservationMs: 50 });
@@ -917,7 +904,7 @@ test('an unobserved provider that fails to stop latches the block, whenever an i
 
 test('a provider that exits and cannot reconnect attaches status-only after its reconnect attempts', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -935,7 +922,7 @@ test('a provider that exits and cannot reconnect attaches status-only after its 
 
 test('an invalidation while a pre-attachment reconnect settles still latches the final safety block', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -961,7 +948,7 @@ test('an invalidation while a pre-attachment reconnect settles still latches the
 
 test('a provider that keeps exiting during the final check attaches from its settled reconnect', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -984,7 +971,7 @@ test('a provider that keeps exiting during the final check attaches from its set
 
 test('after a failed startup phase, valid provider safety still starts and attaches the provider', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); } });
   Object.assign(backend.status, { journal: { state: 'fault', fault: 'journalUnavailable', unacknowledgedEvents: 0 },
     freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalUnavailable' } });
   const provider = new FakeProvider();
@@ -1003,7 +990,7 @@ test('after a failed startup phase, valid provider safety still starts and attac
 
 test('after a failed startup phase, refused provider safety leaves a status-only client', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); },
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} }, closeStartupWorkers: async () => { backend.events.push('workers'); },
     providerSafety: async () => { throw new Error('Context safety authority is unavailable.'); } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
@@ -1020,7 +1007,7 @@ test('after a failed startup phase, refused provider safety leaves a status-only
 
 test('a later invalidation after a final safety block keeps status-only attachment available', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   let safetyCalls = 0;
   const providerSafety = backend.providerSafety.bind(backend);
   Object.assign(backend, { providerSafety: async () => { safetyCalls += 1; if (safetyCalls === 3) { throw new Error('Final safety refused.'); } return providerSafety(); } });
@@ -1037,7 +1024,7 @@ test('a later invalidation after a final safety block keeps status-only attachme
 
 test('a second invalidation after a startup invalidation keeps status-only attachment available', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
@@ -1051,7 +1038,7 @@ test('a second invalidation after a startup invalidation keeps status-only attac
 
 test('an incompatible provider exit before the final check attaches status-only', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -1066,7 +1053,7 @@ test('an incompatible provider exit before the final check attaches status-only'
 
 test('a requested new session retries after an exhausted reconnect', async () => {
   const backend = new FakeBackend();
-  Object.assign(backend, { supervisor: { verifyQuiescent: async () => {} } });
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
   const provider = new FakeProvider();
   const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
@@ -1088,7 +1075,7 @@ test('final safety refusal waits for a queued correction before status-only atta
   const backend = new FakeBackend();
   const provider = new FakeProvider();
   let providerAbsenceProofs = 0;
-  Object.assign(backend, { supervisor: { verifyQuiescent: async (role: string) => {
+  Object.assign(backend, { supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async (role: string) => {
     if (role === 'provider') { assert.equal(provider.current.closed, true); providerAbsenceProofs += 1; }
   } } });
   let host: SessionHost;
@@ -1131,7 +1118,7 @@ for (const [enabled, watcher] of [[false, 'disabled'], [true, 'stopped']] as con
   test(`healthy attachment admits valid state with watcher ${watcher}`, async () => {
     const backend = new FakeBackend();
     Object.assign(backend, { config: { ...backend.config, watcher: { enabled } },
-      supervisor: { verifyQuiescent: async () => {} } });
+      supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => {} } });
     Object.assign(backend.status, { watcher });
     const provider = new FakeProvider();
     const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,

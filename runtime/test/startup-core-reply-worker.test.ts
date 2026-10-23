@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 import { openBackend } from '../src/backend/index.ts';
 import { asInteger, isLowerHex, isObject, parseStrictJson } from '../src/json.ts';
-import { encodeStartupMetadataFrame, FramedReplies } from '../src/startup-metadata.ts';
+import { encodeStartupWorkerFrame, FramedReplies } from '../src/startup-worker-framing.ts';
 import { companionFixture } from './support/companion.ts';
+import { testHelperImage } from './support/native-helper.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const workerScript = fileURLToPath(new URL('../scripts/StartupCoreReplyWorker.ps1', import.meta.url));
@@ -19,7 +20,7 @@ test('startup core reply worker matches the one-shot validator and survives a re
   let backend: Awaited<ReturnType<typeof openBackend>> | null = null;
   try {
     await fs.mkdir(path.join(fixture.root, '.tmp'), { recursive: true });
-    backend = await openBackend({ companionRoot: fixture.root });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
     const nonce = randomBytes(16).toString('hex');
     const child = backend.supervisor.spawn('startupCoreReply', { command: 'pwsh',
       args: ['-NoProfile', '-File', workerScript, '-CompanionRoot', fixture.root, '-DataRoot', backend.scope.dataRoot,
@@ -45,10 +46,12 @@ test('startup core reply worker matches the one-shot validator and survives a re
       const input = Buffer.from(JSON.stringify({ exitCode: core.exitCode, stdout, stderr }));
       const oneShot = await backend.inspector.metadata(readerScript, ['-CompanionRoot', fixture.root, '-Operation', 'Consumer'], fixture.root, 30000, input);
       assert.equal(oneShot.exitCode, 0);
+      // The one-shot validator ran under the metadata role inside the inspector's queue, whose task included its stop proof.
+      await backend.supervisor.verifyQuiescent('metadata');
       const request = (id: string, stream: string) => ({ version: 1, id, op: 'validateCore', root: fixture.root,
         remainingMs: 30000, operation: 'Consumer', exitCode: core.exitCode, stdout: stream, stderr });
       const invalidId = randomBytes(16).toString('hex');
-      child.stdin.write(encodeStartupMetadataFrame(request(invalidId, 'invalid receipt')));
+      child.stdin.write(encodeStartupWorkerFrame(request(invalidId, 'invalid receipt')));
       const invalid = parseStrictJson(await replies.next(30000));
       assert.ok(isObject(invalid));
       assert.deepEqual(Object.keys(invalid).sort(), ['code', 'id', 'op', 'status', 'version']);
@@ -59,7 +62,7 @@ test('startup core reply worker matches the one-shot validator and survives a re
       assert.equal(invalid['code'], 'coreReplyInvalid');
 
       const validId = randomBytes(16).toString('hex');
-      child.stdin.write(encodeStartupMetadataFrame(request(validId, stdout)));
+      child.stdin.write(encodeStartupWorkerFrame(request(validId, stdout)));
       const valid = parseStrictJson(await replies.next(30000));
       assert.ok(isObject(valid));
       assert.deepEqual(Object.keys(valid).sort(), ['id', 'op', 'result', 'status', 'version']);

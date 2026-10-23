@@ -6,31 +6,27 @@ import { DataRootUnavailableError, PathInspector } from '../admission.ts';
 import { capacityError, firstCapacityRefusal, RuntimeCapacityError } from '../capacity.ts';
 import type { CapacitySource } from '../resource-lifecycle/resources.ts';
 import { loadRuntimeConfig } from '../config.ts';
-import { requireDirectMainToken } from '../direct-main-capability.ts';
-import { compiledBrokerSpawn, scopedPowerShellBrokerSpawn, type CompiledBrokerArtifact } from '../compiled-broker.ts';
 import { requireControl } from '../control-values.ts';
 import { resolvePrincipal } from '../core-client.ts';
 import { Deadline } from '../deadline.ts';
 import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
-import { releaseGoBrokerSpawn } from '../go-broker-artifact.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
 import { OperationStore } from '../operations.ts';
-import { releaseNativeJobObserverArtifact } from '../native-observer-artifact.ts';
+import { NativeHelper } from '../native-helper.ts';
+import { NativeHelperUnavailableError } from '../native-helper-error.ts';
+import { ensureNativeHelperImage } from '../native-image.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
-import { ProcessSupervisor, processRoles, type BrokerSpawn, type PrivateNativeStartupJobs } from '../process.ts';
+import { ProcessSupervisor, processRoles } from '../process.ts';
 import { createReadOnlyInspection } from '../read-only-inspection.ts';
 import { maintainRuntimeStorage } from '../resource-lifecycle/retention.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
-import { discoverScope, discoverScopeWithPrincipal, initializeScope, scopeFromAdmittedBinding, type ScopeCandidate } from '../scope.ts';
-import { observeSourceBoundBootstrap } from '../source-bound-bootstrap.ts';
+import { discoverScope, initializeScope } from '../scope.ts';
 import { SerialQueue } from '../serial.ts';
 import { ScopeStorage } from '../storage.ts';
-import { StartupMetadataSession } from '../startup-metadata.ts';
 import { StartupWorkerGroup } from '../startup-workers.ts';
-import { observeBootstrapWorkerSources, observeStartupWorkerSources } from '../startup-worker-sources.ts';
 import type { BackendCommand, BackendOptions, BackendStartup, RuntimeBackend } from './api.ts';
 import { ConsumerCoordinator } from './consumer.ts';
 import { PendingStateCheckError } from './api.ts';
@@ -43,31 +39,6 @@ import { ResourceAuthority } from './resources.ts';
 
 export { readRuntimeStatus as readBackendStatus } from '../platform/index.ts';
 export type * from './api.ts';
-
-/** @internal Private fixture selector. Production callers omit this symbol. */
-export const privateStartupMetadataPlacement = Symbol('privateStartupMetadataPlacement');
-export const privateScopeSourceBatch = Symbol('privateScopeSourceBatch');
-export const privateRecheckSupervisorIdentity = Symbol('privateRecheckSupervisorIdentity');
-export const privateWarmJobObserver = Symbol('privateWarmJobObserver');
-export const privateCombinedBootstrap = Symbol('privateCombinedBootstrap');
-export const privateCompiledProcessBroker = Symbol('privateCompiledProcessBroker');
-export const privateGoBrokerSpawn = Symbol('privateGoBrokerSpawn');
-export const privateNativeStartupJobs = Symbol('privateNativeStartupJobs');
-export const privateSelectedImageBootstrap = Symbol('privateSelectedImageBootstrap');
-export interface SelectedImageBootstrap {
-  readonly token: symbol;
-  readonly imageRoot: string;
-  readonly scratch: string;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly markPossibleTransfer: () => void;
-  readonly onVerifiedPins: (status: 'ready' | 'absent') => void;
-}
-type FixtureBackendOptions = BackendOptions & { readonly [privateStartupMetadataPlacement]?: 'postGuard'; readonly [privateScopeSourceBatch]?: true;
-  readonly [privateRecheckSupervisorIdentity]?: true; readonly [privateWarmJobObserver]?: true;
-  readonly [privateCombinedBootstrap]?: true; readonly [privateCompiledProcessBroker]?: CompiledBrokerArtifact;
-  readonly [privateGoBrokerSpawn]?: BrokerSpawn;
-  readonly [privateNativeStartupJobs]?: PrivateNativeStartupJobs;
-  readonly [privateSelectedImageBootstrap]?: SelectedImageBootstrap };
 
 /** @internal Composition of already-admitted primitives; openBackend owns admission. */
 export class CoordinatorBackend implements RuntimeBackend {
@@ -116,7 +87,7 @@ export class CoordinatorBackend implements RuntimeBackend {
     return { notOwner: false, consumerResult: null, requiredWorkCompleted: false, capacityRewind: null };
   }
   private async cleanup(): Promise<void> {
-    const k = this.kernel; await cleanupPublicationResidue(k.scope, k.guard, k.inspector, k.supervisor);
+    const k = this.kernel; await cleanupPublicationResidue(k.scope, k.guard, k.inspector, k.publisher);
   }
   private async initializeStorage(): Promise<void> {
     const k = this.kernel;
@@ -280,20 +251,11 @@ export class CoordinatorBackend implements RuntimeBackend {
     return this.shuttingDown;
   }
 
-  closeStartupMetadata(): Promise<void> { return this.closeStartupWorkers(); }
-
+  /** Closes the startup core reply worker and proves it absent; the helper service stays for the whole process. */
   async closeStartupWorkers(): Promise<void> {
     const k = this.kernel;
-    k.supervisor.clearStartupJobObserver();
-    const closed = await Promise.allSettled([k.inspector.closeStartupSession(), k.publisher.closeStartupMutationSession()]);
-    const closeFailure = closed.find(result => result.status === 'rejected');
-    if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
-    const absent = await Promise.allSettled([
-      k.supervisor.verifyQuiescent('startupMetadata'), k.supervisor.verifyQuiescent('startupCoreReply'),
-      k.supervisor.verifyQuiescent('startupMutation'),
-    ]);
-    const absenceFailure = absent.find(result => result.status === 'rejected');
-    if (absenceFailure?.status === 'rejected') { throw absenceFailure.reason; }
+    await k.inspector.closeStartupSession();
+    await k.supervisor.verifyQuiescent('startupCoreReply');
   }
 
   async shutdown(providerAndToolsQuiescent: boolean): Promise<void> {
@@ -304,75 +266,59 @@ export class CoordinatorBackend implements RuntimeBackend {
     await k.core.idle(); await k.journal.idle(); await k.storage.idle(); await k.publisher.idle(); await k.inspector.idle();
     await this.closeStartupWorkers();
     for (const role of processRoles) { await k.supervisor.verifyQuiescent(role); }
+    // The clean marker attests the quiescence of every role except the helper service, which writes it and retains no
+    // handle or state between requests; the next start's predecessor proof blocks while that service survives.
     await k.resources.withTransition('runtimeMarker', async () => {
       await k.resources.reserveRuntimeMarker();
       const value = { ...this.runtime.value, cleanShutdown: true, watcher: null };
       const sha256 = await k.storage.write('runtime.json', value, 'config', this.runtime.sha256);
       this.runtime = { value, sha256 };
     }).catch(error => { throw this.recordFailure(error); });
-    await k.supervisor.verifyQuiescent('metadata'); await k.supervisor.verifyQuiescent('startupMetadata');
-    await k.supervisor.verifyQuiescent('startupCoreReply'); await k.supervisor.verifyQuiescent('startupMutation');
-    await k.supervisor.verifyQuiescent('publication');
+    await k.supervisor.verifyQuiescent('metadata'); await k.supervisor.verifyQuiescent('startupCoreReply');
     k.journal.invalidate();
+    // The guard is released only after the service's exit is observed; otherwise it stays held while this process lives.
+    await k.supervisor.nativeHelper.close();
     await k.guard.release();
   }
 }
 
-export async function openBackend(options: FixtureBackendOptions): Promise<RuntimeBackend> {
-  const selected = options[privateSelectedImageBootstrap];
-  if (selected !== undefined) { requireDirectMainToken(selected.token); }
-  if (selected !== undefined && (options[privateCompiledProcessBroker] !== undefined
-    || options[privateGoBrokerSpawn] !== undefined || options[privateNativeStartupJobs] !== undefined
-    || options[privateRecheckSupervisorIdentity] === true)) {
-    throw new Error('Selected image bootstrap conflicts with private process selectors.');
-  }
-  if (options[privateCompiledProcessBroker] !== undefined && options[privateGoBrokerSpawn] !== undefined) {
-    throw new Error('Private broker selectors conflict.');
-  }
-  if (options[privateGoBrokerSpawn] !== undefined && options[privateGoBrokerSpawn].controlVersion !== 2) {
-    throw new Error('Private Go broker requires protocol version 2.');
-  }
+/**
+ * Opens the backend. Phase A starts and verifies the helper service from the image the build step verified, then resolves
+ * the principal and admits the scope through it. Right after the instance guard the helper job and the retired role
+ * names must be positively absent and the service is bound to the scope, before any mutating request. A start that fails
+ * after binding observes the service's exit before the guard is released; when that exit cannot be observed, the guard
+ * stays held while this process lives.
+ */
+export async function openBackend(options: BackendOptions): Promise<RuntimeBackend> {
   options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
-  let bootstrap: Awaited<ReturnType<typeof createReadOnlyInspection>>;
-  try { bootstrap = await createReadOnlyInspection(options.companionRoot, selected?.environment); }
+  let helper: NativeHelper;
+  try { helper = await NativeHelper.start(options.nativeImage ?? await ensureNativeHelperImage({ build: false }), undefined, options.nativeLauncher); }
   catch (error) { throw phaseFatalError(error); }
+  let bootstrap: Awaited<ReturnType<typeof createReadOnlyInspection>>;
+  try { bootstrap = await createReadOnlyInspection(options.companionRoot, helper); }
+  catch (error) {
+    await helper.close().catch(() => undefined);
+    throw phaseFatalError(error);
+  }
   let guard: Awaited<ReturnType<typeof takeInstanceGuard>> | null = null;
   let kernel: Kernel | null = null;
   let supervisor: ProcessSupervisor | null = null;
   let resources: ResourceAuthority | null = null;
   let startupInspector: PathInspector | null = null;
-  let startupPublisher: FilePublisher | null = null;
-  let earlyMetadata: StartupMetadataSession | null = null;
   let startupGroup: StartupWorkerGroup | null = null;
   try {
-    let candidate: ScopeCandidate;
-    let selectedPins: 'ready' | 'absent' | null = null;
-    if (selected !== undefined) {
-      const observed = await observeSourceBoundBootstrap(selected.token, bootstrap.inspector, bootstrap.parentIdentity,
-        options.companionRoot, config.game, selected.imageRoot, selected.environment, selected.markPossibleTransfer);
-      candidate = observed.candidate;
-      selectedPins = observed.imagePins.status;
-      selected.onVerifiedPins(selectedPins);
-    } else if (options[privateCombinedBootstrap] === true) {
-      candidate = await discoverScopeWithPrincipal(bootstrap.inspector, options.companionRoot, config.game);
-    } else {
-      let principal: string;
-      try { principal = await resolvePrincipal(bootstrap.inspector, options.companionRoot); }
-      catch { throw Object.assign(new Error('Windows principal identity is unavailable.'), { code: 'identityUnavailable' }); }
-      candidate = await discoverScope(bootstrap.inspector, options.companionRoot, config.game, principal);
-    }
+    let principal: string;
+    try { principal = await resolvePrincipal(bootstrap.inspector); }
+    catch { throw Object.assign(new Error('Windows principal identity is unavailable.'), { code: 'identityUnavailable' }); }
+    const candidate = await discoverScope(bootstrap.inspector, options.companionRoot, config.game, principal);
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });
-    const broker = selectedPins === 'ready' ? releaseGoBrokerSpawn(selected!.imageRoot, selected!.scratch)
-      : selectedPins === 'absent' ? scopedPowerShellBrokerSpawn(selected!.scratch)
-      : options[privateGoBrokerSpawn] ?? (options[privateCompiledProcessBroker] === undefined
-        ? undefined : compiledBrokerSpawn(options[privateCompiledProcessBroker]));
-    const nativeJobs = selectedPins === 'ready' ? releaseNativeJobObserverArtifact(selected!.imageRoot, selected!.scratch)
-      : options[privateNativeStartupJobs];
-    supervisor = options[privateRecheckSupervisorIdentity] === true
-      ? await ProcessSupervisor.create(candidate.dataRoot, broker, nativeJobs) : bootstrap.supervisorFor(candidate.dataRoot, broker, nativeJobs);
+    supervisor = bootstrap.supervisorFor(candidate.dataRoot);
+    await supervisor.proveBindable();
+    try { await helper.bind({ token: supervisor.scopeToken, companionRoot: candidate.companionRoot, dataRoot: candidate.dataRoot }); }
+    catch (error) { throw error instanceof NativeHelperUnavailableError ? error : new NativeHelperUnavailableError('bindFailed'); }
     const inspector = new PathInspector(supervisor);
     startupInspector = inspector;
     const prospectiveFailure = (error: ProspectiveJsonBudgetError): Error => resources?.prospectiveFailure(error) ?? error;
@@ -389,32 +335,8 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
         const free = await fs.statfs(candidate.companionRoot, { bigint: true });
         requireControl(free.bavail * free.bsize >= BigInt(bytes.byteLength) * 4n);
       }, invalidate: () => { kernel?.journal.invalidate(); resources?.invalidate(); } });
-    startupPublisher = publisher;
-    const hoistMetadata = options.startupMetadata === true && options[privateStartupMetadataPlacement] === 'postGuard';
-    const batchScope = hoistMetadata && options[privateScopeSourceBatch] === true;
-    if (batchScope) { await supervisor.verifyQuiescent('startupMetadata'); }
-    const bootstrapProof = batchScope ? await observeBootstrapWorkerSources(inspector, candidate) : null;
-    const scope = bootstrapProof?.status === 'present' && bootstrapProof.scopeBytes !== null
-      ? scopeFromAdmittedBinding(candidate, bootstrapProof.scopeBytes)
-      : await initializeScope(inspector, candidate, guard, publisher);
+    const scope = await initializeScope(inspector, candidate, guard, publisher);
     requireControl(guard.held);
-    if (hoistMetadata) {
-      if (!batchScope) { await supervisor.verifyQuiescent('startupMetadata'); }
-      const evidence = bootstrapProof?.status === 'present' ? bootstrapProof.evidence
-        : bootstrapProof?.status === 'absent' ? null : await observeStartupWorkerSources(inspector, scope);
-      if (evidence !== null && evidence.scopeSha256 !== scope.bindingSha256) {
-        throw new DataRootUnavailableError('Bootstrap scope changed before startup worker admission.');
-      }
-      if (evidence !== null) {
-        earlyMetadata = await StartupMetadataSession.prepareWithEvidence(supervisor, scope, evidence)();
-        if (earlyMetadata !== null) {
-          inspector.attachStartupSession(earlyMetadata);
-          if (options[privateWarmJobObserver] === true) {
-            supervisor.attachStartupJobObserver((names, timeoutMs) => inspector.observeStartupJobs(names, timeoutMs));
-          }
-        }
-      }
-    }
     options.onStartupPhase?.('runtimeMarker');
     const storage = new ScopeStorage({ scope, guard, inspector, publisher, prospectiveFailure, bind: action => resources?.bind(action) ?? action,
       beforeWrite: (relative, deadline) => resources?.beforeWrite(relative, deadline) ?? Promise.resolve() });
@@ -422,17 +344,10 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
     resources = new ResourceAuthority(scope, inspector, operations);
     const markerSupervisor = supervisor;
     const { identities, runtime, sha256, previous, startupWorker } = await initializeRuntimeMarker(
-      { scope, guard, inspector, supervisor: markerSupervisor, storage, resources, earlyMetadata }, undefined,
-      options.startupMetadata === true ? proveEarly => hoistMetadata
-        ? bootstrapProof?.status === 'absent' ? Promise.resolve(null)
-          : StartupWorkerGroup.prepare(inspector, markerSupervisor, scope, undefined, earlyMetadata, false, proveEarly)
-        : StartupWorkerGroup.prepare(inspector, markerSupervisor, scope) : undefined);
+      { scope, guard, inspector, supervisor: markerSupervisor, storage, resources }, undefined,
+      options.startupCoreReply === true ? () => StartupWorkerGroup.prepare(inspector, markerSupervisor, scope) : undefined);
     startupGroup = startupWorker;
-    if (startupGroup?.metadata !== null && startupGroup?.metadata !== undefined && startupGroup.metadata !== earlyMetadata) {
-      inspector.attachStartupSession(startupGroup.metadata);
-    }
-    if (startupGroup?.coreReply !== null && startupGroup?.coreReply !== undefined) { inspector.attachStartupCoreReplySession(startupGroup.coreReply); }
-    if (startupGroup?.mutation !== null && startupGroup?.mutation !== undefined) { publisher.attachStartupMutationSession(startupGroup.mutation); }
+    if (startupGroup !== null) { inspector.attachStartupCoreReplySession(startupGroup.coreReply); }
     kernel = new Kernel({ config, identities, scope, guard, supervisor, inspector, publisher, storage, resources, options });
     kernel.emit({ previousShutdownClean: previous.status === 'valid' && previous.value.cleanShutdown });
     await bootstrap.close();
@@ -440,8 +355,7 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
   } catch (error) {
     let failure: unknown = resources?.captureFailure(error) ?? error;
     try {
-      supervisor?.clearStartupJobObserver();
-      const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupPublisher?.closeStartupMutationSession(), startupGroup?.close(), earlyMetadata?.close()]);
+      const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupGroup?.close()]);
       const closeFailure = closed.find(result => result.status === 'rejected');
       await bootstrap.close();
       if (guard !== null && supervisor !== null) {
@@ -449,7 +363,10 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
         // lives. A second writer must never race a possibly active predecessor.
         for (const role of processRoles) { await supervisor.verifyQuiescent(role); }
         if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
+        await helper.close();
         await guard.release();
+      } else {
+        await helper.close();
       }
       if (closeFailure?.status === 'rejected') { failure = closeFailure.reason; }
     } catch (cleanupFailure) { failure = cleanupFailure; }
@@ -457,9 +374,10 @@ export async function openBackend(options: FixtureBackendOptions): Promise<Runti
   }
 }
 
-const phaseFatalCodes: ReadonlySet<unknown> = new Set(['configurationInvalid', 'identityUnavailable', 'dataRootUnavailable', 'runtimeAlreadyRunning']);
+const phaseFatalCodes: ReadonlySet<unknown> = new Set(['configurationInvalid', 'identityUnavailable', 'dataRootUnavailable', 'runtimeAlreadyRunning',
+  'nativeHelperUnavailable']);
 
-/** @internal Phases A through C fail only with their four fatal codes; any other failure keeps its cause under `dataRootUnavailable`. */
+/** @internal Phases A through C fail only with their five fatal codes; any other failure keeps its cause under `dataRootUnavailable`. */
 export function phaseFatalError(error: unknown): unknown {
   if (error !== null && typeof error === 'object' && 'code' in error && phaseFatalCodes.has(error.code)) { return error; }
   return new DataRootUnavailableError(error instanceof Error ? error.message : 'Runtime startup authority is unavailable.', { cause: error });

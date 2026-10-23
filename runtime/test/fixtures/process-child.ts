@@ -16,7 +16,7 @@ if (mode === 'arguments') {
   setInterval(() => {}, 1000);
 } else if (mode === 'wait-tree') {
   const descendant = spawn(process.execPath, [process.argv[1]!, 'wait'], { stdio: 'ignore' });
-  process.stdout.write('ready');
+  process.stdout.write(String(descendant.pid));
   setInterval(() => {}, 1000);
 } else {
   process.exitCode = 1;

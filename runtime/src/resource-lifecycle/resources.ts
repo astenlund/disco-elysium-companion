@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import type { PathInspector } from '../admission.ts';
 import { handoffIdentity, handoffIdentityDigest, mergeHandoff } from '../backend/handoffs.ts';
@@ -11,14 +10,13 @@ import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { PublicationPathAdmissionError, type AdmitPublicationScope } from '../files.ts';
 import { eventFileSequence } from '../journal-records.ts';
-import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile } from '../json.ts';
+import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type JsonValue } from '../json.ts';
 import { effectivelyUnfinished, pendingOperationSafety, parseOperation, type FullOperation, type RepairOperation, type RetainedHandoff } from '../operation-records.ts';
 import type { OperationStore } from '../operations.ts';
 import type { RuntimeScope } from '../scope.ts';
 import { parseStateSafety } from '../safety-records.ts';
 import { bytesHash } from '../storage.ts';
 
-const script = fileURLToPath(new URL('../../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
 const zero: ResourceCounts = Object.freeze({ uncompactedEvents: 0, retainedHandoffs: 0, fullTerminalOperations: 0 });
 const fixedControls = new Set(['scope.json', 'runtime.json', 'state-safety.json', 'agent-session.json', 'agent-session-index.json', 'journal/journal.json', 'journal/cursor-agent-session.json']);
 const maximumPendingOutbox = 16;
@@ -259,9 +257,11 @@ export class ResourceAuthority {
   }
 
   private async observe(mode: 'Inventory' | 'Marker', deadline?: Deadline): Promise<ResourceObservation & { readonly retainedHandoffIdentitySha256: string }> {
-    const reply = await this.inspector.metadata(script, ['-Root', this.scope.dataRoot, '-ScopeSha256', this.scope.bindingSha256, '-CompanionRoot', this.scope.companionRoot, '-Mode', mode], this.scope.dataRoot, deadline?.remaining());
-    if (reply.exitCode !== 0) { unavailable('inventory'); }
-    const value = parseStrictJson(reply.stdout);
+    let value: JsonValue;
+    try {
+      value = await this.inspector.native('inventory', { root: this.scope.dataRoot, scopeSha256: this.scope.bindingSha256, companionRoot: this.scope.companionRoot,
+        mode, inputBase64: null }, deadline?.remaining());
+    } catch { return unavailable('inventory'); }
     if (!hasExactKeys(value, ['uncompactedEvents', 'retainedHandoffs', 'retainedHandoffIdentitySha256', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox', 'uncertainWorkspace', 'freeBytes'])) { unavailable('inventory'); }
     const counts = ['uncompactedEvents', 'retainedHandoffs', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox'].map(name => asInteger(value[name]));
     if (!isLowerHex(value['retainedHandoffIdentitySha256'], 64) || counts.some(count => count === undefined || count < 0) || typeof value['freeBytes'] !== 'string' || !/^[0-9]+$/.test(value['freeBytes']) || typeof value['uncertainWorkspace'] !== 'boolean') { unavailable('inventory'); }
@@ -399,8 +399,12 @@ export class ResourceAuthority {
         if (!record.compacted) { validateOperationExpansion(record, reservation.additions.uncompactedEvents + reservation.remainingControlReserve.uncompactedEvents); }
       } else if (event || relative === 'journal/recovery-event.json') {
         requireControl(profile === 'state-event');
-        const result = await this.inspector.metadata(script, ['-Root', this.scope.dataRoot, '-ScopeSha256', this.scope.bindingSha256, '-Mode', 'Event'], this.scope.dataRoot, deadline?.remaining(), Buffer.from(bytes));
-        if (result.exitCode !== 0 || !hasExactKeys(parseStrictJson(result.stdout), ['admitted']) || (parseStrictJson(result.stdout) as { admitted?: unknown }).admitted !== true) { unavailable('eventFinalization'); }
+        let admitted: JsonValue = null;
+        try {
+          admitted = await this.inspector.native('inventory', { root: this.scope.dataRoot, scopeSha256: this.scope.bindingSha256, companionRoot: null,
+            mode: 'Event', inputBase64: Buffer.from(bytes).toString('base64') }, deadline?.remaining());
+        } catch { unavailable('eventFinalization'); }
+        if (!hasExactKeys(admitted, ['admitted']) || admitted['admitted'] !== true) { unavailable('eventFinalization'); }
       } else { unavailable('publicationScope'); }
       if (event || operation) {
         let exists = true;

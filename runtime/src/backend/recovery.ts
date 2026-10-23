@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { requireControl } from '../control-values.ts';
 import type { PublishReceipt } from '../core-client.ts';
@@ -1976,10 +1975,12 @@ export class RecoveryCoordinator {
       const witness = (await k.safety()).recoveryWitness;
       requireControl(witness?.phase === 'active' && witness.owner.operationId === operationId);
       k.resources.invalidatePublication(source);
-      await k.publisher.exclusive(async options => {
-        const actualScript = fileURLToPath(new URL('../../scripts/Invoke-FileAction.ps1', import.meta.url));
-        await options.supervisor.run('publication', { command: 'pwsh', args: ['-NoProfile', '-File', actualScript, '-Root', k.scope.dataRoot, '-Action', 'Move',
-          '-Source', path.join(k.scope.dataRoot, source), '-Target', path.join(k.scope.dataRoot, lost.destination), '-Sha256', lost.sha256], cwd: k.scope.dataRoot }, 30000);
+      await k.publisher.exclusive(async () => {
+        const outcome = await k.publisher.runNativeMutation('fileAction', { root: k.scope.dataRoot, action: 'Move', source: path.join(k.scope.dataRoot, source),
+          sha256: lost.sha256, target: path.join(k.scope.dataRoot, lost.destination) }, 30000);
+        if (!outcome.ended) { k.publisher.block(); }
+        requireControl(outcome.ended);
+        // An error reply or a lost one is settled against both exact postimages.
         requireControl(await this.fileHash(source) === null && await this.fileHash(lost.destination) === lost.sha256);
       });
     }

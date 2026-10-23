@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { deflateSync } from 'node:zlib';
 
 import { DataRootUnavailableError, type PathAdmission } from '../../src/admission.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
@@ -199,20 +198,19 @@ type FixtureEventObservation = { readonly status: 'absent'; readonly sha256: nul
 
 export function installEventInspectionFixture(kernel: Kernel,
   observe: (relative: string, sequence: number) => Promise<FixtureEventObservation>): void {
-  kernel.inspector.metadata = async (script, args, _cwd, _timeout, inputBytes) => {
-    assert.equal(path.basename(script), 'Get-EventMetadata.ps1');
-    const batch = args.includes('-Batch');
-    const input = batch && inputBytes !== undefined ? Buffer.from(inputBytes).toString('utf8') : args[args.indexOf('-RequestsJson') + 1];
-    assert.ok(input !== undefined);
+  kernel.inspector.native = async (op, fields) => {
+    assert.ok(op === 'eventBatch' || op === 'eventMetadata');
+    const batch = op === 'eventBatch';
+    const inputBytes = batch ? Buffer.from(fields['inputBase64'] as string, 'base64') : null;
+    const input = inputBytes === null ? fields['requestsJson'] as string : inputBytes.toString('utf8');
     const requests = JSON.parse(input) as { path: string; sequence: number }[];
     const documents = await Promise.all(requests.map(async request => {
       const relative = path.relative(kernel.scope.dataRoot, request.path).replaceAll(path.sep, '/');
       return { path: request.path, ...await observe(relative, request.sequence) };
     }));
-    const response = batch ? { requestSha256: bytesHash(Buffer.from(inputBytes!)), documents } : { documents };
-    const stdout = Buffer.from(JSON.stringify(response));
+    const response = inputBytes === null ? { documents } : { requestSha256: bytesHash(inputBytes), documents };
 
-    return { exitCode: 0, stdout: batch ? deflateSync(stdout) : stdout, stderr: Buffer.alloc(0) };
+    return parseStrictJson(Buffer.from(JSON.stringify(response)));
   };
 }
 

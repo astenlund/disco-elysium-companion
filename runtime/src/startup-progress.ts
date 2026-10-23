@@ -1,20 +1,20 @@
 import { performance } from 'node:perf_hooks';
 
-export type StartupPhase = 'configuration' | 'scopeAdmission' | 'instanceGuard' | 'runtimeMarker' | 'storageRecovery'
+export type StartupPhase = 'nativeBuild' | 'configuration' | 'scopeAdmission' | 'instanceGuard' | 'runtimeMarker' | 'storageRecovery'
   | 'consumerReconciliation' | 'streamRecovery' | 'outboxDrain' | 'startupAcquisition' | 'safetyReconciliation'
   | 'retention' | 'watcher' | 'providerPreparation' | 'providerPrestart' | 'providerSelection' | 'providerStart' | 'providerBinding' | 'providerFallback' | 'providerRetry' | 'attachmentSafety' | 'startupWorkerClosure';
-export type StartupProgressKind = 'phase' | 'heartbeat' | 'imageAbsent' | 'ready' | 'notOwner' | 'providerUnavailable' | 'failed';
+export type StartupProgressKind = 'phase' | 'heartbeat' | 'nativeHelperBuilt' | 'ready' | 'notOwner' | 'providerUnavailable' | 'failed';
 export interface StartupProgress {
   readonly kind: StartupProgressKind;
   readonly phase: StartupPhase | null;
   readonly at: string;
   readonly elapsedMs: number;
-  readonly selectionMs?: number;
 }
 export type StartupProgressSink = (event: StartupProgress) => void;
 export const startupHeartbeatMs = 15000;
 
 const phaseLabels: Readonly<Record<StartupPhase, string>> = {
+  nativeBuild: 'building the native helper (first launch)',
   configuration: 'loading configuration',
   scopeAdmission: 'validating the companion scope',
   instanceGuard: 'claiming the runtime instance',
@@ -50,11 +50,7 @@ export function formatStartupProgress(event: StartupProgress): string {
     const label = event.phase === null ? 'working' : phaseLabels[event.phase];
     return `${prefix}${label}; elapsed ${elapsed}${event.kind === 'heartbeat' ? '; still working' : ''}`;
   }
-  if (event.kind === 'imageAbsent') {
-    const selection = Math.floor((event.selectionMs ?? 0) / 1000);
-    return `${prefix}compiled images absent; using PowerShell fallback; image selection ${selection}s; elapsed ${elapsed}`;
-  }
-  const outcome = event.kind === 'ready' ? 'chat client ready' : event.kind === 'notOwner' ? 'stopped: runtime is not the consumer'
+  const outcome = event.kind === 'nativeHelperBuilt' ? 'native helper built' : event.kind === 'ready' ? 'chat client ready' : event.kind === 'notOwner' ? 'stopped: runtime is not the consumer'
     : event.kind === 'providerUnavailable' ? 'stopped: provider unavailable' : 'failed';
   return `${prefix}${outcome}; elapsed ${elapsed}`;
 }
@@ -93,21 +89,20 @@ export class StartupProgressReporter {
     this.emit('phase', phase);
   }
 
-  imageAbsent(selectionMs: number): void {
+  finish(kind: 'nativeHelperBuilt' | 'ready' | 'notOwner' | 'providerUnavailable' | 'failed'): void {
     if (this.finished) { return; }
-    this.emit('imageAbsent', this.currentPhase, Number.isFinite(selectionMs) && selectionMs >= 0 ? selectionMs : 0);
-  }
-
-  finish(kind: 'ready' | 'notOwner' | 'providerUnavailable' | 'failed'): void {
-    if (this.finished) { return; }
-    this.finished = true;
-    if (this.timer !== null) { clearInterval(this.timer); }
+    this.cancel();
     this.emit(kind, null);
   }
 
-  private emit(kind: StartupProgressKind, phase: StartupPhase | null, selectionMs?: number): void {
-    try { this.sink?.({ kind, phase, at: this.wallNow().toISOString(), elapsedMs: Math.max(0, this.monotonicNow() - this.startedAt),
-      ...(selectionMs === undefined ? {} : { selectionMs }) }); }
+  /** Stops the heartbeat without a terminal event, for a reporter that never reported a phase. */
+  cancel(): void {
+    this.finished = true;
+    if (this.timer !== null) { clearInterval(this.timer); }
+  }
+
+  private emit(kind: StartupProgressKind, phase: StartupPhase | null): void {
+    try { this.sink?.({ kind, phase, at: this.wallNow().toISOString(), elapsedMs: Math.max(0, this.monotonicNow() - this.startedAt) }); }
     catch { /* Progress output cannot change startup authority or its failure path. */ }
   }
 }

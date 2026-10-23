@@ -3,24 +3,23 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { PathInspector } from '../src/admission.ts';
+import { NativeOperationError, PathInspector } from '../src/admission.ts';
 import { PayloadCodec, CodecDocumentError } from '../src/codec.ts';
 import { EventReader } from '../src/event-reader.ts';
 import { FilePublisher, PublicationError } from '../src/files.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, utcNow } from '../src/json.ts';
-import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
-import type { StartupMutationSession } from '../src/startup-mutation.ts';
 import { OutboxReader } from '../src/outbox.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 describe('file-backed lossless codec', () => {
   it('preserves the payload through private-core settlement, reload, compaction and a lost helper reply', { timeout: 240000 }, async () => {
     const fixture = await companionFixture('state-event');
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const dataRoot = path.join(fixture.root, 'runtime-data');
+    const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot })).supervisor;
     const inspector = new PathInspector(supervisor);
     const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
-    const dataRoot = path.join(fixture.root, 'runtime-data');
     await fs.mkdir(dataRoot);
     const invalidated: string[] = [];
     const publisher = new FilePublisher({ root: dataRoot, guard, supervisor, inspector, preflight: async () => {}, invalidate: target => invalidated.push(target) });
@@ -115,25 +114,17 @@ describe('file-backed lossless codec', () => {
       assert.equal(reservations, 11);
       assert.deepEqual(invalidated, ['invalid.json', 'wrong-sequence.json', 'wrong-hash.json'].map(name => path.join(dataRoot, name)));
 
-      const run = supervisor.run.bind(supervisor);
+      const run = publisher.runNativeMutation.bind(publisher);
       let executions = 0;
       let verifications = 0;
-      supervisor.run = async (role, options, timeout) => {
-        if (role === 'publication' && path.basename(options.args[2] ?? '') === 'Invoke-PayloadCodec.ps1') {
-          if (options.args.includes('-VerifyOnly')) { verifications++; }
-          else { executions++; }
-        }
-        return run(role, options, timeout);
+      publisher.runNativeMutation = async (op, fields, timeout) => {
+        const outcome = await run(op, fields, timeout);
+        if (op !== 'codec') { return outcome; }
+        if (fields['verifyOnly'] === true) { verifications++; return outcome; }
+        executions++;
+        // The fixture discards the first complete native reply.
+        return executions === 1 ? { result: null, ended: true, failure: new NativeOperationError('unavailable') } : outcome;
       };
-      let fallBack = false;
-      const session = { get canFallBack() { return fallBack; },
-        handles: (options: Parameters<ProcessSupervisor['run']>[1]) => path.basename(options.args[2] ?? '') === 'Invoke-PayloadCodec.ps1',
-        async invoke(options: Parameters<ProcessSupervisor['run']>[1], timeout: number) {
-          await supervisor.run('publication', options, timeout);
-          fallBack = true;
-          throw new SupervisorError('result-invalid', 'Fixture discarded the complete native reply.');
-        }, async close() {} } as unknown as StartupMutationSession;
-      publisher.attachStartupMutationSession(session);
       const recovered = await codec.rewriteEvent('event.json', compacted.bytes, { ...acceptedMetadata, compacted: true, acknowledgedAt: now }, true);
       assert.equal(recovered.metadata['acknowledgedAt'], now);
       assert.equal(recovered.metadata['payloadBindingSha256'], created.metadata['payloadBindingSha256']);
@@ -147,7 +138,6 @@ describe('file-backed lossless codec', () => {
       assert.equal(verifications, 1);
     } finally {
       await publisher.idle();
-      await publisher.closeStartupMutationSession();
       await guard.release();
       await fixture.close();
     }
@@ -155,7 +145,7 @@ describe('file-backed lossless codec', () => {
 
   it('refuses a missing complete-transition reservation before creating staging', { timeout: 60000 }, async () => {
     const fixture = await companionFixture();
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root })).supervisor;
     const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
     const publisher = new FilePublisher({ root: fixture.root, guard, supervisor, inspector: new PathInspector(supervisor), preflight: async () => {}, invalidate: () => {} });
     const codec = new PayloadCodec(publisher, async () => { throw new Error('transition refused'); });

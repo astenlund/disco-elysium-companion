@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import type { PathInspector } from '../admission.ts';
 import { isOpaqueToken } from '../identity.ts';
@@ -7,10 +6,9 @@ import { RuntimeCapacityError, runtimeLimits } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { EventReader } from '../event-reader.ts';
-import type { FilePublisher } from '../files.ts';
 import type { Journal } from '../journal.ts';
 import { eventRewriteMetadata, type EventDescription } from '../journal-records.ts';
-import { asInteger, hasExactKeys, parseStrictJson, stringifyJson } from '../json.ts';
+import { asInteger, hasExactKeys, stringifyJson, type JsonValue } from '../json.ts';
 import { effectivelyUnfinished, operationHasUnresolvedCarryRelease, pendingOperationSafety, type RepairOperation } from '../operation-records.ts';
 import type { OperationStore, StoredOperation } from '../operations.ts';
 import type { OutboxReader } from '../outbox.ts';
@@ -27,7 +25,6 @@ import { deferredCarryAuthority, hasCarryAuthority, hasProviderAuthority } from 
 import { matchesRecoveryDisclosure } from '../backend/recovery-disclosure.ts';
 
 const ticksPerDay = 864000000000n;
-const resourceScript = fileURLToPath(new URL('../../scripts/resource-lifecycle/Get-ResourceInventory.ps1', import.meta.url));
 const identity = (value: { readonly logicalOutboxId: string; readonly recordSha256: string }): string => `${value.logicalOutboxId}:${value.recordSha256}`;
 const sameEvent = (left: { readonly journalId: string; readonly eventId: string }, right: { readonly journalId: string; readonly eventId: string }): boolean => left.journalId === right.journalId && left.eventId === right.eventId;
 const nowUtc = (): string => new Date().toISOString().replace(/([.][0-9]{3})Z$/, '$10000Z');
@@ -265,7 +262,6 @@ export function selectOperationRetention(operations: readonly StoredOperation[],
 export interface MaintenanceDependencies {
   readonly scope: RuntimeScope;
   readonly inspector: PathInspector;
-  readonly publisher?: Pick<FilePublisher, 'trimStartupQuarantine'>;
   readonly storage: ScopeStorage;
   readonly journal: Journal;
   readonly operations: OperationStore;
@@ -376,10 +372,11 @@ export async function maintainRuntimeStorage(deps: MaintenanceDependencies, dead
 async function trimQuarantine(deps: MaintenanceDependencies, protectedPaths: ReadonlySet<string>, deadline?: Deadline): Promise<number> {
   await deps.storage.ensureDirectory('quarantine', deadline);
   const control = Buffer.from(stringifyJson([...protectedPaths]), 'utf8');
-  const warm = await deps.publisher?.trimStartupQuarantine(deps.scope, control, deadline?.remaining());
-  const result = warm ?? await deps.inspector.metadata(resourceScript, ['-Root', deps.scope.dataRoot, '-ScopeSha256', deps.scope.bindingSha256, '-Mode', 'Quarantine'], deps.scope.dataRoot, deadline?.remaining(), control);
-  requireControl(result.exitCode === 0);
-  const reply = parseStrictJson(result.stdout);
+  let reply: JsonValue = null;
+  try {
+    reply = await deps.inspector.native('inventory', { root: deps.scope.dataRoot, scopeSha256: deps.scope.bindingSha256, companionRoot: null,
+      mode: 'Quarantine', inputBase64: control.toString('base64') }, deadline?.remaining());
+  } catch { requireControl(false); }
   requireControl(hasExactKeys(reply, ['removed', 'remaining']));
   const removed = asInteger(reply['removed']);
   const remaining = asInteger(reply['remaining']);

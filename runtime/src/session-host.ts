@@ -12,7 +12,6 @@ import type { ClientSink, Correction, HostEvent, HostSnapshot, HostStatus, Inter
 import type { StartupPhase } from './startup-progress.ts';
 import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './window-recovery.ts';
 
-const startupWorkerRoles = ['startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
 const attachmentSafetyLifetimeMs = 3_000;
 const attachmentLivenessLifetimeMs = 1_000;
 const defaultProviderExitObservationMs = 5_000;
@@ -47,6 +46,7 @@ export interface SessionHostOptions {
   readonly requireVerifiedAttach?: boolean;
   readonly providerTerminated: (instance: string) => Promise<void>;
   readonly verifyTools: () => Promise<void>;
+  /** Releases the tool namespace last, after backend shutdown observed the helper's exit; it must not need the helper. */
   readonly closeTools: () => Promise<void>;
   readonly monotonicNow?: () => number;
   readonly delay?: (milliseconds: number) => Promise<void>;
@@ -267,7 +267,9 @@ export class SessionHost implements SessionHostV1 {
 
   private async attachVerifiedReserved(sink: ClientSink, reservation: AttachmentReservation): Promise<VerifiedAttachResult> {
     if (!this.options.backend.guardHeld()) { throw new Error('Client attachment lost the runtime guard.'); }
-    const verifyWorkers = () => allProofs(startupWorkerRoles.map(role => this.options.backend.supervisor.verifyQuiescent(role)));
+    // The startup core reply worker must be absent and the process-long helper service live, as its handshake named it.
+    const verifyWorkers = () => allProofs([this.options.backend.supervisor.verifyQuiescent('startupCoreReply'),
+      this.options.backend.supervisor.nativeHelper.verifyLive()]);
     const expectedStatus = this.options.backend.status;
     const expectedStatusBytes = JSON.stringify(expectedStatus);
     const expectedBinding = this.lifecycle.binding;

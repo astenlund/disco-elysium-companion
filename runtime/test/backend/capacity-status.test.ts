@@ -5,7 +5,7 @@ import { DataRootUnavailableError } from '../../src/admission.ts';
 import { ResourceAuthority, type ResourceObservation } from '../../src/resource-lifecycle/resources.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
 import { CoordinatorBackend, phaseFatalError } from '../../src/backend/index.ts';
-import { CompiledImageReleaseError } from '../../src/compiled-image-release.ts';
+import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { RuntimeAlreadyRunningError } from '../../src/guard.ts';
 import { SupervisorError } from '../../src/process.ts';
 import { DeliveryCoordinator } from '../../src/backend/delivery.ts';
@@ -75,10 +75,11 @@ describe('bounded capacity presentation', () => {
     assert.equal(detail.transition, 'runtimeMarker'); assert.equal(detail.state, 'unavailable');
   });
 
-  it('reports phase A through C failures only under their four fatal codes', () => {
-    const listed = new RuntimeAlreadyRunningError('Another runtime owns this scope.');
-    assert.equal(phaseFatalError(listed), listed);
-    for (const failure of [new CompiledImageReleaseError('Compiled image release changed.'), new SupervisorError('deadline', 'Owned child failed: deadline.')]) {
+  it('reports phase A through C failures only under their five fatal codes', () => {
+    for (const listed of [new RuntimeAlreadyRunningError('Another runtime owns this scope.'), new NativeHelperUnavailableError('imageAbsent')]) {
+      assert.equal(phaseFatalError(listed), listed);
+    }
+    for (const failure of [new Error('An unlisted startup failure.'), new SupervisorError('deadline', 'Owned child failed: deadline.')]) {
       const reported = phaseFatalError(failure);
       assert.ok(reported instanceof DataRootUnavailableError);
       assert.equal(reported.message, failure.message); assert.equal(reported.cause, failure);

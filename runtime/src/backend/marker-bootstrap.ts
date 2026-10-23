@@ -1,4 +1,4 @@
-import { DataRootUnavailableError, type PathInspector } from '../admission.ts';
+import type { PathInspector } from '../admission.ts';
 import { requireControl } from '../control-values.ts';
 import type { InstanceGuard } from '../guard.ts';
 import { mintProcessIdentities } from '../identity.ts';
@@ -7,8 +7,6 @@ import { cleanupRuntimeMarkerResidue, reconcileWatcherOrphan } from '../platform
 import type { ProcessSupervisor } from '../process.ts';
 import { parseRuntimeRecord, type RuntimeRecord } from '../runtime-records.ts';
 import type { RuntimeScope } from '../scope.ts';
-import type { StartupMetadataSession } from '../startup-metadata.ts';
-import type { StartupWorkerEvidence } from '../startup-worker-sources.ts';
 import type { ScopeStorage } from '../storage.ts';
 import type { ResourceAuthority } from './resources.ts';
 
@@ -19,15 +17,17 @@ interface MarkerBootstrap {
   readonly supervisor: ProcessSupervisor;
   readonly storage: Pick<ScopeStorage, 'read' | 'write'>;
   readonly resources: Pick<ResourceAuthority, 'withTransition' | 'reserveRuntimeMarker'>;
-  readonly earlyMetadata?: StartupMetadataSession | null;
 }
 
 interface MarkerWorker { close(): Promise<void> }
 
-/** @internal The common pre-command marker path; openBackend owns scope and guard admission. */
+/**
+ * @internal The common pre-command marker path; openBackend owns scope and guard admission and the helper's binding.
+ * All-role predecessor admission, the bound helper job included, is checked before the marker is published; a warm
+ * worker, when prepared, opens beside that publication.
+ */
 export async function initializeRuntimeMarker<TWorker extends MarkerWorker = MarkerWorker>(dependencies: MarkerBootstrap,
-  cleanup = cleanupRuntimeMarkerResidue,
-  prepareWorker?: (proveEarly?: (evidence: StartupWorkerEvidence) => void) => Promise<(() => Promise<TWorker | null>) | null>) {
+  cleanup = cleanupRuntimeMarkerResidue, prepareWorker?: () => Promise<(() => Promise<TWorker | null>) | null>) {
   const { scope, guard, inspector, supervisor, storage, resources } = dependencies;
   await cleanup(scope, guard, inspector, supervisor);
   return resources.withTransition('runtimeMarker', async () => {
@@ -35,28 +35,12 @@ export async function initializeRuntimeMarker<TWorker extends MarkerWorker = Mar
     const previous = await storage.read('runtime.json', 'config', parseRuntimeRecord);
     requireControl(previous.status !== 'invalid');
     if (previous.status === 'valid' && previous.value.watcher !== null) {
-      await reconcileWatcherOrphan(previous.value, supervisor, scope.companionRoot);
-    }
-    const earlyMetadata = dependencies.earlyMetadata;
-    if (earlyMetadata !== null && earlyMetadata !== undefined && prepareWorker === undefined) {
-      throw new DataRootUnavailableError('Early startup metadata requires fresh worker source preparation.');
+      await reconcileWatcherOrphan(previous.value, supervisor);
     }
     requireControl(guard.held);
-    await supervisor.admitStartup(earlyMetadata !== null && earlyMetadata !== undefined);
+    await supervisor.admitStartup();
     requireControl(guard.held);
-    let proof: StartupWorkerEvidence | null = null;
-    const proveEarly = earlyMetadata === null || earlyMetadata === undefined ? undefined : (evidence: StartupWorkerEvidence): void => {
-      requireControl(guard.held);
-      if (proof !== null || !earlyMetadata.matchesStartupEvidence(scope, evidence)) {
-        throw new DataRootUnavailableError('Early startup metadata source or scope binding changed before admission.');
-      }
-      proof = evidence;
-    };
-    const launch = prepareWorker === undefined ? null : await prepareWorker(proveEarly);
-    if (earlyMetadata !== null && earlyMetadata !== undefined && (proof === null || launch === null
-      || !earlyMetadata.matchesStartupEvidence(scope, proof))) {
-      throw new DataRootUnavailableError('Early startup metadata source proof is incomplete.');
-    }
+    const launch = prepareWorker === undefined ? null : await prepareWorker();
     requireControl(guard.held);
     const identities = mintProcessIdentities(previous.status === 'valid' ? previous.value.runtimeInstanceId : null);
     const runtime: RuntimeRecord = { runtimeInstanceId: identities.runtimeInstanceId, startedAt: utcNow(), cleanShutdown: false, watcher: null };

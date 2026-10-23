@@ -6,13 +6,14 @@ import { describe, it } from 'node:test';
 import { openBackend } from '../../src/backend/index.ts';
 import { ReleaseRefusedError } from '../../src/backend/consumer.ts';
 import { companionFixture } from '../support/companion.ts';
+import { testHelperImage } from '../support/native-helper.ts';
 
 describe('production coordinator command authority', () => {
   it('initializes exact scoped safety and refuses an unverified confirmed release before the core switch', { timeout: 600000 }, async () => {
     const fixture = await companionFixture('runtime');
     let backend: Awaited<ReturnType<typeof openBackend>> | null = null;
     try {
-      backend = await openBackend({ companionRoot: fixture.root });
+      backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
       await assert.rejects(backend.startup({ kind: 'consumer', owner: 'bridge', abandonUndelivered: false }), ReleaseRefusedError);
       const safety = await backend.safety();
       assert.equal(safety.pendingCheck, null);
@@ -33,7 +34,7 @@ describe('production coordinator command authority', () => {
     const fixture = await companionFixture('runtime');
     let backend: Awaited<ReturnType<typeof openBackend>> | null = null;
     try {
-      backend = await openBackend({ companionRoot: fixture.root });
+      backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
       const startup = await backend.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false });
       assert.equal(startup.consumerResult?.success, true);
       const records = await fs.readdir(path.join(backend.scope.dataRoot, 'operations'));

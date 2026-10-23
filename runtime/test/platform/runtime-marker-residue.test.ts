@@ -41,7 +41,7 @@ function fixture(names: readonly string[] = [tmp], withTarget = false) {
       return targets.map(file => ({ ...(admissions.get(file) ?? { path: file, exists: false, kind: null, links: null, volume: null, identity: null, missing: [path.basename(file)] }) }));
     },
   };
-  const supervisor = { async verifyQuiescentMany(roles: readonly string[]) {
+  const supervisor = { async proveNoForeignWriters(roles: readonly string[] = []) {
     assert.deepEqual(roles, ['publication', 'startupMutation']);
     calls.push('batch');
     for (const role of roles) { calls.push(role); control.hook('quiescent:' + ++quiescence); }

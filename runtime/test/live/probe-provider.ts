@@ -7,10 +7,10 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClaudeProvider } from '../../src/claude-provider.ts';
 import { loadRuntimeConfig, type ModelChoice } from '../../src/config.ts';
 import { FileOperationGuard } from '../../src/file-operation.ts';
-import { ProcessSupervisor } from '../../src/process.ts';
 import type { ProviderSession } from '../../src/provider.ts';
 import { hostedTools, ToolBoundary } from '../../src/tool-boundary.ts';
 import { companionFixture } from '../support/companion.ts';
+import { createTestNative } from '../support/native-helper.ts';
 
 const scriptName = path.basename(fileURLToPath(import.meta.url), '.ts');
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     await fs.writeFile(hookScript, "const fs = require('node:fs');\r\nconst path = require('node:path');\r\nfs.writeFileSync(path.join(__dirname, 'hook-executed'), 'EXECUTED');\r\n");
     await fs.writeFile(path.join(fixture.root, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `node "${hookScript}"` }] }] } }) + '\r\n');
     const config = await loadRuntimeConfig(path.join(repository, 'runtime', 'companion.config.json'));
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root)).supervisor;
     const provider = new ClaudeProvider({ companionRoot: fixture.root, config, supervisor,
       appendText: 'This is a private provider integration probe. Follow each request and perform no other work or tool call.',
       isCurrent: instance => current === instance, onPassiveSignal: () => {},

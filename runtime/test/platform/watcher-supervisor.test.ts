@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { describe, it } from 'node:test';
 
+import { rawInteger } from '../../src/json.ts';
 import { SupervisorError, type OwnedExit, type ProcessIdentity, type ProcessSupervisor } from '../../src/process.ts';
 import { reconcileWatcherOrphan, WatcherSupervisor, type WatcherChild, type WatcherClock, type WatcherState } from '../../src/platform/watcher-supervisor.ts';
 import type { RuntimeRecord } from '../../src/runtime-records.ts';
@@ -60,17 +61,17 @@ describe('watcher supervision', () => {
       let runs = 0;
       let verifications = 0;
       const supervisor = { observeJobAbsent: async () => absent, jobName: () => `Global${String.fromCharCode(92)}fixture-watcher`,
-        run: async () => { runs++; return { exitCode: 0, stdout: Buffer.from(JSON.stringify({ state: 'reused', pid: 4, created: '1' })) }; },
+        nativeHelper: { request: async () => { runs++; return { status: 'ok', result: { state: 'reused', pid: rawInteger(4), created: '1' } }; } },
         verifyQuiescent: async () => { verifications++; } } as unknown as ProcessSupervisor;
-      await reconcileWatcherOrphan(previous, supervisor, 'C:/Git/disco-elysium-companion/.tmp/fixture');
+      await reconcileWatcherOrphan(previous, supervisor);
       assert.equal(runs, absent ? 0 : 1);
       assert.equal(verifications, 1);
     }
     const unavailable = new SupervisorError('termination-unverified', 'Fixture job observation is unavailable.');
     const uncertain = { observeJobAbsent: async () => { throw unavailable; },
-      run: async () => { assert.fail('An uncertain job must not inspect or terminate a PID.'); },
+      nativeHelper: { request: async () => { assert.fail('An uncertain job must not inspect or terminate a PID.'); } },
       verifyQuiescent: async () => { assert.fail('An uncertain job must not be reported quiescent.'); } } as unknown as ProcessSupervisor;
-    await assert.rejects(reconcileWatcherOrphan(previous, uncertain, 'C:/Git/disco-elysium-companion/.tmp/fixture'), error => error === unavailable);
+    await assert.rejects(reconcileWatcherOrphan(previous, uncertain), error => error === unavailable);
   });
 
   it('uses the complete restart ladder and resets after a ten-minute run', async () => {

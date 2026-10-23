@@ -3,17 +3,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { RuntimeBackend } from '../../src/backend/api.ts';
-import { DirectImagePinObligation, withDirectMainToken } from '../../src/direct-main-capability.ts';
-import { createChatRuntime, privateRuntimeStartup } from '../../src/runtime.ts';
+import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
+import { ensureNativeHelperImage, type HelperImage } from '../../src/native-image.ts';
 import type { SessionHost } from '../../src/session-host.ts';
-import { SourceBoundBootstrapError } from '../../src/source-bound-bootstrap.ts';
-import { prepareStartupHelperScratch } from '../../src/startup-helper-scratch.ts';
-import { SyntheticProvider } from './synthetic-provider.ts';
+import { openSyntheticChat } from './synthetic-chat.ts';
+import type { SyntheticProvider } from './synthetic-provider.ts';
 
-// Private copied-root fixture main for the selected compiled-image path. Usage:
-//   node runtime/test/support/selected-chat-main.ts <copiedCompanionRoot> <imageRoot> <acknowledgedTurns: 0|1> <prestart|no-prestart>
+// Private copied-root process-to-attachment timing main on the helper path. Usage:
+//   node runtime/test/support/selected-chat-main.ts <copiedCompanionRoot> <acknowledgedTurns: 0|1> <prestart|no-prestart>
 // The product CLI does not prestart the provider, so `no-prestart` measures its path and `prestart` the private opt-in.
-// Emits JSON lines on stdout: `pins`, `attached`, then one final `result`.
+// Emits JSON lines on stdout: `image`, `attached`, then one final `result`.
 
 const installationRoot = path.win32.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 const wholeTurnWaitMs = 480000;
@@ -23,11 +22,11 @@ class FixtureRefusal extends Error {}
 
 function emit(value: Record<string, unknown>): void { process.stdout.write(JSON.stringify(value) + newline); }
 
-/** Finds the bootstrap refusal reason anywhere in a short cause chain, so each negative case can prove its own check. */
-function bootstrapDiagnostic(error: unknown): { reason: string; detail: string | null } | null {
+/** Finds a native helper refusal reason anywhere in a short cause chain, so each negative case can prove its own check. */
+function helperDiagnostic(error: unknown): string | null {
   let current: unknown = error;
   for (let depth = 0; current instanceof Error && depth < 4; depth += 1, current = current.cause) {
-    if (current instanceof SourceBoundBootstrapError) { return { reason: current.reason, detail: current.detail }; }
+    if (current instanceof NativeHelperUnavailableError) { return current.reason; }
   }
   return null;
 }
@@ -110,51 +109,32 @@ async function completeOneTurn(backend: RuntimeBackend, host: SessionHost, provi
   finally { clearTimeout(timer); }
 }
 
-/** Opens each pinned executable for write without writing; while pins live, Windows sharing must refuse both. */
-async function probeArtifactWrites(imageRoot: string): Promise<Record<string, string>> {
-  const outcomes: Record<string, string> = {};
-  for (const name of ['go-broker.exe', 'job-observer.exe']) {
-    try {
-      const handle = await fs.open(path.win32.join(imageRoot, 'runtime', 'native', name), 'r+');
-      await handle.close();
-      outcomes[name] = 'opened';
-    } catch (error) { outcomes[name] = (error as NodeJS.ErrnoException).code ?? 'failed'; }
-  }
-  return outcomes;
+/** Opens the helper image for write without writing; while the service holds it, Windows sharing must refuse. */
+async function probeArtifactWrite(image: HelperImage): Promise<string> {
+  try {
+    const handle = await fs.open(image.path, 'r+');
+    await handle.close();
+    return 'opened';
+  } catch (error) { return (error as NodeJS.ErrnoException).code ?? 'failed'; }
 }
 
-async function run(token: symbol, pins: DirectImagePinObligation, companionRoot: string, imageRoot: string, turns: 0 | 1,
-  prestart: boolean): Promise<number> {
+async function run(companionRoot: string, turns: 0 | 1, prestart: boolean): Promise<number> {
   const phases: Array<{ phase: string; processMs: number }> = [];
   const durations: { turnMs: number | null; shutdownMs: number | null } = { turnMs: null, shutdownMs: null };
-  let stage = 'helper-scratch';
+  let stage = 'native-image';
   let host: SessionHost | null = null;
-  let backend: RuntimeBackend | null = null;
-  let provider: SyntheticProvider | null = null;
   let attachment: AttachmentObservation | null = null;
-  let helperScratch: string | null = null;
+  let artifactWrite: string | null = null;
   try {
-    const scratch = await prepareStartupHelperScratch();
-    helperScratch = scratch.root;
+    const imageStarted = performance.now();
+    let built = false;
+    const image = await ensureNativeHelperImage({ build: true, onBuildStart: () => { built = true; } });
+    emit({ event: 'image', built, imageMs: performance.now() - imageStarted, processMs: performance.now() });
     stage = 'chat-startup';
-    const opened = await createChatRuntime(companionRoot, phase => { phases.push({ phase, processMs: performance.now() }); }, {
-      [privateRuntimeStartup]: {
-        allowUnboundProviderPrestart: prestart,
-        selectedImageBootstrap: { token, imageRoot, scratch: scratch.root, environment: scratch.environment,
-          markPossibleTransfer: () => { pins.markPossibleTransfer(); },
-          onVerifiedPins: status => { pins.verified(status); emit({ event: 'pins', status, processMs: performance.now() }); } },
-        providerFactory: (_text, _tools, current) => {
-          backend ??= current;
-          if (current !== backend) { throw new Error('The fixture backend changed.'); }
-          provider ??= new SyntheticProvider(current.supervisor, companionRoot);
-          return provider;
-        },
-      } });
-    if (opened.result !== 'ready') { throw new Error(`Chat did not become ready: ${opened.result}.`); }
-    host = opened.host;
-    if (backend === null || provider === null) { throw new Error('The fixture provider was never created.'); }
-    const readyBackend: RuntimeBackend = backend;
-    const readyProvider: SyntheticProvider = provider;
+    const chat = await openSyntheticChat(companionRoot, image, prestart, phase => { phases.push({ phase, processMs: performance.now() }); });
+    host = chat.host;
+    const readyBackend: RuntimeBackend = chat.backend;
+    const readyProvider: SyntheticProvider = chat.provider;
     stage = 'verified-attachment';
     let completed: ((value: unknown) => void) | undefined;
     const turnCompleted = new Promise<unknown>(resolve => { completed = resolve; });
@@ -170,42 +150,37 @@ async function run(token: symbol, pins: DirectImagePinObligation, companionRoot:
       await completeOneTurn(readyBackend, host, readyProvider, turnCompleted);
       durations.turnMs = performance.now() - turnStarted;
     }
+    stage = 'held-image-probe';
+    artifactWrite = await probeArtifactWrite(image);
     stage = 'shutdown';
     const shutdownStarted = performance.now();
     await host.shutdown();
     durations.shutdownMs = performance.now() - shutdownStarted;
     host = null;
-    stage = 'pinned-artifact-probe';
-    const artifactWrites = pins.status === 'ready' ? await probeArtifactWrites(imageRoot) : null;
-    emit({ event: 'result', status: 'passed', pins: pins.status, prestart, attachment, acknowledgedTurns: turns, artifactWrites,
-      providerStarts: readyProvider.calls.length, providerResumed: readyProvider.calls[0] ?? null, helperScratch, ...durations, phases });
+    emit({ event: 'result', status: 'passed', prestart, attachment, acknowledgedTurns: turns, artifactWrite,
+      providerStarts: readyProvider.calls.length, providerResumed: readyProvider.calls[0] ?? null, ...durations, phases });
     return 0;
   } catch (error) {
     if (host !== null) {
       try { await host.shutdown(); }
       catch { /* The caller proves every role stopped after this process exits. */ }
     }
-    emit({ event: 'result', status: 'failed', stage, pins: pins.status, prestart, attachment, helperScratch, ...durations, phases,
-      bootstrap: bootstrapDiagnostic(error), message: error instanceof Error ? error.message : String(error) });
+    emit({ event: 'result', status: 'failed', stage, prestart, attachment, artifactWrite, ...durations, phases,
+      helper: helperDiagnostic(error), message: error instanceof Error ? error.message : String(error) });
     return 1;
   }
 }
 
-const pins = new DirectImagePinObligation();
 let code: number;
 try {
-  const [rootArgument, imageArgument, turnsArgument, prestartArgument] = process.argv.slice(2);
+  const [rootArgument, turnsArgument, prestartArgument] = process.argv.slice(2);
   const companionRoot = absoluteArgument(rootArgument, 'The companion root');
-  const imageRoot = absoluteArgument(imageArgument, 'The image root');
   if (turnsArgument !== '0' && turnsArgument !== '1') { throw new FixtureRefusal('Acknowledged turns must be 0 or 1.'); }
   if (prestartArgument !== 'prestart' && prestartArgument !== 'no-prestart') { throw new FixtureRefusal('Choose prestart or no-prestart.'); }
   await admitCopiedRoot(companionRoot);
-  code = await withDirectMainToken(token => run(token, pins, companionRoot, imageRoot, turnsArgument === '1' ? 1 : 0,
-    prestartArgument === 'prestart'));
+  code = await run(companionRoot, turnsArgument === '1' ? 1 : 0, prestartArgument === 'prestart');
 } catch (error) {
-  emit({ event: 'result', status: error instanceof FixtureRefusal ? 'refused' : 'failed', pins: pins.status,
-    message: error instanceof Error ? error.message : String(error) });
+  emit({ event: 'result', status: error instanceof FixtureRefusal ? 'refused' : 'failed', message: error instanceof Error ? error.message : String(error) });
   code = error instanceof FixtureRefusal ? 2 : 1;
 }
-if (pins.requiresHardExit) { process.exit(code); }
 process.exitCode = code;

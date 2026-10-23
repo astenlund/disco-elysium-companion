@@ -7,10 +7,13 @@ import { fileURLToPath } from 'node:url';
 
 import { openBackend } from '../../src/backend/index.ts';
 import type { RuntimeBackend } from '../../src/backend/api.ts';
+import type { JsonValue } from '../../src/json.ts';
+import { parseSessionBinding } from '../../src/session-records.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { companionFixture } from '../support/companion.ts';
 import { FakeProvider, instructionHash } from './support.ts';
+import { testHelperImage } from '../support/native-helper.ts';
 
 // This private fixture includes release, hand-over and safety recovery before the turn; the runtime settlement gate stays at 120 seconds.
 test('real private coordinator carries accepted state through SessionHost and resumes its acknowledged binding', { timeout: 3000000 }, async () => {
@@ -26,7 +29,7 @@ test('real private coordinator carries accepted state through SessionHost and re
   };
   try {
     progress('releasing the private empty runtime-owned fixture to bridge');
-    backend = await openBackend({ companionRoot: fixture.root, onDiagnostic: diagnose });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root, onDiagnostic: diagnose });
     const release = await backend.startup({ kind: 'consumer', owner: 'bridge', abandonUndelivered: true });
     assert.equal(release.consumerResult?.success, true);
     if (release.consumerResult?.success !== true) { assert.fail('Private bridge release failed.'); }
@@ -34,7 +37,7 @@ test('real private coordinator carries accepted state through SessionHost and re
     assert.equal(release.consumerResult.value.abandonedCount, 0);
     await backend.shutdown(true); backend = null;
     progress('opening private consumer hand-over from bridge');
-    backend = await openBackend({ companionRoot: fixture.root, onDiagnostic: diagnose });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root, onDiagnostic: diagnose });
     const ownership = await backend.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false });
     assert.equal(ownership.consumerResult?.success, true);
     if (ownership.consumerResult?.success !== true) { assert.fail('Private runtime hand-over failed.'); }
@@ -45,7 +48,7 @@ test('real private coordinator carries accepted state through SessionHost and re
     progress('verified private bridge hand-over completed; opening chat backend');
 
     const events: HostEvent[] = [];
-    backend = await openBackend({ companionRoot: fixture.root, onStatus: status => {
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root, onStatus: status => {
       host?.statusChanged();
       progress(`status freshness=${status.freshness.state} reason=${status.freshness.reason ?? 'none'} journal=${status.journal.state} safety=${status.stateSafety.state}`);
     }, onInvalidated: reason => host?.invalidate(reason), onDiagnostic: diagnose });
@@ -82,18 +85,17 @@ test('real private coordinator carries accepted state through SessionHost and re
     assert.equal(outcome.type, 'turn.completed', JSON.stringify({ outcome, status: host.status }));
     assert.ok(delivered);
     await host.shutdown(); host = null;
-    const binding = await backend.sessions.readBinding();
-    assert.equal(binding.status, 'valid');
-    if (binding.status !== 'valid') { assert.fail(); }
-    assert.equal(binding.value.turnsCompleted, 1);
+    // Shutdown finalizes the acknowledgement and closes the helper service, so the durable binding is read from its file.
+    const binding = parseSessionBinding(JSON.parse(await fs.readFile(path.join(backend.scope.dataRoot, 'agent-session.json'), 'utf8')) as JsonValue);
+    assert.equal(binding.turnsCompleted, 1);
     const cursor = JSON.parse(await fs.readFile(path.join(backend.scope.dataRoot, 'journal', 'cursor-agent-session.json'), 'utf8')) as Record<string, number>;
     assert.ok(cursor.lastAckedSequence! > 0);
     assert.equal(events.filter(event => event.type === 'turn.completed').length, 1);
-    const sessionId = binding.value.providerSessionId;
+    const sessionId = binding.providerSessionId;
     backend = null;
     progress('acknowledged runtime closed; reopening for resume');
 
-    backend = await openBackend({ companionRoot: fixture.root, onDiagnostic: diagnose });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root, onDiagnostic: diagnose });
     assert.equal((await backend.startup({ kind: 'chat' })).notOwner, false);
     const resumed = new FakeProvider();
     host = new SessionHost({ backend, provider: resumed, instructionsSha256: instructionHash, providerTerminated: async () => backend!.supervisor.verifyQuiescent('provider'),

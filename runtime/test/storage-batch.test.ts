@@ -13,29 +13,31 @@ import { ProcessSupervisor } from '../src/process.ts';
 import type { RuntimeScope } from '../src/scope.ts';
 import { bytesHash, ScopeStorage, StorageConflictError } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 describe('bounded file-hash protocol', () => {
-  it('splits long paths by decoded-text budget and rejects uncorrelated or oversized replies', async () => {
+  it('splits long paths by decoded-text budget and rejects uncorrelated or incomplete replies', async () => {
     const root = path.resolve('hash-protocol-fixture');
     const paths = Array.from({ length: 512 }, (_, index) => path.join(root, 'p'.repeat(2048), String(index)));
     const inspector = new PathInspector({} as ProcessSupervisor);
     const batches: number[] = [];
     let fault = '';
-    inspector.metadata = async (_script, args, _cwd, _timeout, input) => {
-      assert.deepEqual(args, ['-Root', root]);
-      assert.ok(input);
+    inspector.native = async (op, fields) => {
+      assert.equal(op, 'hash');
+      assert.equal(fields['root'], root);
+      assert.equal(fields['scopeSha256'], null);
+      const input = Buffer.from(fields['inputBase64'] as string, 'base64');
       assert.ok(input.byteLength <= jsonBudgets.config.maxBytes);
       const targets = parseStrictJson(input);
       assert.ok(Array.isArray(targets));
       batches.push(targets.length);
-      const value = { requestSha256: fault === 'correlation' ? '0'.repeat(64) : bytesHash(input), sha256: targets.map(() => '1'.repeat(64)) };
-      const stdout = fault === 'overflow' ? Buffer.alloc(65537, 32) : Buffer.from(stringifyJson(value));
-      return { exitCode: 0, stdout, stderr: Buffer.alloc(0) };
+      const hashes = targets.map(() => '1'.repeat(64));
+      return { requestSha256: fault === 'correlation' ? '0'.repeat(64) : bytesHash(input), sha256: fault === 'count' ? hashes.slice(1) : hashes };
     };
     assert.equal((await readFileHashes(inspector, root, paths, Deadline.after(30000))).length, 512);
     assert.ok(batches.length > 1);
     assert.equal(batches.reduce((sum, size) => sum + size, 0), 512);
-    for (const failure of ['correlation', 'overflow']) {
+    for (const failure of ['correlation', 'count']) {
       fault = failure;
       await assert.rejects(readFileHashes(inspector, root, paths, Deadline.after(30000)), DataRootUnavailableError);
     }
@@ -45,14 +47,14 @@ describe('bounded file-hash protocol', () => {
     const inspector = new PathInspector({} as ProcessSupervisor);
     let now = 0;
     let calls = 0;
-    inspector.metadata = async (_script, _args, _cwd, timeout, input) => {
+    inspector.native = async (_op, fields, timeout) => {
       assert.equal(timeout, calls === 0 ? 100 : 40);
       calls++;
       now += 60;
-      assert.ok(input);
+      const input = Buffer.from(fields['inputBase64'] as string, 'base64');
       const targets = parseStrictJson(input);
       assert.ok(Array.isArray(targets));
-      return { exitCode: 0, stdout: Buffer.from(stringifyJson({ requestSha256: bytesHash(input), sha256: targets.map(() => null) })), stderr: Buffer.alloc(0) };
+      return { requestSha256: bytesHash(input), sha256: targets.map(() => null) };
     };
     await assert.rejects(readFileHashes(inspector, path.resolve('fixture'), Array.from({ length: 1025 }, (_, index) => String(index)), Deadline.after(100, () => now)), DeadlineExceededError);
     assert.equal(calls, 2);
@@ -62,11 +64,11 @@ describe('bounded file-hash protocol', () => {
 describe('native storage batch admission', () => {
   it('reads many controls without writes and preserves exact invalid evidence', { timeout: 180000 }, async context => {
     const fixture = await companionFixture();
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root)).supervisor;
     const inspector = new PathInspector(supervisor);
-    const metadata = inspector.metadata.bind(inspector);
+    const native = inspector.native.bind(inspector);
     const calls: string[] = [];
-    inspector.metadata = (script, ...args) => { calls.push(path.basename(script)); return metadata(script, ...args); };
+    inspector.native = (op, ...args) => { if (op !== 'admit') { calls.push(op); } return native(op, ...args); };
     try {
       const binding = Buffer.from(stringifyJson({ runtimeScopeVersion: 1, game: 'game', principal: 'principal' }));
       await fs.writeFile(path.join(fixture.root, 'scope.json'), binding);
@@ -79,7 +81,7 @@ describe('native storage batch admission', () => {
       context.diagnostic(`native1025Ms=${Math.round(performance.now() - started)} metadataCalls=${calls.length}`);
       assert.equal(results.length, 1025);
       assert.ok(results.every((result, index) => result.status === 'valid' && asInteger((result.value as { index: unknown }).index) === index));
-      assert.deepEqual(calls, ['Get-FileHashes.ps1', 'Get-FileHashes.ps1', 'Get-FileHashes.ps1']);
+      assert.deepEqual(calls, ['hash', 'hash', 'hash']);
       assert.deepEqual(await readFileHashes(inspector, fixture.root, [names[0]!], Deadline.after(30000)), [bytesHash(Buffer.from(stringifyJson({ index: 0 })))]);
       const directoryBefore = await fs.readdir(fixture.root);
       const invalid = Buffer.from('{"duplicate":1,"duplicate":2}');
@@ -116,11 +118,11 @@ describe('native storage batch admission', () => {
       const inspector = new PathInspector({} as ProcessSupervisor);
       let mutation = async () => {};
       let now = 0;
-      inspector.metadata = async (_script, args, _cwd, _timeout, input) => {
-        assert.equal(args[3], bytesHash(binding));
-        assert.ok(input);
+      inspector.native = async (_op, fields) => {
+        assert.equal(fields['scopeSha256'], bytesHash(binding));
+        const input = Buffer.from(fields['inputBase64'] as string, 'base64');
         await mutation();
-        return { exitCode: 0, stdout: Buffer.from(stringifyJson({ requestSha256: bytesHash(input), sha256: [bytesHash(original)] })), stderr: Buffer.alloc(0) };
+        return { requestSha256: bytesHash(input), sha256: [bytesHash(original)] };
       };
       const scope: RuntimeScope = { companionRoot: fixture.root, dataRoot: fixture.root, game: 'game', principal: 'principal', bindingSha256: bytesHash(binding), createdHere: false };
       const storage = new ScopeStorage({ scope, inspector, guard: { held: false }, publisher: {} as FilePublisher });

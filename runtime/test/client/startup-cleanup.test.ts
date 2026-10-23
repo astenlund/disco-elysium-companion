@@ -21,7 +21,7 @@ test('worker close failure still stops an opened backend without a host', async 
   const backend = {
     closeStartupWorkers: async () => { order.push('worker'); throw closeFailure; },
     beginShutdown: async () => { order.push('watcher and core'); },
-    supervisor: { verifyQuiescent: async () => { order.push('provider'); } },
+    supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { order.push('provider'); } },
     shutdown: async () => { order.push('backend'); },
   } as unknown as RuntimeBackend;
   const files = { verifyQuiescent: async () => { order.push('tools verified'); },
@@ -37,7 +37,7 @@ test('an unproved pending provider stop closes workers, then fails closed withou
   const backend = {
     closeStartupWorkers: async () => { order.push('worker'); },
     beginShutdown: async () => { order.push('watcher and core'); },
-    supervisor: { verifyQuiescent: async () => { order.push('provider'); } },
+    supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { order.push('provider'); } },
     shutdown: async () => { order.push('backend'); },
   } as unknown as RuntimeBackend;
   await assert.rejects(cleanupFailedChatRuntime(new Error('Startup failed.'), backend, null, null, undefined, pending), error => error === stopFailure);
@@ -51,7 +51,7 @@ test('a stopped pending provider lets cleanup shut down and keep the original fa
   const backend = {
     closeStartupWorkers: async () => { order.push('worker'); },
     beginShutdown: async () => { order.push('watcher and core'); },
-    supervisor: { verifyQuiescent: async () => { order.push('provider'); } },
+    supervisor: { nativeHelper: { verifyLive: async () => {} }, verifyQuiescent: async () => { order.push('provider'); } },
     shutdown: async () => { order.push('backend'); },
   } as unknown as RuntimeBackend;
   await assert.rejects(cleanupFailedChatRuntime(startupFailure, backend, null, null, undefined, pending), error => error === startupFailure);

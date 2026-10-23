@@ -1,75 +1,67 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { readBoundedPrivateFile } from './compiled-broker.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, type JsonValue } from './json.ts';
+import { NativeHelperUnavailableError } from './native-helper-error.ts';
 
-export const compiledImageGeneration = 'd4bd8b098a37aba5e42e739b5e3050da25e2f4d2bf11bb69004f1e94b6b3cbf7';
-export const compiledBrokerSha256 = '3159986b0ed324454000b6b1c7cd21e85d761434823f3053cfe766eea3f2659d';
-export const compiledObserverSha256 = 'f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d';
-const installationRoot = fileURLToPath(new URL('../../', import.meta.url));
-const manifestPath = path.join(installationRoot, 'runtime/native/compiled-images.json');
-const brokerSources = ['runtime/prototypes/go-process-broker/go.mod',
-  'runtime/prototypes/go-process-broker/control.go', 'runtime/prototypes/go-process-broker/child_windows.go',
-  'runtime/prototypes/go-process-broker/job_windows.go', 'runtime/prototypes/go-process-broker/cmd/go-broker/main.go'] as const;
-const observerSources = ['runtime/prototypes/job-observer.go'] as const;
+/** The reviewed pins: the release manifest's digest and the helper image's digest. The pin tool rewrites both together. */
+export const compiledImageGeneration = '92ac8a7ffc0f38e61eb7800c1a528936d1add3a63258f173fe7943926f98b7ed';
+export const nativeHelperSha256 = '0b88d88886b9615946c438906f71608798eb2638ad7567526f9a4e801cbf00ed';
 
-export class CompiledImageReleaseError extends Error {
-  override readonly name = 'CompiledImageReleaseError';
-  readonly code = 'compiledImageReleaseUnavailable';
-}
-export interface CompiledImageSource { readonly path: string; readonly sha256: string }
-export interface CompiledImageEntry { readonly file: string; readonly bytes: number; readonly sha256: string;
-  readonly sources: readonly CompiledImageSource[] }
-export interface CompiledImageRelease { readonly generation: string; readonly broker: CompiledImageEntry;
-  readonly observer: CompiledImageEntry }
+export const manifestFile = 'runtime/native/compiled-images.json';
+export const helperModule = 'runtime/native/helper';
+export const helperImageFile = 'runtime/native/companion-helper.exe';
+export const goToolchain = { name: 'go', version: 'go1.26.0', target: 'windows/amd64', amd64: 'v1',
+  flags: ['-buildvcs=false', '-trimpath', '-ldflags=-buildid='] } as const;
+const maximumImageBytes = 33_554_432;
 
-function unavailable(): CompiledImageReleaseError {
-  return new CompiledImageReleaseError('Compiled image release is unavailable.');
+export interface NativeSource { readonly path: string; readonly sha256: string }
+export interface NativeHelperRelease {
+  readonly generation: string;
+  readonly helper: { readonly file: string; readonly bytes: number; readonly sha256: string; readonly sources: readonly NativeSource[] };
 }
 
-function sourceList(value: JsonValue, expected: readonly string[]): readonly CompiledImageSource[] {
-  if (!Array.isArray(value) || value.length !== expected.length) { throw unavailable(); }
-  return value.map((source, index) => {
-    if (!hasExactKeys(source, ['path', 'sha256']) || source['path'] !== expected[index]
-      || !isLowerHex(source['sha256'], 64)) { throw unavailable(); }
-    return { path: expected[index]!, sha256: source['sha256'] };
+function sourceMismatch(): NativeHelperUnavailableError { return new NativeHelperUnavailableError('sourceMismatch'); }
+
+function sourceList(value: JsonValue | undefined): readonly NativeSource[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 256) { throw sourceMismatch(); }
+  return value.map(source => {
+    if (!hasExactKeys(source, ['path', 'sha256']) || typeof source['path'] !== 'string' || !source['path'].startsWith(`${helperModule}/`)
+      || !isLowerHex(source['sha256'], 64)) { throw sourceMismatch(); }
+    return { path: source['path'], sha256: source['sha256'] };
   });
 }
 
-function imageEntry(value: JsonValue, file: string, sources: readonly string[]): CompiledImageEntry {
-  if (!hasExactKeys(value, ['file', 'bytes', 'sha256', 'sources']) || value['file'] !== file
-    || !isLowerHex(value['sha256'], 64)) { throw unavailable(); }
-  const bytes = asInteger(value['bytes']);
-  if (bytes === undefined || bytes < 1 || bytes > 33_554_432) { throw unavailable(); }
-  return { file, bytes, sha256: value['sha256'], sources: sourceList(value['sources']!, sources) };
-}
-
-/** @internal A fixed reviewed digest is the trust root, even when no manifest exists on disk. */
-export function parseCompiledImageRelease(bytes: Uint8Array): CompiledImageRelease {
+/**
+ * Parses manifest bytes whose digest must equal the reviewed generation pin. A changed manifest is a checkout that no
+ * longer matches its review, so it refuses with the source-digest reason.
+ */
+export function parseNativeHelperRelease(bytes: Uint8Array, expectedGeneration = compiledImageGeneration,
+  expectedImage = nativeHelperSha256): NativeHelperRelease {
   const generation = createHash('sha256').update(bytes).digest('hex');
-  if (generation !== compiledImageGeneration) { throw unavailable(); }
+  if (generation !== expectedGeneration) { throw sourceMismatch(); }
   let value: JsonValue;
   try { value = parseStrictJson(bytes); }
-  catch { throw unavailable(); }
-  if (!hasExactKeys(value, ['compiledImagesVersion', 'toolchain', 'broker', 'observer'])
-    || asInteger(value['compiledImagesVersion']) !== 1 || !hasExactKeys(value['toolchain'], ['name', 'version', 'target', 'flags'])) {
-    throw unavailable();
-  }
+  catch { throw sourceMismatch(); }
+  if (!hasExactKeys(value, ['compiledImagesVersion', 'toolchain', 'helper']) || asInteger(value['compiledImagesVersion']) !== 2
+    || !hasExactKeys(value['toolchain'], ['name', 'version', 'target', 'flags'])
+    || !hasExactKeys(value['helper'], ['file', 'bytes', 'sha256', 'sources'])) { throw sourceMismatch(); }
   const toolchain = value['toolchain'];
-  if (toolchain['name'] !== 'go' || toolchain['version'] !== 'go1.26.0' || toolchain['target'] !== 'windows/amd64'
-    || !Array.isArray(toolchain['flags']) || toolchain['flags'].length !== 3
-    || toolchain['flags'][0] !== '-buildvcs=false' || toolchain['flags'][1] !== '-trimpath'
-    || toolchain['flags'][2] !== '-ldflags=-buildid=') { throw unavailable(); }
-  const broker = imageEntry(value['broker']!, 'go-broker.exe', brokerSources);
-  const observer = imageEntry(value['observer']!, 'job-observer.exe', observerSources);
-  if (broker.sha256 !== compiledBrokerSha256 || observer.sha256 !== compiledObserverSha256) { throw unavailable(); }
-  return { generation,
-    broker, observer };
+  const helper = value['helper'];
+  const flags = toolchain['flags'];
+  if (toolchain['name'] !== goToolchain.name || toolchain['version'] !== goToolchain.version || toolchain['target'] !== goToolchain.target
+    || !Array.isArray(flags) || flags.length !== goToolchain.flags.length || flags.some((flag, index) => flag !== goToolchain.flags[index])
+    || helper['file'] !== path.posix.basename(helperImageFile) || helper['sha256'] !== expectedImage) { throw sourceMismatch(); }
+  const bytesValue = asInteger(helper['bytes']);
+  if (bytesValue === undefined || bytesValue < 1 || bytesValue > maximumImageBytes) { throw sourceMismatch(); }
+  return { generation, helper: { file: helper['file'], bytes: bytesValue, sha256: expectedImage, sources: sourceList(helper['sources']) } };
 }
 
-export function readCompiledImageRelease(): CompiledImageRelease {
-  try { return parseCompiledImageRelease(readBoundedPrivateFile(manifestPath, jsonBudgets.config.maxBytes)); }
-  catch { throw unavailable(); }
+export function readNativeHelperRelease(root: string): NativeHelperRelease {
+  let bytes: Buffer;
+  try { bytes = readFileSync(path.join(root, manifestFile)); }
+  catch { throw sourceMismatch(); }
+  if (bytes.length > jsonBudgets.config.maxBytes) { throw sourceMismatch(); }
+  return parseNativeHelperRelease(bytes);
 }

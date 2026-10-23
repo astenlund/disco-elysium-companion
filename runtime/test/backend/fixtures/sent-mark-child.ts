@@ -3,20 +3,23 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { NativeOperationError } from '../../../src/admission.ts';
 import { openBackend } from '../../../src/backend/index.ts';
 import type { Kernel } from '../../../src/backend/kernel.ts';
 import { assembleInstructions } from '../../../src/instructions.ts';
 import { newIdentity } from '../../../src/identity.ts';
 import { utcNow } from '../../../src/json.ts';
 import type { ProviderSession } from '../../../src/provider.ts';
-import { ProcessSupervisor, processRoles, type OwnedProcess } from '../../../src/process.ts';
+import { processRoles, type OwnedProcess } from '../../../src/process.ts';
+import type { SerialQueue } from '../../../src/serial.ts';
 import { bytesHash } from '../../../src/storage.ts';
+import { createTestNative, testHelperImage } from '../../support/native-helper.ts';
 
 const repository = fileURLToPath(new URL('../../../../', import.meta.url));
 const root = path.resolve(process.argv[2] ?? '');
 assert.equal(path.relative(path.join(repository, '.tmp'), path.dirname(root)), '');
 assert.match(path.basename(root), /^runtime-fixture-[0-9]+-[a-f0-9]{32}$/);
-const backend = await openBackend({ companionRoot: root });
+const backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: root });
 assert.equal((await backend.startup({ kind: 'chat' })).notOwner, false);
 assert.ok(backend.status.journal.unacknowledgedEvents > 0);
 const instructions = await assembleInstructions(backend.inspector, root);
@@ -62,21 +65,22 @@ const bindingBefore = await fs.readFile(bindingPath);
 const indexBefore = await fs.readFile(indexPath);
 const before = (await fs.readdir(backend.scope.dataRoot, { recursive: true })).sort();
 let publicationCalls = 0;
-let failedPublicationExit: number | null = null;
+let failedPublicationCode: string | null = null;
 let stagedInput: string | null = null;
 let stagedHash: string | null = null;
 let lockChild: OwnedProcess | null = null;
-const lockSupervisor = await ProcessSupervisor.create(path.join(root, 'test-sent-lock-' + newIdentity()));
+const lockSupervisor = (await createTestNative(path.join(root, 'test-sent-lock-' + newIdentity()))).supervisor;
 const lockScript = fileURLToPath(new URL('./hold-sent-files.ps1', import.meta.url));
-const nativeRun = backend.supervisor.run.bind(backend.supervisor);
-backend.supervisor.run = async (role, options, timeout, input) => {
-  if (role !== 'publication') { return nativeRun(role, options, timeout, input); }
+const publisher = internal.kernel.publisher;
+const nativeMutation = publisher.runNativeMutation.bind(publisher);
+publisher.runNativeMutation = async (op, fields, timeout) => {
+  if (op !== 'publish') { return nativeMutation(op, fields, timeout); }
   publicationCalls++;
   assert.equal(publicationCalls, 1, 'No further publication is permitted after the injected refusal.');
-  const target = options.args[options.args.indexOf('-Target') + 1]!;
+  const target = fields['target'] as string;
   assert.equal(path.relative(cursorPath, target), '');
-  stagedInput = options.args[options.args.indexOf('-InputFile') + 1]!;
-  stagedHash = options.args[options.args.indexOf('-Sha256') + 1]!;
+  stagedInput = fields['inputFile'] as string;
+  stagedHash = fields['inputSha256'] as string;
   lockChild = lockSupervisor.spawn('provider', { command: 'pwsh', args: ['-NoProfile', '-File', lockScript, '-FixtureRoot', root, '-Target', target, '-InputFile', stagedInput], cwd: root });
   const child = lockChild;
   let readyTimer: NodeJS.Timeout;
@@ -93,10 +97,10 @@ backend.supervisor.run = async (role, options, timeout, input) => {
   child.stderr.resume();
   try { await Promise.all([child.ready, locked]); }
   finally { clearTimeout(readyTimer!); }
-  const result = await nativeRun(role, options, timeout, input);
-  failedPublicationExit = result.exitCode;
-  assert.equal(result.exitCode, 1, 'The real native replacement must fail under the sharing lock.');
-  return result;
+  const outcome = await nativeMutation(op, fields, timeout);
+  failedPublicationCode = outcome.failure instanceof NativeOperationError ? outcome.failure.code : null;
+  assert.equal(failedPublicationCode, 'publicationFailed', 'The real native replacement must fail under the sharing lock.');
+  return outcome;
 };
 try { assert.equal(await backend.markSent(handle), false); }
 finally {
@@ -110,7 +114,7 @@ finally {
   }
 }
 assert.equal(internal.kernel.publisher.blocked, true);
-assert.equal(failedPublicationExit, 1);
+assert.equal(failedPublicationCode, 'publicationFailed');
 assert.equal(publicationCalls, 1);
 assert.ok(stagedInput !== null && stagedHash !== null);
 assert.equal(bytesHash(await fs.readFile(stagedInput)), stagedHash);
@@ -120,7 +124,17 @@ let actualHash: string | null = null;
 const outcome = await session.sendTurn({ contextBlock: handle.contextBlock, playerText: 'Verify retained context.', override: null,
   askUser: async () => ({ cancelled: true }), onSignal: () => {},
   beforeSend: async () => {
-    const context = await backend.copyForSend(handle, bound.binding, identity);
+    // A publication still in flight on the publisher's queue holds the fallback send until it settles.
+    const queue = (internal.kernel.publisher as unknown as { readonly queue: SerialQueue }).queue;
+    const release = Promise.withResolvers<void>();
+    const inFlight = queue.run(() => release.promise);
+    let copied = false;
+    const copying = backend.copyForSend(handle, bound.binding, identity).finally(() => { copied = true; });
+    await new Promise(resolve => { setTimeout(resolve, 500); });
+    assert.equal(copied, false, 'The redelivery fallback must wait for the in-flight publication.');
+    release.resolve();
+    await inFlight;
+    const context = await copying;
     assert.equal(context.redelivery, true);
     assert.equal(context.candidate.fingerprint, candidate.fingerprint);
     actualHash = context.candidate.sha256;
@@ -147,7 +161,7 @@ await backend.inspector.idle();
 for (const role of processRoles) { await backend.supervisor.verifyQuiescent(role); }
 assert.equal(JSON.parse(await fs.readFile(path.join(backend.scope.dataRoot, 'runtime.json'), 'utf8')).cleanShutdown, false);
 assert.equal(internal.kernel.guard.held, true);
-process.stdout.write(JSON.stringify({ proof: 'sent-mark-fallback', dataRoot: backend.scope.dataRoot, events: candidate.eventCount, failedPublicationExit,
+process.stdout.write(JSON.stringify({ proof: 'sent-mark-fallback', dataRoot: backend.scope.dataRoot, events: candidate.eventCount, failedPublicationCode,
   additionalPublications: publicationCalls - 1, retainedInput: path.basename(stagedInput), cleanShutdown: false }) + '\n');
 // Natural process exit owns guard release. Production shutdown and every durable
 // authority retain their failure state, including the unacknowledged cursor.

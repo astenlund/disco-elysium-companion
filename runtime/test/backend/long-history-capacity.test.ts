@@ -37,7 +37,7 @@ function completedRoot(handoffs: readonly RetainedHandoff[]): RepairOperation {
 
 // Native aggregate observations are modeled from scope-consistent parsed control
 // metadata. No event payload, physical path or native helper is claimed verified.
-// Test-ResourceInventory.ps1 independently exercises the actual native union.
+// The helper's Go inventory tests independently exercise the actual native union.
 function fixture(events: readonly EventDescription[], retained: readonly RetainedHandoff[] = []) {
   const memory = new MemoryAuthority();
   const safety: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null };
@@ -48,21 +48,22 @@ function fixture(events: readonly EventDescription[], retained: readonly Retaine
   let metadataCalls = 0;
   let replyChange: ((value: Record<string, unknown>) => Record<string, unknown>) | null = null;
   let afterObserve: (() => void) | null = null;
-  const metadata = async () => {
+  const native = async (op: string) => {
+    assert.equal(op, 'inventory');
     metadataCalls++;
     const inventory = await operations.list();
     const known = inventory.records.flatMap(entry => !entry.record.compacted && entry.record.kind === 'repair' ? entry.record.plan.handoffs : []);
     const pair = (value: { logicalOutboxId: string; recordSha256: string }) => JSON.stringify([value.logicalOutboxId, value.recordSha256]);
-    const native = { uncompactedEvents: events.filter(event => !event.compacted).length, retainedHandoffs: new Set(known.map(pair)).size,
+    const observation = { uncompactedEvents: events.filter(event => !event.compacted).length, retainedHandoffs: new Set(known.map(pair)).size,
       retainedHandoffIdentitySha256: handoffIdentityDigest(known),
       potentialHandoffs: new Set([...events.map(pair), ...known.map(pair)]).size, fullTerminalOperations: inventory.fullTerminalCount,
       unfinishedOperations: inventory.records.filter(entry => effectivelyUnfinished(entry.record)).length, invalidEvents: 0, invalidOperations: inventory.invalid.length,
       pendingOutbox: 0, uncertainWorkspace: false, freeBytes: '100000000000' };
-    const observed = replyChange?.(native) ?? native;
+    const observed = replyChange?.(observation) ?? observation;
     afterObserve?.();
-    return { exitCode: 0, stdout: Buffer.from(stringifyJson(observed)), stderr: Buffer.alloc(0) };
+    return parseStrictJson(Buffer.from(stringifyJson(observed)));
   };
-  const inspector = { metadata, inspect: memory.inspect.bind(memory) } as unknown as PathInspector;
+  const inspector = { native, inspect: memory.inspect.bind(memory) } as unknown as PathInspector;
   const resources = new ResourceAuthority(memory.scope, inspector, operations);
   (resources as unknown as { readSafety: () => Promise<StateSafety> }).readSafety = async () => parseStateSafety(parseStrictJson(memory.files.get('state-safety.json')!), scope);
   const snapshot: JournalSnapshot = { ...journal(events.length, events.filter(event => event.compacted).length),

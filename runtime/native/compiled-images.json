@@ -1,5 +1,5 @@
 {
-  "compiledImagesVersion": 1,
+  "compiledImagesVersion": 2,
   "toolchain": {
     "name": "go",
     "version": "go1.26.0",
@@ -10,41 +10,174 @@
       "-ldflags=-buildid="
     ]
   },
-  "broker": {
-    "file": "go-broker.exe",
-    "bytes": 3468800,
-    "sha256": "3159986b0ed324454000b6b1c7cd21e85d761434823f3053cfe766eea3f2659d",
+  "helper": {
+    "file": "companion-helper.exe",
+    "bytes": 4671488,
+    "sha256": "0b88d88886b9615946c438906f71608798eb2638ad7567526f9a4e801cbf00ed",
     "sources": [
       {
-        "path": "runtime/prototypes/go-process-broker/go.mod",
-        "sha256": "88baaaade6c330321d774dfd20671bb0dc5748fbb051c6fee4ae1eae455c957a"
+        "path": "runtime/native/helper/go.mod",
+        "sha256": "673e548c5e894e5abab8052d0291317dd548f811fde42b08eef058a06f032f58"
       },
       {
-        "path": "runtime/prototypes/go-process-broker/control.go",
-        "sha256": "0bb49ef2da8864fa5919cdcbcf958a4570b0bf5fa10b0fa6dccca020e4d1c696"
-      },
-      {
-        "path": "runtime/prototypes/go-process-broker/child_windows.go",
+        "path": "runtime/native/helper/internal/broker/child_windows.go",
         "sha256": "844fad87d34edb3f551f66c745bc8c80f60f0d758e95417712ed206fcadcd9f9"
       },
       {
-        "path": "runtime/prototypes/go-process-broker/job_windows.go",
-        "sha256": "4a91c17e3c6f5baeb8191eda94561bd9eafd9c39af00a7332167e4743ff834a2"
+        "path": "runtime/native/helper/internal/broker/child_windows_test.go",
+        "sha256": "dac4a249e3e2a3a6447f79fb62dc858bf249d29290c56c40fcb9a89034444ff2"
       },
       {
-        "path": "runtime/prototypes/go-process-broker/cmd/go-broker/main.go",
-        "sha256": "f21929ae4217ced4a3c35829b1d898ff34e19c0ca1dd72cb530d5c8b0b9e13c5"
-      }
-    ]
-  },
-  "observer": {
-    "file": "job-observer.exe",
-    "bytes": 3076096,
-    "sha256": "f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d",
-    "sources": [
+        "path": "runtime/native/helper/internal/broker/control.go",
+        "sha256": "0bb49ef2da8864fa5919cdcbcf958a4570b0bf5fa10b0fa6dccca020e4d1c696"
+      },
       {
-        "path": "runtime/prototypes/job-observer.go",
-        "sha256": "c433dbf7209a59f40adc74780f99b2d659e7d951c85b0b3cf37d505f123a168d"
+        "path": "runtime/native/helper/internal/broker/control_test.go",
+        "sha256": "d8c9b0934733759e5649087e00b572d53370366821aae3e53701aaebd2873244"
+      },
+      {
+        "path": "runtime/native/helper/internal/broker/exit_windows_test.go",
+        "sha256": "6588e81e7c79a241754d7f0f2bfc18530f459d54f43781ac3d4e6d6023d76f58"
+      },
+      {
+        "path": "runtime/native/helper/internal/broker/job_windows.go",
+        "sha256": "a7add9476420f03e91e465467a31856956d3d60e8b94eb6eebf51ad1ea097baf"
+      },
+      {
+        "path": "runtime/native/helper/internal/broker/job_windows_test.go",
+        "sha256": "39106f25350960bbff7f2477f945178b629d0d243433fd7436da5e883ab63ad0"
+      },
+      {
+        "path": "runtime/native/helper/internal/context/codec.go",
+        "sha256": "f536df758d36349036e82e9bc2ad5ca758510b885f306c2bed4e56b875fbbe84"
+      },
+      {
+        "path": "runtime/native/helper/internal/context/fingerprint.go",
+        "sha256": "c323014b3975b1d3f113efca1d89aeddd97f2e9309f2db8bb317d122cd0ab4db"
+      },
+      {
+        "path": "runtime/native/helper/internal/context/golden_test.go",
+        "sha256": "07c951c7ea824ed66bdc6e5a4edcdf507da058486424dff8f83c6b3df64d20b0"
+      },
+      {
+        "path": "runtime/native/helper/internal/context/request.go",
+        "sha256": "9b9f5eadb5cde95584a7e8cc3ae2907541147aa1cb42bc2dda7912a1be207549"
+      },
+      {
+        "path": "runtime/native/helper/internal/context/selection.go",
+        "sha256": "29bf8b2ea72612e15b661f0e36720d8d63e99c9b3c8aba59fce190cb4354e38c"
+      },
+      {
+        "path": "runtime/native/helper/internal/events/codec.go",
+        "sha256": "07a16b41d844e5db2636a7606f1c416e802dee2ced2b9ffd3793d6c818143b10"
+      },
+      {
+        "path": "runtime/native/helper/internal/events/documents.go",
+        "sha256": "2dbe2be231bbc8354461a6079b4e151284b763d004056c8b898574448e49c5e8"
+      },
+      {
+        "path": "runtime/native/helper/internal/events/golden_test.go",
+        "sha256": "8a4c53b5fbf3621c592d96bfe54a2bc872d78647b25181d2a8d0aac80c2c6970"
+      },
+      {
+        "path": "runtime/native/helper/internal/events/inspection.go",
+        "sha256": "d98e6108097cef637b95357ccdadf12ef8d76f15a2b436e132fe9ad520a8e744"
+      },
+      {
+        "path": "runtime/native/helper/internal/events/ordinal.go",
+        "sha256": "568586c61441a6d29db53ca2953b48151824c8204cf9b53a23deaf4325d88daa"
+      },
+      {
+        "path": "runtime/native/helper/internal/events/runtime_codec.go",
+        "sha256": "f5b2d656283e1e01f44e062205c417056d90e57e5418c0f546c2209320eb93ab"
+      },
+      {
+        "path": "runtime/native/helper/internal/inventory/inventory.go",
+        "sha256": "78783a3c5341f39b4113cb9cb0b30d8fa9cd0377e9e5deec40fc667555482ad5"
+      },
+      {
+        "path": "runtime/native/helper/internal/inventory/inventory_test.go",
+        "sha256": "3f98232a682276a145c5698f4d66a176e205e008524947f22ca963fc52026e38"
+      },
+      {
+        "path": "runtime/native/helper/internal/jsondoc/jsondoc.go",
+        "sha256": "d69a8b4802d917a38f241119629c85dc550a470f7f17a99fd76cab96ea34a444"
+      },
+      {
+        "path": "runtime/native/helper/internal/jsondoc/jsondoc_test.go",
+        "sha256": "9e2c0f2821bd740674767f5caf2d28cfb473ec95a79eb12621fb53abe07ab806"
+      },
+      {
+        "path": "runtime/native/helper/internal/jsondoc/normalize_windows.go",
+        "sha256": "c0443d4be7fff22fa9b027b95157eebcbc152e51bfc5cb8edd073b979ab8bbdc"
+      },
+      {
+        "path": "runtime/native/helper/internal/jsondoc/values.go",
+        "sha256": "8731da166b7e1a5750cb93b63689c4be100e55a2d66cbf400a5e17e61428c674"
+      },
+      {
+        "path": "runtime/native/helper/internal/jsondoc/writer.go",
+        "sha256": "49087361482896e35bdf9b5aa3b75c05346ca4464315e87d60a8c3f31cf0119f"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/admission.go",
+        "sha256": "bc448f00ac5939b54a9e6fc2dd94aa48f14da1df4f6ee38efb8102066464685e"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/gate.go",
+        "sha256": "b524f24c202290b479db03a36df484241728e12fa79193b4d3d031da8698cf68"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/gate_test.go",
+        "sha256": "543a48765a3d888e4418142e1528d10db809b1cd6c382ff294f4908e63f210b3"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/hashes.go",
+        "sha256": "6210f6eada29ee0fc2be1e38ac44ce8a72793e59ded123a106c93dea51d55d94"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/nativefs_test.go",
+        "sha256": "c59fefcb21afe1f278cdc40c7194ab1d645557196f2179bc0b96e16d34d4c3c2"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/publish.go",
+        "sha256": "f43fcc8855c2dbcac2407e7122236616c7280485ebf63f29f46af30372b7b009"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/read.go",
+        "sha256": "fb92bd4b2de4ff71d2c74e0ebd8bd40a0fee82df5044a559cc6bc541d2d1623c"
+      },
+      {
+        "path": "runtime/native/helper/internal/service/concurrency_test.go",
+        "sha256": "cf05543c0bad0571452c126a860b0846ebe94bd58de533fec499c7b8e174635f"
+      },
+      {
+        "path": "runtime/native/helper/internal/service/frames.go",
+        "sha256": "fb7dbf6a5598b8d9a788160bc32c15568ae83e0a98fecf50d147dfe292e0f21f"
+      },
+      {
+        "path": "runtime/native/helper/internal/service/handlers.go",
+        "sha256": "3a7a767492e70d203e6374cca680aff0decf4e729abbc9f7f98c3c8d3024664e"
+      },
+      {
+        "path": "runtime/native/helper/internal/service/service.go",
+        "sha256": "b3a97984b2b274e202c94b2747b97ec01192c24e3cee315a2d018476dac3a0e8"
+      },
+      {
+        "path": "runtime/native/helper/internal/service/service_test.go",
+        "sha256": "7851e171919962674f012c224cda6f9e869ac1c017ca26bdb8ea063dc123fd2d"
+      },
+      {
+        "path": "runtime/native/helper/internal/sources/sources.go",
+        "sha256": "ff1f5b52a5603eccfe22517bc1adc4f87aa4b95509e8a1dc6e2af581bbf7b1f9"
+      },
+      {
+        "path": "runtime/native/helper/internal/winproc/winproc.go",
+        "sha256": "f95ad442f4826067ae9d5d63a6b373f3491bef7d853500bf9e7257394d784603"
+      },
+      {
+        "path": "runtime/native/helper/main.go",
+        "sha256": "07255133552576d407aa852bdb58d0bc54c081ac754c255a02106f6f320b5978"
       }
     ]
   }

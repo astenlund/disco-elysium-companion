@@ -10,6 +10,7 @@ import { maintainRuntimeStorage, reconcileRetention, selectOperationRetention, t
 import type { JournalSnapshot } from '../../src/journal.ts';
 import { at, authorityModel, generation, journal, owner, repair, stubJournalTransaction, witness } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
+import { parseStrictJson } from '../../src/json.ts';
 
 const predecessorId = 'jr-' + '0'.repeat(32);
 const successorPath = `operations/${owner.operationId}.json`;
@@ -78,7 +79,7 @@ test('a partial inherited proof stays unresolved and protected until its owner p
 
   await new RecoveryCoordinator(model.kernel).startup();
   stubJournalTransaction(model.kernel, snapshot);
-  model.kernel.inspector.metadata = async () => ({ exitCode: 0, stdout: Buffer.from('{"removed":0,"remaining":0}'), stderr: Buffer.alloc(0) });
+  model.kernel.inspector.native = async () => parseStrictJson(Buffer.from('{"removed":0,"remaining":0}'));
   await maintainRuntimeStorage(model.kernel);
   assert.equal((await model.kernel.safety()).recoveryWitness?.phase, 'awaitingDisclosure');
   assert.equal(await reconcileAcknowledgedRecovery(model.kernel), true);

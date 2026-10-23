@@ -1,11 +1,8 @@
-import { openBackend, privateCombinedBootstrap, privateCompiledProcessBroker, privateGoBrokerSpawn,
-  privateNativeStartupJobs, privateScopeSourceBatch, privateSelectedImageBootstrap,
-  privateStartupMetadataPlacement, privateWarmJobObserver, type SelectedImageBootstrap } from './backend/index.ts';
+import { openBackend } from './backend/index.ts';
 import type { RuntimeBackend } from './backend/api.ts';
 import { ClaudeProvider } from './claude-provider.ts';
 import { FileToolAdapter } from './file-tool-adapter.ts';
-import type { CompiledBrokerArtifact } from './compiled-broker.ts';
-import type { BrokerSpawn, PrivateNativeStartupJobs } from './process.ts';
+import type { HelperImage } from './native-image.ts';
 import { assembleInstructions } from './instructions.ts';
 import { PendingProviderStart, selectPendingProviderStart } from './provider-lifecycle.ts';
 import type { Provider } from './provider.ts';
@@ -20,27 +17,14 @@ export const privateRuntimeStartup = Symbol('privateRuntimeStartup');
 export interface PrivateRuntimeStartupOptions {
   readonly [privateRuntimeStartup]?: {
     readonly allowUnboundProviderPrestart?: boolean;
-    readonly fastCopiedStartup?: true;
-    readonly compiledBroker?: CompiledBrokerArtifact;
-    readonly goBrokerSpawn?: BrokerSpawn;
-    readonly nativeStartupJobs?: PrivateNativeStartupJobs;
-    readonly selectedImageBootstrap?: SelectedImageBootstrap;
     readonly providerFactory?: (text: string, fileTools: FileToolAdapter, backend: RuntimeBackend) => Provider;
   };
 }
 
-/** @internal Private copied-root routing; production does not supply the selector. */
+/** @internal Chat opens the warm core reply worker; the verified image comes from the build step that ran before. */
 export function chatBackendOptions(companionRoot: string, onStatus: () => void, onInvalidated: (reason: Correction['reason']) => void,
-  onStartupPhase: ((phase: StartupPhase) => void) | undefined, fastCopiedStartup: boolean,
-  compiledBroker?: CompiledBrokerArtifact, nativeStartupJobs?: PrivateNativeStartupJobs,
-  goBrokerSpawn?: BrokerSpawn, selectedImageBootstrap?: SelectedImageBootstrap): Parameters<typeof openBackend>[0] {
-  return { companionRoot, startupMetadata: true, onStatus, onInvalidated, onStartupPhase,
-    ...(fastCopiedStartup || selectedImageBootstrap !== undefined ? { [privateCombinedBootstrap]: true as const, [privateScopeSourceBatch]: true as const,
-      [privateWarmJobObserver]: true as const, [privateStartupMetadataPlacement]: 'postGuard' as const,
-      ...(compiledBroker === undefined ? {} : { [privateCompiledProcessBroker]: compiledBroker }),
-      ...(goBrokerSpawn === undefined ? {} : { [privateGoBrokerSpawn]: goBrokerSpawn }),
-      ...(nativeStartupJobs === undefined ? {} : { [privateNativeStartupJobs]: nativeStartupJobs }),
-      ...(selectedImageBootstrap === undefined ? {} : { [privateSelectedImageBootstrap]: selectedImageBootstrap }) } : {}) };
+  onStartupPhase: ((phase: StartupPhase) => void) | undefined, nativeImage?: HelperImage): Parameters<typeof openBackend>[0] {
+  return { companionRoot, startupCoreReply: true, onStatus, onInvalidated, onStartupPhase, ...(nativeImage === undefined ? {} : { nativeImage }) };
 }
 
 /**
@@ -116,7 +100,7 @@ export async function startChatProvider(host: SessionHost, backend: RuntimeBacke
 }
 
 export async function createChatRuntime(companionRoot: string, onStartupPhase?: (phase: StartupPhase) => void,
-  privateOptions: PrivateRuntimeStartupOptions = {}): Promise<ChatRuntime> {
+  privateOptions: PrivateRuntimeStartupOptions = {}, nativeImage?: HelperImage): Promise<ChatRuntime> {
   const reportPhase = onStartupPhase === undefined ? undefined : (phase: StartupPhase) => reportStartupPhase(onStartupPhase, phase);
   let host: SessionHost | null = null;
   let backend: RuntimeBackend | null = null;
@@ -126,9 +110,7 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
   try {
     const opened: RuntimeBackend = await openBackend(chatBackendOptions(companionRoot, () => host?.statusChanged(),
       (reason: Correction['reason']) => { pending?.abort(); if (host === null) { invalidatedBeforeHost = reason; } else { host.invalidate(reason); } }, reportPhase,
-      privateOptions[privateRuntimeStartup]?.fastCopiedStartup === true, privateOptions[privateRuntimeStartup]?.compiledBroker,
-      privateOptions[privateRuntimeStartup]?.nativeStartupJobs, privateOptions[privateRuntimeStartup]?.goBrokerSpawn,
-      privateOptions[privateRuntimeStartup]?.selectedImageBootstrap));
+      nativeImage));
     backend = opened;
     let earlyInstructions: Awaited<ReturnType<typeof assembleInstructions>> | null = null;
     if (privateOptions[privateRuntimeStartup]?.allowUnboundProviderPrestart === true) {
@@ -159,7 +141,7 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     const provider = makeProvider(instructions.text, fileTools);
     host = new SessionHost({ backend, provider, instructionsSha256: instructions.sha256, requireVerifiedAttach: true,
       pendingStart: pending,
-      providerTerminated: instance => fileTools.providerTerminated(instance), verifyTools: () => fileTools.verifyQuiescent(), closeTools: () => fileTools.close() });
+      providerTerminated: instance => fileTools.providerTerminated(instance), verifyTools: () => fileTools.verifyQuiescent(), closeTools: () => fileTools.release() });
     pending = null;
     if (invalidatedBeforeHost !== null) { host.invalidate(invalidatedBeforeHost); }
     // A phase D-H fault cancelled the unbound candidate above; the final start still runs and providerSafety decides.

@@ -1,13 +1,11 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { inflateSync } from 'node:zlib';
 
 import { DataRootUnavailableError, PathInspector } from './admission.ts';
 import { Deadline } from './deadline.ts';
 import { readFileHashes } from './file-hashes.ts';
 import { parseEventDescription, type EventDescription } from './journal-records.ts';
-import { hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
+import { hasExactKeys, isLowerHex, jsonBudgets, stringifyJson, type JsonValue } from './json.ts';
 
 export interface EventReadRequest { readonly path: string; readonly sequence: number }
 export type EventRead =
@@ -15,12 +13,10 @@ export type EventRead =
   | { readonly path: string; readonly status: 'invalid'; readonly sha256: string | null }
   | { readonly path: string; readonly status: 'valid'; readonly sha256: string; readonly metadata: EventDescription };
 
-const script = fileURLToPath(new URL('../scripts/Get-EventMetadata.ps1', import.meta.url));
 type ValidEvent = Extract<EventRead, { status: 'valid' }>;
 const maximumCacheEntries = 16_384;
 const maximumCacheBytes = 64 * 1024 * 1024;
 const maximumBatchRecords = 512;
-const maximumReplyBytes = 65_536;
 
 function parseDocuments(documents: readonly JsonValue[], requests: readonly EventReadRequest[]): EventRead[] {
   return documents.map((document, index): EventRead => {
@@ -37,16 +33,6 @@ function parseDocuments(documents: readonly JsonValue[], requests: readonly Even
     }
     throw new DataRootUnavailableError('Event inspection response is invalid.');
   });
-}
-
-function expandReply(bytes: Buffer): Buffer {
-  if (bytes.length === 0 || bytes.length > maximumReplyBytes) { throw new DataRootUnavailableError('Event inspection reply exceeds its wire budget.'); }
-  try {
-    // The installed Node declarations omit the info:true result overload.
-    const result = inflateSync(bytes, { info: true, maxOutputLength: jsonBudgets.config.maxBytes }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
-    if (!Buffer.isBuffer(result.buffer) || result.engine?.bytesWritten !== bytes.length) { throw new Error('Incomplete compressed stream.'); }
-    return result.buffer;
-  } catch { throw new DataRootUnavailableError('Event inspection compressed reply is invalid.'); }
 }
 
 // Inspection performs no staging, repair or cleanup and needs no writer guard.
@@ -128,10 +114,9 @@ export class EventReader {
     if (batch.length === 0) { throw new DataRootUnavailableError('Event inspection request exceeds its control budget.'); }
     const input = Buffer.from(stringifyJson(batch), 'utf8');
     const requestSha256 = createHash('sha256').update(input).digest('hex');
-    const reply = await this.inspector.metadata(script, ['-Root', this.root, '-Batch'], this.root, deadline.remaining(), input);
-    deadline.check();
-    if (reply.exitCode !== 0) { throw new DataRootUnavailableError('Event inspection is unavailable.'); }
-    const result = parseStrictJson(expandReply(reply.stdout));
+    let result: JsonValue;
+    try { result = await this.inspector.native('eventBatch', { root: this.root, inputBase64: input.toString('base64') }, deadline.remaining()); }
+    catch (error) { throw new DataRootUnavailableError('Event inspection is unavailable.', { cause: error }); }
     deadline.check();
     if (!hasExactKeys(result, ['requestSha256', 'documents']) || result['requestSha256'] !== requestSha256 || !Array.isArray(result['documents']) || result['documents'].length < 1 || result['documents'].length > batch.length) {
       throw new DataRootUnavailableError('Event inspection response is incomplete or uncorrelated.');
@@ -148,9 +133,9 @@ export class EventReader {
     const frozen = requests.map(request => ({ path: path.resolve(this.root, request.path), sequence: request.sequence }));
     const encoded = JSON.stringify(frozen);
     if (Buffer.byteLength(encoded, 'utf8') > 65536) { throw new DataRootUnavailableError('Event inspection control exceeds its budget.'); }
-    const reply = await this.inspector.metadata(script, ['-Root', this.root, '-RequestsJson', encoded], this.root, timeoutMs);
-    if (reply.exitCode !== 0) { throw new DataRootUnavailableError('Event inspection is unavailable.'); }
-    const result = parseStrictJson(reply.stdout);
+    let result: JsonValue;
+    try { result = await this.inspector.native('eventMetadata', { root: this.root, requestsJson: encoded, source: false }, timeoutMs); }
+    catch (error) { throw new DataRootUnavailableError('Event inspection is unavailable.', { cause: error }); }
     if (!hasExactKeys(result, ['documents']) || !Array.isArray(result['documents']) || result['documents'].length !== frozen.length) {
       throw new DataRootUnavailableError('Event inspection response is incomplete.');
     }

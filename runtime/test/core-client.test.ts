@@ -2,26 +2,26 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import { PathInspector } from '../src/admission.ts';
 import { CoreClient, resolvePrincipal, type CoreRequest } from '../src/core-client.ts';
 import { isOpaqueToken } from '../src/identity.ts';
-import { isObject, parseStrictJson } from '../src/json.ts';
-import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
+import { isObject } from '../src/json.ts';
+import { SupervisorError } from '../src/process.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 describe('validated core command boundary', () => {
   it('correlates ownership, publication and settlement against real private-core replies', { timeout: 240000 }, async () => {
     const fixture = await companionFixture('core');
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root)).supervisor;
     const inspector = new PathInspector(supervisor);
     const admitted: CoreRequest[] = [];
     // This transport fixture records admission. Durable safety/reservations belong
     // to the coordinator and are not exercised by this transport-only fixture.
     const client = new CoreClient({ companionRoot: fixture.root, adapter: 'stub', supervisor, inspector, admit: async request => { admitted.push(request); } });
     try {
-      const principal = await resolvePrincipal(inspector, fixture.root);
+      const principal = await resolvePrincipal(inspector);
       assert.equal(isOpaqueToken(principal), true);
       const refused = await client.publish(principal);
       assert.equal(refused.success, false);
@@ -38,10 +38,7 @@ describe('validated core command boundary', () => {
       assert.equal(published.value.sequence, 1);
       assert.equal(published.value.game, 'stubgame');
       const record = path.join(fixture.root, 'state', 'outbox', 'event-0000000000000001.json');
-      const reader = fileURLToPath(new URL('../scripts/Get-EventMetadata.ps1', import.meta.url));
-      const read = await inspector.metadata(reader, ['-Root', fixture.root, '-RequestsJson', JSON.stringify([{ path: record, sequence: 1 }]), '-Source'], fixture.root);
-      assert.equal(read.exitCode, 0, read.stderr.toString());
-      const observed = parseStrictJson(read.stdout);
+      const observed = await inspector.native('eventMetadata', { root: fixture.root, requestsJson: JSON.stringify([{ path: record, sequence: 1 }]), source: true });
       assert.ok(isObject(observed) && Array.isArray(observed['documents']));
       const document = observed['documents'][0]!;
       assert.ok(isObject(document) && isObject(document['metadata']));
@@ -67,7 +64,7 @@ describe('validated core command boundary', () => {
 
   it('refuses mutation before child launch when durable admission is unavailable', { timeout: 60000 }, async () => {
     const fixture = await companionFixture('core');
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root)).supervisor;
     const client = new CoreClient({ companionRoot: fixture.root, adapter: 'stub', supervisor, inspector: new PathInspector(supervisor), admit: async () => { throw new Error('intent unavailable'); } });
     try {
       await assert.rejects(client.consumer({ kind: 'consumer', owner: 'runtime' }), /intent unavailable/);
@@ -78,7 +75,7 @@ describe('validated core command boundary', () => {
 
   it('maps malformed terminal framing to supervisor failure without inventing a consumption state', { timeout: 90000 }, async () => {
     const fixture = await companionFixture('core');
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root)).supervisor;
     const run = supervisor.run.bind(supervisor);
     supervisor.run = async (role, options, timeout, input) => {
       const result = await run(role, options, timeout, input);

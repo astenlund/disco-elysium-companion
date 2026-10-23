@@ -3,7 +3,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
-import { deflateSync, inflateSync } from 'node:zlib';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
 import type { PayloadCodec } from '../src/codec.ts';
@@ -12,10 +11,10 @@ import type { FilePublisher } from '../src/files.ts';
 import { Journal } from '../src/journal.ts';
 import { eventFileName, eventRewriteMetadata } from '../src/journal-records.ts';
 import { parseStrictJson, stringifyJson } from '../src/json.ts';
-import { ProcessSupervisor } from '../src/process.ts';
 import { scopeComponents } from '../src/scope.ts';
 import { companionFixture } from './support/companion.ts';
 import { journalEvent } from './support/journal-event.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 function readOnlyJournal(root: string, inspector: PathInspector): Journal {
   return new Journal({ root, game: 'game', principal: 'principal', identities: { runtimeInstanceId: '1'.repeat(32), runtimeSessionId: '2'.repeat(32), adapterBindingEpoch: '3'.repeat(32) },
@@ -26,20 +25,18 @@ async function measureColdHistory(context: TestContext, count: number): Promise<
     const fixture = await companionFixture('context-event');
     const root = path.join(fixture.root, ...scopeComponents('game', 'principal'));
     await fs.mkdir(path.join(root, 'journal', 'events'), { recursive: true });
-    const supervisor = await ProcessSupervisor.create(root);
+    const supervisor = (await createTestNative(root)).supervisor;
     const inspector = new PathInspector(supervisor);
-    const nativeMetadata = inspector.metadata.bind(inspector);
-    const batches: { records: number; wireBytes: number; expandedBytes: number; elapsedMs: number }[] = [];
+    const native = inspector.native.bind(inspector);
+    const batches: { records: number; replyBytes: number; elapsedMs: number }[] = [];
     const returnedDocuments: unknown[] = [];
-    inspector.metadata = async (script, ...args) => {
+    inspector.native = async (op, fields, timeoutMs) => {
       const started = performance.now();
-      const reply = await nativeMetadata(script, ...args);
-      if (path.basename(script) === 'Get-EventMetadata.ps1' && reply.exitCode === 0) {
-        const expanded = inflateSync(reply.stdout);
-        const parsed = JSON.parse(expanded.toString('utf8')) as { documents: unknown[] };
-        parseStrictJson(expanded);
-        assert.ok(reply.stdout.length <= 65536);
-        const batch = { records: parsed.documents.length, wireBytes: reply.stdout.length, expandedBytes: expanded.length, elapsedMs: Math.round(performance.now() - started) };
+      const reply = await native(op, fields, timeoutMs);
+      if (op === 'eventBatch') {
+        const text = stringifyJson(reply);
+        const parsed = JSON.parse(text) as { documents: unknown[] };
+        const batch = { records: parsed.documents.length, replyBytes: Buffer.byteLength(text, 'utf8'), elapsedMs: Math.round(performance.now() - started) };
         batches.push(batch);
         returnedDocuments.push(...parsed.documents);
         if (count <= 512) { context.diagnostic(JSON.stringify({ batch })); }
@@ -109,12 +106,11 @@ async function measureColdHistory(context: TestContext, count: number): Promise<
             } else { tokens++; if (typeof value === 'string') { decodedTextBytes += Buffer.byteLength(value); } }
           };
           charge(JSON.parse(complete.toString('utf8')));
-          context.diagnostic(JSON.stringify({ kind, completeProjectionBytes: complete.length, tokens, decodedTextBytes, configError,
-            levelOneProjectionWireBytes: deflateSync(complete, { level: 1 }).length }));
+          context.diagnostic(JSON.stringify({ kind, completeProjectionBytes: complete.length, tokens, decodedTextBytes, configError }));
         }
         context.diagnostic(JSON.stringify({ kind, count, totalBytes, minimumBytes, maximumBytes, eventPathBytes: Buffer.byteLength(path.join(directory, eventFileName(1))), independentlyRandomIdentityFields: 7,
           rawPayloadBytes: kind === 'full' ? Buffer.byteLength(rawPayloadSuffix.slice(11, -1)) : 0,
-          elapsedMs, nativeMetadataCalls: batches.length, batches, maximumWireBytes: Math.max(...batches.map(batch => batch.wireBytes)), maximumExpandedBytes: Math.max(...batches.map(batch => batch.expandedBytes)), completeHashesVerified: count }));
+          elapsedMs, nativeMetadataCalls: batches.length, batches, maximumReplyBytes: Math.max(...batches.map(batch => batch.replyBytes)), completeHashesVerified: count }));
       }
     } finally { await journal.idle(); await inspector.idle(); await fixture.close(); }
 }
@@ -126,11 +122,11 @@ describe('native journal cache admission', () => {
   it('rehashes retained history without restarting a parser for each small batch and detects physical or byte damage', { timeout: 240000 }, async context => {
     const fixture = await companionFixture();
     const root = fixture.root;
-    const supervisor = await ProcessSupervisor.create(root);
+    const supervisor = (await createTestNative(root)).supervisor;
     const inspector = new PathInspector(supervisor);
-    const metadata = inspector.metadata.bind(inspector);
+    const native = inspector.native.bind(inspector);
     const calls: string[] = [];
-    inspector.metadata = (script, ...args) => { calls.push(path.basename(script)); return metadata(script, ...args); };
+    inspector.native = (op, ...args) => { calls.push(op); return native(op, ...args); };
     // This read-only fixture refuses every mutation; it measures actual journal admission.
     const journal = readOnlyJournal(root, inspector);
     try {
@@ -146,14 +142,14 @@ describe('native journal cache admission', () => {
       const started = performance.now();
       assert.equal((await journal.read(Deadline.after(120000))).events.size, 128);
       context.diagnostic(`cold128Ms=${Math.round(performance.now() - started)} metadataCalls=${calls.length}`);
-      assert.equal(calls.filter(name => name === 'Get-EventMetadata.ps1').length, 1);
+      assert.equal(calls.filter(name => name === 'eventBatch').length, 1);
       calls.length = 0;
       const warmStarted = performance.now();
       assert.equal((await journal.read(Deadline.after(120000))).events.size, 128);
       context.diagnostic(`warm128Ms=${Math.round(performance.now() - warmStarted)} metadataCalls=${calls.length}`);
-      assert.equal(calls.filter(name => name === 'Get-EventMetadata.ps1').length, 0);
-      assert.equal(calls.filter(name => name === 'Get-FileHashes.ps1').length, 1);
-      assert.equal(calls.filter(name => name === 'Get-PathAdmission.ps1').length, 1);
+      assert.equal(calls.filter(name => name === 'eventBatch').length, 0);
+      assert.equal(calls.filter(name => name === 'hash').length, 1);
+      assert.equal(calls.filter(name => name === 'admit').length, 1);
       const first = path.join(directory, eventFileName(1));
       const original = await fs.readFile(first);
       await fs.writeFile(first, '{}');

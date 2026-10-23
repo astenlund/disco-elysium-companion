@@ -1,19 +1,17 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { DataRootUnavailableError, parseAdmission, PathInspector, type PathAdmission } from './admission.ts';
+import { DataRootUnavailableError, PathInspector, type PathAdmission } from './admission.ts';
 import { FilePublisher } from './files.ts';
 import type { InstanceGuard } from './guard.ts';
 import { isOpaqueToken } from './identity.ts';
-import { asInteger, hasExactKeys, parseStrictJson, readBoundedFile, type JsonValue } from './json.ts';
+import { asInteger, hasExactKeys, parseStrictJson, readBoundedFile } from './json.ts';
 
 export interface ScopeCandidate { readonly companionRoot: string; readonly dataRoot: string; readonly game: string; readonly principal: string }
 export interface RuntimeScope extends ScopeCandidate { readonly bindingSha256: string; readonly createdHere: boolean }
 
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex');
-const bootstrapScript = fileURLToPath(new URL('../scripts/Get-BootstrapScope.ps1', import.meta.url));
 const freshScopes = new WeakSet<RuntimeScope>();
 
 export function consumeFreshScope(scope: RuntimeScope): boolean { return freshScopes.delete(scope); }
@@ -50,28 +48,6 @@ export async function discoverScope(inspector: PathInspector, companionRoot: str
   if (root === undefined || candidate === undefined) { throw new DataRootUnavailableError('Scope admission is incomplete.'); }
 
   return admittedScope(game, principal, root, candidate);
-}
-
-/** @internal Combined bootstrap for the guarded startup path. */
-export async function discoverScopeWithPrincipal(inspector: PathInspector, companionRoot: string, game: string): Promise<ScopeCandidate> {
-  const reply = await inspector.metadata(bootstrapScript, ['-Root', companionRoot, '-Game', game], companionRoot);
-  if (reply.exitCode !== 0) { throw new DataRootUnavailableError('Combined bootstrap observation failed.'); }
-  const value = parseStrictJson(reply.stdout);
-  return parseCombinedScopeReply(value, companionRoot, game, false).candidate;
-}
-
-/** @internal Selected and ordinary bootstrap share the same exact scope admission rules. */
-export function parseCombinedScopeReply(value: JsonValue, companionRoot: string, game: string,
-  selected: boolean): { readonly candidate: ScopeCandidate; readonly imagePins: JsonValue | null } {
-  if (!hasExactKeys(value, selected ? ['sid', 'paths', 'imagePins'] : ['sid', 'paths'])
-    || !isOpaqueToken(value['sid']) || !Array.isArray(value['paths'])
-    || value['paths'].length !== 2) { throw new DataRootUnavailableError('Combined bootstrap observation is incomplete.'); }
-  const principal = value['sid'];
-  const requested = path.join(companionRoot, ...scopeComponents(game, principal));
-  const root = parseAdmission(value['paths'][0]!, companionRoot, true);
-  const candidate = parseAdmission(value['paths'][1]!, requested, true);
-
-  return { candidate: admittedScope(game, principal, root, candidate), imagePins: selected ? value['imagePins']! : null };
 }
 
 export async function readScope(inspector: PathInspector, candidate: ScopeCandidate): Promise<RuntimeScope | null> {

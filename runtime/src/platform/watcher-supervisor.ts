@@ -1,8 +1,7 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
 
-import { asInteger, hasExactKeys, parseStrictJson } from '../json.ts';
+import { asInteger, hasExactKeys } from '../json.ts';
 import { SupervisorError, type OwnedExit, type OwnedSpawnOptions, type ProcessIdentity, type ProcessSupervisor } from '../process.ts';
 import type { RuntimeRecord } from '../runtime-records.ts';
 import { SerialQueue } from '../serial.ts';
@@ -38,17 +37,17 @@ const systemClock: WatcherClock = {
   cancel: timer => clearTimeout(timer as NodeJS.Timeout),
 };
 const delays = [1000, 5000, 30000, 60000] as const;
-const orphanScript = fileURLToPath(new URL('../../scripts/platform/Stop-OrphanWatcher.ps1', import.meta.url));
 
 // The recorded process token alone does not authorize a different PID incarnation
 // or another scope's job. The native helper verifies both before terminating a tree.
-export async function reconcileWatcherOrphan(previous: RuntimeRecord | null, supervisor: ProcessSupervisor, companionRoot: string): Promise<void> {
+export async function reconcileWatcherOrphan(previous: RuntimeRecord | null, supervisor: ProcessSupervisor): Promise<void> {
   if (previous?.watcher !== null && previous?.watcher !== undefined && !await supervisor.observeJobAbsent('watcher')) {
     const identity = previous.watcher;
-    const result = await supervisor.run('metadata', { command: 'pwsh', args: ['-NoProfile', '-File', orphanScript,
-      '-ProcessId', String(identity.pid), '-Created', identity.created, '-JobName', supervisor.jobName('watcher')], cwd: companionRoot }, 30000);
-    if (result.exitCode !== 0) { throw new SupervisorError('termination-unverified', 'Previous watcher could not be reconciled.'); }
-    const value = parseStrictJson(result.stdout);
+    let reply;
+    try { reply = await supervisor.nativeHelper.request('stopOrphanWatcher', { pid: identity.pid, created: identity.created, jobName: supervisor.jobName('watcher') }, 30000); }
+    catch (error) { throw new SupervisorError('termination-unverified', 'Previous watcher could not be reconciled.', { cause: error }); }
+    if (reply.status !== 'ok') { throw new SupervisorError('termination-unverified', 'Previous watcher could not be reconciled.'); }
+    const value = reply.result;
     if (!hasExactKeys(value, ['state', 'pid', 'created']) || asInteger(value['pid']) !== identity.pid || value['created'] !== identity.created
       || typeof value['state'] !== 'string' || !['absent', 'reused', 'terminated'].includes(value['state'])) {
       throw new SupervisorError('result-invalid', 'Previous watcher reconciliation returned invalid evidence.');

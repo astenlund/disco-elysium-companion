@@ -4,13 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 import { parseStrictJson } from '../src/json.ts';
 import { StartupCoreReplySession } from '../src/startup-core-reply.ts';
-import { StartupMutationSession } from '../src/startup-mutation.ts';
 import type { StartupWorkerReply, StartupWorkerTransport } from '../src/startup-worker-transport.ts';
 
 const root = 'C:/private-startup';
 const reader = fileURLToPath(new URL('../scripts/Read-CoreReply.ps1', import.meta.url));
-const writer = fileURLToPath(new URL('../scripts/Write-RuntimeFile.ps1', import.meta.url));
-const codec = fileURLToPath(new URL('../scripts/Invoke-PayloadCodec.ps1', import.meta.url));
 const parsed = (value: unknown) => parseStrictJson(Buffer.from(JSON.stringify(value)));
 
 function fakeTransport(reply: StartupWorkerReply) {
@@ -46,32 +43,4 @@ test('core reply session preserves validated refusal and invalidates unknown wor
     await assert.rejects(active.invoke(reader, args, root, 30000, input));
     assert.equal(fault.invalidated(), 1);
   }
-});
-
-test('mutation session maps native refusal codes and rejects malformed success', async () => {
-  const writeOptions = { command: 'pwsh', cwd: root, args: ['-NoProfile', '-File', writer, '-Root', root,
-    '-Target', root + '/probe.json', '-InputFile', root + '/probe.json.' + '1'.repeat(32) + '.tmp',
-    '-Sha256', 'a'.repeat(64), '-Profile', 'config', '-CreateOnly'] };
-  const codecOptions = { command: 'pwsh', cwd: root, args: ['-NoProfile', '-File', codec, '-Root', root,
-    '-Target', root + '/codec.json', '-InputFile', root + '/codec.json.' + '1'.repeat(32) + '.tmp',
-    '-InputSha256', 'a'.repeat(64), '-ControlFile', root + '/codec.json.' + '2'.repeat(32) + '.tmp',
-    '-ControlSha256', 'b'.repeat(64)] };
-  for (const [options, code, expected] of [
-    [writeOptions, 'publicationFailed', 'Write-RuntimeFile: publication-failed'],
-    [codecOptions, 'documentInvalid', 'Invoke-PayloadCodec: document-invalid'],
-    [codecOptions, 'codecUnavailable', 'Invoke-PayloadCodec: codec-unavailable'],
-  ] as const) {
-    const fixture = fakeTransport({ status: 'error', code });
-    const session = Object.assign(Object.create(StartupMutationSession.prototype), { transport: fixture.transport, root }) as StartupMutationSession;
-    const result = await session.invoke(options, 120000);
-    assert.equal(result.exitCode, 1);
-    assert.equal(result.stderr.toString('utf8').trim(), expected);
-    assert.equal(fixture.calls[0]?.timeout, 30000);
-    assert.equal(fixture.invalidated(), 0);
-  }
-
-  const malformed = fakeTransport({ status: 'ok', result: parsed({ published: true }) });
-  const session = Object.assign(Object.create(StartupMutationSession.prototype), { transport: malformed.transport, root }) as StartupMutationSession;
-  await assert.rejects(session.invoke(writeOptions, 30000));
-  assert.equal(malformed.invalidated(), 1);
 });

@@ -1,0 +1,296 @@
+import assert from 'node:assert/strict';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { NativeHelperUnavailableError } from '../src/native-helper-error.ts';
+import { HelperRequestFailedError, NativeHelper, type ServiceSpawn } from '../src/native-helper.ts';
+import { observeImageFile, type HelperImage } from '../src/native-image.ts';
+import type { FakeAction, FakeScenario } from './support/fake-helper-service.ts';
+import { testHelperImage } from './support/native-helper.ts';
+
+const repository = fileURLToPath(new URL('../../', import.meta.url));
+const fakeService = fileURLToPath(new URL('./support/fake-helper-service.ts', import.meta.url));
+const binding = { token: '1'.repeat(32), companionRoot: 'C:\\companion', dataRoot: 'C:\\companion\\data' };
+
+type Launch = Partial<Pick<FakeScenario, 'hello'>> & { readonly ops?: Readonly<Record<string, readonly FakeAction[]>> };
+interface LoggedRequest { readonly pid: number; readonly op: string; readonly seq: number; readonly deadlineMs: number }
+
+/** A fake image file and a launcher that starts one scripted service per launch, in the order given. */
+async function fakeHelper(launches: readonly Launch[]) {
+  const scratch = path.join(repository, '.tmp', `native-helper-${randomUUID()}`);
+  await fs.mkdir(scratch, { recursive: true });
+  const imagePath = path.join(scratch, 'companion-helper.exe');
+  await fs.writeFile(imagePath, 'fake helper image');
+  const observed = observeImageFile(imagePath)!;
+  const image: HelperImage = { path: imagePath, sha256: observed.sha256, volume: observed.volume, fileId: observed.fileId };
+  const log = path.join(scratch, 'requests.log');
+  await fs.writeFile(log, '');
+  const children: ChildProcessWithoutNullStreams[] = [];
+  const launcher: ServiceSpawn = (_image, nonce) => {
+    const launch = launches[children.length] ?? {};
+    const scenario: FakeScenario = { sha256: observed.sha256, volume: observed.volume, fileId: observed.fileId, created: '1234567', log, ...launch };
+    const child = spawn(process.execPath, [fakeService, nonce], { env: { ...process.env, FAKE_HELPER_SCENARIO: JSON.stringify(scenario) }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    children.push(child);
+    return child;
+  };
+  return {
+    image, launcher, children,
+    start: (sequenceLimit?: number) => NativeHelper.start(image, sequenceLimit, launcher),
+    requests: async (): Promise<LoggedRequest[]> => (await fs.readFile(log, 'utf8')).split('\n').filter(line => line !== '').map(line => JSON.parse(line) as LoggedRequest),
+    close: async () => {
+      for (const child of children) { if (child.exitCode === null && child.signalCode === null) { child.kill(); } }
+      await fs.rm(scratch, { recursive: true, force: true });
+    },
+  };
+}
+
+const exited = (child: ChildProcessWithoutNullStreams): boolean => child.exitCode !== null || child.signalCode !== null;
+const pause = (milliseconds: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, milliseconds); });
+
+async function until(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (!await condition()) {
+    if (performance.now() > deadline) { throw new Error('Condition not reached.'); }
+    await pause(20);
+  }
+}
+
+async function rejectsUnavailable(promise: Promise<unknown>): Promise<void> {
+  await assert.rejects(promise, error => error instanceof NativeHelperUnavailableError);
+}
+
+describe('native helper service client', () => {
+  it('renews a bound service at the sequence bound, rebinds before a mutation and keeps the single failure restart', { timeout: 60000 }, async () => {
+    // Arrange: the second service fails its first read after renewal; the third fails its second read.
+    const fake = await fakeHelper([{}, { ops: { hash: [{ kind: 'exit' }] } }, { ops: { hash: [{ kind: 'ok' }, { kind: 'exit' }] } }]);
+    try {
+      const helper = await fake.start(4);
+      await helper.bind(binding);
+      for (let index = 0; index < 3; index++) { assert.equal((await helper.request('hash', {}, 5000)).status, 'ok'); }
+
+      // Act: the fifth request exceeds the bound, renews the service and publishes on the renewed one.
+      const published = await helper.request('publish', {}, 5000);
+
+      // Assert: renewal stopped the first service, rebound the scope on the second and served the mutation there.
+      assert.equal(published.status, 'ok');
+      assert.equal(fake.children.length, 2);
+      assert.ok(exited(fake.children[0]!));
+      const renewed = (await fake.requests()).filter(request => request.pid === fake.children[1]!.pid).map(request => request.op);
+      assert.deepEqual(renewed, ['jobStates', 'bindScope', 'publish']);
+
+      // Act and assert: a crash after renewal still has its one restart, and the replacement serves the next request.
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      assert.equal((await helper.request('hash', {}, 5000)).status, 'ok');
+      assert.equal(fake.children.length, 3);
+
+      // Act and assert: a second failure exhausts the helper; later requests and broker launches are refused.
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      await rejectsUnavailable(helper.request('hash', {}, 5000));
+      assert.throws(() => helper.brokerImage(), NativeHelperUnavailableError);
+      assert.equal(fake.children.length, 3);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('drives one real service through more than 8,192 requests, whose sequence it checks, without renewal', { timeout: 300000 }, async () => {
+    // Arrange
+    const helper = await NativeHelper.start(await testHelperImage());
+    try {
+      await helper.verifyLive();
+
+      // Act
+      for (let batch = 0; batch < 82; batch++) {
+        const replies = await Promise.all(Array.from({ length: 100 }, () => helper.request('processIdentity', { pid: process.pid }, 30000)));
+        assert.ok(replies.every(reply => reply.status === 'ok'));
+      }
+
+      // Assert: the service that answered the first request still answers its liveness check, so it was never replaced.
+      await helper.verifyLive();
+    } finally { await helper.close(); }
+  });
+
+  for (const fault of ['oversize', 'malformed', 'stderr'] as const) {
+    it(`stops the service on a ${fault} reply, uses the restart and exhausts on the next fault`, { timeout: 60000 }, async () => {
+      // Arrange
+      const fake = await fakeHelper([{ ops: { hash: [{ kind: fault }] } }, { ops: { hash: [{ kind: 'ok' }, { kind: fault }] } }]);
+      try {
+        const helper = await fake.start();
+
+        // Act
+        const failed = helper.request('hash', {}, 5000);
+
+        // Assert
+        await assert.rejects(failed, error => error instanceof HelperRequestFailedError && error.kind === 'fault');
+        assert.equal((await helper.request('hash', {}, 5000)).status, 'ok');
+        assert.equal(fake.children.length, 2);
+        await until(() => exited(fake.children[0]!));
+        await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+        await rejectsUnavailable(helper.request('hash', {}, 5000));
+        await helper.close();
+      } finally { await fake.close(); }
+    });
+  }
+
+  for (const [name, hello, reason] of [
+    ['a wrong nonce', { nonce: 'f'.repeat(32) }, 'serviceStart'],
+    ['a wrong pid', { pidOffset: 1 }, 'serviceStart'],
+    ['a malformed created value', { created: 'soon' }, 'serviceStart'],
+    ['a stderr byte', { stderr: true }, 'serviceStart'],
+    ['a held-image identity that differs from the prelaunch observation', { fileId: '1' }, 'imageIdentityMismatch'],
+  ] as const) {
+    it(`refuses a handshake with ${name}, at start and as the replacement that spends the restart`, { timeout: 60000 }, async () => {
+      // Arrange
+      const atStart = await fakeHelper([{ hello }]);
+      const atRestart = await fakeHelper([{ ops: { hash: [{ kind: 'exit' }] } }, { hello }]);
+      try {
+        // Act and assert: a failed first handshake refuses the start and stops the process.
+        await assert.rejects(atStart.start(), error => error instanceof NativeHelperUnavailableError && error.reason === reason);
+        await until(() => exited(atStart.children[0]!));
+
+        // Act and assert: a failed replacement handshake leaves the helper exhausted.
+        const helper = await atRestart.start();
+        await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+        await rejectsUnavailable(helper.request('hash', {}, 5000));
+        assert.equal(atRestart.children.length, 2);
+        await until(() => exited(atRestart.children[1]!));
+        await helper.close();
+      } finally { await atStart.close(); await atRestart.close(); }
+    });
+  }
+
+  it('answers a proof failed by its service on the replacement and reports a failed mutation only after the exit', { timeout: 60000 }, async () => {
+    // Arrange
+    const fake = await fakeHelper([{ ops: { jobStates: [{ kind: 'exit', delayMs: 100 }] } }, { ops: { publish: [{ kind: 'exit', delayMs: 100 }] } }]);
+    try {
+      const helper = await fake.start();
+
+      // Act
+      const proof = await helper.request('jobStates', { names: ['job'], owner: null }, 10000);
+
+      // Assert: the proof was sent once more, to the replacement, which answered it.
+      assert.equal(proof.status, 'ok');
+      const proofs = (await fake.requests()).filter(request => request.op === 'jobStates');
+      assert.deepEqual(proofs.map(request => request.pid), [fake.children[0]!.pid, fake.children[1]!.pid]);
+
+      // Act and assert: the mutation's failure carries the observed exit of its service.
+      await assert.rejects(helper.request('publish', {}, 10000), error => error instanceof HelperRequestFailedError && error.exitObserved === true);
+      assert.ok(exited(fake.children[1]!));
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('fails a missed request alone, accepts slow peers and proofs during the drain, discards the late reply and then replaces the service', { timeout: 60000 }, async () => {
+    // Arrange: the read misses its deadline plus grace, its reply arrives during the drain, and a slow publish answers after it.
+    const fake = await fakeHelper([{ ops: { hash: [{ kind: 'ok', delayMs: 6000 }], publish: [{ kind: 'ok', delayMs: 7500 }] } }, { ops: { codec: [{ kind: 'exit' }] } }]);
+    try {
+      const helper = await fake.start();
+      const publishing = helper.request('publish', {}, 30000);
+      const missed = helper.request('hash', {}, 300);
+
+      // Act
+      await assert.rejects(missed, error => error instanceof HelperRequestFailedError && error.kind === 'missed');
+      const proof = await helper.request('processIdentity', { pid: 1 }, 2000);
+      const queued = helper.request('codec', {}, 30000);
+      const published = await publishing;
+
+      // Assert: the proof ran on the draining service, the publish completed, and the queued request waited for the replacement.
+      assert.equal(proof.status, 'ok');
+      assert.equal(published.status, 'ok');
+      await assert.rejects(queued, HelperRequestFailedError);
+      const byOp = new Map((await fake.requests()).map(request => [request.op, request.pid]));
+      assert.equal(byOp.get('processIdentity'), fake.children[0]!.pid);
+      assert.equal(byOp.get('codec'), fake.children[1]!.pid);
+      assert.ok(exited(fake.children[0]!));
+
+      // Assert: the drain spent the single restart, so the replacement's failure exhausts the helper.
+      await rejectsUnavailable(helper.request('hash', {}, 5000));
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('refuses near-expiry requests locally or by reply without stopping the service or spending the restart', { timeout: 60000 }, async () => {
+    // Arrange
+    const fake = await fakeHelper([{ ops: { publish: [{ kind: 'error', code: 'deadlineExceeded' }], hash: [{ kind: 'exit' }] } }]);
+    try {
+      const helper = await fake.start();
+
+      // Act
+      const local = await helper.request('hash', {}, 200);
+      const remote = await helper.request('publish', {}, 400);
+
+      // Assert: the first was never sent; the second was refused by the service, which keeps running.
+      assert.deepEqual(local, { status: 'error', code: 'deadlineExceeded' });
+      assert.deepEqual(remote, { status: 'error', code: 'deadlineExceeded' });
+      assert.deepEqual((await fake.requests()).map(request => request.op), ['publish']);
+      assert.equal(fake.children.length, 1);
+      assert.ok(!exited(fake.children[0]!));
+
+      // Act and assert: the restart is still available.
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      assert.equal((await helper.request('hash', {}, 5000)).status, 'ok');
+      assert.equal(fake.children.length, 2);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('keeps four slots for proofs while twelve ordinary requests are in flight', { timeout: 60000 }, async () => {
+    // Arrange
+    const fake = await fakeHelper([{ ops: { hash: Array.from({ length: 12 }, () => ({ kind: 'ok', delayMs: 2000 }) as const) } }]);
+    try {
+      const helper = await fake.start();
+      const ordinary = Array.from({ length: 12 }, () => helper.request('hash', {}, 10000));
+      await until(async () => (await fake.requests()).length === 12);
+
+      // Act
+      const thirteenth = await helper.request('codec', {}, 600);
+      const proofs = await Promise.all(Array.from({ length: 4 }, () => helper.request('processIdentity', { pid: 1 }, 1500)));
+
+      // Assert
+      assert.deepEqual(thirteenth, { status: 'error', code: 'deadlineExceeded' });
+      assert.ok(proofs.every(reply => reply.status === 'ok'));
+      assert.ok((await Promise.all(ordinary)).every(reply => reply.status === 'ok'));
+      assert.ok(!(await fake.requests()).some(request => request.op === 'codec'));
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('attests the broker image inside the restart window only after re-verifying it', { timeout: 60000 }, async () => {
+    // Arrange: the replacement handshake is delayed, holding the restart window open.
+    const fake = await fakeHelper([{ ops: { hash: [{ kind: 'exit' }] } }, { hello: { delayMs: 2000 } }]);
+    try {
+      const helper = await fake.start();
+      assert.equal(helper.brokerImage(), fake.image.path);
+      await assert.rejects(helper.request('hash', {}, 5000), HelperRequestFailedError);
+      await until(() => fake.children.length === 2);
+
+      // Act and assert: an unchanged image is attested; a changed one is refused.
+      assert.equal(helper.brokerImage(), fake.image.path);
+      await fs.writeFile(fake.image.path, 'changed helper image');
+      assert.throws(() => helper.brokerImage(), NativeHelperUnavailableError);
+
+      // Act and assert: the verified replacement holds its image again.
+      assert.equal((await helper.request('hash', {}, 10000)).status, 'ok');
+      assert.equal(helper.brokerImage(), fake.image.path);
+      await helper.close();
+    } finally { await fake.close(); }
+  });
+
+  it('checks liveness against the handshake identity and observes the exit on close', { timeout: 60000 }, async () => {
+    // Arrange
+    const fake = await fakeHelper([{ ops: { processIdentity: [{ kind: 'ok' }, { kind: 'ok', result: { exists: true, pid: 1, created: '7654321' } }] } }]);
+    try {
+      const helper = await fake.start();
+
+      // Act and assert
+      await helper.verifyLive();
+      await rejectsUnavailable(helper.verifyLive());
+      await helper.close();
+      assert.ok(exited(fake.children[0]!));
+      await rejectsUnavailable(helper.request('hash', {}, 5000));
+    } finally { await fake.close(); }
+  });
+});

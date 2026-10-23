@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { PathInspector } from './admission.ts';
 import { PayloadCodec } from './codec.ts';
@@ -26,7 +25,6 @@ export interface RecoveryExecutorOptions {
 
 export class RecoveryDamageError extends Error { override readonly name = 'RecoveryDamageError'; }
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
-const script = fileURLToPath(new URL('../scripts/Invoke-FileAction.ps1', import.meta.url));
 
 // The coordinator holds its mutation queue across execute and the subsequent
 // nextAction publication. Completed postimages survive a lost progress write.
@@ -98,14 +96,14 @@ export class RecoveryExecutor {
       if (recognizeAction(action, await this.observe(action)) !== 'before') { throw new RecoveryDamageError('Recovery preimage changed before mutation.'); }
       await this.options.authorizeMutation?.(action);
       const source = action.kind === 'quarantine' ? action.source : action.target;
-      const args = ['-NoProfile', '-File', script, '-Root', this.options.scope.dataRoot, '-Action', action.kind === 'quarantine' ? 'Move' : 'Remove', '-Source', path.resolve(this.options.scope.dataRoot, source.path), '-Sha256', source.before!];
-      if (action.kind === 'quarantine') { args.push('-Target', path.resolve(this.options.scope.dataRoot, action.target.path)); }
-      try {
-        await options.supervisor.run('publication', { command: 'pwsh', args, cwd: this.options.scope.dataRoot }, 30000);
-      } catch (error) {
-        if (error instanceof SupervisorError && error.reason === 'termination-unverified') { this.options.publisher.block(); throw error; }
-        // A lost reply is settled below against both exact path postimages.
+      const root = this.options.scope.dataRoot;
+      const outcome = await this.options.publisher.runNativeMutation('fileAction', { root, action: action.kind === 'quarantine' ? 'Move' : 'Remove',
+        source: path.resolve(root, source.path), sha256: source.before!, target: action.kind === 'quarantine' ? path.resolve(root, action.target.path) : null }, 30000);
+      if (!outcome.ended) {
+        this.options.publisher.block();
+        throw new SupervisorError('termination-unverified', 'File action helper termination is unverified.', { cause: outcome.failure });
       }
+      // An error reply or a lost one is settled below against both exact path postimages.
       try {
         if (recognizeAction(action, await this.observe(action)) !== 'after') { throw new RecoveryDamageError('Owned file action did not reach its postimage.'); }
       } catch (error) {

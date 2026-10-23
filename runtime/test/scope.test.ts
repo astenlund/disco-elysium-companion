@@ -12,7 +12,6 @@ import { parseJournalHeader } from '../src/journal-records.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
 import { jsonBudgets, parseStrictJson } from '../src/json.ts';
 import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
-import { ProcessSupervisor } from '../src/process.ts';
 import { discoverScope, initializeScope, readScope, scopeComponents } from '../src/scope.ts';
 import { ScopeStorage, StorageConflictError } from '../src/storage.ts';
 import { OperationStore } from '../src/operations.ts';
@@ -24,6 +23,7 @@ import { PayloadCodec } from '../src/codec.ts';
 import { RecoveryExecutor, RecoveryDamageError } from '../src/recovery-executor.ts';
 import type { RecoveryAction } from '../src/recovery-manifest.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 async function openScopeFixture() {
   const fixture = await companionFixture();
@@ -33,9 +33,11 @@ async function openScopeFixture() {
     finally { await fixture.close(); }
   };
   try {
-    const supervisor = await ProcessSupervisor.create(fixture.root);
+    const supervisor = (await createTestNative(fixture.root)).supervisor;
     const inspector = new PathInspector(supervisor);
     const candidate = await discoverScope(inspector, fixture.root, 'game/opaque', 'principal:opaque');
+    await supervisor.proveBindable();
+    await supervisor.nativeHelper.bind({ token: supervisor.scopeToken, companionRoot: fixture.root, dataRoot: candidate.dataRoot });
     assert.equal(await readScope(inspector, candidate), null);
     assert.deepEqual(await fs.readdir(fixture.root), []);
     guard = await takeInstanceGuard(candidate.dataRoot, error => { throw error; });
@@ -152,11 +154,11 @@ describe('immutable runtime scope', () => {
       assert.equal(await sessions.ready(sessionProof), null);
       publisher.publish = publish;
       await sessions.bind(binding, sessionProof);
-      const metadata = inspector.metadata.bind(inspector);
+      const native = inspector.native.bind(inspector);
       const pairCalls: string[] = [];
-      inspector.metadata = (script, ...args) => { pairCalls.push(path.basename(script)); return metadata(script, ...args); };
+      inspector.native = (op, ...args) => { pairCalls.push(op); return native(op, ...args); };
       const pair = await sessions.readPair();
-      assert.deepEqual(pairCalls, ['Get-FileHashes.ps1']);
+      assert.deepEqual(pairCalls, ['hash']);
       assert.equal(pair.binding.status, 'valid');
       assert.equal(pair.index.status, 'valid');
       if (pair.binding.status === 'valid') { assert.deepEqual(pair.binding.value, binding); }
@@ -165,7 +167,7 @@ describe('immutable runtime scope', () => {
       now = 1;
       await assert.rejects(sessions.readPair(expired), DeadlineExceededError);
       assert.equal(pairCalls.length, 1);
-      inspector.metadata = metadata;
+      inspector.native = native;
       assert.deepEqual((await sessions.ready(sessionProof))?.binding, binding);
       await fs.writeFile(path.join(candidate.dataRoot, 'agent-session-index.json'), '{}');
       const damagedPair = await sessions.readPair();

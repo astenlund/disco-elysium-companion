@@ -1,16 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, PathInspector, type PathAdmission } from './admission.ts';
 import type { Deadline } from './deadline.ts';
 import type { InstanceGuard } from './guard.ts';
-import { hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type ProspectiveJsonFailure } from './json.ts';
-import { ProcessSupervisor, SupervisorError, type CommandResult, type OwnedSpawnOptions } from './process.ts';
+import { hasExactKeys, jsonBudgets, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type JsonValue, type ProspectiveJsonFailure } from './json.ts';
+import { HelperRequestFailedError, type HelperOperation } from './native-helper.ts';
+import { SupervisorError, type ProcessSupervisor } from './process.ts';
 import { SerialQueue } from './serial.ts';
-import type { RuntimeScope } from './scope.ts';
-import type { StartupMutationSession } from './startup-mutation.ts';
 
 export class PublicationError extends Error {
   override readonly name = 'PublicationError';
@@ -108,7 +106,6 @@ export interface PublicationOptions {
   readonly beforeWrite?: (relative: string, deadline?: Deadline) => Promise<void>;
 }
 
-const script = fileURLToPath(new URL('../scripts/Write-RuntimeFile.ps1', import.meta.url));
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 // Callers reserve their complete transition; this queue checks its exact publication before staging.
@@ -116,73 +113,52 @@ export class FilePublisher {
   private readonly options: PublicationOptions;
   private readonly queue = new SerialQueue();
   private unavailable = false;
-  private startupMutation: StartupMutationSession | null = null;
-  private startupMutationClosing: Promise<void> | null = null;
 
   constructor(options: PublicationOptions) { this.options = options; }
 
   get blocked(): boolean { return this.unavailable; }
+  /** True while any publication, codec or context preparation is queued or in flight. */
+  get busy(): boolean { return this.queue.busy; }
   idle(): Promise<void> { return this.queue.idle(); }
 
-  attachStartupMutationSession(session: StartupMutationSession): void {
-    if (this.startupMutation !== null || this.startupMutationClosing !== null) { throw new PublicationError('Startup mutation session is already attached.', true); }
-    this.startupMutation = session;
-  }
-
-  trimStartupQuarantine(scope: RuntimeScope, protectedBytes: Uint8Array, timeoutMs = 30000): Promise<CommandResult | null> {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) {
-      return Promise.reject(new PublicationError('Invalid quarantine maintenance deadline.', true));
+  /**
+   * Waits, within the deadline, until no publication, codec or context preparation is queued or in flight, so a caller
+   * that must not run beside a writer waits for an in-flight publish instead of refusing. False when the deadline passed
+   * first. The caller must not hold this publisher's queue, which would wait on itself.
+   */
+  async quiesce(deadline: Deadline): Promise<boolean> {
+    while (this.queue.busy) {
+      let remaining: number;
+      try { remaining = deadline.remaining(); }
+      catch { return false; }
+      let timer: NodeJS.Timeout | undefined;
+      const expired = new Promise<void>(resolve => { timer = setTimeout(resolve, remaining); });
+      try { await Promise.race([this.queue.idle(), expired]); }
+      finally { clearTimeout(timer); }
     }
-    if (scope.dataRoot !== this.options.root) { return Promise.reject(new PublicationError('Quarantine maintenance scope is invalid.', true)); }
-    const frozenBytes = Buffer.from(protectedBytes);
-    const expires = performance.now() + timeoutMs;
-    const selectedSession = this.startupMutation;
-    const selectedClosure = this.startupMutationClosing;
-    return this.exclusive(async () => {
-      if (this.startupMutation !== selectedSession || this.startupMutationClosing !== selectedClosure) {
-        throw new PublicationError('Startup mutation worker changed during quarantine maintenance.', true);
-      }
-      if (selectedSession === null || selectedSession.canFallBack) { return null; }
-      const remaining = Math.floor(expires - performance.now());
-      if (remaining < 1) { throw new PublicationError('Quarantine maintenance deadline expired.', true); }
-      const result = await selectedSession.trimQuarantine(scope, frozenBytes, remaining);
-      this.requireOwnership();
-      if (this.startupMutation !== selectedSession || this.startupMutationClosing !== selectedClosure) {
-        throw new PublicationError('Startup mutation worker changed during quarantine maintenance.', true);
-      }
-      if (performance.now() >= expires) { throw new PublicationError('Quarantine maintenance deadline expired after mutation.', true); }
-      return result;
-    });
+
+    return true;
   }
 
-  closeStartupMutationSession(): Promise<void> {
-    if (this.startupMutationClosing !== null) { return this.startupMutationClosing; }
-    const session = this.startupMutation;
-    if (session === null) { return Promise.resolve(); }
-    this.startupMutationClosing = this.queue.idle().then(async () => {
-      await session.close();
-      if (this.startupMutation === session) { this.startupMutation = null; }
-    });
-    return this.startupMutationClosing;
-  }
-
-  runNativePublication(options: OwnedSpawnOptions, timeoutMs: number): Promise<CommandResult> {
-    const session = this.startupMutation;
-    if (session !== null && session.handles(options)) {
-      if (session.canFallBack) { this.startupMutation = null; }
-      else { return session.invoke(options, timeoutMs); }
+  /**
+   * Runs one mutating helper request. A reply, ok or error, proves the request's handles closed; a failed request is
+   * reported only after the service's exit was observed, and ended is false when that exit could not be observed.
+   */
+  async runNativeMutation(op: HelperOperation, fields: Record<string, unknown>, timeoutMs: number): Promise<{ readonly result: JsonValue | null; readonly ended: boolean; readonly failure: unknown }> {
+    try { return { result: await this.options.inspector.native(op, fields, Math.min(timeoutMs, 30000)), ended: true, failure: null }; }
+    catch (error) {
+      const cause = error instanceof Error ? error.cause : undefined;
+      return { result: null, ended: !(cause instanceof HelperRequestFailedError && cause.exitObserved === false), failure: error };
     }
-    return this.options.supervisor.run('publication', options, timeoutMs);
   }
 
   // Codec and ordinary publication share this owner and queue, including cleanup failure.
   exclusive<T>(operation: (options: PublicationOptions) => Promise<T>, deadline?: Deadline): Promise<T> {
     const captured = this.options.bind?.(() => operation(this.options)) ?? (() => operation(this.options));
-    const run = () => this.queue.run(async () => {
+    return this.queue.run(async () => {
       deadline?.check(); this.requireOwnership();
       return captured();
     });
-    return this.startupMutationClosing === null ? run() : this.startupMutationClosing.then(run);
   }
 
   block(): void { this.unavailable = true; this.options.invalidate(this.options.root); }
@@ -255,18 +231,16 @@ export class FilePublisher {
         inputCreated = true;
         try { await handle.writeFile(bytes); await handle.sync(); }
         finally { await handle.close(); }
-        const args = ['-NoProfile', '-File', script, '-Root', this.options.root, '-Target', target, '-InputFile', input, '-Sha256', hash, '-Profile', profile, ...(createOnly ? ['-CreateOnly'] : [])];
-        let reply: ReturnType<typeof parseStrictJson> | null = null;
+        let reply: JsonValue | null = null;
         try {
           this.requireOwnership();
-          const result = await this.runNativePublication({ command: 'pwsh', args, cwd: this.options.root }, deadline?.remaining() ?? 30000);
-          if (result.exitCode === 0) {
-            try { reply = parseStrictJson(result.stdout); } catch { /* Exact target bytes decide a lost or malformed reply. */ }
-          }
-        } catch (error) {
-          failure = error;
-          if (error instanceof SupervisorError && error.reason === 'termination-unverified') { helperEnded = false; }
-        }
+          const outcome = await this.runNativeMutation('publish', { root: this.options.root, target, inputFile: input, inputSha256: hash, profile, createOnly },
+            deadline?.remaining() ?? 30000);
+          // Exact target bytes decide an error reply or a lost one.
+          reply = outcome.result;
+          failure = outcome.failure;
+          helperEnded = outcome.ended;
+        } catch (error) { failure = error; }
         if (!helperEnded || !this.options.guard.held) {
           this.block();
           throw new PublicationError('Publication cannot be reconciled while ownership is uncertain.', true);

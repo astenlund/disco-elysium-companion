@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { DataRootUnavailableError, type PathAdmission, type PathInspector } from '../admission.ts';
 import { Deadline } from '../deadline.ts';
+import type { FilePublisher } from '../files.ts';
 import type { InstanceGuard } from '../guard.ts';
 import { eventFileSequence } from '../journal-records.ts';
 import { jsonBudgets, readBoundedFile } from '../json.ts';
@@ -37,8 +38,12 @@ function sameObject(left: PathAdmission, right: PathAdmission): boolean {
   return left.kind === right.kind && left.volume === right.volume && left.identity === right.identity && left.links === right.links;
 }
 
+/**
+ * Phase-D cleanup of owned temp and backup siblings. No publication writer may be active: cleanup first waits, within its
+ * deadline, until no publish, codec or context preparation request is queued or in flight on the helper service.
+ */
 export async function cleanupPublicationResidue(scope: RuntimeScope, guard: Pick<InstanceGuard, 'held'>, inspector: PathInspector,
-  supervisor: Pick<ProcessSupervisor, 'verifyQuiescent'>, deadline = Deadline.after(120000)): Promise<{ readonly removed: readonly string[] }> {
+  publisher: Pick<FilePublisher, 'quiesce'>, deadline = Deadline.after(120000)): Promise<{ readonly removed: readonly string[] }> {
   const owned = (): void => {
     deadline.check();
     if (!guard.held) { throw new DataRootUnavailableError('Publication cleanup requires the instance guard.'); }
@@ -53,7 +58,7 @@ export async function cleanupPublicationResidue(scope: RuntimeScope, guard: Pick
     owned();
   };
   owned();
-  await supervisor.verifyQuiescent('publication');
+  if (!await publisher.quiesce(deadline)) { throw new DataRootUnavailableError('A publication writer is still active.'); }
   await verifyBinding();
   const candidates: { relative: string; admitted: PathAdmission }[] = [];
   let entries = 0;
@@ -122,7 +127,7 @@ function sameMarkerObject(left: PathAdmission, right: PathAdmission): boolean {
 // This pre-marker pass has a narrower authority than the full phase-D cleanup:
 // retain the exact target and reject any changed selected object, including loss.
 export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pick<InstanceGuard, 'held'>,
-  inspector: Pick<PathInspector, 'inspectMany'>, supervisor: Pick<ProcessSupervisor, 'verifyQuiescentMany'>,
+  inspector: Pick<PathInspector, 'inspectMany'>, supervisor: Pick<ProcessSupervisor, 'proveNoForeignWriters'>,
   deadline = Deadline.after(120000), io: MarkerResidueIO = markerResidueIO): Promise<{ readonly removed: readonly string[] }> {
   const owned = (): void => {
     deadline.check();
@@ -147,9 +152,8 @@ export async function cleanupRuntimeMarkerResidue(scope: RuntimeScope, guard: Pi
     }
     return { admitted, sha256: admitted.exists ? await digest(admitted.path) : null };
   };
-  const verifyWritersAbsent = async (): Promise<void> => {
-    await supervisor.verifyQuiescentMany(['publication', 'startupMutation']);
-  };
+  // The retired publication writers must be positively absent and the helper job must hold only this runtime's service.
+  const verifyWritersAbsent = (): Promise<void> => supervisor.proveNoForeignWriters(['publication', 'startupMutation']);
   try {
     owned();
     await verifyWritersAbsent();

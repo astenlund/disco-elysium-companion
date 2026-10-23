@@ -4,13 +4,13 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
-import { ProcessSupervisor } from '../src/process.ts';
 import { discoverScope, readScope } from '../src/scope.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 test('discovers and reads a scope with one fresh path batch per operation', { timeout: 120000 }, async () => {
   const fixture = await companionFixture();
-  const supervisor = await ProcessSupervisor.create(fixture.root);
+  const supervisor = (await createTestNative(fixture.root)).supervisor;
   const inspector = new PathInspector(supervisor);
   const original = inspector.inspectMany.bind(inspector);
   const batches: { root: string; targets: readonly string[]; allowMissing: boolean }[] = [];

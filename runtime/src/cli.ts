@@ -4,9 +4,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
-import { createChatRuntime, privateRuntimeStartup } from './runtime.ts';
-import { DirectImagePinObligation, withDirectMainToken } from './direct-main-capability.ts';
-import { prepareStartupHelperScratch } from './startup-helper-scratch.ts';
+import { NativeHelperUnavailableError } from './native-helper-error.ts';
+import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
+import { createChatRuntime } from './runtime.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
 import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
 
@@ -42,6 +42,7 @@ export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityO
 }
 
 export function formatCliError(error: unknown): string {
+  if (error instanceof NativeHelperUnavailableError) { return `${error.code} (${error.reason}): ${error.message}`; }
   const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
   const capacity = error instanceof RuntimeCapacityError ? error : error instanceof Error && error.cause instanceof RuntimeCapacityError ? error.cause : null;
   return capacity === null ? `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}` : `${code}: ${formatCapacityError(capacity)}`;
@@ -56,11 +57,27 @@ export function formatCapacityRewind(result: CapacityRewindResult | null): strin
   return `capacity rewind: affectedEvents=${verified ? count(result.affectedEvents) : 'unknown'}; inclusiveRange=${range}; retainedHandoffs=${count(result.retainedHandoffs)}; replayableHandoffs=${count(result.replayableHandoffs)}; presentationRetiredHandoffs=${count(result.presentationRetiredHandoffs)}; survivingCoreRecords=${count(result.survivingCoreRecords)}${certainty}`;
 }
 
-const compiledSelectorEnabled = false;
+/**
+ * The native build step of chat, consumer and repair: verifies the helper sources and image, building the image when it
+ * is absent or fails its pin. Its own reporter emits nativeBuild only while a build runs and ends with the build terminal.
+ * The image options exist for tests, which build into a copied installation.
+ */
+export async function prepareNativeImage(progressSink: StartupProgressSink, diagnose: (text: string) => void,
+  imageOptions: Omit<NativeImageOptions, 'build' | 'onBuildStart' | 'onDiagnostic'> = {}): Promise<HelperImage> {
+  const progress = new StartupProgressReporter(progressSink);
+  let building = false;
+  try {
+    const image = await ensureNativeHelperImage({ ...imageOptions, build: true, onBuildStart: () => { building = true; progress.phase('nativeBuild'); }, onDiagnostic: diagnose });
+    if (building) { progress.finish('nativeHelperBuilt'); } else { progress.cancel(); }
+    return image;
+  } catch (error) {
+    if (building) { progress.finish('failed'); } else { progress.cancel(); }
+    throw error;
+  }
+}
 
 async function runCliInternal(args: readonly string[], companionRoot: string,
-  write: (text: string) => void, progressSink: StartupProgressSink,
-  directToken?: symbol, pins?: DirectImagePinObligation): Promise<number> {
+  write: (text: string) => void, progressSink: StartupProgressSink, diagnose: (text: string) => void): Promise<number> {
   const command = parseCommand(args);
   if (command === null) { write('Usage: chat | status | consumer <runtime|bridge> [--abandon-undelivered] | repair'); return 2; }
   if (command.kind === 'status') {
@@ -69,22 +86,10 @@ async function runCliInternal(args: readonly string[], companionRoot: string,
     return 0;
   }
   if (command.kind === 'chat') {
+    const image = await prepareNativeImage(progressSink, diagnose);
     const progress = new StartupProgressReporter(progressSink);
     try {
-      if (directToken !== undefined && pins === undefined) { throw new Error('Direct image pin obligation is unavailable.'); }
-      const scratch = directToken !== undefined && compiledSelectorEnabled ? await prepareStartupHelperScratch() : null;
-      let selectionStartedAt: number | null = null;
-      const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase), scratch === null ? {}
-        : { [privateRuntimeStartup]: { selectedImageBootstrap: {
-          token: directToken!,
-          imageRoot: path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url))),
-          scratch: scratch.root, environment: scratch.environment,
-          markPossibleTransfer: () => { pins!.markPossibleTransfer(); selectionStartedAt = performance.now(); },
-          onVerifiedPins: status => {
-            pins!.verified(status);
-            if (status === 'absent') { progress.imageAbsent(selectionStartedAt === null ? 0 : performance.now() - selectionStartedAt); }
-          },
-        } } });
+      const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase), {}, image);
       if (runtime.result === 'notOwner') { progress.finish('notOwner'); write('notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.'); return 1; }
       if (runtime.result === 'providerUnavailable') { progress.finish('providerUnavailable'); write('providerUnavailable: The provider could not start.'); return 1; }
       await runTextClient(runtime.host, { onAttached: () => progress.finish('ready') });
@@ -92,7 +97,8 @@ async function runCliInternal(args: readonly string[], companionRoot: string,
     } catch (error) { progress.finish('failed'); throw error; }
   }
   if (command.kind === 'repair') { write('Repair may set aside undelivered journal changes if a capacity rewind is admitted, then disclose missing history with a current-state resync. Surviving exact core records remain replayable under their retained bindings. No capacity rewind is yet known.'); }
-  const backend = await openBackend({ companionRoot });
+  const nativeImage = await prepareNativeImage(progressSink, diagnose);
+  const backend = await openBackend({ companionRoot, nativeImage });
   try {
     const result = await backend.startup(command);
     const exitCode = operatorExitCode(command.kind, result);
@@ -109,23 +115,15 @@ async function runCliInternal(args: readonly string[], companionRoot: string,
 
 export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),
   write: (text: string) => void = text => { process.stdout.write(`${text}\n`); },
-  progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); }): Promise<number> {
-  return runCliInternal(args, companionRoot, write, progressSink);
+  progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); },
+  diagnose: (text: string) => void = text => { process.stderr.write(`${text}\n`); }): Promise<number> {
+  return runCliInternal(args, companionRoot, write, progressSink, diagnose);
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const pins = new DirectImagePinObligation();
-  const companionRoot = path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)));
-  const write = (value: string): void => { process.stdout.write(`${value}\n`); };
-  const progressSink: StartupProgressSink = event => { console.error(formatStartupProgress(event)); };
-  try {
-    const code = await withDirectMainToken(token => runCliInternal(process.argv.slice(2), companionRoot, write, progressSink, token, pins));
-    if (pins.requiresHardExit) { process.exit(code); }
-    process.exitCode = code;
-  }
+  try { process.exitCode = await runCli(process.argv.slice(2), path.win32.resolve(fileURLToPath(new URL('../../', import.meta.url)))); }
   catch (error) {
     process.stderr.write(`${formatCliError(error)}\n`);
-    if (pins.requiresHardExit) { process.exit(1); }
     process.exitCode = 1;
   }
 }

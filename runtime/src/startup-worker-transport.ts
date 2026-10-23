@@ -5,10 +5,10 @@ import { DataRootUnavailableError } from './admission.ts';
 import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
 import { SupervisorError, type OwnedProcess, type ProcessRole, type ProcessSupervisor } from './process.ts';
 import type { RuntimeScope } from './scope.ts';
-import { encodeStartupMetadataFrame, FramedReplies, maximumNormalOutput, validateStartupHello } from './startup-metadata.ts';
+import { encodeStartupWorkerFrame, FramedReplies, maximumNormalOutput, validateStartupHello } from './startup-worker-framing.ts';
 import { startupWorkerInstallationRoot } from './startup-worker-sources.ts';
 
-type StartupTransportRole = Extract<ProcessRole, 'startupCoreReply' | 'startupMutation'>;
+type StartupTransportRole = Extract<ProcessRole, 'startupCoreReply'>;
 export type StartupWorkerReply = { readonly status: 'ok'; readonly result: JsonValue } | { readonly status: 'error'; readonly code: string };
 
 function unavailable(): DataRootUnavailableError { return new DataRootUnavailableError('Startup worker transport is unavailable.'); }
@@ -62,7 +62,7 @@ export class StartupWorkerTransport {
         { scopeSha256: scope.bindingSha256, sourceSha256 });
       if (child.brokerClosed || replies.fault !== null) { throw unavailable(); }
       return new StartupWorkerTransport(supervisor, role, child, replies,
-        role === 'startupCoreReply' ? scope.companionRoot : scope.dataRoot);
+        scope.companionRoot);
     } catch (error) {
       replies.fail(unavailable());
       await supervisor.stop(role);
@@ -76,7 +76,7 @@ export class StartupWorkerTransport {
   async request(operation: string, fields: Record<string, unknown>, timeoutMs: number): Promise<StartupWorkerReply> {
     if (this.closed || this.inFlight || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) { throw unavailable(); }
     const id = randomBytes(16).toString('hex');
-    const frame = encodeStartupMetadataFrame({ ...fields, version: 1, id, op: operation, root: this.root, remainingMs: timeoutMs });
+    const frame = encodeStartupWorkerFrame({ ...fields, version: 1, id, op: operation, root: this.root, remainingMs: timeoutMs });
     this.inFlight = true;
     const startedAt = performance.now();
     try {

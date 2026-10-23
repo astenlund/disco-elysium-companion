@@ -2,42 +2,41 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { deflateSync, inflateSync } from 'node:zlib';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
 import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
 import { EventReader, type EventReadRequest } from '../src/event-reader.ts';
 import { eventFileName } from '../src/journal-records.ts';
-import { jsonBudgets, stringifyJson } from '../src/json.ts';
+import { parseStrictJson, stringifyJson, type JsonValue } from '../src/json.ts';
 import type { ProcessSupervisor } from '../src/process.ts';
 import { journalEvent } from './support/journal-event.ts';
 
 function fixture(count: number) {
   const root = path.resolve('event-reader-fixture');
   const requests: EventReadRequest[] = Array.from({ length: count }, (_, index) => ({ path: eventFileName(index + 1), sequence: index + 1 }));
-  const state = { fail: false, malformed: false, wrongRequest: false, prefix: 512, onHash: () => {}, onMetadata: () => {}, transform: (bytes: Buffer): Buffer => bytes,
+  const state = { fail: false, malformed: false, wrongRequest: false, prefix: 512, onHash: () => {}, onMetadata: () => {}, transform: (value: unknown): unknown => value,
     calls: [] as string[], timeouts: [] as number[], batches: [] as EventReadRequest[][], hashes: new Map(requests.map(request => [path.join(root, request.path), '1'.repeat(64)])) };
   const inspector = new PathInspector({} as ProcessSupervisor);
-  inspector.metadata = async (script, args, _cwd, _timeout, input) => {
-    const name = path.basename(script);
-    state.calls.push(name);
-    state.timeouts.push(_timeout!);
+  inspector.native = async (op, fields, timeout) => {
+    state.calls.push(op);
+    state.timeouts.push(timeout!);
     if (state.fail) { throw new Error('fixture metadata unavailable'); }
     let value: unknown;
-    if (name === 'Get-FileHashes.ps1') {
+    if (op === 'hash') {
       state.onHash();
-      assert.ok(input);
-      const targets: string[] = JSON.parse(Buffer.from(input).toString('utf8'));
+      const input = Buffer.from(fields['inputBase64'] as string, 'base64');
+      const targets: string[] = JSON.parse(input.toString('utf8'));
       value = { requestSha256: state.wrongRequest ? '0'.repeat(64) : createHash('sha256').update(input).digest('hex'), sha256: targets.map(target => state.hashes.get(target) ?? null) };
     } else {
       state.onMetadata();
-      const targets: EventReadRequest[] = JSON.parse(input === undefined ? args[3]! : Buffer.from(input).toString('utf8'));
+      const input = op === 'eventBatch' ? Buffer.from(fields['inputBase64'] as string, 'base64') : null;
+      const targets: EventReadRequest[] = JSON.parse(input === null ? fields['requestsJson'] as string : input.toString('utf8'));
       state.batches.push(targets);
       const documents = targets.slice(0, state.prefix).map(target => ({ path: target.path, status: state.hashes.has(target.path) ? 'valid' : 'absent', sha256: state.hashes.get(target.path) ?? null, metadata: state.hashes.has(target.path) ? journalEvent(target.sequence) : null }));
-      value = input === undefined ? { documents } : { requestSha256: state.wrongRequest ? '0'.repeat(64) : createHash('sha256').update(input).digest('hex'), documents };
+      value = input === null ? { documents } : { requestSha256: state.wrongRequest ? '0'.repeat(64) : createHash('sha256').update(input).digest('hex'), documents };
     }
-    const encoded = Buffer.from(stringifyJson(state.malformed ? {} : value));
-    return { exitCode: 0, stdout: name === 'Get-EventMetadata.ps1' && input !== undefined ? state.transform(deflateSync(encoded)) : encoded, stderr: Buffer.alloc(0) };
+    const reply = parseStrictJson(Buffer.from(stringifyJson(state.malformed ? {} : value)));
+    return (op === 'eventBatch' ? state.transform(reply) : reply) as JsonValue;
   };
   return { root, requests, state, reader: new EventReader(root, inspector) };
 }
@@ -53,14 +52,14 @@ describe('journal exact-content validation cache', () => {
     const second = await reader.readInventory(requests);
     const observed = second[0]!;
     assert.equal(observed.status === 'valid' && observed.metadata.principal, 'principal');
-    assert.deepEqual(state.calls, ['Get-FileHashes.ps1']);
+    assert.deepEqual(state.calls, ['hash']);
     state.calls.length = 0;
     state.hashes.set(path.join(root, requests[0]!.path), '2'.repeat(64));
     state.hashes.delete(path.join(root, requests[1]!.path));
     const changed = await reader.readInventory(requests);
     assert.equal(changed[0]!.sha256, '2'.repeat(64));
     assert.equal(changed[1]!.status, 'absent');
-    assert.deepEqual(state.calls, ['Get-FileHashes.ps1', 'Get-EventMetadata.ps1']);
+    assert.deepEqual(state.calls, ['hash', 'eventBatch']);
   });
 
   it('drops all reuse after I/O failure, malformed results or explicit invalidation', async () => {
@@ -75,12 +74,12 @@ describe('journal exact-content validation cache', () => {
       state.fail = false; state.malformed = false; state.wrongRequest = false; state.onHash = () => {};
       state.calls.length = 0;
       await reader.readInventory(requests);
-      assert.deepEqual(state.calls, ['Get-EventMetadata.ps1']);
+      assert.deepEqual(state.calls, ['eventBatch']);
     }
     reader.invalidate();
     state.calls.length = 0;
     await reader.readInventory(requests);
-    assert.deepEqual(state.calls, ['Get-EventMetadata.ps1']);
+    assert.deepEqual(state.calls, ['eventBatch']);
   });
 
   it('keeps one deadline and rejects wrong sequence or duplicate inventory entries', async () => {
@@ -103,7 +102,7 @@ describe('journal exact-content validation cache', () => {
     state.calls.length = 0;
     const inventory = await reader.readInventory(requests);
     assert.equal(inventory.length, 8192);
-    assert.deepEqual(state.calls, Array.from({ length: 16 }, () => 'Get-FileHashes.ps1'));
+    assert.deepEqual(state.calls, Array.from({ length: 16 }, () => 'hash'));
   });
 
   it('keeps direct reads compatible and follows only complete nonempty prefixes', async () => {
@@ -129,33 +128,7 @@ describe('journal exact-content validation cache', () => {
     state.onMetadata = () => {};
     state.calls.length = 0;
     assert.equal((await reader.readInventory(requests)).length, 3);
-    assert.deepEqual(state.calls, Array.from({ length: 3 }, () => 'Get-EventMetadata.ps1'));
-  });
-
-  it('rejects corrupt compression, trailing streams, excessive expansion and every JSON budget', async () => {
-    const faults: [string, (bytes: Buffer) => Buffer][] = [
-      ['malformed compression', () => Buffer.from('invalid')],
-      ['truncated stream', bytes => bytes.subarray(0, bytes.length - 1)],
-      ['checksum corruption', bytes => { const result = Buffer.from(bytes); result[result.length - 1]! ^= 1; return result; }],
-      ['trailing byte', bytes => Buffer.concat([bytes, Buffer.from([0])])],
-      ['second stream', bytes => Buffer.concat([bytes, bytes])],
-      ['wire bytes', () => Buffer.alloc(65_537)],
-      ['expanded bytes', () => deflateSync(Buffer.alloc(jsonBudgets.config.maxBytes + 1, 32))],
-      ['decoded text', () => deflateSync(Buffer.from(JSON.stringify({ text: 'x'.repeat(jsonBudgets.config.maxTextBytes) })))],
-      ['tokens', () => deflateSync(Buffer.from(JSON.stringify(Array.from({ length: jsonBudgets.config.maxTokens }, () => null))))],
-      ['depth', () => deflateSync(Buffer.from('['.repeat(65) + '0' + ']'.repeat(65)))],
-      ['duplicate property', () => deflateSync(Buffer.from('{"documents":[],"documents":[]}'))],
-      ['invalid UTF-8', () => deflateSync(Buffer.from([0xff]))],
-    ];
-    for (const [name, transform] of faults) {
-      const { requests, state, reader } = fixture(1);
-      state.transform = transform;
-      await assert.rejects(reader.readInventory(requests), name);
-      state.transform = bytes => bytes;
-      state.calls.length = 0;
-      await reader.readInventory(requests);
-      assert.deepEqual(state.calls, ['Get-EventMetadata.ps1'], name);
-    }
+    assert.deepEqual(state.calls, Array.from({ length: 3 }, () => 'eventBatch'));
   });
 
   it('rejects request, prefix path, sequence and complete metadata mismatches without cache authority', async () => {
@@ -170,10 +143,10 @@ describe('journal exact-content validation cache', () => {
     ];
     for (const [name, mutate] of faults) {
       const { requests, state, reader } = fixture(1);
-      state.transform = bytes => {
-        const value = JSON.parse(inflateSync(bytes).toString('utf8')) as MutableReply;
+      state.transform = reply => {
+        const value = JSON.parse(stringifyJson(reply)) as MutableReply;
         mutate(value);
-        return deflateSync(Buffer.from(JSON.stringify(value)));
+        return parseStrictJson(Buffer.from(JSON.stringify(value)));
       };
       await assert.rejects(reader.readInventory(requests), name);
     }

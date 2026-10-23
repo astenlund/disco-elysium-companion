@@ -7,22 +7,22 @@ import { fileURLToPath } from 'node:url';
 import { PathInspector } from '../../src/admission.ts';
 import { takeInstanceGuard } from '../../src/guard.ts';
 import { newIdentity } from '../../src/identity.ts';
-import { ProcessSupervisor } from '../../src/process.ts';
 import { companionFixture } from '../support/companion.ts';
+import { createTestNative } from '../support/native-helper.ts';
 
 it('sends the precomputed redelivery bytes after a blocked sent publication and exits uncleanly', { timeout: 3600000 }, async () => {
   const fixture = await companionFixture('runtime-owned');
   const script = fileURLToPath(new URL('./fixtures/sent-mark-child.ts', import.meta.url));
-  const supervisor = await ProcessSupervisor.create(path.join(fixture.root, `test-process-${newIdentity()}`));
+  const supervisor = (await createTestNative(path.join(fixture.root, `test-process-${newIdentity()}`))).supervisor;
   let quiescent = false;
   try {
     const result = await supervisor.run('core', { command: process.execPath, args: [script, fixture.root], cwd: fixture.root }, 3500000);
     quiescent = true;
     assert.equal(result.exitCode, 0, result.stderr.toString('utf8'));
-    const proof = JSON.parse(result.stdout.toString('utf8')) as { proof: string; dataRoot: string; events: number; failedPublicationExit: number; additionalPublications: number; retainedInput: string; cleanShutdown: boolean };
+    const proof = JSON.parse(result.stdout.toString('utf8')) as { proof: string; dataRoot: string; events: number; failedPublicationCode: string; additionalPublications: number; retainedInput: string; cleanShutdown: boolean };
     assert.equal(proof.proof, 'sent-mark-fallback');
     assert.ok(proof.events > 0);
-    assert.equal(proof.failedPublicationExit, 1);
+    assert.equal(proof.failedPublicationCode, 'publicationFailed');
     assert.equal(proof.additionalPublications, 0);
     assert.match(proof.retainedInput, /^cursor-agent-session[.]json[.][a-f0-9]{32}[.]tmp$/);
     assert.equal(proof.cleanShutdown, false);

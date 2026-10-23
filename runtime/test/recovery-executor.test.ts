@@ -7,16 +7,16 @@ import { PathInspector } from '../src/admission.ts';
 import type { PayloadCodec } from '../src/codec.ts';
 import { FilePublisher } from '../src/files.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
-import { ProcessSupervisor } from '../src/process.ts';
 import { RecoveryExecutor } from '../src/recovery-executor.ts';
 import type { RecoveryAction } from '../src/recovery-manifest.ts';
 import type { RuntimeScope } from '../src/scope.ts';
 import { bytesHash } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 it('gates native carry deletion and recognizes its postimage after lost progress', { timeout: 120000 }, async () => {
   const fixture = await companionFixture();
-  const supervisor = await ProcessSupervisor.create(fixture.root);
+  const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root })).supervisor;
   const inspector = new PathInspector(supervisor);
   const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
   const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor, preflight: async () => {}, invalidate: () => {} });
@@ -49,7 +49,6 @@ it('gates native carry deletion and recognizes its postimage after lost progress
     await assert.rejects(executor().execute(action), /durable matching owner/);
   } finally {
     await publisher.idle();
-    await supervisor.verifyQuiescent('publication');
     await guard.release();
     await fixture.close();
   }

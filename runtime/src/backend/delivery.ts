@@ -260,7 +260,7 @@ export class DeliveryCoordinator {
     const bindingChanged = wanted !== state.request['stateWanted'] || (binding.turnsCompleted === 0) !== (state.binding.turnsCompleted === 0);
     if (state.forceRedelivery) {
       if (!current || bindingChanged || state.fallback === null) { throw new SafetyUnavailableError('The prepared redelivery fallback no longer satisfies current dependencies.'); }
-      await k.supervisor.verifyQuiescent('publication');
+      if (!await k.publisher.quiesce(Deadline.after(30_000))) { throw new SafetyUnavailableError('A publication writer is still active before the redelivery fallback.'); }
       await k.supervisor.verifyQuiescent('core');
       if (!k.guard.held || !provider.isCurrent() || !await k.sessionProof(provider).verify(binding) || !await this.dependenciesCurrent(state.snapshot)) {
         await this.invalidateObservedDamage();

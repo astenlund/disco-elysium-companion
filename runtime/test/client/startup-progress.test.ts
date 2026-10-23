@@ -55,17 +55,25 @@ test('terminal progress distinguishes ownership and provider refusal from startu
   assert.equal(terminal('failed'), `[${at}] startup: failed; elapsed 1s`);
 });
 
-test('absent compiled images disclose the fallback and its separate selection time', () => {
+test('the build reporter reports nativeBuild with its own terminal and stays silent when no build runs', () => {
+  // Arrange
   const events: StartupProgress[] = [];
   let elapsed = 0;
-  const reporter = new StartupProgressReporter(event => events.push(event), 15000,
+  const reporter = (): StartupProgressReporter => new StartupProgressReporter(event => events.push(event), 15000,
     () => elapsed, () => new Date('2026-10-13T13:00:00.000Z'));
-  reporter.phase('scopeAdmission');
-  elapsed = 6200;
-  reporter.imageAbsent(4100);
-  reporter.finish('ready');
-  assert.equal(formatStartupProgress(events[1]!),
-    '[2026-10-13T13:00:00.000Z] startup: compiled images absent; using PowerShell fallback; image selection 4s; elapsed 6s');
-  assert.equal(events[1]!.selectionMs, 4100);
-  assert.equal(events[2]!.kind, 'ready');
+  const built = reporter();
+  const unused = reporter();
+
+  // Act
+  built.phase('nativeBuild');
+  elapsed = 4200;
+  built.finish('nativeHelperBuilt');
+  unused.cancel();
+  unused.finish('ready');
+
+  // Assert
+  assert.deepEqual(events.map(event => formatStartupProgress(event)), [
+    '[2026-10-13T13:00:00.000Z] startup: building the native helper (first launch); elapsed 0s',
+    '[2026-10-13T13:00:00.000Z] startup: native helper built; elapsed 4s',
+  ]);
 });

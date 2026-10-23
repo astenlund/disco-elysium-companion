@@ -1,28 +1,10 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { requireDirectMainToken } from './direct-main-capability.ts';
-import { asInteger, hasExactKeys, isLowerHex, parseStrictJson, type JsonValue } from './json.ts';
-import { childEnvironment, ProcessSupervisor, type CommandResult, type OwnedSpawnOptions } from './process.ts';
+import { asInteger, hasExactKeys, isLowerHex, type JsonValue } from './json.ts';
+import type { HelperOperation, NativeHelper } from './native-helper.ts';
+import { SupervisorError, type CommandResult, type ProcessSupervisor } from './process.ts';
 import { SerialQueue } from './serial.ts';
-import type { RuntimeScope } from './scope.ts';
-import type { StartupMetadataSession } from './startup-metadata.ts';
 import type { StartupCoreReplySession } from './startup-core-reply.ts';
-
-/** @internal Copies one complete printable expression ending in a newline, or returns null when it is not exactly that. */
-export function frozenStdinExpression(expression: Uint8Array): Buffer | null {
-  if (expression.byteLength < 2 || expression.byteLength > 1_048_576 || expression[expression.byteLength - 1] !== 10) { return null; }
-  const frozen = Buffer.from(expression);
-  for (let index = 0; index < frozen.byteLength - 1; index++) {
-    if (frozen[index]! < 32 || frozen[index]! > 126) { return null; }
-  }
-  return frozen;
-}
-
-/** @internal The supervised command that reads one in-memory expression from stdin, with a copied environment. */
-export function stdinExpressionCommand(cwd: string, env: NodeJS.ProcessEnv): OwnedSpawnOptions {
-  return { command: 'pwsh', args: ['-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-'], cwd, env: childEnvironment(env) };
-}
 
 export class DataRootUnavailableError extends Error {
   override readonly name = 'DataRootUnavailableError';
@@ -38,7 +20,6 @@ export interface PathAdmission {
   readonly missing: readonly string[];
 }
 
-const script = fileURLToPath(new URL('../scripts/Get-PathAdmission.ps1', import.meta.url));
 export const maximumPathAdmissionBatchEntries = 64;
 export const maximumPathAdmissionControlBytes = 65_536;
 
@@ -61,71 +42,50 @@ export function parseAdmission(value: JsonValue, target: string, allowMissing: b
   return { path: value['path'], exists: true, kind: value['kind'], links, volume: value['volume'], identity: value['identity'], missing };
 }
 
+/** A native helper request that did not succeed: the service's error code, or unavailable when the request itself failed. */
+export class NativeOperationError extends Error {
+  override readonly name = 'NativeOperationError';
+  readonly code: string;
+  constructor(code: string, options?: ErrorOptions) { super(`Native operation failed: ${code}.`, options); this.code = code; }
+}
+
 export class PathInspector {
   private readonly supervisor: ProcessSupervisor;
+  private readonly helper: NativeHelper;
+  // Only retained core reply validation runs here; helper requests go through the helper's own queue, never this one.
   private readonly queue = new SerialQueue();
-  private startupSession: StartupMetadataSession | null = null;
   private coreReplySession: StartupCoreReplySession | null = null;
-  private startupClosing: Promise<void> | null = null;
-  private startupSessionStopped = false;
+  private coreReplyClosing: Promise<void> | null = null;
 
-  constructor(supervisor: ProcessSupervisor) { this.supervisor = supervisor; }
+  constructor(supervisor: ProcessSupervisor) { this.supervisor = supervisor; this.helper = supervisor.nativeHelper; }
 
   idle(): Promise<void> { return this.queue.idle(); }
 
-  /** Resolves null once the warm worker has verifiably stopped, so the supervisor takes a fresh one-shot observation. */
-  observeStartupJobs(names: readonly string[], timeoutMs = 5000): Promise<readonly boolean[] | null> {
-    if (this.startupWorkerStopped) {
-      this.dropVerifiedStartupSession();
-      return Promise.resolve(null);
-    }
-    // Like a metadata call, an observation queued before worker closure is served by the session it was queued for.
-    const session = this.startupClosing === null ? this.startupSession : null;
-    return this.queue.run(async () => {
-      // A request queued ahead of this one may have stopped the worker verifiably, or another observation already dropped it.
-      if (this.startupWorkerStopped || session?.canFallBack === true) {
-        if (this.startupSession === session) { this.dropVerifiedStartupSession(); }
-        return null;
-      }
-      if (session === null) { throw new DataRootUnavailableError('Startup job observation is unavailable.'); }
-      return session.observeJobStates(names, timeoutMs);
-    });
-  }
-
-  attachStartupSession(session: StartupMetadataSession): void {
-    if (this.startupSession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup metadata session is already attached.'); }
-    this.startupSession = session;
-    this.startupSessionStopped = false;
-  }
-
-  private get startupWorkerStopped(): boolean {
-    return this.startupClosing === null && (this.startupSessionStopped || this.startupSession?.canFallBack === true);
-  }
-
-  // A verifiably stopped worker supplies no further answers; its warm job observer goes with it.
-  private dropVerifiedStartupSession(): void {
-    this.startupSession = null;
-    this.startupSessionStopped = true;
-    this.supervisor.clearStartupJobObserver();
-  }
-
   attachStartupCoreReplySession(session: StartupCoreReplySession): void {
-    if (this.coreReplySession !== null || this.startupClosing !== null) { throw new DataRootUnavailableError('Startup core reply session is already attached.'); }
+    if (this.coreReplySession !== null || this.coreReplyClosing !== null) { throw new DataRootUnavailableError('Startup core reply session is already attached.'); }
     this.coreReplySession = session;
   }
 
   closeStartupSession(): Promise<void> {
-    if (this.startupClosing !== null) { return this.startupClosing; }
-    const sessions = [this.startupSession, this.coreReplySession].filter(session => session !== null);
-    this.startupSession = null;
+    if (this.coreReplyClosing !== null) { return this.coreReplyClosing; }
+    const session = this.coreReplySession;
     this.coreReplySession = null;
-    if (sessions.length === 0) { return Promise.resolve(); }
-    this.startupClosing = this.queue.idle().then(async () => {
-      const results = await Promise.allSettled(sessions.map(session => session.close()));
-      const failure = results.find(result => result.status === 'rejected');
-      if (failure?.status === 'rejected') { throw failure.reason; }
-    });
-    return this.startupClosing;
+    if (session === null) { return Promise.resolve(); }
+    this.coreReplyClosing = this.queue.idle().then(() => session.close());
+    return this.coreReplyClosing;
+  }
+
+  /**
+   * Sends one native helper request within a bounded budget and returns its result. A service error code, a local
+   * deadline refusal and a failed request all reject with NativeOperationError, which each reader maps to its own failure.
+   */
+  async native(op: HelperOperation, fields: Record<string, unknown>, timeoutMs = 30000): Promise<JsonValue> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { throw new NativeOperationError('invalidDeadline'); }
+    let reply;
+    try { reply = await this.helper.request(op, fields, timeoutMs); }
+    catch (error) { throw new NativeOperationError('unavailable', { cause: error }); }
+    if (reply.status !== 'ok') { throw new NativeOperationError(reply.code); }
+    return reply.result;
   }
 
   async inspect(root: string, target: string, allowMissing = false, timeoutMs = 30000): Promise<PathAdmission> {
@@ -134,21 +94,17 @@ export class PathInspector {
     return results[0]!;
   }
 
+  /** Runs retained core reply validation: through the warm worker while it is open, otherwise one-shot under the metadata role. */
   metadata(scriptPath: string, args: readonly string[], cwd: string, timeoutMs = 30000, input?: Uint8Array): Promise<CommandResult> {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) { return Promise.reject(new DataRootUnavailableError('Invalid metadata deadline.')); }
     const deadline = performance.now() + timeoutMs;
     const frozenArgs = [...args];
     const frozenInput = input === undefined ? undefined : Buffer.from(input);
-    const startupSession = this.startupSession;
     const coreReplySession = this.coreReplySession;
-    const closing = this.startupClosing;
+    const closing = this.coreReplyClosing;
     const run = async (): Promise<CommandResult> => {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
-      if (startupSession !== null && startupSession.supports(scriptPath, frozenArgs, frozenInput)) {
-        if (startupSession.canFallBack) { if (this.startupSession === startupSession) { this.dropVerifiedStartupSession(); } }
-        else { return startupSession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
-      }
       if (coreReplySession !== null && coreReplySession.supports(scriptPath, frozenArgs, frozenInput)) {
         if (coreReplySession.canFallBack) { this.coreReplySession = null; }
         else { return coreReplySession.invoke(scriptPath, frozenArgs, cwd, remaining, frozenInput); }
@@ -158,43 +114,21 @@ export class PathInspector {
     return closing === null ? this.queue.run(run) : closing.then(() => this.queue.run(run));
   }
 
-  /**
-   * @internal The caller constructs one fixed expression from captured, verified source bytes. That expression can transfer
-   * image pins into this process, so only a direct main entry may send it.
-   */
-  metadataStdinExpression(token: unknown, expression: Uint8Array, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 30000): Promise<CommandResult> {
-    try { requireDirectMainToken(token); }
-    catch (error) { return Promise.reject(error); }
-    const frozen = frozenStdinExpression(expression);
-    if (frozen === null || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000
-      || this.startupSession !== null || this.coreReplySession !== null || this.startupClosing !== null) {
-      return Promise.reject(new DataRootUnavailableError('Invalid in-memory metadata request.'));
-    }
-    const command = stdinExpressionCommand(cwd, env);
-    const deadline = performance.now() + timeoutMs;
-    const run = (): Promise<CommandResult> => {
-      if (this.startupSession !== null || this.coreReplySession !== null || this.startupClosing !== null) {
-        throw new DataRootUnavailableError('In-memory metadata is unavailable after startup worker opening.');
-      }
-      const remaining = Math.floor(deadline - performance.now());
-      if (remaining <= 0) { throw new DataRootUnavailableError('Metadata deadline expired.'); }
-      return this.supervisor.run('metadata', command, remaining, frozen);
-    };
-    return this.queue.run(run);
-  }
-
-  inspectMany(root: string, targets: readonly string[], allowMissing = false, timeoutMs = 30000): Promise<readonly PathAdmission[]> {
-    if (targets.length < 1 || targets.length > maximumPathAdmissionBatchEntries || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) { return Promise.reject(new DataRootUnavailableError('Invalid path admission request.')); }
+  async inspectMany(root: string, targets: readonly string[], allowMissing = false, timeoutMs = 30000): Promise<readonly PathAdmission[]> {
+    if (targets.length < 1 || targets.length > maximumPathAdmissionBatchEntries || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) { throw new DataRootUnavailableError('Invalid path admission request.'); }
     const frozenTargets = [...targets];
-    const targetText = JSON.stringify(frozenTargets);
-    if (Buffer.byteLength(targetText, 'utf8') > maximumPathAdmissionControlBytes) { return Promise.reject(new DataRootUnavailableError('Path admission batch exceeds its control budget.')); }
-    const args = ['-Root', root, '-TargetsJson', targetText, ...(allowMissing ? ['-AllowMissing'] : [])];
-    return this.metadata(script, args, root, timeoutMs).then(result => {
-      if (result.exitCode !== 0) { throw new DataRootUnavailableError('Physical path admission failed.'); }
-      const value = parseStrictJson(result.stdout);
-      if (!hasExactKeys(value, ['paths']) || !Array.isArray(value['paths']) || value['paths'].length !== frozenTargets.length) { throw new DataRootUnavailableError('Incomplete path admission batch.'); }
+    if (Buffer.byteLength(JSON.stringify(frozenTargets), 'utf8') > maximumPathAdmissionControlBytes) { throw new DataRootUnavailableError('Path admission batch exceeds its control budget.'); }
+    let value: JsonValue;
+    try { value = await this.native('admit', { root, targets: frozenTargets, allowMissing }, Math.min(timeoutMs, 30000)); }
+    catch (error) {
+      // A refused path is a data-root failure; a helper that could not answer is a native transport failure.
+      if (error instanceof DataRootUnavailableError) { throw error; }
+      if (error instanceof NativeOperationError && error.code === 'admissionUnavailable') { throw new DataRootUnavailableError('Physical path admission failed.', { cause: error }); }
+      throw new SupervisorError(error instanceof NativeOperationError && error.code === 'deadlineExceeded' ? 'deadline' : 'abnormal-exit',
+        'Native path admission is unavailable.', { cause: error });
+    }
+    if (!hasExactKeys(value, ['paths']) || !Array.isArray(value['paths']) || value['paths'].length !== frozenTargets.length) { throw new DataRootUnavailableError('Incomplete path admission batch.'); }
 
-      return value['paths'].map((entry, index) => parseAdmission(entry, frozenTargets[index]!, allowMissing));
-    });
+    return value['paths'].map((entry, index) => parseAdmission(entry, frozenTargets[index]!, allowMissing));
   }
 }

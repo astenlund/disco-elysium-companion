@@ -1,16 +1,18 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, maximumPathAdmissionBatchEntries, maximumPathAdmissionControlBytes, type PathAdmission, type PathInspector } from '../admission.ts';
 import { deferredCarryAuthority, hasCarryAuthority, hasSafetyRecordAuthority, type CarryReleaseStatus } from '../backend/provider-authority.ts';
 import { loadRuntimeConfig, type RuntimeConfig } from '../config.ts';
+import { resolvePrincipal } from '../core-client.ts';
 import { ControlDocumentError, requireControl } from '../control-values.ts';
 import { Deadline } from '../deadline.ts';
 import { EventReader, type EventRead } from '../event-reader.ts';
-import { isOpaqueToken, operationIdPattern } from '../identity.ts';
+import { operationIdPattern } from '../identity.ts';
 import { eventFileSequence, JournalDocumentError, parseJournalCursor, parseJournalHeader, type JournalCursor, type JournalHeader } from '../journal-records.ts';
-import { hasExactKeys, jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, utcNow, type JsonProfile, type JsonValue } from '../json.ts';
+import { jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, utcNow, type JsonProfile, type JsonValue } from '../json.ts';
+import { NativeHelper } from '../native-helper.ts';
+import { ensureNativeHelperImage } from '../native-image.ts';
 import { effectivelyUnfinished, parseOperation, pendingOperationSafety, type OperationRecord } from '../operation-records.ts';
 import type { OperationInventory } from '../operations.ts';
 import { carryReleaseState } from '../recovery-manifest.ts';
@@ -62,7 +64,6 @@ export interface StandaloneRuntimeStatus {
   readonly liveStateNotice: string;
 }
 
-const principalScript = fileURLToPath(new URL('../../scripts/Get-Principal.ps1', import.meta.url));
 const volatile = Object.freeze({ consumer: 'unavailable', freshness: 'unavailable', operational: 'unavailable', watcher: 'unavailable', provider: 'unavailable', windowRecovery: 'unavailable', capacity: 'unavailable',
   liveStateNotice: 'Consumer, freshness, operational warnings, watcher, provider, window recovery and capacity state are available only in the running chat client.' } as const);
 
@@ -290,17 +291,23 @@ export async function readAdmittedRuntimeStatus(scope: RuntimeScope, inspector: 
     agentSession: session, operations: { records: operations, unavailable }, ...volatile };
 }
 
+/**
+ * Standalone status is a read-only reader: it starts its own helper service from a verified image without any build
+ * step and never binds it, so it can never mutate. An absent or failing image refuses before scope discovery.
+ */
 export async function readRuntimeStatus(companionRoot: string): Promise<StandaloneRuntimeStatus> {
   const config = await loadRuntimeConfig(path.join(companionRoot, 'runtime', 'companion.config.json'));
-  const inspection = await createReadOnlyInspection(companionRoot);
+  const helper = await NativeHelper.start(await ensureNativeHelperImage({ build: false }));
+  try { return await readStatusWithHelper(companionRoot, config, helper); }
+  finally { await helper.close(); }
+}
+
+async function readStatusWithHelper(companionRoot: string, config: RuntimeConfig, helper: NativeHelper): Promise<StandaloneRuntimeStatus> {
+  const inspection = await createReadOnlyInspection(companionRoot, helper);
   try {
     let principal: string;
-    try {
-      const result = await inspection.inspector.metadata(principalScript, [], companionRoot);
-      const value = parseStrictJson(result.stdout);
-      if (result.exitCode !== 0 || !hasExactKeys(value, ['sid']) || !isOpaqueToken(value['sid'])) { throw new StatusIdentityError('Windows principal is unavailable.'); }
-      principal = value['sid'];
-    } catch { throw new StatusIdentityError('Windows principal is unavailable.'); }
+    try { principal = await resolvePrincipal(inspection.inspector); }
+    catch { throw new StatusIdentityError('Windows principal is unavailable.'); }
     const candidate = await discoverScope(inspection.inspector, companionRoot, config.game, principal);
     const scope = await readScope(inspection.inspector, candidate);
     if (scope !== null) { return await readAdmittedRuntimeStatus(scope, inspection.inspector, config); }

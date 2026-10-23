@@ -9,6 +9,7 @@ import type { EventDescription, EventMetadata } from '../../src/journal-records.
 import { maintainRuntimeStorage } from '../../src/resource-lifecycle/retention.ts';
 import { at, authorityModel, correctionId, generation, journal, owner, repair, stubJournalTransaction, witness } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
+import { parseStrictJson } from '../../src/json.ts';
 
 const operationPath = `operations/${owner.operationId}.json`;
 
@@ -50,7 +51,7 @@ function writableJournal(model: ReturnType<typeof completedDisclosure>, initial:
       } } as unknown as JournalTransaction;
     return action(transaction);
   }) as typeof model.kernel.journal.transact;
-  model.kernel.inspector.metadata = async () => ({ exitCode: 0, stdout: Buffer.from('{"removed":0,"remaining":0}'), stderr: Buffer.alloc(0) });
+  model.kernel.inspector.native = async () => parseStrictJson(Buffer.from('{"removed":0,"remaining":0}'));
   return () => current;
 }
 
@@ -202,7 +203,7 @@ test('an acknowledged recovery proof survives a later healthy journal replacemen
   model.memory.seed('state-safety.json', { ...safety, generation: '9'.repeat(32) });
   model.kernel.journal.read = async () => snapshot;
   stubJournalTransaction(model.kernel, snapshot);
-  model.kernel.inspector.metadata = async () => ({ exitCode: 0, stdout: Buffer.from('{"removed":0,"remaining":0}'), stderr: Buffer.alloc(0) });
+  model.kernel.inspector.native = async () => parseStrictJson(Buffer.from('{"removed":0,"remaining":0}'));
   const writes = model.memory.writes.length;
   await maintainRuntimeStorage(model.kernel);
   await maintainRuntimeStorage(model.kernel);

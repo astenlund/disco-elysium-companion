@@ -13,21 +13,21 @@ import { takeInstanceGuard } from '../src/guard.ts';
 import { Journal, JournalUnavailableError, SentMarkPublicationError, type JournalTransaction } from '../src/journal.ts';
 import { eventRewriteMetadata } from '../src/journal-records.ts';
 import { parseStrictJson, utcNow } from '../src/json.ts';
-import { ProcessSupervisor } from '../src/process.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 describe('journal durable write ordering', () => {
   it('recovers event-before-high-water without settling early and acknowledges only the accepted copy', { timeout: 360000 }, async () => {
     const fixture = await companionFixture('state-event');
     const dataRoot = path.join(fixture.root, 'runtime-data');
     await fs.mkdir(path.join(dataRoot, 'journal', 'events'), { recursive: true });
-    const supervisor = await ProcessSupervisor.create(dataRoot);
+    const supervisor = (await createTestNative(dataRoot, { companionRoot: fixture.root, dataRoot })).supervisor;
     const inspector = new PathInspector(supervisor);
-    const inspectMetadata = inspector.metadata.bind(inspector);
+    const native = inspector.native.bind(inspector);
     let eventInspections = 0;
-    inspector.metadata = async (script, ...args) => {
-      if (['Get-EventMetadata.ps1', 'Get-FileHashes.ps1'].includes(path.basename(script))) { eventInspections++; }
-      return inspectMetadata(script, ...args);
+    inspector.native = async (op, ...args) => {
+      if (op === 'eventBatch' || op === 'hash') { eventInspections++; }
+      return native(op, ...args);
     };
     const guard = await takeInstanceGuard(dataRoot, error => { throw error; });
     let refuseHeader = false;

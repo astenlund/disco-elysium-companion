@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { NativeOperationError } from './admission.ts';
 import type { Deadline } from './deadline.ts';
 import { FilePublisher, PublicationError, type PublicationOptions } from './files.ts';
 import { asInteger, hasExactKeys, isLowerHex, isObject, jsonBudgets, parseStrictJson, readBoundedFile, stringifyJson, type JsonValue } from './json.ts';
@@ -34,13 +34,11 @@ interface RedeliveryPlan { readonly candidate: ContextCandidate; readonly offset
 interface ContextReply { readonly candidates: readonly ContextCandidate[]; readonly redeliveries: ReadonlyMap<ContextCandidate, RedeliveryPlan>; readonly published: boolean; readonly cleanupComplete: boolean }
 const maximumBytes = 4194304;
 const targetName = 'prepared-context.txt';
-const script = fileURLToPath(new URL('../scripts/Invoke-ContextPreparation.ps1', import.meta.url));
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
-function reply(bytes: Uint8Array, requestSha256: string): ContextReply {
-  const value = parseStrictJson(bytes);
-  if (bytes.byteLength > 65536 || !hasExactKeys(value, ['contextResultVersion', 'requestSha256', 'published', 'cleanupComplete', 'candidates', 'redeliveryOffsets']) || asInteger(value['contextResultVersion']) !== 1
+function reply(value: JsonValue, requestSha256: string): ContextReply {
+  if (Buffer.byteLength(stringifyJson(value), 'utf8') > 65536 || !hasExactKeys(value, ['contextResultVersion', 'requestSha256', 'published', 'cleanupComplete', 'candidates', 'redeliveryOffsets']) || asInteger(value['contextResultVersion']) !== 1
     || value['requestSha256'] !== requestSha256 || typeof value['published'] !== 'boolean' || typeof value['cleanupComplete'] !== 'boolean' || !Array.isArray(value['candidates']) || value['candidates'].length > 4
     || typeof value['redeliveryOffsets'] !== 'string' || value['redeliveryOffsets'].length > 43692) {
     throw new PublicationError('Context helper response is uncorrelated.');
@@ -243,15 +241,19 @@ export class ContextPreparer {
       const handle = await fs.open(input, 'wx');
       created = true;
       try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-      try {
-        publisher.assertAvailable();
-        const timeout = deadline?.remaining() ?? 30000;
-        attempted = mode === 'Publish';
-        const result = await options.supervisor.run('publication', { command: 'pwsh', args: ['-NoProfile', '-File', script, '-Root', scope.dataRoot, '-InputFile', input, '-InputSha256', inputHash, '-Mode', mode], cwd: scope.dataRoot }, timeout);
-        if (result.exitCode === 0) { response = reply(result.stdout, inputHash); }
-      } catch (error) {
-        if (error instanceof SupervisorError && error.reason === 'termination-unverified') { ended = false; publisher.block(); throw error; }
-        if (mode === 'Preview' || !attempted) { throw error; }
+      publisher.assertAvailable();
+      const timeout = deadline?.remaining() ?? 30000;
+      attempted = mode === 'Publish';
+      const outcome = await publisher.runNativeMutation('contextPreparation', { root: scope.dataRoot, inputFile: input, inputSha256: inputHash, mode }, timeout);
+      if (!outcome.ended) {
+        ended = false;
+        publisher.block();
+        throw new SupervisorError('termination-unverified', 'Context helper termination is unverified.', { cause: outcome.failure });
+      }
+      if (outcome.result !== null) { response = reply(outcome.result, inputHash); }
+      else if (!(outcome.failure instanceof NativeOperationError && outcome.failure.code !== 'unavailable') && (mode === 'Preview' || !attempted)) {
+        // A request that failed outright leaves a preview nothing to reconcile; an error reply leaves the response empty.
+        throw outcome.failure;
       }
       if (mode === 'Publish' && expected !== null) {
         const actualPath = await options.inspector.inspect(scope.dataRoot, target, true);

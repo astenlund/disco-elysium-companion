@@ -1,10 +1,5 @@
-runtime/native/*.exe binary
 runtime/native/compiled-images.json text eol=lf
 runtime/native/helper/**/*.go text eol=lf
 runtime/native/helper/go.mod text eol=lf
 runtime/native/helper/**/testdata/** -text
-runtime/scripts/Get-BootstrapScope.ps1 text eol=crlf
 runtime/scripts/NativeFiles.cs text eol=crlf
-runtime/scripts/NativeImagePins.cs text eol=crlf
-runtime/scripts/BootstrapImagePins.ps1 text eol=crlf
-runtime/scripts/BootstrapImagePackage.ps1 text eol=crlf

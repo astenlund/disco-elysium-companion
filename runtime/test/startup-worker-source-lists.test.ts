@@ -94,45 +94,69 @@ function coreLoads(moduleText: string, readPrivate: (name: string) => string): {
   return { names, unrecognized };
 }
 
-const evidence = read(path.join(scripts, 'Get-StartupWorkerSource.ps1'));
-const workers = [
-  { script: 'StartupMetadataWorker.ps1', evidenceList: 'metadataNames', ownList: 'sourceNames' },
-  { script: 'StartupCoreReplyWorker.ps1', evidenceList: 'coreReplyNames', ownList: 'runtimeNames' },
-  { script: 'StartupMutationWorker.ps1', evidenceList: 'mutationNames', ownList: 'sourceNames' },
-] as const;
+// The core-reply source lists live in the helper's sources package, which computes the worker's expected digest.
+const goSources = read(path.join(repository, 'runtime', 'native', 'helper', 'internal', 'sources', 'sources.go'));
+function goNames(variable: string): string[] {
+  const match = new RegExp(`var ${variable} = \\[\\]string\\{([^}]*)\\}`).exec(goSources);
+  assert.ok(match !== null, `${variable} was not found in sources.go.`);
+  return [...capture(match, 1).matchAll(/"([^"]+)"/g)].map(item => capture(item, 1));
+}
+const retainedScripts = ['Read-CoreReply.ps1', 'StartupCoreReplyWorker.ps1', 'CoreReplyValidation.ps1', 'StartupWorkerProtocol.ps1'] as const;
 
-test('each startup worker hashes every installation file it loads', () => {
-  for (const worker of workers) {
-    const text = read(path.join(scripts, worker.script));
-    const hashed = arrayNames(evidence, worker.evidenceList);
-    const loads = workerLoads(text);
-    assert.deepEqual(loads.unrecognized, [], `${worker.script} has a load statement the source analysis does not cover.`);
-    assert.ok(loads.runtime.includes('StartupWorkerProtocol.ps1') && loads.runtime.includes('NativeFiles.cs'), `${worker.script} loads were not found.`);
-    assert.equal(loads.importsCore, worker.script === 'StartupCoreReplyWorker.ps1', `${worker.script} core import was misread.`);
-    assert.ok(hashed.includes(worker.script), `${worker.script} does not hash itself.`);
-    for (const name of loads.runtime) { assert.ok(hashed.includes(name), `${worker.script} loads ${name} without hashing it.`); }
-    assert.deepEqual(arrayNames(text, worker.ownList), hashed, `${worker.script} hashes a different list than the source evidence.`);
-    if (loads.importsCore) { assert.deepEqual(arrayNames(text, 'coreNames'), arrayNames(evidence, 'coreNames'), `${worker.script} hashes different core sources.`); }
-  }
+test('the core reply worker hashes every installation file it loads, in the helper source order', () => {
+  // Arrange
+  const text = read(path.join(scripts, 'StartupCoreReplyWorker.ps1'));
+  const hashed = goNames('CoreReplyRuntimeNames');
+
+  // Act
+  const loads = workerLoads(text);
+
+  // Assert
+  assert.deepEqual(loads.unrecognized, [], 'The worker has a load statement the source analysis does not cover.');
+  assert.ok(loads.runtime.includes('StartupWorkerProtocol.ps1') && loads.runtime.includes('NativeFiles.cs'), 'The worker loads were not found.');
+  assert.equal(loads.importsCore, true);
+  assert.ok(hashed.includes('StartupCoreReplyWorker.ps1'), 'The worker does not hash itself.');
+  for (const name of loads.runtime) { assert.ok(hashed.includes(name), `The worker loads ${name} without hashing it.`); }
+  assert.deepEqual(arrayNames(text, 'runtimeNames'), hashed, 'The worker hashes a different list than the helper.');
+  assert.deepEqual(arrayNames(text, 'coreNames'), goNames('CoreNames'), 'The worker hashes different core sources.');
 });
 
-test('every copy of the startup source lists matches the source evidence', () => {
-  const metadataWorker = read(path.join(scripts, 'StartupMetadataWorker.ps1'));
-  for (const name of ['coreReplyNames', 'mutationNames', 'coreNames']) { assert.deepEqual(arrayNames(metadataWorker, name), arrayNames(evidence, name), name); }
-  assert.deepEqual(arrayNames(read(path.join(scripts, 'Get-StartupMetadataSource.ps1')), 'sourceNames'), arrayNames(evidence, 'metadataNames'));
+test('every file the retained scripts and the tests load from runtime/scripts exists', () => {
+  // Arrange
+  const loaded = new Set<string>();
+  for (const script of retainedScripts) {
+    for (const name of workerLoads(read(path.join(scripts, script))).runtime) { loaded.add(name); }
+  }
+  const testRoot = path.join(repository, 'runtime', 'test');
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const location = path.join(directory, entry.name);
+      if (entry.isDirectory()) { visit(location); continue; }
+      if (!/\.(ts|ps1|mjs)$/.test(entry.name)) { continue; }
+      for (const match of read(location).matchAll(/scripts\/([A-Za-z0-9/-]+\.(?:ps1|cs|psm1))/g)) { loaded.add(capture(match, 1)); }
+    }
+  };
+  visit(testRoot);
+
+  // Act
+  const missing = [...loaded].filter(name => !fs.existsSync(path.join(scripts, name)));
+
+  // Assert
+  assert.ok(loaded.size > 0);
+  assert.deepEqual(missing, []);
 });
 
 test('the core source list is exactly what the core module loads', () => {
   const loads = coreLoads(read(path.join(core, 'DigestDiff.psm1')), name => read(path.join(core, name)));
   assert.deepEqual(loads.unrecognized, []);
-  assert.deepEqual(['DigestDiff.psm1', ...loads.names], arrayNames(evidence, 'coreNames'));
+  assert.deepEqual(['DigestDiff.psm1', ...loads.names], goNames('CoreNames'));
 });
 
 test('the source analysis catches an unhashed dot-source, type source or core import', () => {
   const coreReply = read(path.join(scripts, 'StartupCoreReplyWorker.ps1'));
   const dotSourced = coreReply.replace('. $validationPath', ". $validationPath\n        . (Join-Path $PSScriptRoot 'Extra.ps1')");
   assert.ok(workerLoads(dotSourced).runtime.includes('Extra.ps1'));
-  assert.ok(!arrayNames(evidence, 'coreReplyNames').includes('Extra.ps1'));
+  assert.ok(!goNames('CoreReplyRuntimeNames').includes('Extra.ps1'));
   const typed = coreReply.replace("$sources = @('NativeFiles.cs',", "$sources = @('Extra.cs', 'NativeFiles.cs',");
   assert.ok(workerLoads(typed).runtime.includes('Extra.cs'));
   assert.deepEqual(workerLoads(coreReply.replace('. $validationPath', '. $somewhereElse')).unrecognized, ['. $somewhereElse']);

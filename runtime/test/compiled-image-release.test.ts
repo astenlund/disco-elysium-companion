@@ -1,32 +1,61 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
-import { CompiledImageReleaseError, compiledImageGeneration, parseCompiledImageRelease,
-  readCompiledImageRelease } from '../src/compiled-image-release.ts';
+import { compiledImageGeneration as releaseGeneration, manifestFile, nativeHelperSha256 as releaseImage, parseNativeHelperRelease,
+  readNativeHelperRelease } from '../src/compiled-image-release.ts';
+import { NativeHelperUnavailableError } from '../src/native-helper-error.ts';
+import { canonicalInstallationRoot, compileHelper, helperSourcePaths, verifyHelperSources } from '../src/native-image.ts';
 
-const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const manifest = path.join(repository, 'runtime/native/compiled-images.json');
+// The reviewed pins, repeated here so a pin change is visible in review; the pin tool rewrites both copies.
+const compiledImageGeneration = '92ac8a7ffc0f38e61eb7800c1a528936d1add3a63258f173fe7943926f98b7ed';
+const nativeHelperSha256 = '0b88d88886b9615946c438906f71608798eb2638ad7567526f9a4e801cbf00ed';
 
-test('packaged Go images bind one fixed manifest generation and source list', async () => {
-  const bytes = await fs.readFile(manifest);
+const root = canonicalInstallationRoot();
+
+test('the helper release manifest binds the reviewed pins and the checkout source set', async () => {
+  // Arrange
+  const bytes = await fs.readFile(path.join(root, manifestFile));
+
+  // Act
+  const parsed = parseNativeHelperRelease(bytes);
+
+  // Assert
   assert.equal(bytes.includes(13), false);
-  const parsed = parseCompiledImageRelease(bytes);
-  assert.deepEqual(readCompiledImageRelease(), parsed);
+  assert.equal(releaseGeneration, compiledImageGeneration);
+  assert.equal(releaseImage, nativeHelperSha256);
   assert.equal(parsed.generation, compiledImageGeneration);
-  assert.equal(parsed.broker.sha256, '3159986b0ed324454000b6b1c7cd21e85d761434823f3053cfe766eea3f2659d');
-  assert.equal(parsed.observer.sha256, 'f2301be464bf0f41f1851144319a6058370a0e118bbf93d094173b71826db12d');
-  assert.equal(parsed.broker.sources.length, 5);
-  assert.equal(parsed.observer.sources.length, 1);
-  for (const image of [parsed.broker, parsed.observer]) {
-    const packaged = await fs.readFile(path.join(repository, 'runtime/native', image.file));
-    assert.equal(packaged.length, image.bytes, image.file);
-    assert.equal(createHash('sha256').update(packaged).digest('hex'), image.sha256, image.file);
-  }
-  const changed = Buffer.from(bytes);
+  assert.equal(parsed.helper.sha256, nativeHelperSha256);
+  assert.deepEqual(readNativeHelperRelease(root), parsed);
+  assert.deepEqual(parsed.helper.sources.map(source => source.path), helperSourcePaths(root));
+  verifyHelperSources(root, parsed);
+});
+
+test('a changed manifest refuses with the source-digest reason', async () => {
+  // Arrange
+  const changed = Buffer.from(await fs.readFile(path.join(root, manifestFile)));
   changed[changed.length - 1] = 32;
-  assert.throws(() => parseCompiledImageRelease(changed), CompiledImageReleaseError);
+
+  // Act
+  const attempt = () => parseNativeHelperRelease(changed);
+
+  // Assert
+  assert.throws(attempt, error => error instanceof NativeHelperUnavailableError && error.reason === 'sourceMismatch');
+});
+
+test('a build into a private .tmp location reproduces the pinned image', { timeout: 900000 }, async () => {
+  // Arrange
+  const directory = path.join(root, '.tmp', `native-reproduce-${randomBytes(16).toString('hex')}`);
+  await fs.mkdir(directory, { recursive: true });
+  try {
+    // Act
+    const output = await compileHelper(root, directory);
+    const bytes = await fs.readFile(output);
+
+    // Assert
+    assert.equal(bytes.length, parseNativeHelperRelease(await fs.readFile(path.join(root, manifestFile))).helper.bytes);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), nativeHelperSha256);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

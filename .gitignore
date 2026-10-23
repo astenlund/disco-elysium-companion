@@ -19,3 +19,6 @@ CLAUDE.local.md
 # Runtime dependencies and private identity-scoped state.
 runtime/node_modules/
 runtime-data/
+
+# Native helper image, built on first launch against pinned digests.
+runtime/native/companion-helper.exe

@@ -51,8 +51,8 @@ function model() {
   const write = memory.write.bind(memory);
   memory.write = async (...args) => { await resources.beforeWrite(args[0], args[4]); boundaries.push('write:' + resources.currentSource()?.kind + ':' + args[0]); return write(...args); };
   resources.capacity.admitted('runtimeMarker');
-  const kernel = new Kernel({ scope: memory.scope, resources, storage: memory, inspector, publisher: { idle: async () => {} },
-    supervisor: { run: forbidden, stop: async (role: string) => { boundaries.push('stop:' + role); }, verifyQuiescent: async (role: string) => { boundaries.push('quiet:' + role); } },
+  const kernel = new Kernel({ scope: memory.scope, resources, storage: memory, inspector, publisher: { idle: async () => {}, quiesce: async () => true },
+    supervisor: { nativeHelper: { close: async () => { boundaries.push('helper:close'); } }, run: forbidden, stop: async (role: string) => { boundaries.push('stop:' + role); }, verifyQuiescent: async (role: string) => { boundaries.push('quiet:' + role); } },
     guard: { held: true, release: async () => { boundaries.push('release'); } },
     config: { configVersion: 1, adapter: 'stub', game: 'stubgame', provider: { model: null, effort: null, questionOverride: null }, watcher: { enabled: false } },
     identities: { runtimeInstanceId: '5'.repeat(32), runtimeSessionId: '6'.repeat(32), adapterBindingEpoch: '7'.repeat(32) },
@@ -125,7 +125,10 @@ describe('source-bound capacity ownership', () => {
     await value.backend.shutdown(true);
     const write = value.boundaries.indexOf('write:runtimeMarker:runtime.json');
     assert.ok(write >= 0);
-    assert.ok(value.boundaries.lastIndexOf('quiet:metadata') > write && value.boundaries.lastIndexOf('quiet:publication') > write);
+    assert.ok(value.boundaries.lastIndexOf('quiet:metadata') > write && value.boundaries.lastIndexOf('quiet:startupCoreReply') > write);
+    // The helper service closes after every role is verified, and the guard is released only after its exit.
+    assert.ok(value.boundaries.indexOf('helper:close') > value.boundaries.lastIndexOf('quiet:startupCoreReply'));
+    assert.equal(value.boundaries.at(-2), 'helper:close');
     assert.equal(value.boundaries.at(-1), 'release'); assert.equal(value.resources.capacity.current.ordinary.state, 'unavailable');
   });
 });

@@ -12,6 +12,7 @@ import { assembleInstructions } from '../../src/instructions.ts';
 import { ProcessSupervisor } from '../../src/process.ts';
 import type { DialogAnswer, DialogQuestion, ProviderOutcome, ProviderSession } from '../../src/provider.ts';
 import { ToolBoundary } from '../../src/tool-boundary.ts';
+import { createTestNative } from '../support/native-helper.ts';
 
 const scriptName = path.basename(fileURLToPath(import.meta.url), '.ts');
 const repository = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -106,7 +107,7 @@ async function main(): Promise<void> {
   };
   try {
     contained(repository, scratch);
-    supervisor = await ProcessSupervisor.create(fixture);
+    supervisor = (await createTestNative(fixture)).supervisor;
     const inspector = new PathInspector(supervisor);
     await inspector.inspect(repository, scratch, true);
     await fs.mkdir(scratch, { recursive: true });

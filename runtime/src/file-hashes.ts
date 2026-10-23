@@ -1,14 +1,11 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { DataRootUnavailableError, PathInspector } from './admission.ts';
 import { Deadline } from './deadline.ts';
-import { hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, stringifyJson } from './json.ts';
+import { hasExactKeys, isLowerHex, jsonBudgets, stringifyJson, type JsonValue } from './json.ts';
 
-const script = fileURLToPath(new URL('../scripts/Get-FileHashes.ps1', import.meta.url));
 const maximumBatchPaths = 512;
-const maximumReplyBytes = 65_536;
 
 // This is read-only physical admission and complete-byte observation, not JSON authority.
 export async function readFileHashes(inspector: PathInspector, root: string, targets: readonly string[], deadline: Deadline, scopeSha256?: string): Promise<readonly (string | null)[]> {
@@ -34,11 +31,10 @@ export async function readFileHashes(inspector: PathInspector, root: string, tar
     if (batch.length === 0) { throw new DataRootUnavailableError('File observation target exceeds its control budget.'); }
     const input = Buffer.from(stringifyJson(batch), 'utf8');
     const requestSha256 = createHash('sha256').update(input).digest('hex');
-    const args = ['-Root', root, ...(scopeSha256 === undefined ? [] : ['-ScopeSha256', scopeSha256])];
-    const reply = await inspector.metadata(script, args, root, deadline.remaining(), input);
+    let response: JsonValue;
+    try { response = await inspector.native('hash', { root, inputBase64: input.toString('base64'), scopeSha256: scopeSha256 ?? null }, deadline.remaining(30000)); }
+    catch (error) { throw new DataRootUnavailableError('File observation is unavailable.', { cause: error }); }
     deadline.check();
-    if (reply.exitCode !== 0 || reply.stdout.length > maximumReplyBytes) { throw new DataRootUnavailableError('File observation is unavailable.'); }
-    const response = parseStrictJson(reply.stdout);
     if (!hasExactKeys(response, ['requestSha256', 'sha256']) || response['requestSha256'] !== requestSha256 || !Array.isArray(response['sha256']) || response['sha256'].length !== batch.length || !response['sha256'].every(hash => hash === null || isLowerHex(hash, 64))) {
       throw new DataRootUnavailableError('File observation is incomplete or uncorrelated.');
     }

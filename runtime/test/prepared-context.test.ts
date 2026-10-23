@@ -4,21 +4,22 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { PathInspector } from '../src/admission.ts';
+import { NativeOperationError, PathInspector } from '../src/admission.ts';
 import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
 import { FilePublisher, PublicationError } from '../src/files.ts';
 import { takeInstanceGuard } from '../src/guard.ts';
-import { isObject } from '../src/json.ts';
+import { isObject, parseStrictJson, stringifyJson } from '../src/json.ts';
 import { ContextPreparer } from '../src/prepared-context.ts';
-import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
 import { ScopeStorage } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 async function contextHarness(withEvent = false) {
   const fixture = await companionFixture(withEvent ? 'context-event' : 'context');
-  const supervisor = await ProcessSupervisor.create(fixture.root);
+  const native = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
+  const supervisor = native.supervisor;
   const inspector = new PathInspector(supervisor);
   const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
   const scopeSha256 = hash(await fs.readFile(path.join(fixture.root, 'scope.json')));
@@ -36,24 +37,24 @@ async function contextHarness(withEvent = false) {
       freshness: { state: 'failed', class: 'journal', reason: 'settlementPending', lastGoodGeneratedAt: null }, operational: { state: 'unknown', warnings: [] }, correction: null },
     events: [], state: null, stateWanted: true, shape: null, failedBlockBytes: null, instructionsSha256: 'a'.repeat(64), providerFingerprint: 'b'.repeat(64), disclosure: true };
   return { fixture, supervisor, inspector, guard, control, publisher, preparer, request, scope,
-    close: async () => { await publisher.idle(); await guard.release(); await fixture.close(); } };
+    close: async () => { await publisher.idle(); await native.close(); await guard.release(); await fixture.close(); } };
 }
 
 describe('prepared context ownership', () => {
   it('copies an exact native redelivery variant after a lost publication reply without changing nested payload flags', { timeout: 120000 }, async () => {
     const harness = await contextHarness(true);
-    const { fixture, supervisor, preparer, publisher, request } = harness;
+    const { fixture, preparer, publisher, request } = harness;
     try {
       const eventHash = hash(await fs.readFile(path.join(fixture.root, 'journal/events/0000000000000001.json')));
       const selected = { ...request, journalId: 'journal', events: [{ sequence: 1, sha256: eventHash, redelivery: false }], state: { sequence: 1, sha256: eventHash }, disclosure: false,
         template: { ...request.template, freshness: { state: 'fresh', class: null, reason: null, lastGoodGeneratedAt: null }, operational: { state: 'current', warnings: [] } } };
       const preview = await preparer.preview(selected);
       const candidate = preview.candidates.find(item => item.shape === 1)!;
-      const run = supervisor.run.bind(supervisor);
-      supervisor.run = async (role, options, ...rest) => {
-        const result = await run(role, options, ...rest);
-        if (role === 'publication' && options.args.includes('Publish')) { throw new SupervisorError('result-invalid', 'Fixture discarded publication response.'); }
-        return result;
+      const run = publisher.runNativeMutation.bind(publisher);
+      publisher.runNativeMutation = async (op, fields, timeout) => {
+        const outcome = await run(op, fields, timeout);
+        // The fixture discards a complete publication reply.
+        return op === 'contextPreparation' && fields['mode'] === 'Publish' ? { result: null, ended: true, failure: new NativeOperationError('unavailable') } : outcome;
       };
       const prepared = await preparer.prepare(preview, candidate);
       const copies = await preparer.copyVariantsForSend(prepared);
@@ -76,7 +77,7 @@ describe('prepared context ownership', () => {
 
   it('finishes admission alongside an actual storage write without reversing queue ownership', { timeout: 180000 }, async () => {
     const harness = await contextHarness();
-    const { publisher, supervisor, preparer, request, control, scope, guard, inspector } = harness;
+    const { publisher, preparer, request, control, scope, guard, inspector } = harness;
     const storage = new ScopeStorage({ scope, guard, inspector, publisher });
     const queued = Promise.withResolvers<void>();
     let write: Promise<string> | null = null;
@@ -102,15 +103,15 @@ describe('prepared context ownership', () => {
       assert.equal(contextOwned, false, 'Context admission must not hold the publication queue while reading storage.');
       await storage.read('agent-session.json', 'config', value => value, Deadline.after(120000));
     };
-    const run = supervisor.run.bind(supervisor);
-    supervisor.run = async (role, options, ...rest) => {
-      if (!triggered && role === 'publication' && options.args.includes('Preview')) {
+    const run = publisher.runNativeMutation.bind(publisher);
+    publisher.runNativeMutation = async (op, fields, ...rest) => {
+      if (!triggered && op === 'contextPreparation' && fields['mode'] === 'Preview') {
         triggered = true;
         write = storage.write('agent-session.json', { bindingVersion: 1 }, 'config', null, Deadline.after(120000));
         void write.catch(error => queued.reject(error));
         await queued.promise;
       }
-      return run(role, options, ...rest);
+      return run(op, fields, ...rest);
     };
     try {
       const preview = await preparer.preview(request, Deadline.after(120000));
@@ -126,14 +127,14 @@ describe('prepared context ownership', () => {
   it('retires only its own artifact when final admission fails and retains uncertain cleanup ownership', { timeout: 180000 }, async () => {
     for (const cleanupFault of [false, true]) {
       const harness = await contextHarness();
-      const { fixture, supervisor, preparer, publisher, inspector, request, control } = harness;
+      const { fixture, preparer, publisher, inspector, request, control } = harness;
       try {
         const preview = await preparer.preview(request);
-        const run = supervisor.run.bind(supervisor);
-        supervisor.run = async (role, options, ...rest) => {
-          const result = await run(role, options, ...rest);
-          if (role === 'publication' && options.args.includes('Publish')) { control.current = false; }
-          return result;
+        const run = publisher.runNativeMutation.bind(publisher);
+        publisher.runNativeMutation = async (op, fields, ...rest) => {
+          const outcome = await run(op, fields, ...rest);
+          if (op === 'contextPreparation' && fields['mode'] === 'Publish') { control.current = false; }
+          return outcome;
         };
         control.beforeAdmission = async () => {
           if (!control.current && cleanupFault) {
@@ -155,18 +156,18 @@ describe('prepared context ownership', () => {
   it('rejects malformed offset metadata and a validly framed but wrong native redelivery hash', { timeout: 180000 }, async () => {
     for (const fault of ['offset', 'hash'] as const) {
       const harness = await contextHarness();
-      const { fixture, supervisor, preparer, request, publisher } = harness;
+      const { fixture, preparer, request, publisher } = harness;
       try {
-        const run = supervisor.run.bind(supervisor);
-        supervisor.run = async (role, options, ...rest) => {
-          const result = await run(role, options, ...rest);
-          if (role === 'publication' && options.args.includes('Preview')) {
-            const response = JSON.parse(result.stdout.toString());
+        const run = publisher.runNativeMutation.bind(publisher);
+        publisher.runNativeMutation = async (op, fields, ...rest) => {
+          const outcome = await run(op, fields, ...rest);
+          if (op === 'contextPreparation' && fields['mode'] === 'Preview' && outcome.result !== null) {
+            const response = JSON.parse(stringifyJson(outcome.result));
             if (fault === 'offset') { response.redeliveryOffsets = '!!!!'; }
             else { response.candidates[0].redeliverySha256 = '0'.repeat(64); }
-            return { ...result, stdout: Buffer.from(JSON.stringify(response)) };
+            return { ...outcome, result: parseStrictJson(Buffer.from(JSON.stringify(response))) };
           }
-          return result;
+          return outcome;
         };
         if (fault === 'offset') {
           await assert.rejects(preparer.preview(request), /redelivery offsets are invalid/);
@@ -185,7 +186,7 @@ describe('prepared context ownership', () => {
 
   it('publishes exact preview bytes, rechecks send authority and retires one-use artifacts', { timeout: 120000 }, async () => {
     const harness = await contextHarness();
-    const { fixture, supervisor, publisher, preparer, request, control } = harness;
+    const { fixture, publisher, preparer, request, control } = harness;
     try {
       let clock = 0;
       const expired = Deadline.after(1, () => clock);
@@ -226,11 +227,11 @@ describe('prepared context ownership', () => {
       await fs.writeFile(safetyPath, safetyBytes);
 
       const lostReplyPreview = await preparer.preview(request);
-      const run = supervisor.run.bind(supervisor);
-      supervisor.run = async (role, options, timeout, input) => {
-        const result = await run(role, options, timeout, input);
-        if (role === 'publication' && options.args.includes('Publish')) { throw new SupervisorError('result-invalid', 'Fixture discarded the context reply.'); }
-        return result;
+      const run = publisher.runNativeMutation.bind(publisher);
+      publisher.runNativeMutation = async (op, fields, timeout) => {
+        const outcome = await run(op, fields, timeout);
+        // The fixture discards the complete context reply.
+        return op === 'contextPreparation' && fields['mode'] === 'Publish' ? { result: null, ended: true, failure: new NativeOperationError('unavailable') } : outcome;
       };
       const recovered = await preparer.prepare(lostReplyPreview, lostReplyPreview.candidates[0]!);
       assert.equal(recovered.cleanupComplete, false);
@@ -244,19 +245,20 @@ describe('prepared context ownership', () => {
   it('retains ownership on unknown termination and distinguishes unreadable postconditions from incomplete cleanup', { timeout: 180000 }, async () => {
     for (const fault of ['termination', 'postcondition', 'cleanup'] as const) {
       const harness = await contextHarness();
-      const { fixture, supervisor, inspector, publisher, preparer, request, control } = harness;
+      const { fixture, inspector, publisher, preparer, request, control } = harness;
       try {
         const preview = await preparer.preview(request);
-        const run = supervisor.run.bind(supervisor);
+        const run = publisher.runNativeMutation.bind(publisher);
         let published = false;
-        supervisor.run = async (role, options, timeout, input) => {
-          if (role === 'publication' && options.args.includes('Publish') && fault === 'termination') {
-            // The injected transport result carries no verified termination evidence.
-            throw new SupervisorError('termination-unverified', 'Fixture lost termination evidence.');
+        publisher.runNativeMutation = async (op, fields, timeout) => {
+          const publishing = op === 'contextPreparation' && fields['mode'] === 'Publish';
+          if (publishing && fault === 'termination') {
+            // The injected outcome carries no observed service exit.
+            return { result: null, ended: false, failure: new NativeOperationError('unavailable') };
           }
-          const result = await run(role, options, timeout, input);
-          if (role === 'publication' && options.args.includes('Publish')) { published = true; }
-          return result;
+          const outcome = await run(op, fields, timeout);
+          if (publishing) { published = true; }
+          return outcome;
         };
         const inspect = inspector.inspect.bind(inspector);
         inspector.inspect = async (root, target, ...args) => {
@@ -269,11 +271,14 @@ describe('prepared context ownership', () => {
           const prepared = await preparer.prepare(preview, preview.candidates[0]!);
           assert.equal(prepared.cleanupComplete, false);
           assert.equal(hash(Buffer.from(await preparer.copyForSend(prepared))), prepared.candidate.sha256);
-          assert.equal(control.invalidated.length, 0);
+          // Incomplete cleanup blocks the publisher, which invalidates the data root; the published target stays valid.
+          assert.deepEqual(new Set(control.invalidated), new Set([fixture.root]));
         } else {
           await assert.rejects(preparer.prepare(preview, preview.candidates[0]!));
           assert.equal(preparer.current, null);
-          assert.deepEqual(control.invalidated, [path.join(fixture.root, 'prepared-context.txt')]);
+          // The attempted target is invalidated, and blocking the publisher invalidates the whole data root.
+          assert.ok(control.invalidated.includes(path.join(fixture.root, 'prepared-context.txt')));
+          assert.deepEqual(new Set(control.invalidated), new Set([fixture.root, path.join(fixture.root, 'prepared-context.txt')]));
         }
         assert.equal(publisher.blocked, true);
         await assert.rejects(preparer.preview(request), PublicationError);

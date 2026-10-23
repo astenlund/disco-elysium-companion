@@ -9,12 +9,14 @@ import { parseJournalCursor, parseJournalHeader } from '../../src/journal-record
 import { parseOperation } from '../../src/operation-records.ts';
 import { activeRecoveryOwner } from '../../src/recovery-progress.ts';
 import { parseStateSafety } from '../../src/safety-records.ts';
+import { parseSessionBinding } from '../../src/session-records.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { bytesHash } from '../../src/storage.ts';
 import type { StartupPhase } from '../../src/startup-progress.ts';
 import { CrashFixture, readDocument } from '../backend-crash/support.ts';
 import { FakeProvider, instructionHash } from './support.ts';
+import { testHelperImage } from '../support/native-helper.ts';
 
 test('first owner resumes a witnessed lostJournal repair before provider input and discharges it on acknowledgement', { timeout: 5400000 }, async () => {
   const fixture = await CrashFixture.create('first-owner-recovery', ['lostJournalPrepared'], ['lostJournalPrepared'], 'runtime');
@@ -49,7 +51,7 @@ test('first owner resumes a witnessed lostJournal repair before provider input a
     assert.equal((await readDocument<{ owner: string }>(path.join(fixture.fixture.root, 'state', 'consumer.json'))).owner, 'runtime');
     await assert.rejects(fs.access(path.join(dataRoot, 'agent-session.json')), { code: 'ENOENT' });
 
-    backend = await openBackend({ companionRoot: fixture.fixture.root });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.fixture.root });
     const blockedProvider = new FakeProvider();
     host = new SessionHost({ backend, provider: blockedProvider, instructionsSha256: instructionHash,
       providerTerminated: async () => backend!.supervisor.verifyQuiescent('provider'),
@@ -60,7 +62,7 @@ test('first owner resumes a witnessed lostJournal repair before provider input a
     assert.deepEqual(blockedProvider.sessions, []);
     await host.shutdown(); host = null; backend = null;
 
-    backend = await openBackend({ companionRoot: fixture.fixture.root, onStartupPhase: phase => recoveryPhases.push(phase) });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.fixture.root, onStartupPhase: phase => recoveryPhases.push(phase) });
     const repaired = await backend.startup({ kind: 'repair' });
     assert.equal(repaired.notOwner, false);
     assert.ok(recoveryPhases.includes('streamRecovery'));
@@ -82,7 +84,7 @@ test('first owner resumes a witnessed lostJournal repair before provider input a
     assert.equal((await fs.readdir(path.join(dataRoot, 'operations'))).filter(name => name.startsWith('jr-')).length, 1);
     await backend.shutdown(true); backend = null;
 
-    backend = await openBackend({ companionRoot: fixture.fixture.root });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.fixture.root });
     assert.equal((await backend.startup({ kind: 'chat' })).notOwner, false);
     const provider = new FakeProvider();
     let deliveredResync = false;
@@ -109,17 +111,16 @@ test('first owner resumes a witnessed lostJournal repair before provider input a
     assert.equal((await completed).type, 'turn.completed');
     assert.equal(deliveredResync, true);
     await host.shutdown(); host = null;
+    // Shutdown finalizes the acknowledgement and closes the helper service, so the durable binding is read from its file.
+    const binding = parseSessionBinding(await readDocument(path.join(dataRoot, 'agent-session.json')));
     const cursor = parseJournalCursor(await readDocument(path.join(dataRoot, 'journal', 'cursor-agent-session.json')));
     assert.ok(cursor.lastAckedSequence >= checkpoint.sequence);
     assert.equal((parseStateSafety(await readDocument(safetyPath), scopeHash)).recoveryWitness, null);
-    const binding = await backend.sessions.readBinding();
-    assert.equal(binding.status, 'valid');
-    if (binding.status !== 'valid') { assert.fail('The accepted turn has no durable binding.'); }
-    assert.equal(binding.value.turnsCompleted, 1);
-    const sessionId = binding.value.providerSessionId;
+    assert.equal(binding.turnsCompleted, 1);
+    const sessionId = binding.providerSessionId;
     backend = null;
 
-    backend = await openBackend({ companionRoot: fixture.fixture.root });
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.fixture.root });
     assert.equal((await backend.startup({ kind: 'chat' })).notOwner, false);
     const resumedProvider = new FakeProvider();
     host = new SessionHost({ backend, provider: resumedProvider, instructionsSha256: instructionHash,

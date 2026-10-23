@@ -12,6 +12,7 @@ import { assembleInstructions } from '../../src/instructions.ts';
 import { ProcessSupervisor } from '../../src/process.ts';
 import type { ProviderOutcome, ProviderSession } from '../../src/provider.ts';
 import { companionFixture, type CompanionFixture } from '../support/companion.ts';
+import { createTestNative } from '../support/native-helper.ts';
 
 const scriptName = path.basename(fileURLToPath(import.meta.url), '.ts');
 const repository = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
   try {
     fixture = await companionFixture('empty');
     observation.fixture = fixture.root;
-    supervisor = await ProcessSupervisor.create(fixture.root);
+    supervisor = (await createTestNative(fixture.root)).supervisor;
     const inspector = new PathInspector(supervisor);
     await inspector.inspect(repository, resultsDirectory, true);
     await fs.mkdir(resultsDirectory, { recursive: true });

@@ -18,6 +18,7 @@ import { bytesHash, ScopeStorage, StorageConflictError } from '../src/storage.ts
 import { repair } from './backend/authority-fixtures.ts';
 import { companionFixture } from './support/companion.ts';
 import { journalEvent } from './support/journal-event.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 const root = 'C:/unopened-admission-fixture';
 const scopePath = path.resolve(root, 'scope.json');
@@ -258,7 +259,7 @@ test('production resource callbacks share native staging admission and retain sc
   const binding = path.join(dataRoot, 'scope.json');
   const bindingBytes = Buffer.from('{}');
   await fs.writeFile(binding, bindingBytes);
-  const supervisor = await ProcessSupervisor.create(fixture.root);
+  const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot })).supervisor;
   const inspector = new PathInspector(supervisor);
   const guard = await takeInstanceGuard(dataRoot, error => { throw error; });
   const scope = { dataRoot, companionRoot: fixture.root, bindingSha256: bytesHash(bindingBytes) } as RuntimeScope;

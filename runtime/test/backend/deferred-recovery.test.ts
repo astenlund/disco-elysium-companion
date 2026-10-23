@@ -8,6 +8,7 @@ import { carryReleaseResolved, type RecoveryAction } from '../../src/recovery-ma
 import { validateOperationTransition } from '../../src/operations.ts';
 import type { StateSafety } from '../../src/safety-records.ts';
 import { bytesHash } from '../../src/storage.ts';
+import { NativeOperationError } from '../../src/admission.ts';
 import { stringifyJson } from '../../src/json.ts';
 import type { OutboxRead } from '../../src/outbox.ts';
 import { journalEvent } from '../support/journal-event.ts';
@@ -221,10 +222,10 @@ describe('deferred carry execution', () => {
     model.kernel.carryHash = async () => null;
     model.kernel.journal.read = async () => { throw new Error('Journal queue reentry.'); };
     let inspections = 0;
-    model.kernel.inspector.metadata = async script => {
-      assert.ok(script.endsWith('Get-EventMetadata.ps1'));
+    model.kernel.inspector.native = async op => {
+      assert.ok(op === 'eventMetadata' || op === 'eventBatch');
       inspections++;
-      return { exitCode: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('Source inspection unavailable.') };
+      throw new NativeOperationError('inspectionUnavailable');
     };
     new RecoveryCoordinator(model.kernel);
     await assert.rejects(model.kernel.authorizeDeferredCore!(record), /Event inspection is unavailable/);

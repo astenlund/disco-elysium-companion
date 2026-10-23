@@ -62,6 +62,14 @@ export class FileToolAdapter {
 
   async close(): Promise<void> {
     await this.verifyQuiescent();
+    await this.release();
+  }
+
+  /**
+   * Releases the namespace without another proof. Graceful shutdown calls it last, after the host verified tool quiescence
+   * and the backend proved every role quiescent and observed the helper service's exit, so no helper remains to repeat it.
+   */
+  async release(): Promise<void> {
     this.operations.namespaceLost();
     await this.namespace?.release();
   }

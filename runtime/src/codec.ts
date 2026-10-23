@@ -1,9 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import type { PathAdmission } from './admission.ts';
+import { NativeOperationError, type PathAdmission } from './admission.ts';
 import { Deadline } from './deadline.ts';
 import { admitStagingPaths, FilePublisher, PublicationError, type AdmitPublicationScope } from './files.ts';
 import { asInteger, hasExactKeys, isLowerHex, isObject, jsonBudgets, parseStrictJson, readBoundedFile, stringifyJson, type JsonValue } from './json.ts';
@@ -41,11 +40,9 @@ interface CodecRequest {
 }
 
 interface CodecReply { readonly sha256: string; readonly published: boolean; readonly cleanupComplete: boolean; readonly metadata: JsonObject }
-const script = fileURLToPath(new URL('../scripts/Invoke-PayloadCodec.ps1', import.meta.url));
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
-function parseReply(bytes: Buffer): CodecReply {
-  const value = parseStrictJson(bytes);
+function parseReply(value: JsonValue): CodecReply {
   if (!hasExactKeys(value, ['codecVersion', 'sha256', 'published', 'cleanupComplete', 'metadata']) || asInteger(value['codecVersion']) !== 1 || !isLowerHex(value['sha256'], 64)
     || typeof value['published'] !== 'boolean' || typeof value['cleanupComplete'] !== 'boolean' || !isObject(value['metadata'])) {
     throw new SupervisorError('result-invalid', 'Codec returned malformed control metadata.');
@@ -175,21 +172,18 @@ export class PayloadCodec {
           try { await handle.writeFile(item.bytes); await handle.sync(); }
           finally { await handle.close(); }
         }
-        const args = ['-NoProfile', '-File', script, '-Root', options.root, '-Target', target, '-InputFile', input, '-InputSha256', sourceHash, '-ControlFile', controlFile, '-ControlSha256', controlHash, ...(preview ? ['-Preview'] : [])];
+        const fields = { root: options.root, target, inputFile: input, inputSha256: sourceHash, controlFile, controlSha256: controlHash, preview };
         const invoke = async (verifyOnly: boolean): Promise<CodecReply> => {
           const timeout = remaining();
           if (mutation && !verifyOnly) { publicationAttempted = true; }
-          try {
-            const result = await this.publisher.runNativePublication({ command: 'pwsh', args: [...args, ...(verifyOnly ? ['-VerifyOnly'] : [])], cwd: options.root }, timeout);
-            if (result.exitCode !== 0) {
-              if (result.stderr.toString('utf8').trim() === 'Invoke-PayloadCodec: document-invalid') { throw new CodecDocumentError('Codec rejected an invalid document.'); }
-              throw new SupervisorError('result-invalid', 'Codec helper could not complete.');
-            }
-            return parseReply(result.stdout);
-          } catch (error) {
-            if (error instanceof SupervisorError && error.reason === 'termination-unverified') { helperEnded = false; this.publisher.block(); }
-            throw error;
+          const outcome = await this.publisher.runNativeMutation('codec', { ...fields, verifyOnly }, timeout);
+          if (!outcome.ended) { helperEnded = false; this.publisher.block(); }
+          if (outcome.result === null) {
+            const code = outcome.failure instanceof NativeOperationError ? outcome.failure.code : null;
+            if (code === 'documentInvalid') { throw new CodecDocumentError('Codec rejected an invalid document.'); }
+            throw new SupervisorError(helperEnded ? 'result-invalid' : 'termination-unverified', 'Codec helper could not complete.', { cause: outcome.failure });
           }
+          return parseReply(outcome.result);
         };
         try { reply = await invoke(false); }
         catch (error) {

@@ -13,13 +13,14 @@ import { activeRecoveryOwner } from '../../src/recovery-progress.ts';
 import { parseStateSafety, type StateSafety } from '../../src/safety-records.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { crashExit, publicationExit, privateFixture, sourceManifest, type ChildProof, type RecoveryCut, type ReleaseCut } from './support.ts';
+import { testHelperImage } from '../support/native-helper.ts';
 
 const root = privateFixture(process.argv[2] ?? '');
 const mode = process.argv[3] ?? '';
 const boundary = process.argv[4] ?? '';
 const manifest = await sourceManifest();
 const diagnostics: string[] = [];
-const backend = await openBackend({ companionRoot: root, onDiagnostic: (phase, error) => { diagnostics.push(`${phase}: ${error instanceof Error ? error.message : String(error)}`); } });
+const backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: root, onDiagnostic: (phase, error) => { diagnostics.push(`${phase}: ${error instanceof Error ? error.message : String(error)}`); } });
 const k = (backend as unknown as { readonly kernel: Kernel }).kernel;
 const run = backend.supervisor.run.bind(backend.supervisor);
 const processHistory: Record<string, unknown>[] = [];

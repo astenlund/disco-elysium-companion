@@ -1,67 +1,41 @@
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 
-import { scopedPowerShellBrokerLaunch, scopedPowerShellBrokerSpawn, withoutHome } from '../src/compiled-broker.ts';
-import { dotnetFirstRunOptOuts } from '../src/dotnet-environment.ts';
+import { withoutHome } from '../src/native-helper.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
+import { createTestNative } from './support/native-helper.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixture = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
-const create = (): Promise<ProcessSupervisor> => ProcessSupervisor.create(path.join(root, '.tmp', `process-${randomUUID()}`));
+const create = async (): Promise<ProcessSupervisor> => (await createTestNative(path.join(root, '.tmp', `process-${randomUUID()}`))).supervisor;
 const options = (mode: string, ...args: string[]) => ({ command: process.execPath, args: [fixture, mode, ...args], cwd: root });
-const execFileAsync = promisify(execFile);
 
 describe('owned process transport', () => {
-  it('redirects helper writable locations while preserving the provider environment', { timeout: 30000 }, async () => {
-    const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'helper-environment-'));
-    const providerProfile = path.join(scratch, 'provider');
-    await fs.mkdir(providerProfile);
-    const inherited = withoutHome(process.env);
-    const helperEnvironment = { ...inherited, TEMP: scratch, TMP: scratch, TMPDIR: scratch,
-      APPDATA: scratch, LOCALAPPDATA: scratch, USERPROFILE: scratch, DOTNET_CLI_HOME: scratch, ...dotnetFirstRunOptOuts };
-    const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), undefined, undefined, helperEnvironment);
+  it('gives every child its own supplied environment through the control frame', { timeout: 30000 }, async () => {
+    // Arrange
+    const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'child-environment-'));
+    const profile = path.join(scratch, 'profile');
+    await fs.mkdir(profile);
+    const supervisor = (await createTestNative(path.join(scratch, 'scope'))).supervisor;
+    const supplied = { ...withoutHome(process.env), TEMP: profile, TMP: profile, TMPDIR: profile,
+      APPDATA: profile, LOCALAPPDATA: profile, USERPROFILE: profile, HOME: profile };
     try {
-      const supplied = { ...inherited, TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
-        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile, HOME: providerProfile,
-        DOTNET_CLI_HOME: providerProfile, ...dotnetFirstRunOptOuts };
-      const helper = await supervisor.run('metadata', { ...options('environment'), env: supplied }, 15000);
-      assert.deepEqual(JSON.parse(helper.stdout.toString('utf8')), { TEMP: scratch, APPDATA: scratch, HOME: null });
+      // Act
+      const metadata = await supervisor.run('metadata', { ...options('environment'), env: supplied }, 15000);
       const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 15000);
-      assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')),
-        { TEMP: providerProfile, APPDATA: providerProfile, HOME: providerProfile });
-      await supervisor.verifyQuiescentMany(['metadata', 'provider']);
-    } finally {
-      assert.equal(path.relative(root, scratch).startsWith('..'), false);
-      await fs.rm(scratch, { recursive: true, force: true });
-    }
-  });
 
-  it('launches the scoped PowerShell broker with its scratch profile while the provider child keeps its own', { timeout: 60000 }, async () => {
-    const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'scoped-broker-'));
-    const brokerScratch = path.join(scratch, 'broker');
-    const providerProfile = path.join(scratch, 'provider');
-    await fs.mkdir(brokerScratch);
-    await fs.mkdir(providerProfile);
-    const supervisor = await ProcessSupervisor.create(path.join(scratch, 'scope'), scopedPowerShellBrokerSpawn(brokerScratch));
-    try {
-      const supplied = { ...withoutHome(process.env), TEMP: providerProfile, TMP: providerProfile, TMPDIR: providerProfile,
-        APPDATA: providerProfile, LOCALAPPDATA: providerProfile, USERPROFILE: providerProfile, HOME: providerProfile };
-      const provider = await supervisor.run('provider', { ...options('environment'), env: supplied }, 30000);
-      assert.deepEqual(JSON.parse(provider.stdout.toString('utf8')), { TEMP: providerProfile, APPDATA: providerProfile, HOME: providerProfile });
-      await supervisor.verifyQuiescentMany(['provider']);
-      // The broker itself runs in its scratch profile with version-2 control, so its PowerShell writes stay there.
-      const launch = scopedPowerShellBrokerLaunch({ ...options('environment'), env: supplied }, brokerScratch);
-      assert.equal(launch.args.at(-1), '-ChildEnvironment');
-      for (const name of ['TEMP', 'TMP', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'DOTNET_CLI_HOME']) { assert.equal(launch.env[name], brokerScratch, name); }
-      assert.equal(scopedPowerShellBrokerSpawn(brokerScratch).controlVersion, 2);
+      // Assert
+      for (const result of [metadata, provider]) {
+        assert.deepEqual(JSON.parse(result.stdout.toString('utf8')), { TEMP: profile, APPDATA: profile, HOME: profile });
+      }
+      await supervisor.verifyQuiescentMany(['metadata', 'provider']);
     } finally {
       assert.equal(path.relative(root, scratch).startsWith('..'), false);
       await fs.rm(scratch, { recursive: true, force: true });
@@ -76,11 +50,10 @@ describe('owned process transport', () => {
     try {
       const identity = await child.ready;
       await supervisor.verifyOwnedLive('provider', child, identity);
-      const script = fileURLToPath(new URL('../scripts/Get-OwnedProcessLive.ps1', import.meta.url));
       const observe = async (jobName: string, created: string): Promise<unknown> => {
-        const reply = await execFileAsync('pwsh', ['-NoProfile', '-File', script, '-JobName', jobName, '-ProcessId', String(identity.pid), '-ProcessCreated', created],
-          { timeout: 5000, windowsHide: true });
-        return JSON.parse(reply.stdout);
+        const reply = await supervisor.nativeHelper.request('ownedProcessLive', { jobName, pid: identity.pid, created }, 5000);
+        assert.equal(reply.status, 'ok');
+        return reply.status === 'ok' ? JSON.parse(JSON.stringify(reply.result)) : null;
       };
       assert.deepEqual(await observe(otherScope.jobName('provider'), identity.created), { live: false });
       assert.deepEqual(await observe(supervisor.jobName('provider'), String(BigInt(identity.created) + 1n)), { live: false });
@@ -176,6 +149,31 @@ describe('owned process transport', () => {
     } finally { if (!child.brokerClosed) { child.kill(); } await child.terminated; }
   });
 
+  it('kills the whole child tree through its kill-on-close job when the broker dies', { timeout: 30000 }, async () => {
+    // Arrange: a child that starts a descendant of its own.
+    const supervisor = await create();
+    const child = supervisor.spawn('provider', options('wait-tree'));
+    child.stderr.resume();
+    child.stdin.end();
+    let output = '';
+    child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+    await child.ready;
+    const deadline = performance.now() + 15000;
+    while (!/^[0-9]+$/.test(output) && performance.now() < deadline) { await new Promise(resolve => { setTimeout(resolve, 20); }); }
+    const descendant = Number(output);
+    assert.ok(descendant > 0);
+
+    // Act: terminate the broker process alone.
+    assert.equal(child.kill(), true);
+    await child.terminated;
+
+    // Assert: the job took the child and its descendant with it, and the role is launchable again.
+    assert.throws(() => process.kill(descendant, 0), (error: NodeJS.ErrnoException) => error.code === 'ESRCH');
+    await supervisor.verifyQuiescent('provider');
+    const next = await supervisor.run('provider', options('arguments', 'after-broker-death'), 15000);
+    assert.equal(next.stdout.toString(), '["after-broker-death"]');
+  });
+
   it('can stop before readiness without releasing an unverifiable owner', { timeout: 30000 }, async () => {
     const supervisor = await create();
     const child = supervisor.spawn('core', options('wait'));
@@ -222,7 +220,7 @@ describe('owned process transport', () => {
       assert.ok(report.identity.pid > 0);
       owner.stdin.end();
       await closed;
-      const replacement = await ProcessSupervisor.create(candidate);
+      const replacement = (await createTestNative(candidate)).supervisor;
       assert.equal(replacement.jobName('watcher'), report.job);
       await replacement.verifyQuiescent('watcher');
       const result = await replacement.run('watcher', options('arguments', 'replacement'), 15000);

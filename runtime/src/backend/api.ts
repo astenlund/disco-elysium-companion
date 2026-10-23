@@ -1,3 +1,5 @@
+import type { ServiceSpawn } from '../native-helper.ts';
+import type { HelperImage } from '../native-image.ts';
 import type { RuntimeConfig } from '../config.ts';
 import type { CapacityStatus } from '../capacity.ts';
 import type { ConsumerReceipt, CoreResult } from '../core-client.ts';
@@ -75,7 +77,12 @@ export interface CapacityRewindResult {
 export interface BackendStartup { readonly notOwner: boolean; readonly consumerResult: CoreResult<ConsumerReceipt> | null; readonly requiredWorkCompleted: boolean; readonly capacityRewind: CapacityRewindResult | null }
 export interface BackendOptions {
   readonly companionRoot: string;
-  readonly startupMetadata?: boolean;
+  /** Opens the warm core reply worker beside marker publication; chat sets it. */
+  readonly startupCoreReply?: boolean;
+  /** The helper image the build step verified; without it the backend checks the image without building. */
+  readonly nativeImage?: HelperImage;
+  /** @internal Tests only: starts each helper service process, so a test can stand between the runtime and the service. */
+  readonly nativeLauncher?: ServiceSpawn;
   readonly onStatus?: (status: BackendStatus) => void;
   readonly onInvalidated?: (reason: CorrectionReason) => void;
   readonly onDiagnostic?: (phase: string, error: unknown) => void;
@@ -103,7 +110,6 @@ export interface RuntimeBackend {
   markSent(handle: DeliveryHandle): Promise<boolean>;
   acknowledge(handle: DeliveryHandle, binding: AgentSessionBinding, provider: ProviderIdentity, options: AcknowledgementOptions): Promise<BoundSession | null>;
   beginShutdown(): Promise<void>;
-  closeStartupMetadata(): Promise<void>;
   closeStartupWorkers(): Promise<void>;
   shutdown(providerAndToolsQuiescent: boolean): Promise<void>;
 }

@@ -1,28 +1,24 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough, type Writable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 
-import { admitPrivateDirectory, pinPrivateFile, readPinnedPrivateFile, verifyPinnedPrivateFile, withoutHome, type PinnedFile } from './compiled-broker.ts';
-import { compiledImageGeneration, parseCompiledImageRelease } from './compiled-image-release.ts';
-import { normalizedGoSourceHash } from './go-source.ts';
 import { guardScopeToken } from './guard.ts';
-import { asInteger, hasExactKeys, jsonBudgets, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
+import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
+import { withoutHome, type NativeHelper } from './native-helper.ts';
 
-export const processRoles = ['core', 'publication', 'provider', 'watcher', 'metadata', 'startupMetadata', 'startupCoreReply', 'startupMutation'] as const;
+/** Roles the supervisor launches through a broker. */
+export const processRoles = ['core', 'provider', 'watcher', 'metadata', 'startupCoreReply'] as const;
 export type ProcessRole = typeof processRoles[number];
-/** Answers warm job observations; resolving null asks the supervisor for a fresh one-shot observation instead. */
-export type StartupJobObserver = (names: readonly string[], timeoutMs: number) => Promise<readonly boolean[] | null>;
-// Roles whose requests run inside the PathInspector queue are always observed one-shot: their stop proofs can be awaited
-// from within that queue, where a warm observation would wait behind its own caller.
-const inspectorQueueRoles: readonly ProcessRole[] = ['startupMetadata', 'metadata', 'startupCoreReply'];
+/** Job names that no longer launch but still take part in predecessor proof. */
+export const retiredJobRoles = ['publication', 'startupMetadata', 'startupMutation'] as const;
+export type RetiredJobRole = typeof retiredJobRoles[number];
+export type JobRole = ProcessRole | RetiredJobRole | 'helper';
 export type SupervisorReason = 'deadline' | 'capture-overflow' | 'abnormal-exit' | 'result-invalid' | 'termination-unverified';
 export class SupervisorError extends Error {
   override readonly name = 'SupervisorError';
   readonly reason: SupervisorReason;
-  constructor(reason: SupervisorReason, message: string) { super(message); this.reason = reason; }
+  constructor(reason: SupervisorReason, message: string, options?: ErrorOptions) { super(message, options); this.reason = reason; }
 }
 export interface ProcessIdentity { readonly pid: number; readonly created: string }
 export interface OwnedSpawnOptions {
@@ -34,25 +30,14 @@ export interface OwnedSpawnOptions {
 }
 export interface OwnedExit { readonly code: number | null; readonly signal: NodeJS.Signals | null; readonly failure: Error | null }
 export interface CommandResult { readonly exitCode: number; readonly stdout: Buffer; readonly stderr: Buffer }
-export type BrokerSpawn = ((options: OwnedSpawnOptions) => ChildProcessWithoutNullStreams) & { readonly controlVersion?: 2 };
-export interface PrivateNativeStartupJobs {
-  readonly binary: string;
-  readonly source: string;
-  readonly manifest: string;
-  readonly scratch: string;
-  readonly binarySha256: string;
-  readonly sourceSha256: string;
-  readonly manifestSha256: string;
-  readonly releaseGeneration?: string;
-  readonly onObservation?: (roles: readonly ProcessRole[], elapsedMs: number, outcome: 'ok' | 'failed') => void;
-}
+export type BrokerSpawn = (options: OwnedSpawnOptions) => ChildProcessWithoutNullStreams;
 
-const scripts = fileURLToPath(new URL('../scripts/', import.meta.url));
 const creationToken = /^[1-9][0-9]{0,18}$/;
+/** A present retired name, or a helper job before binding, may still be ending: it gets this bounded absence poll. */
+const predecessorPollMs = 5000;
 const wait = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
-const spawnBroker: BrokerSpawn = options => spawn('pwsh', ['-NoProfile', '-File', path.join(scripts, 'Invoke-OwnedProcess.ps1')], { cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
-/** @internal Freeze the v2 child environment before the private broker changes its own profile. */
+/** @internal Freeze the child environment that the broker's control frame carries. */
 export function childEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
   const selected: Record<string, string> = Object.create(null) as Record<string, string>;
   const folded = new Set<string>();
@@ -69,22 +54,32 @@ export function childEnvironment(source: NodeJS.ProcessEnv): Record<string, stri
   return selected;
 }
 
-// These bootstrap scripts inspect metadata only and never start another process or write a file.
-function inspectNative(script: 'Get-ProcessIdentity.ps1' | 'Get-OwnedJobState.ps1' | 'Get-OwnedJobStates.ps1' | 'Get-OwnedProcessLive.ps1',
-  args: readonly string[], timeoutMs = 5000, environment?: NodeJS.ProcessEnv): Promise<ReturnType<typeof parseStrictJson>> {
-  return new Promise((resolve, reject) => {
-    execFile('pwsh', ['-NoProfile', '-File', path.join(scripts, script), ...args],
-      { windowsHide: true, timeout: timeoutMs, maxBuffer: 65_536, encoding: 'buffer', env: environment }, (error, stdout) => {
-      if (error !== null) { reject(new SupervisorError('termination-unverified', 'Native process metadata is unavailable.')); return; }
-      try { resolve(parseStrictJson(stdout)); }
-      catch { reject(new SupervisorError('result-invalid', 'Native process metadata is invalid.')); }
-    });
-  });
+/**
+ * Launches the Go broker from the helper image, with the child's environment minus HOME; the child itself receives its
+ * environment through the control frame. A launch the helper cannot attest is refused before any process is created.
+ */
+export function helperBrokerSpawn(helper: Pick<NativeHelper, 'brokerImage'>): BrokerSpawn {
+  return options => {
+    let image: string;
+    try { image = helper.brokerImage(); }
+    catch (error) { throw new SupervisorError('termination-unverified', 'No verified native helper attests the broker image.', { cause: error }); }
+    return spawn(image, ['broker'], { cwd: options.cwd, env: withoutHome(options.env ?? process.env), shell: false, windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'] });
+  };
 }
 
-export async function readProcessIdentity(pid: number, environment?: NodeJS.ProcessEnv): Promise<ProcessIdentity | null> {
+async function helperResult(helper: Pick<NativeHelper, 'request'>, op: 'processIdentity' | 'jobStates' | 'ownedProcessLive',
+  fields: Record<string, unknown>, timeoutMs: number): Promise<JsonValue> {
+  let reply;
+  try { reply = await helper.request(op, fields, timeoutMs); }
+  catch (error) { throw new SupervisorError('termination-unverified', 'Native process metadata is unavailable.', { cause: error }); }
+  if (reply.status !== 'ok') { throw new SupervisorError('termination-unverified', 'Native process metadata is unavailable.'); }
+  return reply.result;
+}
+
+export async function readProcessIdentity(helper: Pick<NativeHelper, 'request'>, pid: number): Promise<ProcessIdentity | null> {
   if (!Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647) { throw new SupervisorError('result-invalid', 'Invalid process identifier.'); }
-  const value = await inspectNative('Get-ProcessIdentity.ps1', ['-ProcessId', String(pid)], 5000, environment);
+  const value = await helperResult(helper, 'processIdentity', { pid }, 5000);
   if (!hasExactKeys(value, ['exists', 'pid', 'created']) || asInteger(value['pid']) !== pid || typeof value['exists'] !== 'boolean') {
     throw new SupervisorError('result-invalid', 'Invalid process identity response.');
   }
@@ -93,112 +88,22 @@ export async function readProcessIdentity(pid: number, environment?: NodeJS.Proc
   throw new SupervisorError('result-invalid', 'Invalid process creation identity.');
 }
 
-async function jobAbsent(name: string, timeoutMs: number, environment?: NodeJS.ProcessEnv): Promise<boolean> {
-  const value = await inspectNative('Get-OwnedJobState.ps1', ['-JobName', name], timeoutMs, environment);
-  if (!hasExactKeys(value, ['state', 'processes'])) { throw new SupervisorError('termination-unverified', 'Invalid job observation.'); }
-  if (value['state'] === 'absent' && value['processes'] === null) { return true; }
-  const count = asInteger(value['processes']);
-  if (value['state'] === 'present' && count !== undefined && count >= 0) { return false; }
-  throw new SupervisorError('termination-unverified', 'Job state is unavailable.');
-}
-
-/** @internal A partial or reordered batch cannot establish startup quiescence. */
-export function parseStartupJobStates(value: JsonValue, names: readonly string[]): readonly boolean[] {
-  if (!hasExactKeys(value, ['jobs']) || !Array.isArray(value['jobs']) || value['jobs'].length !== names.length) {
-    throw new SupervisorError('termination-unverified', 'Startup job observations are incomplete.');
+/** @internal A partial or reordered batch cannot establish quiescence. */
+export function parseJobStates(value: JsonValue, names: readonly string[]): readonly boolean[] {
+  if (!hasExactKeys(value, ['jobs']) && !hasExactKeys(value, ['jobs', 'owned'])) {
+    throw new SupervisorError('termination-unverified', 'Job observations are incomplete.');
   }
-  return value['jobs'].map((entry, index) => {
+  const jobs = value['jobs'];
+  if (!Array.isArray(jobs) || jobs.length !== names.length) { throw new SupervisorError('termination-unverified', 'Job observations are incomplete.'); }
+  return jobs.map((entry, index) => {
     if (!hasExactKeys(entry, ['name', 'state', 'processes']) || entry['name'] !== names[index]) {
-      throw new SupervisorError('termination-unverified', 'Startup job observation identity is invalid.');
+      throw new SupervisorError('termination-unverified', 'Job observation identity is invalid.');
     }
     if (entry['state'] === 'absent' && entry['processes'] === null) { return true; }
     const count = asInteger(entry['processes']);
     if (entry['state'] === 'present' && count !== undefined && count >= 0) { return false; }
-    throw new SupervisorError('termination-unverified', 'Startup job state is unavailable.');
+    throw new SupervisorError('termination-unverified', 'Job state is unavailable.');
   });
-}
-
-interface OwnedJobProof { readonly name: string; readonly identity: ProcessIdentity; readonly broker: ProcessIdentity }
-
-async function jobsAbsent(names: readonly string[], owned?: OwnedJobProof, timeoutMs = 30000,
-  environment?: NodeJS.ProcessEnv): Promise<readonly boolean[]> {
-  const args = ['-JobNamesJson', JSON.stringify(names)];
-  if (owned !== undefined) { args.push('-OwnedJobName', owned.name, '-OwnedProcessId', String(owned.identity.pid), '-OwnedBrokerProcessId', String(owned.broker.pid),
-    '-OwnedProcessCreated', owned.identity.created, '-OwnedBrokerCreated', owned.broker.created); }
-  const value = await inspectNative('Get-OwnedJobStates.ps1', args, timeoutMs, environment);
-  if (owned === undefined) { return parseStartupJobStates(value, names); }
-  if (!hasExactKeys(value, ['jobs', 'owned']) || value['owned'] !== true) {
-    throw new SupervisorError('termination-unverified', 'Owned startup metadata job membership is unverified.');
-  }
-  const observedJobs = value['jobs'];
-  if (observedJobs === undefined) { throw new SupervisorError('termination-unverified', 'Startup job observations are incomplete.'); }
-  return parseStartupJobStates({ jobs: observedJobs }, names);
-}
-
-/** @internal The observer does not receive HOME; it has no child control frame. */
-export function nativeObserverEnvironment(scratch: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...withoutHome(source), TEMP: scratch, TMP: scratch, USERPROFILE: scratch,
-    APPDATA: scratch, LOCALAPPDATA: scratch, GOTELEMETRY: 'off' };
-}
-
-async function nativeJobsAbsent(names: readonly string[], selection: PrivateNativeStartupJobs,
-  owned?: OwnedJobProof, timeoutMs = 30000): Promise<readonly boolean[]> {
-  const started = performance.now();
-  const pinned: PinnedFile[] = [];
-  let value: ReturnType<typeof parseStrictJson> | undefined;
-  let failure: unknown;
-  try {
-    admitPrivateDirectory(selection.scratch);
-    pinned.push(pinPrivateFile(selection.binary, selection.binarySha256));
-    pinned.push(pinPrivateFile(selection.source, selection.sourceSha256));
-    pinned.push(pinPrivateFile(selection.manifest, selection.manifestSha256));
-    const manifestBytes = readPinnedPrivateFile(pinned[2]!, jsonBudgets.config.maxBytes);
-    if (selection.releaseGeneration === undefined) {
-      const record = parseStrictJson(manifestBytes);
-      if (!hasExactKeys(record, ['sourceSha256', 'binarySha256', 'toolchain', 'output', 'provenance'])
-        || record['binarySha256'] !== selection.binarySha256 || record['sourceSha256'] !== selection.sourceSha256) {
-        throw new SupervisorError('termination-unverified', 'Private native job observer provenance is unavailable.');
-      }
-    } else {
-      const release = parseCompiledImageRelease(manifestBytes);
-      const imageRoot = path.win32.dirname(path.win32.dirname(path.win32.dirname(selection.manifest)));
-      if (selection.releaseGeneration !== compiledImageGeneration || release.generation !== selection.releaseGeneration
-        || release.observer.sha256 !== selection.binarySha256
-        || path.win32.join(imageRoot, 'runtime/native/job-observer.exe') !== selection.binary
-        || path.win32.join(imageRoot, release.observer.sources[0]!.path) !== selection.source
-        || normalizedGoSourceHash(readPinnedPrivateFile(pinned[1]!, 1_048_576)) !== release.observer.sources[0]!.sha256) {
-        throw new SupervisorError('termination-unverified', 'Compiled native job observer provenance is unavailable.');
-      }
-    }
-    const remaining = Math.floor(timeoutMs - (performance.now() - started));
-    if (remaining < 1) { throw new SupervisorError('termination-unverified', 'Private native job observation expired.'); }
-    const request = JSON.stringify({ names, ...(owned === undefined ? {} : { owned: {
-      name: owned.name, processId: owned.identity.pid, brokerId: owned.broker.pid,
-      created: owned.identity.created, brokerCreated: owned.broker.created,
-    } }) });
-    value = await new Promise<ReturnType<typeof parseStrictJson>>((resolve, reject) => {
-      execFile(selection.binary, [request], { cwd: selection.scratch, windowsHide: true, timeout: remaining, maxBuffer: 65_536,
-        encoding: 'buffer', env: nativeObserverEnvironment(selection.scratch) }, (error, stdout) => {
-        if (error !== null) { reject(new SupervisorError('termination-unverified', 'Private native job observer is unavailable.')); return; }
-        try { resolve(parseStrictJson(stdout)); }
-        catch { reject(new SupervisorError('termination-unverified', 'Private native job observation is invalid.')); }
-      });
-    });
-    for (const file of pinned) { verifyPinnedPrivateFile(file); }
-    if (performance.now() - started >= timeoutMs) { throw new SupervisorError('termination-unverified', 'Private native job observation expired.'); }
-  } catch (error) { failure = error; }
-  for (const file of pinned) {
-    try { closeSync(file.descriptor); }
-    catch (error) { failure ??= error; }
-  }
-  if (failure !== undefined || value === undefined) {
-    throw failure instanceof SupervisorError ? failure : new SupervisorError('termination-unverified', 'Private native job observation is unavailable.');
-  }
-  if (owned === undefined) { return parseStartupJobStates(value, names); }
-  if (!hasExactKeys(value, ['jobs', 'owned']) || value['owned'] !== true) {
-    throw new SupervisorError('termination-unverified', 'Private owned startup job membership is unverified.');
-  }
-  return parseStartupJobStates({ jobs: value['jobs']! }, names);
 }
 
 export class OwnedProcess extends EventEmitter {
@@ -219,21 +124,18 @@ export class OwnedProcess extends EventEmitter {
   private resolveTermination!: (exit: OwnedExit) => void;
   private rejectTermination!: (error: Error) => void;
 
-  constructor(jobName: string, parent: ProcessIdentity, options: OwnedSpawnOptions, verifyTermination: () => Promise<void>, createBroker: BrokerSpawn = spawnBroker) {
+  constructor(jobName: string, parent: ProcessIdentity, options: OwnedSpawnOptions, verifyTermination: () => Promise<void>, createBroker: BrokerSpawn) {
     super();
     options.signal?.throwIfAborted();
-    const control = { command: options.command, args: options.args, cwd: options.cwd, jobName, parentPid: parent.pid, parentCreated: parent.created };
-    const environment = createBroker.controlVersion === 2 ? childEnvironment(options.env ?? process.env) : undefined;
-    const frame = environment === undefined ? stringifyJson(control)
-      : stringifyJson({ ...control, brokerProtocolVersion: 2, childEnvironment: environment });
-    const launchOptions = environment === undefined ? options : { ...options, env: environment };
+    const frame = stringifyJson({ command: options.command, args: options.args, cwd: options.cwd, jobName, parentPid: parent.pid, parentCreated: parent.created,
+      brokerProtocolVersion: 2, childEnvironment: childEnvironment(options.env ?? process.env) });
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.terminated = new Promise((resolve, reject) => { this.resolveTermination = resolve; this.rejectTermination = reject; });
     // SDK consumers use events; runtime consumers additionally await these original promises.
     void this.ready.catch(() => undefined);
     void this.terminated.catch(() => undefined);
     this.on('error', error => { this.failure ??= error as Error; });
-    this.broker = createBroker(launchOptions);
+    this.broker = createBroker(options);
     this.stdin = this.broker.stdin;
     let failing = false;
     const fail = (error: Error): void => {
@@ -339,91 +241,86 @@ export class OwnedProcess extends EventEmitter {
 export class ProcessSupervisor {
   private readonly parent: ProcessIdentity;
   private readonly scope: string;
+  private readonly helper: NativeHelper;
   private readonly createBroker: BrokerSpawn;
-  private readonly nativeJobs: PrivateNativeStartupJobs | undefined;
-  private readonly helperEnvironment: NodeJS.ProcessEnv | undefined;
   private readonly active = new Map<ProcessRole, OwnedProcess | null>();
   private readonly stopping = new Map<ProcessRole, Promise<void>>();
-  private startupJobObserver: StartupJobObserver | null = null;
 
-  private constructor(parent: ProcessIdentity, canonicalScope: string, createBroker: BrokerSpawn = spawnBroker,
-    nativeJobs?: PrivateNativeStartupJobs, helperEnvironment?: NodeJS.ProcessEnv) {
-    this.parent = parent; this.scope = guardScopeToken(canonicalScope); this.createBroker = createBroker; this.nativeJobs = nativeJobs;
-    this.helperEnvironment = helperEnvironment === undefined ? undefined : Object.freeze(childEnvironment(helperEnvironment));
+  private constructor(parent: ProcessIdentity, canonicalScope: string, helper: NativeHelper, createBroker: BrokerSpawn) {
+    this.parent = parent; this.scope = guardScopeToken(canonicalScope); this.helper = helper; this.createBroker = createBroker;
   }
 
-  static async create(canonicalScope: string, createBroker?: BrokerSpawn, nativeJobs?: PrivateNativeStartupJobs,
-    helperEnvironment?: NodeJS.ProcessEnv): Promise<ProcessSupervisor> {
-    const frozenEnvironment = helperEnvironment === undefined ? undefined : childEnvironment(helperEnvironment);
-    const parent = await readProcessIdentity(process.pid, frozenEnvironment);
+  static async create(canonicalScope: string, helper: NativeHelper, createBroker: BrokerSpawn = helperBrokerSpawn(helper)): Promise<ProcessSupervisor> {
+    // The runtime's own identity comes from the helper; children name it as the parent their job must outlive.
+    const parent = await readProcessIdentity(helper, process.pid);
     if (parent === null) { throw new SupervisorError('termination-unverified', 'Runtime process identity is unavailable.'); }
 
-    return new ProcessSupervisor(parent, canonicalScope, createBroker, nativeJobs, frozenEnvironment);
+    return new ProcessSupervisor(parent, canonicalScope, helper, createBroker);
   }
 
-  forScope(canonicalScope: string, createBroker?: BrokerSpawn, nativeJobs?: PrivateNativeStartupJobs): ProcessSupervisor {
-    return new ProcessSupervisor(this.parent, canonicalScope, createBroker, nativeJobs, this.helperEnvironment);
+  forScope(canonicalScope: string): ProcessSupervisor {
+    return new ProcessSupervisor(this.parent, canonicalScope, this.helper, this.createBroker);
   }
 
   parentIdentity(): ProcessIdentity { return Object.freeze({ ...this.parent }); }
 
-  jobName(role: ProcessRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
+  get scopeToken(): string { return this.scope; }
 
-  attachStartupJobObserver(observer: StartupJobObserver): void {
-    if (this.startupJobObserver !== null) { throw new SupervisorError('result-invalid', 'Startup job observer is already attached.'); }
-    this.startupJobObserver = observer;
+  get nativeHelper(): NativeHelper { return this.helper; }
+
+  jobName(role: JobRole): string { return ['Global', `game-companion-process-${this.scope}-${role}`].join(path.win32.sep); }
+
+  private async observeJobs(names: readonly string[], timeoutMs: number,
+    owner: { readonly name: string; readonly pid: number; readonly created: string } | null = null): Promise<{ absent: readonly boolean[]; owned: boolean | null }> {
+    const value = await helperResult(this.helper, 'jobStates', { names, owner }, timeoutMs);
+    const absent = parseJobStates(value, names);
+    if (owner === null) {
+      if (hasExactKeys(value, ['jobs', 'owned'])) { throw new SupervisorError('termination-unverified', 'Unexpected owned observation.'); }
+      return { absent, owned: null };
+    }
+    if (!hasExactKeys(value, ['jobs', 'owned']) || typeof value['owned'] !== 'boolean') {
+      throw new SupervisorError('termination-unverified', 'Owned helper job membership is unverified.');
+    }
+    return { absent, owned: value['owned'] };
   }
 
-  clearStartupJobObserver(): void { this.startupJobObserver = null; }
-
-  private async observeNativeJobs(names: readonly string[], timeoutMs: number,
-    owned?: OwnedJobProof): Promise<readonly boolean[]> {
-    const selection = this.nativeJobs;
-    if (selection === undefined) { throw new SupervisorError('termination-unverified', 'Private native job selection is absent.'); }
-    const allNames = processRoles.map(role => this.jobName(role));
-    const roles = names.map(name => {
-      const index = allNames.indexOf(name);
-      if (index < 0) { throw new SupervisorError('termination-unverified', 'Private job request names an unrelated role.'); }
-      return processRoles[index]!;
-    });
-    if (new Set(roles).size !== roles.length) { throw new SupervisorError('termination-unverified', 'Private job request repeats a role.'); }
-    const started = performance.now();
-    let outcome: 'ok' | 'failed' = 'failed';
-    try {
-      const allAbsent = await nativeJobsAbsent(allNames, selection, owned, timeoutMs);
-      outcome = 'ok';
-      return names.map(name => allAbsent[allNames.indexOf(name)]!);
-    } finally {
-      try { selection.onObservation?.(roles, performance.now() - started, outcome); }
-      catch { /* Private timing must not change admission. */ }
+  /**
+   * Before binding, right after the instance guard: the helper job and every retired name must be positively absent. A
+   * present one is polled briefly, since a predecessor that is still ending must not fail a quick restart.
+   */
+  async proveBindable(): Promise<void> {
+    const names = [this.jobName('helper'), ...retiredJobRoles.map(role => this.jobName(role))];
+    const until = performance.now() + predecessorPollMs;
+    for (;;) {
+      const { absent } = await this.observeJobs(names, 30000);
+      if (absent.every(value => value)) { return; }
+      if (performance.now() >= until) { throw new SupervisorError('termination-unverified', 'A predecessor helper or retired job is still present.'); }
+      await wait(50);
     }
   }
 
-  private observeJobsOneShot(names: readonly string[], timeoutMs: number): Promise<readonly boolean[]> {
-    return names.length === 1 ? jobAbsent(names[0]!, timeoutMs, this.helperEnvironment).then(absent => [absent])
-      : jobsAbsent(names, undefined, timeoutMs, this.helperEnvironment);
-  }
-
-  private async observeUnownedJobs(names: readonly string[], timeoutMs: number): Promise<readonly boolean[]> {
-    if (this.nativeJobs !== undefined) { return this.observeNativeJobs(names, timeoutMs); }
-    const observer = this.startupJobObserver;
-    if (observer === null || inspectorQueueRoles.some(role => names.includes(this.jobName(role)))) {
-      return this.observeJobsOneShot(names, timeoutMs);
+  /**
+   * After binding: the helper job must hold exactly this runtime's bound service and each named retired job must be
+   * positively absent, a present one polled briefly. Startup admission names every retired role; the pre-marker residue
+   * pass names only the publication writers.
+   */
+  async proveNoForeignWriters(retired: readonly RetiredJobRole[] = retiredJobRoles): Promise<void> {
+    const owner = this.helper.owner();
+    const names = [this.jobName('helper'), ...retired.map(role => this.jobName(role))];
+    const until = performance.now() + predecessorPollMs;
+    for (;;) {
+      const { absent, owned } = await this.observeJobs(names, 30000, owner);
+      if (absent[0] || owned !== true) { throw new SupervisorError('termination-unverified', 'The helper job holds a member other than this runtime\'s service.'); }
+      if (absent.slice(1).every(value => value)) { return; }
+      if (performance.now() >= until) { throw new SupervisorError('termination-unverified', 'A retired predecessor job is still present.'); }
+      await wait(50);
     }
-    let result: readonly boolean[] | null;
-    try { result = await observer([...names], timeoutMs); }
-    catch { throw new SupervisorError('termination-unverified', 'Startup job observation is unavailable.'); }
-    if (result === null) { return this.observeJobsOneShot(names, timeoutMs); }
-    if (result.length !== names.length || result.some(value => typeof value !== 'boolean')) {
-      throw new SupervisorError('termination-unverified', 'Startup job observation is invalid.');
-    }
-    return result;
   }
 
   async observeJobAbsent(role: ProcessRole): Promise<boolean> {
     const owner = this.active.get(role);
     if (owner !== undefined) { throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.'); }
-    const absent = (await this.observeUnownedJobs([this.jobName(role)], 5000))[0]!;
+    const absent = (await this.observeJobs([this.jobName(role)], 5000)).absent[0]!;
     if (this.active.get(role) !== owner) { throw new SupervisorError('termination-unverified', 'Process ownership changed during verification.'); }
     return absent;
   }
@@ -443,7 +340,7 @@ export class ProcessSupervisor {
     if (ready.pid !== identity.pid || ready.created !== identity.created || this.active.get(role) !== child || child.brokerClosed) {
       throw new SupervisorError('termination-unverified', 'Owned provider process changed before verification.');
     }
-    const result = await inspectNative('Get-OwnedProcessLive.ps1', ['-JobName', this.jobName(role), '-ProcessId', String(identity.pid), '-ProcessCreated', identity.created], 5000, this.helperEnvironment);
+    const result = await helperResult(this.helper, 'ownedProcessLive', { jobName: this.jobName(role), pid: identity.pid, created: identity.created }, 5000);
     if (!hasExactKeys(result, ['live']) || result['live'] !== true || this.active.get(role) !== child || child.brokerClosed || child.terminationState !== 'running' || this.stopping.has(role)) {
       throw new SupervisorError('termination-unverified', 'Owned provider process liveness is unverified.');
     }
@@ -465,15 +362,14 @@ export class ProcessSupervisor {
       owners.set(role, current);
     }
     const names = roles.map(role => this.jobName(role));
-    let absent = await this.observeUnownedJobs(names, 5000);
+    let absent = (await this.observeJobs(names, 5000)).absent;
     if (absent.some(value => !value)) {
       for (const [index, role] of roles.entries()) {
         if (absent[index]) { continue; }
-        const owner = owners.get(role);
-        await this.verifyOwner(role, owner);
+        await this.verifyOwner(role, owners.get(role));
         owners.set(role, undefined);
       }
-      absent = await this.observeUnownedJobs(names, 5000);
+      absent = (await this.observeJobs(names, 5000)).absent;
     }
     for (const [index, role] of roles.entries()) {
       const owner = owners.get(role);
@@ -490,7 +386,7 @@ export class ProcessSupervisor {
     do {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) { break; }
-      if ((await this.observeUnownedJobs([this.jobName(role)], remaining))[0]) {
+      if ((await this.observeJobs([this.jobName(role)], remaining)).absent[0]) {
         if (this.active.get(role) !== owner) { throw new SupervisorError('termination-unverified', 'Process ownership changed during verification.'); }
         this.active.delete(role);
         return;
@@ -500,51 +396,26 @@ export class ProcessSupervisor {
     throw new SupervisorError('termination-unverified', 'A predecessor process job is still present.');
   }
 
-  async admitStartup(allowOwnedStartupMetadata = false): Promise<void> {
+  /**
+   * Startup predecessor admission under the held guard: every launch role, the bound helper job as an owned observation and
+   * every retired name. A present launch role takes the quiescence path; a foreign helper or a present retired name fails closed.
+   */
+  async admitStartup(): Promise<void> {
     const owners = new Map<ProcessRole, OwnedProcess | null | undefined>();
-    let metadataIdentity: ProcessIdentity | undefined;
     for (const role of processRoles) {
       const owner = this.active.get(role);
       if (owner?.terminationState === 'verifying') { await owner.terminated; }
       const current = this.active.get(role);
-      if (role === 'startupMetadata' && allowOwnedStartupMetadata
-        && current !== undefined && current !== null && !current.brokerClosed
-        && !this.stopping.has(role) && current.terminationState === 'running') {
-        const identity = await current.ready;
-        if (current.brokerClosed || this.active.get(role) !== current || this.stopping.has(role)) {
-          throw new SupervisorError('termination-unverified', 'Owned startup process changed during admission.');
-        }
-        metadataIdentity = identity;
-        owners.set(role, current);
-        continue;
-      }
       if (current === null || current !== undefined && !current.brokerClosed) {
         throw new SupervisorError('termination-unverified', 'An in-process owner is still starting or running.');
       }
       owners.set(role, current);
     }
-    if (allowOwnedStartupMetadata && metadataIdentity === undefined) {
-      throw new SupervisorError('termination-unverified', 'Owned startup metadata process is unavailable.');
-    }
-    const metadataOwner = owners.get('startupMetadata');
-    const broker = metadataOwner?.ownedBrokerIdentity;
-    if (metadataIdentity !== undefined && (broker === undefined || broker === null || !creationToken.test(broker.created)
-      || broker.pid !== metadataOwner?.brokerPid)) {
-      throw new SupervisorError('termination-unverified', 'Owned startup metadata broker identity is unavailable.');
-    }
+    await this.proveNoForeignWriters();
     const names = processRoles.map(role => this.jobName(role));
-    const owned = metadataIdentity === undefined ? undefined : { name: this.jobName('startupMetadata'), identity: metadataIdentity, broker: broker! };
-    const absent = this.nativeJobs === undefined ? await jobsAbsent(names, owned, 30000, this.helperEnvironment)
-      : await this.observeNativeJobs(names, 30000, owned);
+    const { absent } = await this.observeJobs(names, 30000);
     for (const [index, role] of processRoles.entries()) {
       if (this.active.get(role) !== owners.get(role)) { throw new SupervisorError('termination-unverified', 'Process ownership changed during startup admission.'); }
-      if (role === 'startupMetadata' && metadataIdentity !== undefined) {
-        const owner = owners.get(role);
-        if (absent[index] || owner === undefined || owner === null || owner.brokerClosed || owner.terminationState !== 'running' || this.stopping.has(role)) {
-          throw new SupervisorError('termination-unverified', 'Owned startup metadata job changed during admission.');
-        }
-        continue;
-      }
       if (absent[index]) { this.active.delete(role); }
       else { await this.verifyQuiescent(role); }
     }
@@ -585,9 +456,7 @@ export class ProcessSupervisor {
     this.active.set(role, null);
     try {
       let child: OwnedProcess;
-      const launch = this.helperEnvironment === undefined || role === 'provider' ? options
-        : { ...options, env: { ...withoutHome(options.env ?? process.env), ...this.helperEnvironment } };
-      child = new OwnedProcess(this.jobName(role), this.parent, launch, () => this.verifyOwner(role, child), this.createBroker);
+      child = new OwnedProcess(this.jobName(role), this.parent, options, () => this.verifyOwner(role, child), this.createBroker);
       this.active.set(role, child);
       return child;
     }

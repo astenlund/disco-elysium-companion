@@ -102,10 +102,13 @@ describe('complete runtime transition capacity', () => {
 
   it('revokes a previous reservation when the next inventory cannot be established', async () => {
     let unavailable = false;
-    const inspector = { metadata: async () => ({ exitCode: unavailable ? 1 : 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify({
+    const inspector = { native: async () => {
+      if (unavailable) { throw new Error('The inventory request failed.'); }
+      return {
       uncompactedEvents: 0, retainedHandoffs: 0, retainedHandoffIdentitySha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', potentialHandoffs: 0, fullTerminalOperations: 0, unfinishedOperations: 0, invalidEvents: 0, invalidOperations: 0,
       uncertainWorkspace: false, pendingOutbox: 0, freeBytes: '4000000000',
-    })) }) } as unknown as PathInspector;
+      };
+    } } as unknown as PathInspector;
     const operations = { list: async () => ({ records: [], invalid: [], handoffCount: 0, fullTerminalCount: 0 }) } as unknown as OperationStore;
     const scope = { dataRoot: 'C:/fixture', bindingSha256: 'a'.repeat(64) } as RuntimeScope;
     const authority = new ResourceAuthority(scope, inspector, operations);
