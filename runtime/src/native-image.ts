@@ -286,12 +286,14 @@ function disableTelemetry(environment: NodeJS.ProcessEnv): void {
  * is final: the result reports it whatever the exit code, and when no exit follows the kill within its bounded wait, the
  * command is abandoned and reported expired, leaving whatever it still holds for a later sweep.
  */
+interface ToolchainResult { readonly code: number | null; readonly stdout: string; readonly expired: boolean; readonly abandoned: boolean }
+
 function runToolchain(go: string, args: readonly string[], cwd: string, environment: NodeJS.ProcessEnv,
-  deadlineMs: number): Promise<{ readonly code: number | null; readonly stdout: string; readonly expired: boolean }> {
+  deadlineMs: number): Promise<ToolchainResult> {
   return new Promise(result => {
     let settled = false;
     let abandon: NodeJS.Timeout | undefined;
-    const resolve = (value: { readonly code: number | null; readonly stdout: string; readonly expired: boolean }): void => {
+    const resolve = (value: ToolchainResult): void => {
       if (settled) { return; }
       settled = true;
       clearTimeout(abandon);
@@ -309,10 +311,16 @@ function runToolchain(go: string, args: readonly string[], cwd: string, environm
         const taskkill = path.join(environment['SystemRoot']!, 'System32', 'taskkill.exe');
         spawn(taskkill, ['/T', '/F', '/PID', String(child.pid)], { shell: false, windowsHide: true, stdio: 'ignore' }).on('error', () => {});
       }
-      abandon = setTimeout(() => { resolve({ code: null, stdout: '', expired: true }); }, killWaitMs);
+      abandon = setTimeout(() => {
+        // Detached, so the refused command can end while the abandoned process lingers.
+        child.unref();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        resolve({ code: null, stdout: '', expired: true, abandoned: true });
+      }, killWaitMs);
     }, deadlineMs);
-    child.once('error', () => { clearTimeout(timer); resolve({ code: null, stdout: '', expired }); });
-    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout: Buffer.concat(output).toString('utf8'), expired }); });
+    child.once('error', () => { clearTimeout(timer); resolve({ code: null, stdout: '', expired, abandoned: false }); });
+    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout: Buffer.concat(output).toString('utf8'), expired, abandoned: false }); });
   });
 }
 
@@ -321,16 +329,18 @@ function runToolchain(go: string, args: readonly string[], cwd: string, environm
  * checking the toolchain version; returns the output path. The pin tool and the build step share this one recipe.
  */
 export async function compileHelper(root: string, directory: string, go = resolveGo(), deadlineMs = buildDeadlineMs,
-  source: NodeJS.ProcessEnv = process.env): Promise<string> {
+  source: NodeJS.ProcessEnv = process.env, onAbandoned: () => void = () => {}): Promise<string> {
   const environment = goEnvironment(directory, go, source);
   disableTelemetry(environment);
   const moduleDirectory = path.join(root, helperModule);
   const version = await runToolchain(go, ['version'], moduleDirectory, environment, 60_000);
   if (version.code === null && !version.expired) { throw refuse('toolchainMissing'); }
+  if (version.abandoned) { onAbandoned(); }
   if (version.expired) { throw refuse('buildFailed'); }
   if (version.code !== 0 || version.stdout.trim() !== `go version ${goToolchain.version} ${goToolchain.target}`) { throw refuse('toolchainVersion'); }
   const output = path.join(directory, path.basename(helperImageFile));
   const compiled = await runToolchain(go, ['build', ...goToolchain.flags, '-o', output, '.'], moduleDirectory, environment, deadlineMs);
+  if (compiled.abandoned) { onAbandoned(); }
   if (compiled.expired || compiled.code !== 0) { throw refuse('buildFailed'); }
   return output;
 }
@@ -401,8 +411,9 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
     options.onBuildStart?.();
     const go = resolveGo(options.toolchainEnvironment);
     const { directory, claim } = createBuildDirectory(buildRoot);
+    let abandoned = false;
     try {
-      const output = await compileHelper(root, directory, go, options.buildDeadlineMs, options.toolchainEnvironment);
+      const output = await compileHelper(root, directory, go, options.buildDeadlineMs, options.toolchainEnvironment, () => { abandoned = true; });
       const observed = observeImageFile(output);
       if (observed === null || observed.sha256 !== release.helper.sha256 || observed.bytes !== release.helper.bytes) { throw refuse('outputMismatch'); }
       // A hard link publishes create-only: it never replaces an image another start published meanwhile.
@@ -411,10 +422,14 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
     } finally {
       // A toolchain process ended at the deadline can hold its files briefly. A directory that still cannot be removed
       // keeps its claim, so the next build's sweep removes both instead of this cleanup replacing the build's outcome.
-      try {
-        rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-        rmSync(claim, { force: true });
-      } catch { /* Left claimed for the next build's sweep. */ }
+      // An abandoned process may still be writing, so its directory and claim are always left for a later sweep.
+      if (abandoned) { options.onDiagnostic?.(`Left ${path.basename(directory)} in .tmp/native-build: its toolchain process outlived the deadline.`); }
+      else {
+        try {
+          rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+          rmSync(claim, { force: true });
+        } catch { /* Left claimed for the next build's sweep. */ }
+      }
     }
     const published = pinnedImage(image, release);
     if (published === null) { throw refuse('publicationFailed'); }

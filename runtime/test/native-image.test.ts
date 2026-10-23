@@ -276,11 +276,21 @@ describe('native helper first-launch build', () => {
       await refuses(ensureNativeHelperImage({ build: true, root, buildDeadlineMs: 1000, toolchainEnvironment: { ...process.env, PATH: toolchain, SystemRoot: systemRoot } }), 'buildFailed');
       assert.ok(performance.now() - started < 60_000);
       assert.ok(!existsSync(path.join(root, helperImageFile)));
+      // The abandoned build keeps its directory and claim, since its process may still write there.
+      const left = await fs.readdir(buildRoot(root));
+      assert.equal(left.filter(name => name.startsWith('build-') && name.endsWith('.claim')).length, 1);
+      assert.equal(left.filter(name => name.startsWith('build-') && !name.endsWith('.claim')).length, 1);
     } finally {
       const pid = Number(await fs.readFile(marker, 'utf8').catch(() => '0'));
       if (pid > 0) { try { process.kill(pid); } catch { /* Already ended. */ } }
       await processGone(pid);
     }
+
+    // Act and assert: once the process has ended, the next build sweeps the claimed directory and succeeds.
+    const real = await testHelperImage();
+    const image = await ensureNativeHelperImage({ build: true, root, ...withToolchain(await fakeToolchain({ build: 'copy', copyFrom: real.path })) });
+    assert.equal(image.sha256, nativeHelperSha256);
+    assert.deepEqual(await fs.readdir(buildRoot(root)), []);
   });
 
   it('refuses with toolchainMissing when go.exe is not on the PATH', { timeout: 120000 }, async () => {
