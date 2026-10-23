@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4675072,
-    "sha256": "67348eac3eb5450d21ff6a9f013ee21f216509160915ca1b13f9f88e95b753c5",
+    "bytes": 4653568,
+    "sha256": "9456de6e44c2a921d5c4ad7f2fb098c9bb588b4c8317ed992673ef6720fcd1c0",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -105,7 +105,7 @@
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory.go",
-        "sha256": "78783a3c5341f39b4113cb9cb0b30d8fa9cd0377e9e5deec40fc667555482ad5"
+        "sha256": "a07b651e4ec5a37d66211815498437f46e23dd02d7fea56c26fd98b0abbc1877"
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory_test.go",
@@ -138,6 +138,14 @@
       {
         "path": "runtime/native/helper/internal/nativefs/admission.go",
         "sha256": "ba613d9c7a034c7a27caecd99d1c1f85dc9e48993b24d3507736df379f679388"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/directory.go",
+        "sha256": "5bea5e40223f507db2a39c33b06bbda5146fbe31bdd398a4450460a96a32d5bb"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/directory_test.go",
+        "sha256": "5d2d6f16093a75d5d2ef7f712b80d763b7517f269dac34ec675e8fdce608b464"
       },
       {
         "path": "runtime/native/helper/internal/nativefs/gate.go",

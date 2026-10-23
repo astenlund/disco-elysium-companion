@@ -337,12 +337,7 @@ func enumerate(root, directory, prefix string, markerOnly bool) ([]entry, error)
 
 // listDirectory returns entry names without following or filtering anything.
 func listDirectory(directory string) ([]string, error) {
-	handle, err := os.Open(`\\?\` + directory)
-	if err != nil {
-		return nil, err
-	}
-	defer handle.Close()
-	return handle.Readdirnames(-1)
+	return nativefs.ListDirectory(directory)
 }
 
 func freeBytes(root string) (uint64, error) {
