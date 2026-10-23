@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4655616,
-    "sha256": "0e78c42c350a097c7d1161f795a044fc31269a37fac293ba5b7c9c968e262a99",
+    "bytes": 4661760,
+    "sha256": "061fdfcda8b84d4397605c51ecb819d1486875922bc0ccbfef9684fab6435969",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -109,7 +109,7 @@
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory.go",
-        "sha256": "29518f5d92408551d1b9da09b0a4b334394755f5df8a8e172be95c09d3e7bde3"
+        "sha256": "647e5e04683790c0d41bbc373059ed0bc9736f89316558f7207032c19b61fe5d"
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory_test.go",
@@ -118,6 +118,10 @@
       {
         "path": "runtime/native/helper/internal/inventory/resources_test.go",
         "sha256": "53134e7a12c64d0a88131c7aba4315d0a1f23c94248fdd0aa3fe590493e342cc"
+      },
+      {
+        "path": "runtime/native/helper/internal/inventory/timing_test.go",
+        "sha256": "1c49b8aafde496b15c4cf53e9505a4535610a185a4ed3ffcc99e4f9f3ae1a07d"
       },
       {
         "path": "runtime/native/helper/internal/jsondoc/jsondoc.go",
@@ -141,7 +145,11 @@
       },
       {
         "path": "runtime/native/helper/internal/nativefs/admission.go",
-        "sha256": "ba613d9c7a034c7a27caecd99d1c1f85dc9e48993b24d3507736df379f679388"
+        "sha256": "1870082c57b139621d8daa86ff680ac5ddc5067355c97e78124f363266bf8a04"
+      },
+      {
+        "path": "runtime/native/helper/internal/nativefs/child_test.go",
+        "sha256": "e171ce7b8f3b07acda2954a83c3daf2ff24e54d781c35f7579b5a57dbf4cba8a"
       },
       {
         "path": "runtime/native/helper/internal/nativefs/directory.go",

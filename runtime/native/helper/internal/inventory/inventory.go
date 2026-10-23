@@ -122,7 +122,11 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string, gate 
 		}
 		return nil
 	}
-	if err := walk(root, root, "", markerOnly, gate, scan); err != nil {
+	scope, err := nativefs.Admit(root, false)
+	if err != nil || !scope.IsDirectory {
+		return nil, ErrUnavailable
+	}
+	if err := walk(scope, "", markerOnly, gate, scan); err != nil {
 		return nil, err
 	}
 	if err := verifyScope(root, scopeSha256); err != nil {
@@ -294,13 +298,13 @@ func verifyScope(root, expected string) error {
 	return nil
 }
 
-// walk streams one admitted directory, admitting every entry as it is read and handing each file the mode cares about to
-// visit, so no directory is held in memory whole. gate is checked before each entry. A failure of visit, a nested walk or
-// gate is returned unchanged; any other enumeration failure is unavailable.
-func walk(root, directory, prefix string, markerOnly bool, gate nativefs.Gate, visit func(entry) error) error {
+// walk streams one admitted directory, admitting every entry as a child of it as it is read and handing each file the
+// mode cares about to visit, so no directory is held in memory whole. gate is checked before each entry. A failure of
+// visit, a nested walk or gate is returned unchanged; any other enumeration failure is unavailable.
+func walk(directory nativefs.Admission, prefix string, markerOnly bool, gate nativefs.Gate, visit func(entry) error) error {
 	var stopped error
-	err := nativefs.WalkDirectory(directory, func(name string) error {
-		stopped = visitEntry(root, directory, prefix, name, markerOnly, gate, visit)
+	err := nativefs.WalkDirectory(directory.Path, func(name string) error {
+		stopped = visitEntry(directory, prefix, name, markerOnly, gate, visit)
 		return stopped
 	})
 	if stopped != nil {
@@ -312,16 +316,16 @@ func walk(root, directory, prefix string, markerOnly bool, gate nativefs.Gate, v
 	return nil
 }
 
-func visitEntry(root, directory, prefix, name string, markerOnly bool, gate nativefs.Gate, visit func(entry) error) error {
+func visitEntry(directory nativefs.Admission, prefix, name string, markerOnly bool, gate nativefs.Gate, visit func(entry) error) error {
 	if err := gate(); err != nil {
 		return err
 	}
-	path := filepath.Join(directory, name)
 	relative := prefix + name
-	admitted, err := nativefs.AdmitWithin(root, path, false)
+	admitted, err := nativefs.AdmitChild(directory, name)
 	if err != nil {
 		return ErrUnavailable
 	}
+	path := admitted.Path
 	switch {
 	case admitted.IsDirectory:
 		if markerOnly {
@@ -330,7 +334,7 @@ func visitEntry(root, directory, prefix, name string, markerOnly bool, gate nati
 		if !allowedDirectories[relative] {
 			return ErrUnavailable
 		}
-		return walk(root, path, relative+"/", false, gate, visit)
+		return walk(admitted, relative+"/", false, gate, visit)
 	case markerOnly:
 		if relative == "runtime.json" || strings.HasPrefix(relative, "runtime.json.") {
 			return visit(entry{path, relative})
@@ -376,7 +380,7 @@ func countOutbox(companionRoot string, journalSources map[string]bool, gate nati
 	var stopped error
 	walkErr := nativefs.WalkDirectory(directory.Path, func(name string) error {
 		inspected++
-		stopped = countOutboxEntry(companionRoot, directory.Path, name, inspected, journalSources, gate, &count)
+		stopped = countOutboxEntry(directory, name, inspected, journalSources, gate, &count)
 		return stopped
 	})
 	if stopped != nil {
@@ -388,7 +392,7 @@ func countOutbox(companionRoot string, journalSources map[string]bool, gate nati
 	return count, nil
 }
 
-func countOutboxEntry(companionRoot, directory, name string, inspected int, journalSources map[string]bool, gate nativefs.Gate, count *int) error {
+func countOutboxEntry(directory nativefs.Admission, name string, inspected int, journalSources map[string]bool, gate nativefs.Gate, count *int) error {
 	if err := gate(); err != nil {
 		return err
 	}
@@ -398,8 +402,7 @@ func countOutboxEntry(companionRoot, directory, name string, inspected int, jour
 	if !strings.HasPrefix(name, "event-") || !eventName.MatchString(name[6:]) {
 		return nil
 	}
-	path := filepath.Join(directory, name)
-	record, err := nativefs.AdmitWithin(companionRoot, path, false)
+	record, err := nativefs.AdmitChild(directory, name)
 	if err != nil || record.IsDirectory {
 		return ErrUnavailable
 	}
@@ -486,11 +489,11 @@ func TrimQuarantine(root, scopeSha256 string, protectedBytes []byte, gate native
 		if err := gate(); err != nil {
 			return nil, err
 		}
-		path := filepath.Join(directory.Path, name)
-		admitted, err := nativefs.AdmitWithin(root, path, false)
+		admitted, err := nativefs.AdmitChild(directory, name)
 		if err != nil || admitted.IsDirectory || !quarantineName.MatchString(name) {
 			return nil, ErrUnavailable
 		}
+		path := admitted.Path
 		info, err := os.Stat(`\\?\` + path)
 		if err != nil {
 			return nil, ErrUnavailable

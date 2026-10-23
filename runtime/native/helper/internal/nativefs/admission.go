@@ -74,6 +74,17 @@ type fileIdentity struct {
 
 // NormalizePath validates and canonicalizes a local drive-qualified path the way the C# NativeFiles.NormalizePath does.
 func NormalizePath(candidate string) (string, error) {
+	normalized, err := validatedPath(candidate)
+	if err != nil {
+		return "", err
+	}
+	return fullPath(normalized)
+}
+
+// validatedPath applies NormalizePath's checks without GetFullPathNameW. A path that passes them has no relative,
+// empty, dot or trailing-dot component, so it is already its own full path; a canonical path a handle reports needs
+// only these checks.
+func validatedPath(candidate string) (string, error) {
 	if !utf8.ValidString(candidate) {
 		return "", ErrUnavailable
 	}
@@ -98,7 +109,7 @@ func NormalizePath(candidate string) (string, error) {
 			}
 		}
 	}
-	return fullPath(normalized)
+	return normalized, nil
 }
 
 func utf16Length(text string) int { return len(utf16.Encode([]rune(text))) }
@@ -139,12 +150,30 @@ func fullPath(path string) (string, error) {
 	if err != nil {
 		return "", ErrUnavailable
 	}
-	buffer := make([]uint16, maximumPathChars+8)
-	length, _, _ := procGetFullPathNameW.Call(uintptr(unsafe.Pointer(input)), uintptr(len(buffer)), uintptr(unsafe.Pointer(&buffer[0])), 0)
-	if length == 0 || int(length) >= len(buffer) {
-		return "", ErrUnavailable
+	return pathCall(func(buffer []uint16) uintptr {
+		length, _, _ := procGetFullPathNameW.Call(uintptr(unsafe.Pointer(input)), uintptr(len(buffer)), uintptr(unsafe.Pointer(&buffer[0])), 0)
+		return length
+	})
+}
+
+// pathBufferChars is the largest path, terminator included, a path call may return.
+const pathBufferChars = maximumPathChars + 8
+
+// pathCall runs a Windows call that writes a path into a caller buffer and, when the buffer is too small, returns the
+// length it needs. It starts with a small buffer and grows it only for a longer path, instead of allocating the largest
+// path's buffer on every call.
+func pathCall(call func(buffer []uint16) uintptr) (string, error) {
+	buffer := make([]uint16, 520)
+	for {
+		length := int(call(buffer))
+		if length == 0 || length >= pathBufferChars {
+			return "", ErrUnavailable
+		}
+		if length < len(buffer) {
+			return string(utf16.Decode(buffer[:length])), nil
+		}
+		buffer = make([]uint16, length+1)
 	}
-	return string(utf16.Decode(buffer[:length])), nil
 }
 
 // AdmitWithin admits candidate under an admitted directory root, requiring that the textual root prefix of candidate
@@ -299,6 +328,38 @@ func DescribeHeld(handle syscall.Handle, expectedPath string) (Admission, error)
 	if err != nil {
 		return Admission{}, err
 	}
+	return describe(handle, path)
+}
+
+// AdmitChild admits name directly inside an admitted directory through one handle opened without following a reparse
+// point, whose canonical path must equal the directory's canonical path joined with name. A redirected ancestor would
+// resolve to a different canonical path, so the directory's own admission stands for every ancestor and the walk from
+// the drive root is not repeated for each entry. A file must have exactly one link, as in Admit.
+func AdmitChild(directory Admission, name string) (Admission, error) {
+	if !directory.Exists || !directory.IsDirectory || invalidComponent(name) {
+		return Admission{}, ErrUnavailable
+	}
+	path := strings.TrimSuffix(directory.Path, `\`) + `\` + name
+	if strings.Count(path[3:], `\`)+1 > maximumComponents || utf16Length(path) > maximumPathChars {
+		return Admission{}, ErrUnavailable
+	}
+	handle, _ := Open(path, readAttributes, shareReadWriteDelete)
+	if handle == syscall.InvalidHandle {
+		return Admission{}, ErrUnavailable
+	}
+	defer syscall.CloseHandle(handle)
+	admission, err := describe(handle, path)
+	if err != nil {
+		return Admission{}, err
+	}
+	if err := requireOrdinary(admission); err != nil {
+		return Admission{}, err
+	}
+	return admission, nil
+}
+
+// describe is DescribeHeld for a path already normalized.
+func describe(handle syscall.Handle, path string) (Admission, error) {
 	kind, _, _ := procGetFileType.Call(uintptr(handle))
 	if kind != diskFileType {
 		return Admission{}, ErrUnavailable
@@ -317,14 +378,14 @@ func DescribeHeld(handle syscall.Handle, expectedPath string) (Admission, error)
 	if identity.Low == 0 && identity.High == 0 {
 		return Admission{}, ErrUnavailable
 	}
-	buffer := make([]uint16, maximumPathChars+8)
-	length, _, _ := procGetFinalPathNameByHandle.Call(uintptr(handle), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), 0)
-	if length == 0 || int(length) >= len(buffer) {
-		return Admission{}, ErrUnavailable
+	canonical, err := pathCall(func(buffer []uint16) uintptr {
+		length, _, _ := procGetFinalPathNameByHandle.Call(uintptr(handle), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), 0)
+		return length
+	})
+	if err != nil {
+		return Admission{}, err
 	}
-	canonical := string(utf16.Decode(buffer[:length]))
-	canonical = strings.TrimPrefix(canonical, `\\?\`)
-	canonical, err = NormalizePath(canonical)
+	canonical, err = validatedPath(strings.TrimPrefix(canonical, `\\?\`))
 	if err != nil {
 		return Admission{}, err
 	}
