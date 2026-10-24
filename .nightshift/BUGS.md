@@ -73,12 +73,6 @@ Reproduce the intermittent concurrent test scratch removal failure before changi
 
 **Requires:** none.
 
-### [Operational disclosure status label](bugs/runtime-operational-disclosure-label.md)
-
-Align the freshness label with operational warnings that withhold state while preserving conservative guidance refusal.
-
-**Requires:** none.
-
 ### [Pre-provider interrupt status](bugs/runtime-preprovider-interrupt-status.md)
 
 Define client terminal timing and turnInProgress behavior while a cancelled turn still has acquisition in flight.
