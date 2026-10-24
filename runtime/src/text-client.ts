@@ -54,9 +54,13 @@ function formatOperational(operational: HostStatus['operational']): string {
   return `operational: ${operational.state}; warnings: ${warnings}${remediation === '' ? '' : `. ${remediation}`}`;
 }
 
+const restartRemedy = 'Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit.';
+
 export function formatStatus(status: HostStatus): string {
   const fault = status.journal.fault === null ? '' : ` (${status.journal.fault})`;
-  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}`;
+  // A live repairFailed fault means an unfinished repair that resumes only at the next chat or repair start.
+  const repairRemedy = status.journal.fault === 'repairFailed' ? ` State validation waits for an unfinished repair. ${restartRemedy}` : '';
+  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}`;
 }
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean; readonly onAttached?: () => void }
@@ -97,7 +101,7 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
       const pendingCheck = event.code === 'stateInvalidated' && !event.retryable && status?.stateSafety.state === 'recovering'
         && status.freshness.state === 'failed' && status.freshness.class === 'journal' && status.freshness.reason === 'settlementPending';
       line(pendingCheck
-        ? 'State validation was interrupted. Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit. The question was not resent.'
+        ? `State validation was interrupted. ${restartRemedy} The question was not resent.`
         : event.code === 'capacityBlocked'
           ? 'Runtime capacity blocked this turn. The current status names the refused transition and any known obligations. The question was not automatically resent.'
           : event.code === 'contextExhausted'

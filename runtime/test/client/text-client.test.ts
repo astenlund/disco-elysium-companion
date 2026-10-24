@@ -124,6 +124,42 @@ test('text client shows operational warnings and named-root remediation on every
   await running;
 });
 
+test('text client directs a restart while an unfinished repair holds state validation', async () => {
+  // Arrange
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {},
+    verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  const remedy = 'State validation waits for an unfinished repair. Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit.';
+  Object.assign(backend.status, { journal: { state: 'fault', fault: 'repairFailed', unacknowledgedEvents: 0 },
+    stateSafety: { state: 'recovering', correction: { correctionId: '8'.repeat(32), reason: 'coreRejected' }, carryRelease: 'none' } });
+  host.statusChanged();
+  const { input, output, read } = clientStreams();
+
+  // Act
+  const running = runTextClient(host, { input, output, terminal: false });
+  await until(() => read().includes('Enter a question.'));
+  const attachment = read();
+  host.invalidate('coreRejected');
+  await until(() => read().includes('Earlier state-based guidance may be unreliable'));
+  input.write('/status\n');
+  await until(() => read().split(remedy).length - 1 >= 2);
+  const pending = read();
+  Object.assign(backend.status, { journal: { state: 'healthy', fault: null, unacknowledgedEvents: 0 } });
+  host.statusChanged();
+  await until(() => read().length > pending.length && read().endsWith('\n') && read().slice(pending.length).includes('journal: healthy'));
+  const cleared = read().slice(pending.length);
+  input.write('/quit\n');
+  await running;
+
+  // Assert
+  assert.ok(attachment.includes(`journal: fault (repairFailed)`));
+  assert.ok(attachment.includes(remedy));
+  assert.ok(pending.slice(attachment.length).includes(remedy));
+  assert.equal(cleared.includes('unfinished repair'), false);
+});
+
 test('capacity readout keeps fixed slot order and labels each unknown obligation', () => {
   const initial = initialCapacity();
   assert.match(formatCapacity(initial), /unacknowledgedEvents=unknown/);

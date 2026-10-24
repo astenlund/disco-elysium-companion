@@ -55,6 +55,7 @@ describe('cleanup-only retained settlement', () => {
           assert.notEqual(safety.generation, generation);
           assert.equal(safety.correction?.reason, 'coreRejected');
           assert.equal(await model.kernel.providerAuthority(safety), false);
+          assert.deepEqual({ state: model.kernel.status.journal.state, fault: model.kernel.status.journal.fault }, { state: 'fault', fault: 'repairFailed' });
         } else {
           assert.deepEqual(model.invalidations, []);
           assert.deepEqual(plans, []);

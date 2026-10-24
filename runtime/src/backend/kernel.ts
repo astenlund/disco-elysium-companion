@@ -416,6 +416,8 @@ export class Kernel {
     const sources = new Set<string>();
     let pendingFault: string | null = this.adapterMismatch ? 'adapterMismatch' : null;
     let neededRepair: RepairRequest | null = null;
+    let plannedRepair = false;
+    const plan = async (request: RepairRequest): Promise<void> => { await this.planRecovery(request, deadline); plannedRepair = true; };
     const result = await this.journal.transact(async transaction => {
       let snapshot = await transaction.recoverHighWater();
       if (snapshot.fault !== null || snapshot.damaged.length > 0) { throw new SafetyUnavailableError('Journal requires structural recovery.'); }
@@ -473,7 +475,7 @@ export class Kernel {
           const decision = decideSettlement(current?.metadata ?? null, binding, result, generation, retained?.presentation ?? 'replayable');
           if (decision.kind === 'outboxInvalid') {
             await this.safetyStore.invalidate('coreRejected', deadline);
-            await this.planRecovery({ cause: 'coreRejected', journal: transaction.snapshot(), ...(current === null ? {} : { rejectedEvent: current.metadata }) }, deadline);
+            await plan({ cause: 'coreRejected', journal: transaction.snapshot(), ...(current === null ? {} : { rejectedEvent: current.metadata }) });
             proceed = false;
             return;
           }
@@ -481,7 +483,7 @@ export class Kernel {
           if (current === null) {
             if (decision.kind === 'quarantined' && retained?.presentation !== 'rejected') {
               await this.safetyStore.invalidate('coreRejected', deadline);
-              await this.planRecovery({ cause: 'coreRejected', journal: transaction.snapshot() }, deadline);
+              await plan({ cause: 'coreRejected', journal: transaction.snapshot() });
               proceed = false;
             }
             if (decision.kind === 'retry') { proceed = false; }
@@ -490,13 +492,13 @@ export class Kernel {
           if (decision.kind === 'accept' || decision.kind === 'unknown') {
             await transaction.rewrite(current, () => decision.metadata);
             if (decision.kind === 'unknown' && !decision.currentEvidence) {
-              await this.planRecovery({ cause: 'settlementUnverified', journal: transaction.snapshot(), rejectedEvent: current.metadata }, deadline);
+              await plan({ cause: 'settlementUnverified', journal: transaction.snapshot(), rejectedEvent: current.metadata });
               proceed = false;
             }
           } else if (decision.kind === 'quarantined') {
             if (retained?.presentation === 'rejected' && current.metadata.acceptance?.generation !== generation) { return; }
             await this.safetyStore.invalidate('coreRejected', deadline);
-            await this.planRecovery({ cause: 'coreRejected', journal: transaction.snapshot(), rejectedEvent: current.metadata }, deadline);
+            await plan({ cause: 'coreRejected', journal: transaction.snapshot(), rejectedEvent: current.metadata });
             proceed = false;
           } else if (decision.kind === 'retry') { proceed = false; }
         }, deadline, owningRepair);
@@ -504,8 +506,9 @@ export class Kernel {
       }
       return transaction.snapshot();
     }, deadline);
-    if (neededRepair !== null) { await this.planRecovery(neededRepair, deadline); }
-    pendingFault ??= repairFault;
+    if (neededRepair !== null) { await plan(neededRepair); }
+    // A repair this unowned drain planned resumes only at the next chat or repair start, like one found unfinished.
+    pendingFault ??= repairFault ?? (plannedRepair && owningRepair === null ? 'repairFailed' : null);
     this.emit({ journal: { state: pendingFault === null ? 'healthy' : 'fault', fault: pendingFault, unacknowledgedEvents: result.header.status === 'valid' && result.cursor.status === 'valid' ? result.header.value.highWaterSequence - result.cursor.value.lastAckedSequence : 0 } });
     return result;
   }
