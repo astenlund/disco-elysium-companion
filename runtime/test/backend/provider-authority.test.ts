@@ -19,6 +19,7 @@ import { ContextPreparer, type ContextCandidate } from '../../src/prepared-conte
 import { WindowRecovery, WindowRecoveryError, recoveryFingerprint } from '../../src/window-recovery.ts';
 import { parseSessionBinding } from '../../src/session-records.ts';
 import { parseStrictJson, stringifyJson } from '../../src/json.ts';
+import type { CoreWarning } from '../../src/core-client.ts';
 import { coreAttemptToken, type HandoverOperation, type RepairOperation } from '../../src/operation-records.ts';
 import type { OperationInventory } from '../../src/operations.ts';
 import type { StateSafety } from '../../src/safety-records.ts';
@@ -294,13 +295,13 @@ describe('codec-owned relevance lifecycle', () => {
     return [1, 3, 4].map(shape => ({ shape: shape as 1 | 3 | 4, fingerprint: shape === 4 ? floor : fingerprint, sha256: 'a'.repeat(64),
       bytes: shape === 4 ? 465 : 1075, eventCount: 0, stateIncluded: shape !== 4, degraded: shape === 4 ? 'stateTooLarge' : null }));
   }
-  function deliveryFixture() {
+  function deliveryFixture(warnings: readonly CoreWarning[] = []) {
     const event = journalEvent(1, { adapter: 'stubgame', acknowledgedAt: now, acceptance: { journalId: 'journal', eventId: '1'.repeat(32), generation } });
     const events = new Map([[1, { metadata: event, sha256: 'a'.repeat(64) }]]);
     const model = authorityModel(clean, { ...journal(1, 1), events });
     model.kernel.publish = async (_required, _repair, _deadline, _operation, afterChild) => {
       const result = { success: true as const, value: { outcome: 'unchanged' as const, kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1,
-        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings: [] } };
+        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings } };
       model.kernel.operational.observe(result); afterChild?.(result, performance.now()); return result;
     };
     model.kernel.drain = async () => model.kernel.journal.read();
@@ -308,6 +309,27 @@ describe('codec-owned relevance lifecycle', () => {
       createdAt: now, turnsCompleted: 1, needsState: true, instructionsSha256: 'b'.repeat(64), stateGeneration: generation }))));
     return { ...model, events, binding, delivery: new DeliveryCoordinator(model.kernel, async () => { throw new Error('Unexpected retention.'); }) };
   }
+
+  it('keeps a fresh digest fresh while operational warnings alone withhold state', async () => {
+    const cases = [
+      { name: 'clean', warnings: [], operational: 'current', disclosureOnly: false },
+      { name: 'reaper limit', warnings: [{ code: 'pipeline-reaper-discovery-limit-exceeded', detail: 'tmp' }], operational: 'current', disclosureOnly: true },
+      { name: 'cleanup degraded', warnings: [{ code: 'pipeline-cleanup-degraded', detail: null }], operational: 'unknown', disclosureOnly: true },
+    ] as const;
+    for (const item of cases) {
+      // Arrange
+      const model = deliveryFixture(item.warnings);
+
+      // Act
+      const snapshot = await model.delivery.acquire({ interactionId: `operational-${item.name.replaceAll(' ', '-')}`, requestReceivedAt: now });
+
+      // Assert
+      assert.deepEqual({ state: snapshot.freshness.state, class: snapshot.freshness.class, reason: snapshot.freshness.reason }, { state: 'fresh', class: null, reason: null }, item.name);
+      assert.equal(snapshot.disclosureOnly, item.disclosureOnly, item.name);
+      assert.equal(model.kernel.status.freshness.state, 'fresh', item.name);
+      assert.deepEqual(model.kernel.status.operational, { state: item.operational, warnings: item.warnings }, item.name);
+    }
+  });
 
   it('preserves the empty candidate boundary for initial, exhausted and disclosure selection', async () => {
     const model = deliveryFixture();

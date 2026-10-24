@@ -167,7 +167,9 @@ export class DeliveryCoordinator {
     if (receipt?.success && receipt.value.game !== k.config.game) { failure = { class: 'journal', reason: 'adapterMismatch' }; }
     if (k.status.journal.fault !== null) { failure = { class: 'journal', reason: k.status.journal.fault }; }
     const matches = receipt?.success === true && state !== null && receipt.value.targetIdentitySha256 === state.metadata.targetIdentitySha256;
-    if (blocked || !matches || !operationallyCurrent(k.operational.current)) { failure ??= { class: 'journal', reason: 'settlementPending' }; }
+    // Freshness describes the game digest alone; an unknown or reaper-limited operational observation is reported by the
+    // separate operational field and withholds state through disclosureOnly below.
+    if (blocked || !matches) { failure ??= { class: 'journal', reason: 'settlementPending' }; }
     const freshness: Freshness = { state: failure === null ? 'fresh' : 'failed', class: failure?.class ?? null, reason: failure?.reason ?? null,
       lastGoodGeneratedAt: state?.metadata.stateGeneratedAt ?? k.status.freshness.lastGoodGeneratedAt, checkedAt: utcNow() };
     const disclosureOnly = blocked || !matches || !operationallyCurrent(k.operational.current) || failure !== null;
