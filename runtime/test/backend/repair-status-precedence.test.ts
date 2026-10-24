@@ -73,20 +73,3 @@ test('a repair-owned drain keeps the repairing cue for the steps that follow it'
   assert.deepEqual({ state: exhausted.state, fault: exhausted.fault }, { state: 'repairing', fault: 'runtimeCapacityExceeded' });
   assert.deepEqual({ state: unowned.state, fault: unowned.fault }, { state: 'fault', fault: 'repairFailed' });
 });
-
-test('a completed repair hands a retained capacity exhaustion back to the fault state', () => {
-  // Arrange
-  const model = authorityModel();
-  model.kernel.emit({ journal: { state: 'repairing', fault: null, unacknowledgedEvents: 0 } });
-  model.kernel.resources.reportFailure(refusal('exhausted'));
-
-  // Act
-  model.kernel.emit({ journal: { ...model.kernel.status.journal, state: 'healthy', fault: null } });
-  const completed = model.kernel.status.journal;
-  model.kernel.resources.capacity.admitted('ordinary'); model.kernel.emit();
-  const admitted = model.kernel.status.journal;
-
-  // Assert
-  assert.deepEqual({ state: completed.state, fault: completed.fault }, { state: 'fault', fault: 'runtimeCapacityExceeded' });
-  assert.deepEqual({ state: admitted.state, fault: admitted.fault }, { state: 'healthy', fault: null });
-});

@@ -25,11 +25,11 @@ function memoryFileHash(model: ReturnType<typeof authorityModel>) {
   };
 }
 
-function completedAtFloor(floor = 3) {
+function completedAtFloor(floor = 3, cause: RepairOperation['cause'] = repair().cause) {
   const oldEvent = journalEvent(4, { adapter: 'stubgame', type: 'state.resync', coreRepairOperationId: coreAttemptToken(owner.operationId, 0),
     attemptRef: { operationId: owner.operationId, attemptOrdinal: 0 }, acceptance: { journalId: 'journal', eventId: '4'.padStart(32, '0'), generation } });
   const base = repair();
-  let record = repair({ plan: { ...base.plan, lastGoodSequence: floor, publishedVersions: { schemaVersion: 2, adapterVersion: 1 } } });
+  let record = repair({ cause, plan: { ...base.plan, lastGoodSequence: floor, publishedVersions: { schemaVersion: 2, adapterVersion: 1 } } });
   record = selectRecoveryRecord(record, { logicalOutboxId: oldEvent.logicalOutboxId, recordSha256: oldEvent.recordSha256 }, 'observed', null);
   record = bindRecoveryEvent(record, oldEvent);
   record = completeRecovery(checkpointRecovery(record, oldEvent, generation, floor + 1, at), 'journal', generation, at);
@@ -87,8 +87,8 @@ function completedOrdinaryCarryModel() {
   return { model, oldVersion, restored, prerequisite };
 }
 
-function nonTailVersionReplayModel() {
-  const { oldEvent, record } = completedAtFloor();
+function nonTailVersionReplayModel(cause?: RepairOperation['cause']) {
+  const { oldEvent, record } = completedAtFloor(3, cause);
   const oldVersion = journalEvent(4, { ...oldEvent, schemaVersion: 1 });
   const later = journalEvent(5, { adapter: 'stubgame', logicalOutboxId: `${'b'.repeat(32)}-5`, recordSha256: 'c'.repeat(64),
     acceptance: { journalId: 'journal', eventId: '5'.padStart(32, '0'), generation } });
@@ -617,8 +617,10 @@ test('a newly deferred selection without a journal reference keeps its original 
   assert.equal(current.value.recovery.episodes.at(-1)?.replacementAttempt, null);
 });
 
-test('old-version replay preserves a later accepted suffix event before replacement', async () => {
-  const { model, oldEvent, later, events } = nonTailVersionReplayModel();
+// A non-tail old-version replay that rewinds, publishes one replacement resync and completes; atReplacement runs inside that
+// replacement Publish, while the repair is executing.
+function oldVersionReplacementModel(cause?: RepairOperation['cause'], atReplacement: () => Promise<void> = async () => {}) {
+  const { model, oldEvent, later, events } = nonTailVersionReplayModel(cause);
   seedExternalHandoff(model, handoffFor(later));
   const newId = `${'9'.repeat(32)}-4`;
   const newSource = replayOutbox(newId, 4, 1, '7'.repeat(64));
@@ -643,6 +645,7 @@ test('old-version replay preserves a later accepted suffix event before replacem
       assert.equal(snapshotAtReplacement.header.status, 'valid');
       if (snapshotAtReplacement.header.status !== 'valid') { throw new Error('Expected a rewound header.'); }
       assert.equal(snapshotAtReplacement.header.value.highWaterSequence, 3);
+      await atReplacement();
       replacementPublished = true;
       return publishReceipt(newId, 4, 'committed');
     }
@@ -667,6 +670,41 @@ test('old-version replay preserves a later accepted suffix event before replacem
     await model.kernel.operations.update(stored, value => bindRecoveryEvent(value as RepairOperation, event));
     return model.kernel.journal.read();
   };
+
+  return { model, coordinator, oldEvent, later, events, newId, published, retiredId, retiredSource };
+}
+
+for (const cause of ['operationLost', 'capacity'] as const) {
+  test(`a repair caused by ${cause} that completes beside capacity exhaustion hands the capacity fault back`, async () => {
+    // Arrange
+    let during: { state: string; fault: string | null } | null = null;
+    const fixture = oldVersionReplacementModel(cause, async () => {
+      fixture.model.kernel.resources.reportFailure(new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['uncompactedEvents'] }, 'ordinary'));
+      fixture.model.kernel.emit();
+      during = { state: fixture.model.kernel.status.journal.state, fault: fixture.model.kernel.status.journal.fault };
+    });
+    // The executing repair holds the repair reservation, so the ordinary refusal does not refuse its own steps.
+    Object.assign(fixture.model.kernel.resources, { assertReservation: () => 'repair' as const });
+
+    // Act
+    await fixture.coordinator.resume(owner.operationId);
+    const completed = fixture.model.kernel.status;
+    fixture.model.kernel.resources.capacity.admitted('ordinary'); fixture.model.kernel.emit();
+    const admitted = fixture.model.kernel.status.journal;
+
+    // Assert
+    assert.deepEqual(during, { state: 'repairing', fault: 'runtimeCapacityExceeded' });
+    const stored = await fixture.model.kernel.operations.read(owner.operationId);
+    assert.ok(stored.status === 'valid' && !stored.value.compacted && stored.value.kind === 'repair' && stored.value.recovery.activeEpisode === null);
+    assert.equal(fixture.published.length, 2);
+    assert.deepEqual({ state: completed.journal.state, fault: completed.journal.fault }, { state: 'fault', fault: 'runtimeCapacityExceeded' });
+    assert.equal(completed.capacity.ordinary.state, 'exhausted');
+    assert.deepEqual({ state: admitted.state, fault: admitted.fault }, { state: 'healthy', fault: null });
+  });
+}
+
+test('old-version replay preserves a later accepted suffix event before replacement', async () => {
+  const { model, coordinator, oldEvent, later, events, newId, published, retiredId, retiredSource } = oldVersionReplacementModel();
   await coordinator.resume(owner.operationId);
   const current = await model.kernel.operations.read(owner.operationId);
   assert.equal(current.status, 'valid');
