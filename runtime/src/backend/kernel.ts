@@ -330,6 +330,11 @@ export class Kernel {
     } finally { this.admission = null; }
   }
 
+  // A Publish call that ends without a validated, observed result is an unknown operational observation for every caller.
+  private publishUnobserved(): void {
+    if (this.operational.unavailable()) { this.emit(); }
+  }
+
   async publish(requireRecord: boolean, repair: RepairOperation | null, deadline: Deadline, accept?: (result: CoreResult<PublishReceipt>) => Promise<void>, afterChild?: (result: CoreResult<PublishReceipt> | null, terminatedAt: number | null) => Deadline): Promise<CoreResult<PublishReceipt>> {
     const repairOperationId = repair === null ? null : coreAttemptToken(repair.operationId, currentAttemptOrdinal(repair));
     const request: CoreRequest = { kind: 'publish', principal: this.scope.principal, requireRecord, repairOperationId };
@@ -338,14 +343,11 @@ export class Kernel {
       let result: CoreResult<PublishReceipt> | null = null;
       let terminatedAt: number | null = null;
       try { result = await this.core.publish(this.scope.principal, requireRecord, repairOperationId, deadline, at => { terminatedAt = at; }); return result; }
-      catch (error) {
-        // A Publish call that ends without a validated result is an unknown operational observation for every caller.
-        if (this.operational.unavailable()) { this.emit(); }
-        throw error;
-      }
+      catch (error) { this.publishUnobserved(); throw error; }
       finally { workDeadline = afterChild?.(result, terminatedAt) ?? deadline; }
     }, async result => {
-      this.operational.observe(result);
+      try { this.operational.observe(result); }
+      catch (error) { this.publishUnobserved(); throw error; }
       if (result.success) { this.emit({ consumer: 'owner' }); }
       else if (['consumer-not-owner', 'consumer-outbox-pending', 'consumer-owner-invalid', 'consumer-owner-unreadable'].includes(result.reason)) { this.emit({ consumer: 'notOwner' }); }
       if (result.success && result.value.game !== this.config.game) {

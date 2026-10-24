@@ -45,6 +45,22 @@ for (const failure of [
   });
 }
 
+test('a recovery-owned resync result the observer refuses marks the operational observation unknown', async () => {
+  // Arrange
+  const model = deferredResyncModel();
+  model.kernel.operational.observe(cleanReceipt([retainedWarning]));
+  assert.equal(model.kernel.operational.current.state, 'current');
+  model.kernel.core.publish = async () => cleanReceipt([{ code: 'pipeline-reaper-discovery-limit-exceeded', detail: 'elsewhere' }]);
+
+  // Act
+  await assert.rejects(new RecoveryCoordinator(model.kernel).resume(owner.operationId), /invalid reaper root/);
+
+  // Assert
+  assert.deepEqual(model.kernel.operational.current, { state: 'unknown', warnings: [retainedWarning] });
+  assert.equal(model.kernel.status.operational.state, 'unknown');
+  assert.notEqual((await model.kernel.safety()).pendingCheck, null);
+});
+
 test('a Publish failure after its validated result keeps the observation that result established', async () => {
   // Arrange
   const model = authorityModel();
