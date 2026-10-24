@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, openSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -215,13 +215,39 @@ describe('native helper first-launch build', () => {
       holder.once('exit', () => { reject(new Error('The holder exited before holding the file.')); });
     });
     try {
-      // Act and assert
+      // Act and assert: the open fails with a sharing violation, which Node reports as EBUSY.
+      assert.throws(() => openSync(held, 'r'), { code: 'EBUSY' });
       assert.throws(() => observeImageFile(held), error => error instanceof NativeHelperUnavailableError && error.reason === 'imageInUse');
       assert.throws(() => observeImageFile(held, 'buildOutput'), error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed');
     } finally {
       const closed = new Promise(resolve => { holder.once('close', resolve); });
       holder.stdin.end();
       await closed;
+    }
+  });
+
+  it('rebuilds an image denied read access while status refuses it with the pin-mismatch reason', { timeout: 120000 }, async () => {
+    // Arrange: a pinned image whose read-data right is denied to the current user, so opening it fails with EPERM.
+    const real = await testHelperImage();
+    const root = await installation();
+    const image = path.join(root, helperImageFile);
+    await fs.copyFile(real.path, image);
+    const user = execFileSync('whoami', { encoding: 'utf8' }).trim();
+    execFileSync('icacls', [image, '/deny', `${user}:(RD)`], { stdio: 'ignore' });
+    try {
+      assert.throws(() => openSync(image, 'r'), { code: 'EPERM' });
+      assert.throws(() => observeImageFile(image), error => error instanceof NativeHelperUnavailableError && error.reason === 'imagePinMismatch');
+
+      // Act
+      const status = ensureNativeHelperImage({ build: false, root });
+      await refuses(status, 'imagePinMismatch');
+      const built = await ensureNativeHelperImage({ build: true, root, ...withToolchain(await fakeToolchain({ build: 'copy', copyFrom: real.path })) });
+
+      // Assert: the unreadable image was removed and a readable pinned image published in its place.
+      assert.equal(built.sha256, nativeHelperSha256);
+      assert.equal((await fs.readFile(image)).length > 0, true);
+    } finally {
+      if (existsSync(image)) { execFileSync('icacls', [image, '/remove:d', user], { stdio: 'ignore' }); }
     }
   });
 

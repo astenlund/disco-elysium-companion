@@ -171,17 +171,32 @@ export function observeImageFile(location: string, file: ObservedFile = 'image')
 export type ObservedFile = 'image' | 'buildOutput';
 
 /**
- * A build output that cannot be read fails the build. A published image that another process holds is in use, whose remedy
- * is to close that process; any other unreadable image keeps the pin-mismatch remedy of running chat to rebuild it.
+ * A build output that cannot be read fails the build. A published image that another process holds open (a sharing
+ * violation, which Node reports as EBUSY) is in use, whose remedy is to close that process. Any other unreadable image,
+ * such as one denied read access (EPERM), fails its pin: chat, consumer and repair remove and rebuild it, and status
+ * refuses with the pin-mismatch remedy of running chat once.
  */
 function unreadable(error: unknown, file: ObservedFile): NativeHelperUnavailableError {
   if (file === 'buildOutput') { return refuse('buildFailed'); }
-  const code = (error as NodeJS.ErrnoException).code;
-  return refuse(code === 'EBUSY' || code === 'EPERM' ? 'imageInUse' : 'imagePinMismatch');
+  return refuse((error as NodeJS.ErrnoException).code === 'EBUSY' ? 'imageInUse' : 'imagePinMismatch');
 }
 
-function pinnedImage(location: string, release: NativeHelperRelease): HelperImage | null {
-  const observed = observeImageFile(location);
+function isUnreadableImage(error: unknown): boolean {
+  return error instanceof NativeHelperUnavailableError && error.reason === 'imagePinMismatch';
+}
+
+/**
+ * The published image when it is present, readable and matches its pin, or null when it is absent or fails its pin. With
+ * rebuildUnreadable, an image that is present but cannot be read for a reason other than being held is also null, so the
+ * build step replaces it; an image another process holds still refuses as in use.
+ */
+function pinnedImage(location: string, release: NativeHelperRelease, rebuildUnreadable = false): HelperImage | null {
+  let observed;
+  try { observed = observeImageFile(location); }
+  catch (error) {
+    if (rebuildUnreadable && isUnreadableImage(error)) { return null; }
+    throw error;
+  }
   if (observed === null || observed.sha256 !== release.helper.sha256) { return null; }
   return { path: location, sha256: observed.sha256, volume: observed.volume, fileId: observed.fileId };
 }
@@ -400,6 +415,20 @@ async function sweepLeftoverBuilds(root: string, report: (message: string) => vo
   finally { await releaseGuard(); }
 }
 
+/**
+ * The identity of a present image the build step replaces: the file it hashed, or, for an image that cannot be read, the
+ * file lstat reports. The held build guard keeps any other start from publishing meanwhile, so that file is the unreadable
+ * image itself. Null when no image is present.
+ */
+function failedImageIdentity(location: string): { readonly volume: string; readonly fileId: string } | null {
+  try { return observeImageFile(location); }
+  catch (error) {
+    if (!isUnreadableImage(error)) { throw error; }
+    const current = lstatOrNull(location);
+    return current === null ? null : { volume: String(current.dev), fileId: String(current.ino) };
+  }
+}
+
 /** Removes a present image that failed its pin, only when it is still the file that was hashed. */
 function removeFailedImage(location: string, hashed: { readonly volume: string; readonly fileId: string }): void {
   const current = lstatOrNull(location);
@@ -416,14 +445,14 @@ function removeFailedImage(location: string, hashed: { readonly volume: string; 
 /**
  * Returns the verified helper image. The source set and digests are checked against the manifest first, so a cached
  * image is never accepted for changed sources; then a present image matching its pin is used as is, and otherwise
- * chat, consumer and repair build it while status refuses.
+ * chat, consumer and repair build it while status refuses. An image another process holds refuses as in use in both.
  */
 export async function ensureNativeHelperImage(options: NativeImageOptions): Promise<HelperImage> {
   const root = canonicalInstallationRoot(options.root);
   const release = readNativeHelperRelease(root);
   verifyHelperSources(root, release);
   const image = path.join(root, helperImageFile);
-  const ready = pinnedImage(image, release);
+  const ready = pinnedImage(image, release, options.build);
   if (ready !== null) {
     if (options.build) { await sweepLeftoverBuilds(root, options.onDiagnostic ?? (() => {})); }
     return ready;
@@ -432,13 +461,13 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
   const releaseGuard = await takeBuildGuard(root);
   try {
     // Another start may have finished the build while this one waited for the guard.
-    const built = pinnedImage(image, release);
+    const built = pinnedImage(image, release, true);
     if (built !== null) { return built; }
     admitOrCreateDirectory(path.join(root, '.tmp'));
     const buildRoot = path.join(root, buildFolder);
     admitOrCreateDirectory(buildRoot);
     sweepBuildDirectories(buildRoot, options.onDiagnostic ?? (() => {}));
-    const failed = observeImageFile(image);
+    const failed = failedImageIdentity(image);
     if (failed !== null) { removeFailedImage(image, failed); }
     options.onBuildStart?.();
     const go = resolveGo(options.toolchainEnvironment);
