@@ -141,6 +141,7 @@ export class SessionHost implements SessionHostV1 {
     try {
       const started = await starting;
       this.ready = started && !this.initialStartupInvalidated;
+      if (!this.ready && this.lifecycle.status.state !== 'failed') { this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: await this.safetyRefusalRemedy() }); }
       return this.ready;
     } finally {
       this.initialStartCompleted = true;
@@ -148,6 +149,19 @@ export class SessionHost implements SessionHostV1 {
       this.statusChanged();
       this.scheduleTransition();
     }
+  }
+
+  /**
+   * A start refusal that left the provider unfailed is a safety refusal. An invalidation, or a readable safety record that still
+   * refused, is a durable obligation only startup reconciliation discharges, so it needs a restart; unreadable authority may be
+   * transient, and /new rechecks it.
+   */
+  private async safetyRefusalRemedy(): Promise<'retryable' | 'restartRequired'> {
+    if (this.initialStartupInvalidated) { return 'restartRequired'; }
+    try { await this.options.backend.safety(); }
+    catch { return 'retryable'; }
+
+    return 'restartRequired';
   }
 
   async prepareAttachmentWitness(): Promise<void> {
@@ -225,6 +239,8 @@ export class SessionHost implements SessionHostV1 {
     await this.transition;
     await this.lifecycle.failCurrent();
     this.statusChanged();
+    // The latched block refuses /new for the rest of this process.
+    this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: 'restartRequired' });
   }
 
   attach(sink: ClientSink): ReturnType<SessionHostV1['attach']> {

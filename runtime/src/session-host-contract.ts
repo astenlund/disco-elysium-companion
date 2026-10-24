@@ -45,7 +45,8 @@ export type HostNotice =
   | { readonly type: 'notice'; readonly code: 'agentSessionStarted'; readonly reason: StartReason }
   | { readonly type: 'notice'; readonly code: 'sessionReconnected'; readonly reason: 'subprocessExited' | 'overrideReset' }
   | { readonly type: 'notice'; readonly code: 'stateRedelivered'; readonly reason: null }
-  | { readonly type: 'notice'; readonly code: 'stateContextInvalidated'; readonly reason: Correction['reason'] };
+  | { readonly type: 'notice'; readonly code: 'stateContextInvalidated'; readonly reason: Correction['reason'] }
+  | { readonly type: 'notice'; readonly code: 'providerSafetyRefused'; readonly reason: 'retryable' | 'restartRequired' };
 export type TurnFailure = 'interrupted' | 'subprocessExited' | 'providerError' | 'authenticationFailed' | 'rateLimited' | 'contextExhausted' | 'capacityBlocked' | 'stateInvalidated';
 export type HostEvent = HostNotice
   | ({ readonly type: 'turn.started' } & Interaction)
