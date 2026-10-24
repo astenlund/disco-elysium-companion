@@ -22,7 +22,9 @@ const (
 
 var procGetFileSizeEx = kernel32.NewProc("GetFileSizeEx")
 
-// OpenRead opens a regular file for reading with the given sharing, following no reparse point at the final component.
+// OpenRead opens a file for reading with the given sharing. It does not pass FILE_FLAG_OPEN_REPARSE_POINT, so it follows a
+// reparse point at the final component; it is safe only on a path the caller has already admitted, as the callers of
+// ReadBounded and ObserveRaw do before reading.
 func OpenRead(path string, share uint32) (syscall.Handle, error) {
 	// Admitted paths are full local paths; the extended prefix keeps long paths from failing as absent.
 	name, err := syscall.UTF16PtrFromString(`\\?\` + path)

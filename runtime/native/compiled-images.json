@@ -13,7 +13,7 @@
   "helper": {
     "file": "companion-helper.exe",
     "bytes": 4668928,
-    "sha256": "59cb7fe61c201d9962ef5933a63d47f66b54f4e303c663169618846bde53acf5",
+    "sha256": "0cdf981bd145e68cf4d3bff21eef23ee822bbb494dc162da4563314c9e058f34",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -185,7 +185,7 @@
       },
       {
         "path": "runtime/native/helper/internal/nativefs/read.go",
-        "sha256": "fb92bd4b2de4ff71d2c74e0ebd8bd40a0fee82df5044a559cc6bc541d2d1623c"
+        "sha256": "e867b06f036dcec4aa2c7309a5619db741426df21f712e37d14083f24871dc42"
       },
       {
         "path": "runtime/native/helper/internal/nativefs/staging_test.go",
