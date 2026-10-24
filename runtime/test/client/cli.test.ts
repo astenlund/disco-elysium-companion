@@ -47,17 +47,20 @@ test('status through a junction spelling of the companion root starts the helper
   await testHelperImage();
   const fixture = await companionFixture('runtime');
   const junction = path.join(path.dirname(fixture.root), `junction-${randomUUID()}`);
-  await fs.symlink(fixture.root, junction, 'junction');
   const output: string[] = [];
   try {
-    // Act
-    const code = await runCli(['status'], junction, text => output.push(text));
+    await fs.symlink(fixture.root, junction, 'junction');
+    try {
+      // Act
+      const code = await runCli(['status'], junction, text => output.push(text));
 
-    // Assert
-    assert.equal(code, 0);
-    assert.equal(typeof (JSON.parse(output[0]!) as { initialized?: unknown }).initialized, 'boolean');
+      // Assert
+      assert.equal(code, 0);
+      assert.equal(typeof (JSON.parse(output[0]!) as { initialized?: unknown }).initialized, 'boolean');
+    } finally {
+      await fs.rm(junction, { force: true });
+    }
   } finally {
-    await fs.rm(junction);
     await fixture.close();
   }
 });
