@@ -189,7 +189,10 @@ remains only for manual inspection that must not consume.
 
 ## Hard limits
 
-- Never modify anything outside the repository root. Saves are sacred: never write
+- Never modify anything outside the repository root, except new reports in (and, if
+  it is absent, the creation of) the Nightshift clone's inbox
+  (`C:/Git/nightshift/.nightshift/inbox/`), which the global instructions direct you
+  to file. Saves are sacred: never write
   to, move, or delete anything under
   `C:\Users\asten\AppData\LocalLow\ZAUM Studio\Disco Elysium\SaveGames\`.
 - References: `adapters/disco_elysium/knowledge.md` (game structure),
