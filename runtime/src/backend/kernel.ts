@@ -138,7 +138,10 @@ export class Kernel {
     }
     const capacity = this.resources.capacity.current;
     const fault = capacityJournalFault(capacity, this.journalObservation.fault);
-    const journal = { ...this.journalObservation, fault, state: fault !== null ? 'fault' as const : this.journalObservation.state === 'fault' ? 'healthy' as const : this.journalObservation.state };
+    // An executing repair step keeps its repairing cue; a capacity-derived fault is still reported beside it.
+    const state = this.journalObservation.state === 'repairing' ? 'repairing' as const
+      : fault !== null ? 'fault' as const : this.journalObservation.state === 'fault' ? 'healthy' as const : this.journalObservation.state;
+    const journal = { ...this.journalObservation, fault, state };
     this.status = Object.freeze({ ...this.status, ...change, capacity, journal, operational: this.operational.current }); this.options.onStatus?.(this.status);
   }
   diagnose(phase: string, error: unknown): void {
