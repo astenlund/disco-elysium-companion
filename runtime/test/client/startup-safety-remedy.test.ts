@@ -29,17 +29,26 @@ async function attachNotices(host: SessionHost): Promise<HostEvent[]> {
 
 const refusals = (events: readonly HostEvent[]) => events.flatMap(event => event.type === 'notice' && event.code === 'providerSafetyRefused' ? [event.reason] : []);
 
-test('an unavailable safety check at provider start names /new as its recheck, and /new recovers once it is available', async () => {
+// The safety record reads as busy, the transient sharing-violation condition, until the test clears it.
+function busySafety(backend: FakeBackend): { clear: () => void } {
+  let busy = true;
+  const safety = backend.safety.bind(backend);
+  Object.assign(backend, { safety: async () => { if (busy) { throw Object.assign(new Error('The safety record is in use.'), { code: 'EBUSY' }); } return safety(); } });
+
+  return { clear: () => { busy = false; } };
+}
+
+test('a transiently busy safety read at provider start names /new as its recheck, and /new recovers once it clears', async () => {
   // Arrange
   const { backend, provider, host } = startupModel();
-  backend.unavailable = true;
+  const busy = busySafety(backend);
 
   // Act
   const started = await startChatProvider(host, backend.asRuntime());
   const events = await attachNotices(host);
   const refusedSubmission = host.submitChat({ text: 'question', questionOverride: false }).result;
   const stillUnavailable = await host.startNewAgentSession();
-  backend.unavailable = false;
+  busy.clear();
   const recovered = await host.startNewAgentSession();
 
   // Assert
@@ -50,6 +59,22 @@ test('an unavailable safety check at provider start names /new as its recheck, a
   assert.equal(recovered, 'started');
   assert.equal(provider.calls.length, 1);
   assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
+test('a safety read failure that is not known to be transient requires a restart', async () => {
+  // Arrange
+  const { backend, provider, host } = startupModel();
+  backend.unavailable = true;
+
+  // Act
+  const started = await startChatProvider(host, backend.asRuntime());
+  const events = await attachNotices(host);
+
+  // Assert
+  assert.equal(started.result, 'ready');
+  assert.deepEqual(refusals(events), ['restartRequired']);
+  assert.equal(provider.calls.length, 0);
   await host.shutdown();
 });
 
@@ -92,7 +117,7 @@ test('a final attachment safety block requires a restart', async () => {
 
 test('text client renders each provider safety refusal with its remedy', async () => {
   for (const item of [
-    { arrange: (backend: FakeBackend) => { backend.unavailable = true; }, text: '/new rechecks it; if it stays unavailable, use /quit and run repair after exit.' },
+    { arrange: (backend: FakeBackend) => { busySafety(backend); }, text: '/new rechecks it; if it stays unavailable, use /quit and run repair after exit.' },
     { arrange: (backend: FakeBackend) => { backend.safetyValue = { ...backend.safetyValue, pendingCheck: '7'.repeat(32) }; },
       text: 'Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit.' },
   ]) {

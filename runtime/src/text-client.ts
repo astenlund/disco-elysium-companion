@@ -114,7 +114,7 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
       if (event.code === 'stateContextInvalidated') { line('[Earlier state-based guidance may be unreliable. A clean session must revalidate it.]'); }
       else if (event.code === 'providerSafetyRefused') {
         line(event.reason === 'retryable'
-          ? '[Provider start refused: context safety is unavailable. /new rechecks it; if it stays unavailable, use /quit and run repair after exit.]'
+          ? '[Provider start refused: context safety is temporarily unavailable. /new rechecks it; if it stays unavailable, use /quit and run repair after exit.]'
           : `[Provider start refused: state safety needs startup recovery. ${restartRemedy}]`);
       }
       else { line(`[${event.code}${event.reason === null ? '' : `: ${event.reason}`}]`); }

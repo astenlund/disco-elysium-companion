@@ -12,9 +12,9 @@ import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 import { FakeProvider, instructionHash, until } from './support.ts';
 
-// A private real coordinator decides the retryable branch: unreadable safety authority refuses the provider start, and /new
-// recovers once that authority reads valid again, without a restart.
-test('real coordinator safety unavailability at provider start is recovered by /new once readable', { timeout: 600000 }, async () => {
+// A private real coordinator decides the restart branch: a content-invalid safety record refuses the provider start, no /new in
+// that process can recover it, and the next chat start reconciles the record.
+test('real coordinator content-invalid safety at provider start requires a restart, which reconciles it', { timeout: 600000 }, async () => {
   // Arrange
   const fixture = await companionFixture('runtime-owned-empty');
   let backend: RuntimeBackend | null = null;
@@ -23,11 +23,8 @@ test('real coordinator safety unavailability at provider start is recovered by /
     backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root, onStatus: () => host?.statusChanged(),
       onInvalidated: reason => host?.invalidate(reason) });
     const opened = backend;
-    const startup = await opened.startup({ kind: 'chat' });
-    assert.equal(startup.notOwner, false);
-    const safetyPath = path.join(opened.scope.dataRoot, 'state-safety.json');
-    const safetyBytes = await fs.readFile(safetyPath);
-    await fs.writeFile(safetyPath, '{');
+    assert.equal((await opened.startup({ kind: 'chat' })).notOwner, false);
+    await fs.writeFile(path.join(opened.scope.dataRoot, 'state-safety.json'), '{');
     const provider = new FakeProvider();
     host = new SessionHost({ backend: opened, provider, instructionsSha256: instructionHash, requireVerifiedAttach: true,
       providerTerminated: async () => opened.supervisor.verifyQuiescent('provider'), verifyTools: async () => opened.supervisor.verifyQuiescent('provider'),
@@ -38,17 +35,20 @@ test('real coordinator safety unavailability at provider start is recovered by /
     const started = await startChatProvider(host, opened);
     const attached = await host.attachVerified(event => { events.push(event); });
     await until(() => events.some(event => event.type === 'notice' && event.code === 'providerSafetyRefused'));
-    const whileUnreadable = await host.startNewAgentSession();
-    await fs.writeFile(safetyPath, safetyBytes);
-    const afterRestore = await host.startNewAgentSession();
+    const retried = await host.startNewAgentSession();
+    await host.shutdown(); host = null; backend = null;
+    backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
+    const restarted = await backend.startup({ kind: 'chat' });
+    const reconciled = await backend.safety();
 
     // Assert
     assert.equal(started.result, 'ready');
     assert.equal(attached.result, 'attached');
-    assert.deepEqual(events.flatMap(event => event.type === 'notice' && event.code === 'providerSafetyRefused' ? [event.reason] : []), ['retryable']);
-    assert.equal(whileUnreadable, 'providerUnavailable');
-    assert.equal(afterRestore, 'started');
-    assert.equal(provider.calls.length, 1);
+    assert.deepEqual(events.flatMap(event => event.type === 'notice' && event.code === 'providerSafetyRefused' ? [event.reason] : []), ['restartRequired']);
+    assert.equal(retried, 'providerUnavailable');
+    assert.equal(provider.calls.length, 0);
+    assert.equal(restarted.notOwner, false);
+    assert.equal(reconciled.stateSafetyVersion, 1);
   } finally {
     if (host !== null) { await host.shutdown(); backend = null; }
     if (backend !== null) { await backend.shutdown(true); }

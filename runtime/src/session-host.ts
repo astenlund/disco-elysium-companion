@@ -15,6 +15,8 @@ import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './windo
 const attachmentSafetyLifetimeMs = 3_000;
 const attachmentLivenessLifetimeMs = 1_000;
 const defaultProviderExitObservationMs = 5_000;
+// A sharing violation or exhausted handles clear on their own; every other read failure is treated as durable.
+const transientReadCodes = new Set(['EBUSY', 'EAGAIN', 'EMFILE', 'ENFILE']);
 interface AttachmentSafetyWitness {
   readonly generation: string;
   readonly binding: NonNullable<ProviderLifecycle['binding']>;
@@ -152,14 +154,14 @@ export class SessionHost implements SessionHostV1 {
   }
 
   /**
-   * A start refusal that left the provider unfailed is a safety refusal. An invalidation, or a readable safety record that still
-   * refused, is a durable obligation only startup reconciliation discharges, so it needs a restart; unreadable authority may be
-   * transient, and /new rechecks it.
+   * A start refusal that left the provider unfailed is a safety refusal. Only a safety read that failed with a known transient
+   * file-system condition can clear inside this process, so only that names /new as its recheck. An invalidation, a readable record
+   * that still refused, an absent or content-invalid record and any other failure need startup reconciliation, so a restart.
    */
   private async safetyRefusalRemedy(): Promise<'retryable' | 'restartRequired'> {
     if (this.initialStartupInvalidated) { return 'restartRequired'; }
     try { await this.options.backend.safety(); }
-    catch { return 'retryable'; }
+    catch (error) { return transientReadCodes.has((error as NodeJS.ErrnoException).code ?? '') ? 'retryable' : 'restartRequired'; }
 
     return 'restartRequired';
   }
