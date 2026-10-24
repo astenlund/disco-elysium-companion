@@ -159,6 +159,23 @@ describe('standalone status interpretation', () => {
     assert.equal(summary([], 0, 0, [repair]).state, 'repairing');
     assert.equal(summary([], 0, 0, [repair]).fault, 'repairFailed');
   });
+
+  it('names lost operation authority before any repair and clears it once the inventory reads valid', () => {
+    // Arrange
+    const lost = ['jr-' + '4'.repeat(32) + '.json'];
+    const events = [event(1), event(2), event(3)];
+
+    // Act
+    const owed = summarizeJournal(header(3), cursor(1), events, 'game', 'principal', [], lost);
+    const discharged = summarizeJournal(header(3), cursor(1), events, 'game', 'principal', [], []);
+    const damagedHeader = summarizeJournal({ status: 'absent' }, cursor(1), events, 'game', 'principal', [], lost);
+
+    // Assert
+    assert.deepEqual({ state: owed.state, fault: owed.fault, integrity: owed.integrity, unacknowledgedEvents: owed.unacknowledgedEvents },
+      { state: 'fault', fault: 'repairFailed', integrity: 'operations', unacknowledgedEvents: 2 });
+    assert.deepEqual({ state: discharged.state, fault: discharged.fault, integrity: discharged.integrity }, { state: 'healthy', fault: null, integrity: 'valid' });
+    assert.equal(damagedHeader.integrity, 'header');
+  });
 });
 
 describe('owned publication names', () => {

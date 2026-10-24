@@ -186,6 +186,7 @@ describe('native runtime platform', () => {
         const damaged = await readRuntimeStatus(fixture.root);
         assert.deepEqual(damaged.operations.unavailable, [broken]);
         assert.equal(damaged.journal.fault, 'repairFailed');
+        assert.equal(damaged.journal.integrity, 'operations');
         assert.equal(damaged.stateSafety.pendingOperationSafety, true);
         assert.equal(await fs.readFile(path.join(scope.dataRoot, 'operations', broken), 'utf8'), '{');
       } finally { await guard.release(); }

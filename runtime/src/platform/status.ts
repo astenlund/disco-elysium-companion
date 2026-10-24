@@ -37,7 +37,7 @@ export interface OperationStatus {
 export interface JournalStatus {
   readonly state: 'healthy' | 'repairing' | 'fault' | 'unavailable' | 'notInitialized';
   readonly fault: 'repairFailed' | null;
-  readonly integrity: 'valid' | 'header' | 'cursor' | 'gap' | 'unavailable';
+  readonly integrity: 'valid' | 'header' | 'cursor' | 'gap' | 'operations' | 'unavailable';
   readonly historyVerified: boolean | null;
   readonly unacknowledgedEvents: number | null;
   readonly retainedEvents: number;
@@ -216,8 +216,11 @@ export function summarizeJournal(header: StatusDocument<JournalHeader>, cursor: 
   }
   if (expected <= header.value.highWaterSequence) { return { ...empty, state: 'fault', fault: 'repairFailed', integrity: 'gap' }; }
   const repairing = operations.some(operation => operation.kind === 'repair' && operation.effectivelyUnfinished);
-  return { ...empty, state: unavailableOperations.length > 0 ? 'fault' : repairing ? 'repairing' : 'healthy', fault: unavailableOperations.length > 0 || repairing ? 'repairFailed' : null,
-    integrity: 'valid', unacknowledgedEvents: header.value.highWaterSequence - cursor.value.lastAckedSequence + (unrecordedEvent ? 1 : 0), unrecordedEvent };
+  // An unreadable operation record owes an operationLost repair whether or not one has started; 'operations' says so
+  // until the record is discharged and the inventory reads complete and valid again.
+  const operationsLost = unavailableOperations.length > 0;
+  return { ...empty, state: operationsLost ? 'fault' : repairing ? 'repairing' : 'healthy', fault: operationsLost || repairing ? 'repairFailed' : null,
+    integrity: operationsLost ? 'operations' : 'valid', unacknowledgedEvents: header.value.highWaterSequence - cursor.value.lastAckedSequence + (unrecordedEvent ? 1 : 0), unrecordedEvent };
 }
 
 export async function readAdmittedRuntimeStatus(scope: RuntimeScope, inspector: PathInspector, config: RuntimeConfig, deadline = Deadline.after(3_600_000)): Promise<StandaloneRuntimeStatus> {
