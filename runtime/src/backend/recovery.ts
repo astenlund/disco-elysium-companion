@@ -1805,7 +1805,10 @@ export class RecoveryCoordinator {
       throw error;
     } finally {
       this.running = false;
-      const record = await this.stored(operationId);
+      let record: StoredOperation & { record: RepairOperation };
+      // An unreadable record still ends the executing step, so status settles on the most cautious repair fault.
+      try { record = await this.stored(operationId); }
+      catch (error) { k.emit({ journal: { ...k.status.journal, state: 'fault', fault: 'repairFailed' } }); throw error; }
       const unfinished = effectivelyUnfinished(record.record);
       const disagrees = record.record.recovery.activeEpisode !== null && record.record.recovery.episodes[record.record.recovery.activeEpisode]!.phase === 'recordRejected';
       k.emit({ journal: { ...k.status.journal, state: unfinished ? 'fault' : 'healthy', fault: disagrees ? 'recordRejected' : unfinished ? 'repairFailed' : null } });

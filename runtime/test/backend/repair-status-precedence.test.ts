@@ -73,3 +73,22 @@ test('a repair-owned drain keeps the repairing cue for the steps that follow it'
   assert.deepEqual({ state: exhausted.state, fault: exhausted.fault }, { state: 'repairing', fault: 'runtimeCapacityExceeded' });
   assert.deepEqual({ state: unowned.state, fault: unowned.fault }, { state: 'fault', fault: 'repairFailed' });
 });
+
+for (const exhausted of [false, true]) {
+  test(`a repair whose record is unreadable when its step ends settles on repairFailed${exhausted ? ' beside capacity exhaustion' : ''}`, async () => {
+    // Arrange
+    const model = deferredResyncModel();
+    const repair = pausedRepair(model);
+    await repair.atStep;
+    if (exhausted) { model.kernel.resources.reportFailure(refusal('exhausted')); model.kernel.emit(); }
+    model.memory.unreadable.add(`operations/${owner.operationId}.json`);
+
+    // Act
+    repair.release(new Error('Synthetic repair step failure.'));
+    await assert.rejects(repair.running);
+    const settled = model.kernel.status.journal;
+
+    // Assert
+    assert.deepEqual({ state: settled.state, fault: settled.fault }, { state: 'fault', fault: 'repairFailed' });
+  });
+}
