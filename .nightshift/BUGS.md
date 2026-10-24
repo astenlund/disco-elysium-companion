@@ -207,6 +207,20 @@ Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the per
 
 **Requires:** none.
 
+## Go native helper follow-ups
+
+### Backend crash tests drain outside a capacity transition
+
+`runtime/test/backend-crash/consumer-release.test.ts` and `recovery-boundaries.test.ts` fail at their first child (`01-prepare-none`) with `RuntimeCapacityError`. The first refusal is `ResourceAuthority.codec`'s 'Codec owner is stale.' check: the crash worker's prepare mode (`runtime/test/backend-crash/worker.ts`) calls `kernel.drain` directly, and the drain's outbox read inspects a source through the codec without a reserved lease, while production wraps every drain in `resources.withTransition` and `reserve`. The lease check and the codec's pre-staging reservation predate the Go native helper branch and the drain path is unchanged by it, so the failure is believed older, but that is unverified: the one run on main failed earlier at backend startup for an unrelated environment reason. Confirm on a clean main checkout, then make the worker drain inside the transition and reservation production uses rather than relaxing the lease check.
+
+**Requires:** none.
+
+### Restart spent during startup bind hides the native helper refusal
+
+If the native helper exhausts its single restart while binding at startup, the failed-start cleanup re-verifies every process role through the exhausted helper and its error replaces the original refusal, so the operator sees `dataRootUnavailable` (termination unverified) instead of `nativeHelperUnavailable` with the restart remedy. The guard stays held, so it fails closed, and it needs two service failures in a short window. The [Go native helper](features/runtime-powershell-dependency.md) spec also does not say which surface carries the unavailable remedy for an attached chat. State in the spec, and implement, that a failed start whose cleanup checks fail only because the helper cannot serve keeps the guard and still reports the original refusal.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed.
