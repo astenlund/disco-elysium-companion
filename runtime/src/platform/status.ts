@@ -197,28 +197,30 @@ export function summarizeJournal(header: StatusDocument<JournalHeader>, cursor: 
   if (cursor.status !== 'valid' || cursor.value.journalId !== header.value.journalId || cursor.value.lastAckedSequence > header.value.highWaterSequence || cursor.value.lastSentSequence > header.value.highWaterSequence) {
     return { ...empty, state: 'fault', fault: 'repairFailed', integrity: 'cursor' };
   }
+  // Repair takes operationLost ahead of a stream gap, so a lost operation record names the stream fault as well.
+  const operationsLost = unavailableOperations.length > 0;
+  const streamFault: JournalStatus = { ...empty, state: 'fault', fault: 'repairFailed', integrity: operationsLost ? 'operations' : 'gap' };
   const sorted = [...events].sort((left, right) => left.status === 'valid' && right.status === 'valid' ? left.metadata.sequence - right.metadata.sequence : 0);
   const ids = new Set<string>();
   const logicalIds = new Set<string>();
   let expected = cursor.value.lastAckedSequence + 1;
   let unrecordedEvent = false;
   for (const result of sorted) {
-    if (result.status !== 'valid') { return { ...empty, state: 'fault', fault: 'repairFailed', integrity: 'gap' }; }
+    if (result.status !== 'valid') { return streamFault; }
     const event = result.metadata;
     if (event.journalId !== header.value.journalId || event.adapter !== game || event.principal !== principal || ids.has(event.eventId) || logicalIds.has(event.logicalOutboxId)) {
-      return { ...empty, state: 'fault', fault: 'repairFailed', integrity: 'gap' };
+      return streamFault;
     }
     ids.add(event.eventId); logicalIds.add(event.logicalOutboxId);
     if (event.sequence <= cursor.value.lastAckedSequence) { continue; }
-    if (event.sequence !== expected || event.compacted || event.sequence > header.value.highWaterSequence + 1) { return { ...empty, state: 'fault', fault: 'repairFailed', integrity: 'gap' }; }
+    if (event.sequence !== expected || event.compacted || event.sequence > header.value.highWaterSequence + 1) { return streamFault; }
     expected++;
     if (event.sequence === header.value.highWaterSequence + 1) { unrecordedEvent = true; }
   }
-  if (expected <= header.value.highWaterSequence) { return { ...empty, state: 'fault', fault: 'repairFailed', integrity: 'gap' }; }
+  if (expected <= header.value.highWaterSequence) { return streamFault; }
   const repairing = operations.some(operation => operation.kind === 'repair' && operation.effectivelyUnfinished);
   // An unreadable operation record owes an operationLost repair whether or not one has started; 'operations' says so
   // until the record is discharged and the inventory reads complete and valid again.
-  const operationsLost = unavailableOperations.length > 0;
   return { ...empty, state: operationsLost ? 'fault' : repairing ? 'repairing' : 'healthy', fault: operationsLost || repairing ? 'repairFailed' : null,
     integrity: operationsLost ? 'operations' : 'valid', unacknowledgedEvents: header.value.highWaterSequence - cursor.value.lastAckedSequence + (unrecordedEvent ? 1 : 0), unrecordedEvent };
 }

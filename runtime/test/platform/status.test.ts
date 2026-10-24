@@ -176,6 +176,23 @@ describe('standalone status interpretation', () => {
     assert.deepEqual({ state: discharged.state, fault: discharged.fault, integrity: discharged.integrity }, { state: 'healthy', fault: null, integrity: 'valid' });
     assert.equal(damagedHeader.integrity, 'header');
   });
+
+  it('names lost operation authority ahead of a stream gap, as the repair cause order does', () => {
+    // Arrange
+    const lost = ['jr-' + '4'.repeat(32) + '.json'];
+    const damaged: EventRead = { path: 'C:/fixture/journal/events/0000000000000002.json', status: 'invalid', sha256: null };
+
+    // Act
+    const sequenceGap = summarizeJournal(header(3), cursor(1), [event(3)], 'game', 'principal', [], lost);
+    const damagedEvent = summarizeJournal(header(3), cursor(1), [damaged, event(3)], 'game', 'principal', [], lost);
+    const gapOnly = summarizeJournal(header(3), cursor(1), [event(3)], 'game', 'principal', [], []);
+
+    // Assert
+    for (const summary of [sequenceGap, damagedEvent]) {
+      assert.deepEqual({ fault: summary.fault, integrity: summary.integrity }, { fault: 'repairFailed', integrity: 'operations' });
+    }
+    assert.equal(gapOnly.integrity, 'gap');
+  });
 });
 
 describe('owned publication names', () => {
