@@ -10,7 +10,7 @@ A related label appeared on 2026-10-19: an invalidation during the initial provi
 
 ## Follow-up
 
-Make the provider status reflect immediate suppression, including the bind-then-invalidate startup interval and the lasting `starting` or `reconnecting` label after an invalidated initial start, while preserving the existing no-input and later recovery gates. Add a regression for the status-only snapshot and send refusal.
+Make the provider status reflect immediate suppression, including the bind-then-invalidate startup interval and the lasting `starting` or `reconnecting` label after an invalidated initial start, while preserving the existing no-input and later recovery gates. Add a regression for the status-only snapshot and send refusal. [Startup remedy persistence](runtime-startup-remedy-persistence.md) changes the same provider readout after an invalidated initial start, so whichever fix lands first sets a label and refusal-field contract the other must adopt.
 
 ## Status
 
