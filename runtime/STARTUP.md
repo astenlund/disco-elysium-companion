@@ -4,7 +4,7 @@
 
 |                   Message                    |                                                                     What the runtime is doing                                                                     |
 |----------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Building the native helper (first launch)    | Only when the image is absent, fails its pin or cannot be read: builds the helper from its pinned sources before chat starts. It ends with `native helper built` or `failed`.     |
+| Building the native helper (first launch)    | Only when the image is absent, fails its pin or cannot be read for a reason other than a sharing violation: builds the helper from its pinned sources before chat starts. It ends with `native helper built` or `failed`.     |
 | Loading configuration                        | Reads and validates the runtime and adapter settings.                                                                                                             |
 | Validating the companion scope               | Starts and verifies the native helper service, then checks the companion root, Windows principal and physical paths used to select the runtime data scope.        |
 | Claiming the runtime instance                | Takes the single-instance guard, proves no earlier helper or retired worker still runs, binds the helper service to the scope and prepares the bound runtime scope so another writer cannot start there. |
