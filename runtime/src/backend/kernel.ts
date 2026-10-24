@@ -335,6 +335,11 @@ export class Kernel {
       let result: CoreResult<PublishReceipt> | null = null;
       let terminatedAt: number | null = null;
       try { result = await this.core.publish(this.scope.principal, requireRecord, repairOperationId, deadline, at => { terminatedAt = at; }); return result; }
+      catch (error) {
+        // A Publish call that ends without a validated result is an unknown operational observation for every caller.
+        if (this.operational.unavailable()) { this.emit(); }
+        throw error;
+      }
       finally { workDeadline = afterChild?.(result, terminatedAt) ?? deadline; }
     }, async result => {
       this.operational.observe(result);
