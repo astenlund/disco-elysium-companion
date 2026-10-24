@@ -121,12 +121,6 @@ Assert sent-mark and later redelivery-notice behavior when a window refusal occu
 
 **Requires:** none.
 
-### [Capacity fault during active repair](bugs/runtime-capacity-repair-status-precedence.md)
-
-Show an executing repair cue alongside capacity refusal rather than silently replacing it with a repair fault.
-
-**Requires:** none.
-
 ### [Deep helper working directories](bugs/runtime-helper-cwd-length.md)
 
 Investigate measured Windows helper launch failures in deep private working directories without weakening containment or quiescence.
