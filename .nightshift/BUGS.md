@@ -109,12 +109,6 @@ Give restart or repair guidance based on actually unfinished rejection repair au
 
 **Requires:** none.
 
-### [Pre-repair operation-loss status](bugs/runtime-operation-loss-status-label.md)
-
-Use a truthful status for an unreadable operation record before any repair step has failed.
-
-**Requires:** none.
-
 ### [Sent mark after unsent refusal](bugs/runtime-unsent-window-sent-mark.md)
 
 Assert sent-mark and later redelivery-notice behavior when a window refusal occurs before or after marking.
