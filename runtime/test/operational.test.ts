@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import type { CoreResult, CoreWarning, PublishReceipt } from '../src/core-client.ts';
+import type { CoreWarning } from '../src/core-client.ts';
 import { OperationalObservation, operationallyCurrent } from '../src/operational.ts';
+import { publishReceipt } from './support/publish-receipt.ts';
 
-function success(warnings: readonly CoreWarning[]): CoreResult<PublishReceipt> {
-  return { success: true, value: { outcome: 'unchanged', kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 2, game: 'game', targetIdentitySha256: 'a'.repeat(64), targetGeneratedAt: '2026-10-08T00:00:00.0000000Z', baselineApplied: null, cacheDegraded: false, warnings } };
-}
+const success = (warnings: readonly CoreWarning[]) => publishReceipt({ warnings });
 const reaper = (detail: 'tmp' | 'state'): CoreWarning => ({ code: 'pipeline-reaper-discovery-limit-exceeded', detail });
 
 describe('current operational observations', () => {

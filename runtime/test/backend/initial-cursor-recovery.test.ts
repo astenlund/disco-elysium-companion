@@ -15,6 +15,7 @@ import { activeRecoveryOwner, bindRecoveryEvent, checkpointRecovery, completeRec
 import type { RecoveryAction } from '../../src/recovery-manifest.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { journalEvent } from '../support/journal-event.ts';
+import { publishReceipt as receipt } from '../support/publish-receipt.ts';
 import { at, authorityModel, correctionId, deferredResyncModel, generation, journal, owner, repair, replayOutbox, witness } from './authority-fixtures.ts';
 
 function memoryFileHash(model: ReturnType<typeof authorityModel>) {
@@ -125,8 +126,7 @@ function memoryRewindExecutor(model: ReturnType<typeof authorityModel>, coordina
 }
 
 function publishReceipt(logicalOutboxId: string, sequence: number, outcome: PublishReceipt['outcome']): CoreResult<PublishReceipt> {
-  return { success: true, value: { outcome, kind: 'resync', logicalOutboxId, sequence, schemaVersion: 2, adapterVersion: 1, game: 'stubgame',
-    targetIdentitySha256: null, targetGeneratedAt: null, baselineApplied: null, cacheDegraded: false, warnings: [] } };
+  return receipt({ outcome, kind: 'resync', logicalOutboxId, sequence });
 }
 
 function receiptCaptureModel() {

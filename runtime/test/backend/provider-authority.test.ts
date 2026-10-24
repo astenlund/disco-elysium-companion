@@ -12,6 +12,7 @@ import { SafetyUnavailableError } from '../../src/safety-records.ts';
 import { SupervisorError } from '../../src/process.ts';
 import { admittedCapacityFixture, authorityModel, carryTransfer, deferredRepair, journal, release, repair, owner } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
+import { publishReceipt } from '../support/publish-receipt.ts';
 import { eventRewriteMetadata } from '../../src/journal-records.ts';
 import { handoffFor, RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import { bytesHash } from '../../src/storage.ts';
@@ -301,8 +302,7 @@ describe('codec-owned relevance lifecycle', () => {
     const events = new Map([[1, { metadata: event, sha256: 'a'.repeat(64) }]]);
     const model = authorityModel(clean, { ...journal(1, 1), events });
     model.kernel.publish = async (_required, _repair, _deadline, _operation, afterChild) => {
-      const result = { success: true as const, value: { outcome: 'unchanged' as const, kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1,
-        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings } };
+      const result = publishReceipt({ targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, warnings });
       model.kernel.operational.observe(result); afterChild?.(result, performance.now()); return result;
     };
     model.kernel.drain = async () => model.kernel.journal.read();
@@ -338,8 +338,7 @@ describe('codec-owned relevance lifecycle', () => {
       const model = deliveryFixture();
       model.kernel.publish = Kernel.prototype.publish.bind(model.kernel);
       const event = model.events.get(1)!.metadata;
-      const receipt = { success: true as const, value: { outcome: 'unchanged' as const, kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1,
-        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings: [] } };
+      const receipt = publishReceipt({ targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt });
       model.kernel.operational.observe(receipt);
       const read = model.kernel.journal.read.bind(model.kernel.journal);
       let reads = 0;
@@ -506,8 +505,7 @@ describe('checked timeout status boundary', () => {
       observed.push({ kind: 'status', state: model.kernel.status.stateSafety.state, correction: model.kernel.status.stateSafety.correction, reason: model.kernel.status.freshness.reason });
     };
     model.kernel.publish = async (_required, _repair, _deadline, _accept, afterChild) => {
-      const result = { success: true as const, value: { outcome: 'unchanged' as const, kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1,
-        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings: [] } };
+      const result = publishReceipt({ targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt });
       model.kernel.operational.observe(result); afterChild?.(result, performance.now()); return result;
     };
     let gate: Deadline | null = null;

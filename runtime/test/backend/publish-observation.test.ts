@@ -2,18 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
-import type { CoreResult, CoreWarning, PublishReceipt } from '../../src/core-client.ts';
+import type { CoreWarning } from '../../src/core-client.ts';
 import { Deadline } from '../../src/deadline.ts';
 import { operationallyCurrent } from '../../src/operational.ts';
 import { SupervisorError } from '../../src/process.ts';
+import { publishReceipt } from '../support/publish-receipt.ts';
 import { authorityModel, deferredResyncModel, owner } from './authority-fixtures.ts';
 
 const retainedWarning: CoreWarning = { code: 'pipeline-reaper-discovery-limit-exceeded', detail: 'tmp' };
 
-function cleanReceipt(warnings: readonly CoreWarning[]): CoreResult<PublishReceipt> {
-  return { success: true, value: { outcome: 'unchanged', kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1, game: 'stubgame',
-    targetIdentitySha256: null, targetGeneratedAt: null, baselineApplied: null, cacheDegraded: false, warnings } };
-}
+const cleanReceipt = (warnings: readonly CoreWarning[]) => publishReceipt({ warnings });
 
 for (const failure of [
   { name: 'supervisor', error: new SupervisorError('abnormal-exit', 'Synthetic core child failure.') },
