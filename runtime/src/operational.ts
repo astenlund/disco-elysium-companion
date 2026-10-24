@@ -7,8 +7,11 @@ const cleanupCode = 'pipeline-cleanup-degraded';
 export class OperationalObservation {
   private retainedRoots = new Set<'tmp' | 'state'>();
   private value: OperationalStatus = Object.freeze({ state: 'unknown', warnings: Object.freeze([]) });
+  private observedResults = 0;
 
   get current(): OperationalStatus { return this.value; }
+  /** Counts Publish results this observation validated and recorded, so a caller can tell a failure after its result was observed. */
+  get observations(): number { return this.observedResults; }
 
   unavailable(): boolean { return this.replace('unknown', this.value.warnings); }
 
@@ -22,6 +25,7 @@ export class OperationalObservation {
         roots.add(warning.detail);
       }
     }
+    this.observedResults++;
     if (clean) { this.retainedRoots = roots; }
     else { for (const root of roots) { this.retainedRoots.add(root); } }
     const merged = [...warnings];

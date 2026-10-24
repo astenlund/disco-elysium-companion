@@ -120,6 +120,8 @@ export class DeliveryCoordinator {
     let failure: { class: string; reason: string } | null = null;
     let gate: Deadline | null = null;
     let capacityFailure: RuntimeCapacityError | null = null;
+    // Kernel.publish marks a Publish that ends without an observed result; a later failure keeps the observation it made.
+    let failedAfterObservation = false;
     try {
       const acquired = await acquireWithPolicy({ game: k.config.game, fault: () => k.status.journal.fault,
         readJournal: async () => {
@@ -127,14 +129,18 @@ export class DeliveryCoordinator {
           if (snapshot.fault !== null || snapshot.damaged.length > 0) { await k.reportPayloadDamage(snapshot); }
           return snapshot;
         },
-        publish: (requireRecord, deadline, afterChild) => k.publish(requireRecord, null, deadline, undefined, afterChild), onGate: established => { gate = established; },
+        publish: async (requireRecord, deadline, afterChild) => {
+          const observations = k.operational.observations;
+          try { return await k.publish(requireRecord, null, deadline, undefined, afterChild); }
+          catch (error) { failedAfterObservation = k.operational.observations !== observations; throw error; }
+        }, onGate: established => { gate = established; },
       });
       receipt = acquired.receipt; gate = acquired.gate;
       if (acquired.skippedFault !== null) { k.operational.unavailable(); failure = { class: 'journal', reason: acquired.skippedFault }; }
     } catch (error) {
       capacityFailure = k.resources.captureFailure(error) ?? capacityFailure;
       k.diagnose('acquisition', error);
-      k.operational.unavailable();
+      if (!failedAfterObservation) { k.operational.unavailable(); }
       failure = { class: 'supervisor', reason: typeof error === 'object' && error !== null && 'reason' in error ? String(error.reason) : 'result-invalid' };
     }
     // This is the only post-acquisition settlement budget for the interaction.

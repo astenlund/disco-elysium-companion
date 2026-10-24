@@ -9,6 +9,7 @@ import * as BackendApi from '../../src/backend/api.ts';
 import { CoordinatorBackend } from '../../src/backend/index.ts';
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { SafetyUnavailableError } from '../../src/safety-records.ts';
+import { SupervisorError } from '../../src/process.ts';
 import { admittedCapacityFixture, authorityModel, carryTransfer, deferredRepair, journal, release, repair, owner } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
 import { eventRewriteMetadata } from '../../src/journal-records.ts';
@@ -328,6 +329,34 @@ describe('codec-owned relevance lifecycle', () => {
       assert.equal(snapshot.disclosureOnly, item.disclosureOnly, item.name);
       assert.equal(model.kernel.status.freshness.state, 'fresh', item.name);
       assert.deepEqual(model.kernel.status.operational, { state: item.operational, warnings: item.warnings }, item.name);
+    }
+  });
+
+  it('keeps the observation an interaction Publish made when a later step fails, and marks unknown when none was made', async () => {
+    for (const item of [{ name: 'after observation', expected: 'current' }, { name: 'before a result', expected: 'unknown' }] as const) {
+      // Arrange
+      const model = deliveryFixture();
+      model.kernel.publish = Kernel.prototype.publish.bind(model.kernel);
+      const event = model.events.get(1)!.metadata;
+      const receipt = { success: true as const, value: { outcome: 'unchanged' as const, kind: null, logicalOutboxId: null, sequence: null, schemaVersion: 2, adapterVersion: 1,
+        game: 'stubgame', targetIdentitySha256: event.targetIdentitySha256, targetGeneratedAt: event.stateGeneratedAt, baselineApplied: null, cacheDegraded: false, warnings: [] } };
+      model.kernel.operational.observe(receipt);
+      const read = model.kernel.journal.read.bind(model.kernel.journal);
+      let reads = 0;
+      model.kernel.journal.read = async deadline => {
+        reads++;
+        if (item.name === 'after observation' && reads === 2) { throw new Error('Synthetic journal read failure after the receipt was observed.'); }
+        return read(deadline);
+      };
+      model.kernel.core.publish = async () => { if (item.name === 'before a result') { throw new SupervisorError('abnormal-exit', 'Synthetic core child failure.'); } return receipt; };
+
+      // Act
+      await assert.rejects(model.delivery.acquire({ interactionId: `observation-${item.expected}`, requestReceivedAt: now }));
+
+      // Assert
+      assert.equal(model.kernel.operational.current.state, item.expected, item.name);
+      assert.equal(model.kernel.status.freshness.state, 'failed', item.name);
+      assert.notEqual((await model.kernel.safety()).pendingCheck, null, item.name);
     }
   });
 
