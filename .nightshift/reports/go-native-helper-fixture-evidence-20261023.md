@@ -10,7 +10,7 @@ The harness runs the fixture main four times on the same root with a synthetic p
 
 ## Results
 
-The runs below measured commit `180acf3` on 2026-10-23, the branch's last runtime code change at the time; later fixes on 2026-10-24 changed the CLI's companion-root handling and the image-read refusal reasons without a new fixture run, with the helper image already built and pinned.
+The runs below measured commit `180acf3` on 2026-10-23, with the helper image already built and pinned; it was the branch's last runtime code change at the time. Later fixes on 2026-10-24 changed the CLI's companion-root handling, the image-read refusal reasons and the rebuild of an unreadable image, and re-pinned the helper after a source comment change, without a new fixture run, so the measured helper binary is not the one now pinned.
 
 | Run | Attached healthy | Turn | Shutdown |
 |---|---|---|---|

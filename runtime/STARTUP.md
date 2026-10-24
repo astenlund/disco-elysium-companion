@@ -4,7 +4,7 @@
 
 |                   Message                    |                                                                     What the runtime is doing                                                                     |
 |----------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Building the native helper (first launch)    | Only when the image is absent or fails its pin: builds the helper from its pinned sources before chat starts. It ends with `native helper built` or `failed`.     |
+| Building the native helper (first launch)    | Only when the image is absent, fails its pin or cannot be read: builds the helper from its pinned sources before chat starts. It ends with `native helper built` or `failed`.     |
 | Loading configuration                        | Reads and validates the runtime and adapter settings.                                                                                                             |
 | Validating the companion scope               | Starts and verifies the native helper service, then checks the companion root, Windows principal and physical paths used to select the runtime data scope.        |
 | Claiming the runtime instance                | Takes the single-instance guard, proves no earlier helper or retired worker still runs, binds the helper service to the scope and prepares the bound runtime scope so another writer cannot start there. |
@@ -30,4 +30,4 @@
 
 `still working` means the current phase has been quiet for at least 15 seconds while the event loop could report progress. It is not a percentage or a deadline. `chat client ready` means the text client attached; a start can instead end with `stopped: runtime is not the consumer`, `stopped: provider unavailable` or `failed`. A status-only client can also attach after some authority failures or a failed provider reconnect, so read the following consumer, state, journal, safety and provider status before treating the session as usable. The current performance target counts only a healthy attached session.
 
-When the native helper cannot be built, started or bound, the command exits with a `nativeHelperUnavailable (<reason>)` line whose message names the remedy. `chat`, `consumer` and `repair` build a missing image first; `status` never builds and refuses instead.
+When the native helper cannot be built, started or bound, the command exits with a `nativeHelperUnavailable (<reason>)` line whose message names the remedy. `chat`, `consumer` and `repair` build a missing, pin-failing or unreadable image first, and refuse with `imageInUse` when another process holds the image so it cannot be read or replaced; `status` never builds and refuses instead.
