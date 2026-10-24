@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -76,10 +77,21 @@ export async function prepareNativeImage(progressSink: StartupProgressSink, diag
   }
 }
 
-async function runCliInternal(args: readonly string[], companionRoot: string,
+/**
+ * The companion root in its canonical final-path spelling, which the helper service is started with, so the guard, scope
+ * and service see one spelling of a junction, substituted drive or short name. A root that cannot be resolved stays as
+ * given, so its own admission refuses it as before.
+ */
+function canonicalCompanionRoot(root: string): string {
+  try { return realpathSync.native(root); }
+  catch { return root; }
+}
+
+async function runCliInternal(args: readonly string[], givenRoot: string,
   write: (text: string) => void, progressSink: StartupProgressSink, diagnose: (text: string) => void): Promise<number> {
   const command = parseCommand(args);
   if (command === null) { write('Usage: chat | status | consumer <runtime|bridge> [--abandon-undelivered] | repair'); return 2; }
+  const companionRoot = canonicalCompanionRoot(givenRoot);
   if (command.kind === 'status') {
     write(JSON.stringify(await readBackendStatus(companionRoot)));
     write('Consumer, freshness, operational warnings, watcher, provider, window recovery and capacity are available only in the running chat client.');

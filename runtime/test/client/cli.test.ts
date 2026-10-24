@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
+import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 
 test('CLI admits exactly the four command grammars without touching state on invalid input', async () => {
@@ -36,6 +40,26 @@ test('failed chat startup reports a terminal progress event without exposing its
   assert.equal(progress.at(-1)?.phase, null);
   assert.ok(progress.every(event => !JSON.stringify(event).includes('intentionally-nonexistent-fixture')));
   assert.deepEqual(output, []);
+});
+
+test('status through a junction spelling of the companion root starts the helper service on its canonical root', { timeout: 240000 }, async () => {
+  // Arrange: a runtime fixture reached through a junction, the kind of spelling the helper service refuses to admit.
+  await testHelperImage();
+  const fixture = await companionFixture('runtime');
+  const junction = path.join(path.dirname(fixture.root), `junction-${randomUUID()}`);
+  await fs.symlink(fixture.root, junction, 'junction');
+  const output: string[] = [];
+  try {
+    // Act
+    const code = await runCli(['status'], junction, text => output.push(text));
+
+    // Assert
+    assert.equal(code, 0);
+    assert.equal(typeof (JSON.parse(output[0]!) as { initialized?: unknown }).initialized, 'boolean');
+  } finally {
+    await fs.rm(junction);
+    await fixture.close();
+  }
 });
 
 test('a successful bridge release exits successfully even though runtime is no longer owner', () => {
