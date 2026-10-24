@@ -5,6 +5,7 @@ import { DataRootUnavailableError } from '../../src/admission.ts';
 import { formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
+import { testHelperImage } from '../support/native-helper.ts';
 
 test('CLI admits exactly the four command grammars without touching state on invalid input', async () => {
   assert.deepEqual(parseCommand([]), { kind: 'chat' });
@@ -21,9 +22,15 @@ test('CLI admits exactly the four command grammars without touching state on inv
 });
 
 test('failed chat startup reports a terminal progress event without exposing its root', async () => {
+  // Arrange: the shared pinned test image, so the chat build step finds the image ready and its own reporter emits nothing.
+  await testHelperImage();
   const output: string[] = [];
   const progress: StartupProgress[] = [];
+
+  // Act
   await assert.rejects(runCli(['chat'], 'C:/intentionally-nonexistent-fixture', text => output.push(text), event => progress.push(event)));
+
+  // Assert
   assert.deepEqual(progress.map(event => event.kind), ['phase', 'failed']);
   assert.equal(progress[0]?.phase, 'configuration');
   assert.equal(progress.at(-1)?.phase, null);
