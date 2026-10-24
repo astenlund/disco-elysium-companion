@@ -137,6 +137,9 @@ export class ProviderLifecycle {
   private invalidatedGeneration: string | null = null;
   private observedSafetyGeneration: string | null = null;
   private initialStartActive = false;
+  private safetyRefusal: { readonly error: unknown } | null = null;
+  /** The error with which provider safety refused the latest initial start, or null when it did not refuse. */
+  get startSafetyRefusal(): { readonly error: unknown } | null { return this.safetyRefusal; }
   private pendingStart: PendingProviderStart | null;
   private stateValue: 'starting' | 'ready' | 'reconnecting' | 'failed' = 'starting';
   private source: string | null = null;
@@ -292,10 +295,12 @@ export class ProviderLifecycle {
       this.requireEpoch(epoch);
       this.state('starting');
       let safety;
+      this.safetyRefusal = null;
       try { safety = await this.options.backend.providerSafety(); this.requireEpoch(epoch); this.observedSafetyGeneration = safety.generation; }
-      catch {
+      catch (error) {
         // A blocked state layer is not an observed provider failure. The client
         // remains attached to its startup status without launching a subprocess.
+        this.safetyRefusal = { error };
         await this.discardPending();
         return false;
       }

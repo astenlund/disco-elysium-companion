@@ -62,6 +62,32 @@ test('a transiently busy safety read at provider start names /new as its recheck
   await host.shutdown();
 });
 
+test('the remedy follows the error that refused the start, not a later safety read', async () => {
+  for (const item of [{ name: 'busy refusal that has already cleared', expected: 'retryable' }, { name: 'durable refusal before a busy read', expected: 'restartRequired' }] as const) {
+    // Arrange
+    const { backend, host } = startupModel();
+    const providerSafety = backend.providerSafety.bind(backend);
+    let calls = 0;
+    if (item.expected === 'retryable') {
+      Object.assign(backend, { providerSafety: async () => { calls++; if (calls === 1) { throw Object.assign(new Error('The safety record is in use.'), { code: 'EBUSY' }); } return providerSafety(); } });
+    } else {
+      backend.safetyValue = { ...backend.safetyValue, pendingCheck: '7'.repeat(32) };
+      busySafety(backend);
+      Object.assign(backend, { providerSafety: async () => { throw new Error('Provider history admission is unresolved.'); } });
+    }
+
+    // Act
+    await startChatProvider(host, backend.asRuntime());
+    const events = await attachNotices(host);
+    const retried = await host.startNewAgentSession();
+
+    // Assert
+    assert.deepEqual(refusals(events), [item.expected], item.name);
+    assert.equal(retried, item.expected === 'retryable' ? 'started' : 'providerUnavailable', item.name);
+    await host.shutdown();
+  }
+});
+
 test('a safety read failure that is not known to be transient requires a restart', async () => {
   // Arrange
   const { backend, provider, host } = startupModel();

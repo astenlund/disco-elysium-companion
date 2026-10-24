@@ -143,7 +143,7 @@ export class SessionHost implements SessionHostV1 {
     try {
       const started = await starting;
       this.ready = started && !this.initialStartupInvalidated;
-      if (!this.ready && this.lifecycle.status.state !== 'failed') { this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: await this.safetyRefusalRemedy() }); }
+      if (!this.ready && this.lifecycle.status.state !== 'failed') { this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: this.safetyRefusalRemedy() }); }
       return this.ready;
     } finally {
       this.initialStartCompleted = true;
@@ -154,16 +154,15 @@ export class SessionHost implements SessionHostV1 {
   }
 
   /**
-   * A start refusal that left the provider unfailed is a safety refusal. Only a safety read that failed with a known transient
-   * file-system condition can clear inside this process, so only that names /new as its recheck. An invalidation, a readable record
-   * that still refused, an absent or content-invalid record and any other failure need startup reconciliation, so a restart.
+   * A start refusal that left the provider unfailed is a safety refusal. Only a refusal raised by a known transient file-system
+   * condition can clear inside this process, so only that names /new as its recheck. An invalidation, an authority refusal, an
+   * absent or content-invalid record and any other failure need startup reconciliation, so a restart.
    */
-  private async safetyRefusalRemedy(): Promise<'retryable' | 'restartRequired'> {
-    if (this.initialStartupInvalidated) { return 'restartRequired'; }
-    try { await this.options.backend.safety(); }
-    catch (error) { return transientReadCodes.has((error as NodeJS.ErrnoException).code ?? '') ? 'retryable' : 'restartRequired'; }
+  private safetyRefusalRemedy(): 'retryable' | 'restartRequired' {
+    const refusal = this.lifecycle.startSafetyRefusal;
+    if (this.initialStartupInvalidated || refusal === null) { return 'restartRequired'; }
 
-    return 'restartRequired';
+    return transientReadCodes.has((refusal.error as NodeJS.ErrnoException | null)?.code ?? '') ? 'retryable' : 'restartRequired';
   }
 
   async prepareAttachmentWitness(): Promise<void> {
