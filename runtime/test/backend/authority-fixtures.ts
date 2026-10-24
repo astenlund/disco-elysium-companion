@@ -9,8 +9,10 @@ import { ControlDocumentError } from '../../src/control-values.ts';
 import type { Deadline } from '../../src/deadline.ts';
 import { eventRewriteMetadata, parseJournalCursor, parseJournalHeader, type EventDescription } from '../../src/journal-records.ts';
 import { parseStrictJson, stringifyJson, StrictJsonError, type JsonProfile, type JsonValue } from '../../src/json.ts';
-import { parseOperation, type OperationRecord, type RepairOperation, type ReleaseOperation } from '../../src/operation-records.ts';
+import { coreAttemptToken, parseOperation, type OperationRecord, type RepairOperation, type ReleaseOperation } from '../../src/operation-records.ts';
 import type { JournalSnapshot, JournalTransaction } from '../../src/journal.ts';
+import type { OutboxRead } from '../../src/outbox.ts';
+import { selectRecoveryRecord } from '../../src/recovery-progress.ts';
 import { parseStateSafety, SafetyUnavailableError, type CorrectionReason, type RecoveryWitness, type StateSafety } from '../../src/safety-records.ts';
 import { parseSessionBinding, parseSessionIndex, type AgentSessionIndex } from '../../src/session-records.ts';
 import { bytesHash, StorageConflictError, type ScopeStorage, type StoredDocument } from '../../src/storage.ts';
@@ -89,6 +91,26 @@ export function carryTransfer(state: 'waitingReplacement' | 'resolved' = 'resolv
   const successor = repair({ ...replacement, operationId, plan: { ...replacement.plan, inheritedRecovery: owner }, recovery: { ...replacement.recovery,
     episodes: [{ ...replacement.recovery.episodes[0]!, prerequisite: { ...replacement.recovery.episodes[0]!.prerequisite!, carryRelease: { attemptRef: { operationId, attemptOrdinal: 1 } } } }] } });
   return { predecessor, successor, releaseRecord, records: [predecessor, successor, releaseRecord].map(record => ({ record, sha256: 'b'.repeat(64) })) };
+}
+
+export function replayOutbox(logicalOutboxId: string, sequence: number, attemptOrdinal: number, sha256: string): Extract<OutboxRead, { status: 'valid' }> {
+  const name = `event-${String(sequence).padStart(16, '0')}.json`;
+  return { status: 'valid', name, sha256, bytes: Buffer.from('modeled core source'), receipt: { sourceInspection: true },
+    metadata: { stateEventVersion: 1, logicalOutboxId, incarnationId: logicalOutboxId.slice(0, 32), sequence, kind: 'resync', createdAt: at,
+      principal: 'principal', repairOperationId: coreAttemptToken(owner.operationId, attemptOrdinal), adapterVersion: 1, game: 'stubgame',
+      schemaVersion: 2, targetIdentitySha256: '1'.repeat(64), stateGeneratedAt: at } };
+}
+
+// A repair whose next step is a recovery-owned resync Publish of an already selected deferred record.
+export function deferredResyncModel(changes: Partial<RepairOperation> = {}) {
+  const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null,
+    correction: { correctionId, reason: 'contextUncertain', recoveryOperationId: owner.operationId }, recoveryWitness: witness });
+  const logicalId = `${'8'.repeat(32)}-5`;
+  const source = replayOutbox(logicalId, 5, 0, '7'.repeat(64));
+  model.memory.seed(`operations/${owner.operationId}.json`, selectRecoveryRecord(repair(changes), { logicalOutboxId: logicalId, recordSha256: source.sha256 }, 'deferred', null));
+  model.kernel.outbox.read = async () => source;
+
+  return model;
 }
 
 export function journal(highWater = 0, acked = 0): JournalSnapshot {

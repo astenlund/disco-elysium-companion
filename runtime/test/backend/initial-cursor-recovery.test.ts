@@ -15,7 +15,7 @@ import { activeRecoveryOwner, bindRecoveryEvent, checkpointRecovery, completeRec
 import type { RecoveryAction } from '../../src/recovery-manifest.ts';
 import { bytesHash } from '../../src/storage.ts';
 import { journalEvent } from '../support/journal-event.ts';
-import { at, authorityModel, correctionId, generation, journal, owner, repair, witness } from './authority-fixtures.ts';
+import { at, authorityModel, correctionId, deferredResyncModel, generation, journal, owner, repair, replayOutbox, witness } from './authority-fixtures.ts';
 
 function memoryFileHash(model: ReturnType<typeof authorityModel>) {
   return async (relative: string) => {
@@ -127,14 +127,6 @@ function memoryRewindExecutor(model: ReturnType<typeof authorityModel>, coordina
 function publishReceipt(logicalOutboxId: string, sequence: number, outcome: PublishReceipt['outcome']): CoreResult<PublishReceipt> {
   return { success: true, value: { outcome, kind: 'resync', logicalOutboxId, sequence, schemaVersion: 2, adapterVersion: 1, game: 'stubgame',
     targetIdentitySha256: null, targetGeneratedAt: null, baselineApplied: null, cacheDegraded: false, warnings: [] } };
-}
-
-function replayOutbox(logicalOutboxId: string, sequence: number, attemptOrdinal: number, sha256: string): Extract<OutboxRead, { status: 'valid' }> {
-  const name = `event-${String(sequence).padStart(16, '0')}.json`;
-  return { status: 'valid', name, sha256, bytes: Buffer.from('modeled core source'), receipt: { sourceInspection: true },
-    metadata: { stateEventVersion: 1, logicalOutboxId, incarnationId: logicalOutboxId.slice(0, 32), sequence, kind: 'resync', createdAt: at,
-      principal: 'principal', repairOperationId: coreAttemptToken(owner.operationId, attemptOrdinal), adapterVersion: 1, game: 'stubgame',
-      schemaVersion: 2, targetIdentitySha256: '1'.repeat(64), stateGeneratedAt: at } };
 }
 
 function receiptCaptureModel() {
@@ -607,15 +599,13 @@ test('damage-transferred replayed tombstone uses its recorded hash after source 
 });
 
 test('a newly deferred selection without a journal reference keeps its original attempt', async () => {
-  const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null,
-    correction: { correctionId, reason: 'contextUncertain', recoveryOperationId: owner.operationId }, recoveryWitness: witness });
-  const logicalId = `${'8'.repeat(32)}-5`;
-  const source = replayOutbox(logicalId, 5, 0, '7'.repeat(64));
-  const selected = selectRecoveryRecord(repair(), { logicalOutboxId: logicalId, recordSha256: source.sha256 }, 'deferred', null);
-  assert.equal(selected.recovery.attempts[0]?.journalEvent, null);
-  model.memory.seed(`operations/${owner.operationId}.json`, selected);
+  const model = deferredResyncModel();
+  const selected = await model.kernel.operations.read(owner.operationId);
+  assert.ok(selected.status === 'valid' && !selected.value.compacted && selected.value.kind === 'repair');
+  assert.equal(selected.value.recovery.attempts[0]?.journalEvent, null);
   let sourceReads = 0;
-  model.kernel.outbox.read = async () => { sourceReads++; return source; };
+  const read = model.kernel.outbox.read;
+  model.kernel.outbox.read = async name => { sourceReads++; return read(name); };
   const interrupted = new Error('Stop at the original core token.');
   model.kernel.publish = async (_force, record) => { assert.equal(record?.recovery.attempts.length, 1); throw interrupted; };
   await assert.rejects(new RecoveryCoordinator(model.kernel).resume(owner.operationId), error => error === interrupted);
