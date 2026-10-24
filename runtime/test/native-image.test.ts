@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { prepareNativeImage } from '../src/cli.ts';
 import { goToolchain, helperImageFile, helperModule, manifestFile, nativeHelperSha256 } from '../src/compiled-image-release.ts';
 import { nativeHelperReasons, NativeHelperUnavailableError, type NativeHelperReason } from '../src/native-helper-error.ts';
-import { compileHelper, ensureNativeHelperImage, type NativeImageOptions } from '../src/native-image.ts';
+import { compileHelper, ensureNativeHelperImage, observeImageFile, type NativeImageOptions } from '../src/native-image.ts';
 import type { StartupProgress } from '../src/startup-progress.ts';
 import { compileTestProgram, testHelperImage } from './support/native-helper.ts';
 
@@ -201,6 +201,28 @@ describe('native helper first-launch build', () => {
     // Act and assert
     await assert.rejects(compileHelper(root, path.join(blocker, 'build'), path.join(toolchain, 'go.exe')),
       error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed' && error.message.length > nativeHelperReasons.buildFailed.length);
+  });
+
+  it('reports an unreadable file by what it is: in use for a held image, a build failure for a held build output', { timeout: 120000 }, async () => {
+    // Arrange: a synthetic file another process holds open without sharing.
+    const held = path.join(scratch, `held-${randomUUID()}.exe`);
+    await fs.writeFile(held, 'synthetic');
+    const holdScript = "$held = [IO.File]::Open($env:HOLD_PATH, 'Open', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [void][Console]::In.ReadLine(); $held.Dispose()";
+    const holder = spawn('pwsh', ['-NoProfile', '-NonInteractive', '-Command', holdScript], { env: { ...process.env, HOLD_PATH: held }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', () => { resolve(); });
+      holder.once('error', reject);
+      holder.once('exit', () => { reject(new Error('The holder exited before holding the file.')); });
+    });
+    try {
+      // Act and assert
+      assert.throws(() => observeImageFile(held), error => error instanceof NativeHelperUnavailableError && error.reason === 'imageInUse');
+      assert.throws(() => observeImageFile(held, 'buildOutput'), error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed');
+    } finally {
+      const closed = new Promise(resolve => { holder.once('close', resolve); });
+      holder.stdin.end();
+      await closed;
+    }
   });
 
   it('names the pinned toolchain version in every toolchain remedy', () => {

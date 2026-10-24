@@ -144,12 +144,12 @@ export function verifyHelperSources(root: string, release: NativeHelperRelease):
 }
 
 /** Hashes a file through one descriptor and records that descriptor's identity, or returns null when it is absent. */
-export function observeImageFile(location: string): { readonly sha256: string; readonly volume: string; readonly fileId: string; readonly bytes: number } | null {
+export function observeImageFile(location: string, file: ObservedFile = 'image'): { readonly sha256: string; readonly volume: string; readonly fileId: string; readonly bytes: number } | null {
   let descriptor: number;
   try { descriptor = openSync(location, 'r'); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return null; }
-    throw refuse('imagePinMismatch');
+    throw unreadable(error, file);
   }
   try {
     const identity = fstatSync(descriptor, { bigint: true });
@@ -163,7 +163,21 @@ export function observeImageFile(location: string): { readonly sha256: string; r
       total += count;
     }
     return { sha256: hash.digest('hex'), volume: String(identity.dev), fileId: String(identity.ino), bytes: total };
-  } finally { closeSync(descriptor); }
+  } catch (error) { throw unreadable(error, file); }
+  finally { closeSync(descriptor); }
+}
+
+/** The file an observation reads, which decides the refusal for one that exists but cannot be read. */
+export type ObservedFile = 'image' | 'buildOutput';
+
+/**
+ * A build output that cannot be read fails the build. A published image that another process holds is in use, whose remedy
+ * is to close that process; any other unreadable image keeps the pin-mismatch remedy of running chat to rebuild it.
+ */
+function unreadable(error: unknown, file: ObservedFile): NativeHelperUnavailableError {
+  if (file === 'buildOutput') { return refuse('buildFailed'); }
+  const code = (error as NodeJS.ErrnoException).code;
+  return refuse(code === 'EBUSY' || code === 'EPERM' ? 'imageInUse' : 'imagePinMismatch');
 }
 
 function pinnedImage(location: string, release: NativeHelperRelease): HelperImage | null {
@@ -432,7 +446,7 @@ export async function ensureNativeHelperImage(options: NativeImageOptions): Prom
     let abandoned = false;
     try {
       const output = await compileHelper(root, directory, go, options.buildDeadlineMs, options.toolchainEnvironment, () => { abandoned = true; });
-      const observed = observeImageFile(output);
+      const observed = observeImageFile(output, 'buildOutput');
       if (observed === null || observed.sha256 !== release.helper.sha256 || observed.bytes !== release.helper.bytes) { throw refuse('outputMismatch'); }
       // A hard link publishes create-only: it never replaces an image another start published meanwhile.
       try { linkSync(output, image); }
