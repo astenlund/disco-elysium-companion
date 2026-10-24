@@ -15,3 +15,5 @@ Track a precise startup-unavailable status and recovery contract, documenting wh
 ## Status
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+
+Fixed on 2026-10-24 and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md), which records the fix and its commits.

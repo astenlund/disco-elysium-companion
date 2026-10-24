@@ -91,12 +91,6 @@ Define the missing content baseline after a failed first disclosure while preser
 
 **Requires:** none.
 
-### [Startup safety recovery status](bugs/runtime-startup-safety-recovery-status.md)
-
-Distinguish retryable unavailable startup safety from faults requiring repair or restart.
-
-**Requires:** none.
-
 ### [Sent mark after unsent refusal](bugs/runtime-unsent-window-sent-mark.md)
 
 Assert sent-mark and later redelivery-notice behavior when a window refusal occurs before or after marking.
