@@ -163,12 +163,6 @@ Investigate extra fixture-root invalidations before changing the assertion or pr
 
 **Requires:** none.
 
-### [Recovery publish observation status](bugs/runtime-repair-publish-operational-status.md)
-
-Mark operational status unknown when recovery publication fails before a validated result while retaining provider withholding.
-
-**Requires:** none.
-
 ### [Release refusal details](bugs/runtime-release-refusal-details.md)
 
 Show known refusal facts in the CLI and test that refusal creates no intent or consumer switch.
