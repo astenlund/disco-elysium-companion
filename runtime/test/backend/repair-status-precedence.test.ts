@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import { isCapacityBlocked, RuntimeCapacityError } from '../../src/capacity.ts';
-import { authorityModel, deferredResyncModel, owner } from './authority-fixtures.ts';
+import { Deadline } from '../../src/deadline.ts';
+import { authorityModel, deferredResyncModel, journal, owner, repair as unfinishedRepair, stubJournalTransaction } from './authority-fixtures.ts';
 
 function refusal(state: 'unavailable' | 'exhausted'): RuntimeCapacityError {
   return new RuntimeCapacityError({ admitted: false, state, dimensions: [state === 'unavailable' ? 'inventory' : 'uncompactedEvents'] }, 'ordinary');
@@ -50,6 +51,28 @@ for (const cause of ['operationLost', 'capacity'] as const) {
     assert.equal(failed.capacity.ordinary.state, 'exhausted');
   });
 }
+
+test('a repair-owned drain keeps the repairing cue for the steps that follow it', async () => {
+  // Arrange
+  const model = authorityModel();
+  model.memory.seed(`operations/${owner.operationId}.json`, unfinishedRepair());
+  stubJournalTransaction(model.kernel, journal());
+  model.kernel.emit({ journal: { state: 'repairing', fault: null, unacknowledgedEvents: 0 } });
+
+  // Act
+  await model.kernel.drain(Deadline.after(10_000), owner.operationId);
+  const drained = model.kernel.status.journal;
+  model.kernel.resources.reportFailure(refusal('exhausted')); model.kernel.emit();
+  const exhausted = model.kernel.status.journal;
+  model.kernel.resources.capacity.admitted('ordinary'); model.kernel.emit();
+  await model.kernel.drain(Deadline.after(10_000));
+  const unowned = model.kernel.status.journal;
+
+  // Assert
+  assert.deepEqual({ state: drained.state, fault: drained.fault }, { state: 'repairing', fault: null });
+  assert.deepEqual({ state: exhausted.state, fault: exhausted.fault }, { state: 'repairing', fault: 'runtimeCapacityExceeded' });
+  assert.deepEqual({ state: unowned.state, fault: unowned.fault }, { state: 'fault', fault: 'repairFailed' });
+});
 
 test('a completed repair hands a retained capacity exhaustion back to the fault state', () => {
   // Arrange

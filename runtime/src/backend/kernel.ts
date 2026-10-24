@@ -509,7 +509,9 @@ export class Kernel {
     if (neededRepair !== null) { await plan(neededRepair); }
     // A repair this unowned drain planned resumes only at the next chat or repair start, like one found unfinished.
     pendingFault ??= repairFault ?? (plannedRepair && owningRepair === null ? 'repairFailed' : null);
-    this.emit({ journal: { state: pendingFault === null ? 'healthy' : 'fault', fault: pendingFault, unacknowledgedEvents: result.header.status === 'valid' && result.cursor.status === 'valid' ? result.header.value.highWaterSequence - result.cursor.value.lastAckedSequence : 0 } });
+    // A repair's own drain is one of its steps, so its executing repair keeps the repairing cue until the repair settles its state.
+    const state = pendingFault !== null ? 'fault' : owningRepair !== null ? 'repairing' : 'healthy';
+    this.emit({ journal: { state, fault: pendingFault, unacknowledgedEvents: result.header.status === 'valid' && result.cursor.status === 'valid' ? result.header.value.highWaterSequence - result.cursor.value.lastAckedSequence : 0 } });
     return result;
   }
 
