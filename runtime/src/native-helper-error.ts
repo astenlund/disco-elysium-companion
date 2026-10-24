@@ -10,7 +10,7 @@ export const nativeHelperReasons = {
   buildFailed: `The native helper build failed or timed out with Go ${goToolchain.version}. Check the toolchain and retry.`,
   buildGuardHeld: 'Another start is building the native helper. Retry when that build finishes.',
   publicationFailed: 'The built native helper could not be published. Close any running chat and retry.',
-  imageInUse: 'A running chat holds the native helper image. Close that chat and retry.',
+  imageInUse: 'Another process, such as a running chat, holds the native helper image. Close it and retry.',
   imageAbsent: 'The native helper image is absent. Run chat once to build it.',
   imagePinMismatch: 'The native helper image does not match its pin. Run chat once to rebuild it.',
   serviceStart: 'The native helper service did not start or verify. Rerun chat, which rebuilds the image when it fails its pin.',
