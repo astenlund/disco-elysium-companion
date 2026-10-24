@@ -15,3 +15,5 @@ Track a precise host-owned remedy sourced from actual effectively unfinished rep
 ## Status
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+
+Fixed on 2026-10-24 and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md), which records the fix and its commits.

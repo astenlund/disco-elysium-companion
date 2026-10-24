@@ -97,12 +97,6 @@ Distinguish retryable unavailable startup safety from faults requiring repair or
 
 **Requires:** none.
 
-### [Rejected-state repair guidance](bugs/runtime-rejection-repair-restart-guidance.md)
-
-Give restart or repair guidance based on actually unfinished rejection repair authority.
-
-**Requires:** none.
-
 ### [Sent mark after unsent refusal](bugs/runtime-unsent-window-sent-mark.md)
 
 Assert sent-mark and later redelivery-notice behavior when a window refusal occurs before or after marking.
