@@ -159,6 +159,21 @@ remains only for manual inspection that must not consume.
   the mechanical advice in the current digest (build, vitals, money) and general
   knowledge of the game's mechanics; never in foreknowledge of specific upcoming
   checks or content, which would reveal what the spoiler rules forbid.
+- A request for a summary or status gets state, not advice. Any recommendation
+  added to such an answer, even a one-line closing suggestion, makes it a guidance
+  answer bound by every rule here, the research-cache read included; leave the
+  suggestion out rather than add one without that grounding.
+- Report unspent skill points as state; their presence alone never calls for
+  spending them. Recommend spending only with a concrete allocation: which skills,
+  or a thought slot, and why each fits, and why spending now beats holding points
+  (held points stay available, for example to raise a skill before retrying a
+  failed white check). Ground the build and the points in the current digest and
+  the known active, retryable or seen checks in the reconciled research cache; a
+  thought-slot point is justified by the thought tradeoff under the thought notice
+  rule. Without cache-backed check facts the recommendation is build-only, marked
+  provisional, and leans toward holding. Mark uncertain reasoning as such, never
+  recommend spending every point as a default, and offer the interactive
+  allocation decision above.
 
 ## Active work memory
 
