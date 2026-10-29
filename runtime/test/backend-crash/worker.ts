@@ -117,11 +117,16 @@ try {
     assert.equal((await backend.startup({ kind: 'consumer', owner: 'runtime', abandonUndelivered: false })).consumerResult?.success, true);
     // The first drain records lostJournal. The second executes the normal append
     // and real core settlement under that recorded owner, without a resync run.
-    await k.drain(Deadline.after(600000));
+    // Each drain runs inside the capacity transition and reservation production
+    // uses: the startup outbox drain for the first, repair resumption for the second.
+    await k.resources.withTransition('ordinary', async () => { await k.resources.reserve('ordinary'); await k.drain(Deadline.after(600000)); });
     let inventory = await k.operations.list();
     const initial = inventory.records.find(item => !item.record.compacted && item.record.kind === 'repair');
     assert.ok(initial && !initial.record.compacted && initial.record.kind === 'repair');
-    const snapshot = await k.drain(Deadline.after(600000), initial.record.operationId);
+    const snapshot = await k.resources.withTransition('repair', async () => {
+      await k.resources.reserve('repair');
+      return k.drain(Deadline.after(600000), initial.record.operationId);
+    });
     assert.equal(snapshot.events.size, 1);
     const event = [...snapshot.events.values()][0]!;
     assert.equal(event.metadata.settlement, 'accepted');
@@ -130,9 +135,14 @@ try {
     assert.equal((await k.outbox.list()).length, 0);
     // Inject context uncertainty through the real safety and recovery APIs. No
     // accepted checkpoint, acknowledgement or completion is supplied by a fixture.
-    await k.safetyStore.invalidate('contextUncertain');
+    // The invalidation shares the repair transition that planning reserves, as
+    // production invalidates inside its repair planning.
     const recovery = new RecoveryCoordinator(k);
-    await recovery.plan({ cause: 'contextUncertain', journal: snapshot, rejectedEvent: event.metadata });
+    await k.resources.withTransition('repair', async () => {
+      await k.resources.reserve('repair');
+      await k.safetyStore.invalidate('contextUncertain');
+      await recovery.plan({ cause: 'contextUncertain', journal: snapshot, rejectedEvent: event.metadata });
+    });
     await recovery.reconcileSafety();
     inventory = await k.operations.list();
     const repair = inventory.records.find(item => item.record.operationId === initial.record.operationId)!.record as RepairOperation;
