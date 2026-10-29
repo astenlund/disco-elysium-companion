@@ -139,14 +139,6 @@ Show known refusal facts in the CLI and test that refusal creates no intent or c
 
 **Requires:** none.
 
-## Live runtime findings
-
-### [Ungrounded skill-point spending advice](bugs/runtime-ungrounded-skill-point-advice.md)
-
-Investigate why a fresh status brief urged spending all available skill points without an allocation analysis or a player request for a spending decision.
-
-**Requires:** none.
-
 ## Startup prototype deferred bugs
 
 These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
@@ -162,36 +154,6 @@ A correction can leave a status-only snapshot labeled provider ready, or after a
 Text entered while the asynchronous attachment proof is pending can be lost before the readline listener is registered.
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
-
-## Host environment findings
-
-### [.NET tools folders leak into the User PATH](bugs/user-path-dotnet-tools-leak.md)
-
-Stop repository runs from adding `.dotnet\tools` folders under `.tmp` to the persisted User PATH, which grew past cmd's PATH limit by 2026-10-19. The runtime no longer redirects `DOTNET_CLI_HOME` since the Go native helper MVP; untracked probe and harness scripts still can, and the PATH confirmation check remains open.
-
-**Requires:** none.
-
-## Go native helper follow-ups
-
-### Backend crash tests drain outside a capacity transition
-
-`runtime/test/backend-crash/consumer-release.test.ts` and `recovery-boundaries.test.ts` fail at their first child (`01-prepare-none`) with `RuntimeCapacityError`. The first refusal is `ResourceAuthority.codec`'s 'Codec owner is stale.' check: the crash worker's prepare mode (`runtime/test/backend-crash/worker.ts`) calls `kernel.drain` directly, and the drain's outbox read inspects a source through the codec without a reserved lease, while production wraps every drain in `resources.withTransition` and `reserve`. The lease check and the codec's pre-staging reservation predate the Go native helper branch and the drain path is unchanged by it, so the failure is believed older, but that is unverified: the one run on main failed earlier at backend startup for an unrelated environment reason. Confirm on a clean main checkout, then make the worker drain inside the transition and reservation production uses rather than relaxing the lease check.
-
-**Requires:** none.
-
-### Restart spent during startup bind hides the native helper refusal
-
-If the native helper exhausts its single restart while binding at startup, the failed-start cleanup re-verifies every process role through the exhausted helper and its error replaces the original refusal, so the operator sees `dataRootUnavailable` (termination unverified) instead of `nativeHelperUnavailable` with the restart remedy. The guard stays held, so it fails closed, and it needs two service failures in a short window. The [Go native helper](features/runtime-powershell-dependency.md) spec also does not say which surface carries the unavailable remedy for an attached chat. State in the spec, and implement, that a failed start whose cleanup checks fail only because the helper cannot serve keeps the guard and still reports the original refusal.
-
-**Requires:** none.
-
-## Status truthfulness follow-ups
-
-### [Startup remedy persistence](bugs/runtime-startup-remedy-persistence.md)
-
-Keep the startup safety-refusal remedy on the live status surface, so `/status` repeats it after the one-off notice.
-
-**Requires:** none.
 
 ## History
 
