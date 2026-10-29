@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
-import { NativeHelperUnavailableError } from './native-helper-error.ts';
+import { classifyHelperFailure, NativeHelperUnavailableError } from './native-helper-error.ts';
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
 import { createChatRuntime } from './runtime.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
@@ -104,13 +104,16 @@ async function runCliInternal(args: readonly string[], givenRoot: string,
       const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase), {}, image);
       if (runtime.result === 'notOwner') { progress.finish('notOwner'); write('notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.'); return 1; }
       if (runtime.result === 'providerUnavailable') { progress.finish('providerUnavailable'); write('providerUnavailable: The provider could not start.'); return 1; }
-      await runTextClient(runtime.host, { onAttached: () => progress.finish('ready') });
+      try { await runTextClient(runtime.host, { onAttached: () => progress.finish('ready') }); }
+      catch (error) { throw classifyHelperFailure(error, runtime.helper); }
       return 0;
     } catch (error) { progress.finish('failed'); throw error; }
   }
   if (command.kind === 'repair') { write('Repair may set aside undelivered journal changes if a capacity rewind is admitted, then disclose missing history with a current-state resync. Surviving exact core records remain replayable under their retained bindings. No capacity rewind is yet known.'); }
   const nativeImage = await prepareNativeImage(progressSink, diagnose);
   const backend = await openBackend({ companionRoot, nativeImage });
+  const helper = backend.supervisor.nativeHelper;
+  let outcome: OperatorOutcome;
   try {
     const result = await backend.startup(command);
     const exitCode = operatorExitCode(command.kind, result);
@@ -118,11 +121,28 @@ async function runCliInternal(args: readonly string[], givenRoot: string,
       : { result: result.notOwner ? 'notOwner' : exitCode === 0 ? 'completed' : 'incomplete', capacityRewind: result.capacityRewind, status: backend.status }));
     write(formatCapacity(backend.status.capacity));
     if (command.kind === 'repair') { write(formatCapacityRewind(result.capacityRewind)); }
-    return exitCode;
+    outcome = { exitCode };
   } catch (error) {
-    if (error instanceof RuntimeCapacityError) { write(formatCapacity(backend.status.capacity)); write(formatCapacityError(error, backend.status.capacity.owed)); return 1; }
-    throw error;
-  } finally { await backend.shutdown(true); }
+    if (error instanceof RuntimeCapacityError && !helper.exhausted) { write(formatCapacity(backend.status.capacity)); write(formatCapacityError(error, backend.status.capacity.owed)); outcome = { exitCode: 1 }; }
+    else { outcome = { failure: error }; }
+  }
+  return finishOperatorRun(outcome, () => backend.shutdown(true), helper);
+}
+
+export type OperatorOutcome = { readonly exitCode: number } | { readonly failure: unknown };
+
+/**
+ * @internal Shuts an operator command's backend down after its startup settled. A shutdown that fails while the helper is
+ * exhausted failed because the helper cannot serve, so an earlier failure stands; any other shutdown failure replaces the
+ * outcome. Every reported failure then takes the exhausted-helper classification.
+ */
+export async function finishOperatorRun(outcome: OperatorOutcome, shutdown: () => Promise<void>, helper: { readonly exhausted: boolean }): Promise<number> {
+  let settled = outcome;
+  try { await shutdown(); }
+  catch (shutdownFailure) { if (!('failure' in settled) || !helper.exhausted) { settled = { failure: shutdownFailure }; } }
+  if ('failure' in settled) { throw classifyHelperFailure(settled.failure, helper); }
+
+  return settled.exitCode;
 }
 
 export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),

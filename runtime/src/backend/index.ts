@@ -15,7 +15,7 @@ import { initializeJournal } from '../journal-initialization.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
 import { OperationStore } from '../operations.ts';
 import { NativeHelper } from '../native-helper.ts';
-import { NativeHelperUnavailableError } from '../native-helper-error.ts';
+import { classifyHelperFailure, NativeHelperUnavailableError } from '../native-helper-error.ts';
 import { ensureNativeHelperImage } from '../native-image.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
@@ -300,7 +300,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
   try { bootstrap = await createReadOnlyInspection(options.companionRoot, helper); }
   catch (error) {
     await helper.close().catch(() => undefined);
-    throw phaseFatalError(error);
+    throw phaseFatalError(error, helper);
   }
   let guard: Awaited<ReturnType<typeof takeInstanceGuard>> | null = null;
   let kernel: Kernel | null = null;
@@ -368,17 +368,26 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
       } else {
         await helper.close();
       }
-      if (closeFailure?.status === 'rejected') { failure = closeFailure.reason; }
-    } catch (cleanupFailure) { failure = cleanupFailure; }
-    throw phaseFatalError(failure);
+      if (closeFailure?.status === 'rejected' && !helper.exhausted) { failure = closeFailure.reason; }
+    } catch (cleanupFailure) {
+      // A cleanup that fails while the helper is exhausted failed because the helper cannot serve: the start's own failure
+      // stands, and the guard stays held because the release was not reached.
+      if (!helper.exhausted) { failure = cleanupFailure; }
+    }
+    throw phaseFatalError(failure, helper);
   }
 }
 
 const phaseFatalCodes: ReadonlySet<unknown> = new Set(['configurationInvalid', 'identityUnavailable', 'dataRootUnavailable', 'runtimeAlreadyRunning',
   'nativeHelperUnavailable']);
 
-/** @internal Phases A through C fail only with their five fatal codes; any other failure keeps its cause under `dataRootUnavailable`. */
-export function phaseFatalError(error: unknown): unknown {
+/**
+ * @internal Phases A through C fail only with their five fatal codes. While the helper reports itself exhausted the failure is
+ * the helper's refusal; otherwise any failure without a fatal code keeps its cause under `dataRootUnavailable`.
+ */
+export function phaseFatalError(error: unknown, helper: { readonly exhausted: boolean } | null = null): unknown {
+  const classified = classifyHelperFailure(error, helper);
+  if (classified !== error) { return classified; }
   if (error !== null && typeof error === 'object' && 'code' in error && phaseFatalCodes.has(error.code)) { return error; }
   return new DataRootUnavailableError(error instanceof Error ? error.message : 'Runtime startup authority is unavailable.', { cause: error });
 }

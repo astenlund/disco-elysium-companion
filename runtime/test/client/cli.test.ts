@@ -5,8 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError } from '../../src/admission.ts';
-import { formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runCli } from '../../src/cli.ts';
+import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
+import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
@@ -111,4 +112,33 @@ test('repair extent renders only the typed plan result, preserving unknown and e
   const rendered = formatCapacityRewind(known);
   assert.match(rendered, /affectedEvents=3; inclusiveRange=2\.\.4/);
   assert.match(rendered, /retainedHandoffs=2; replayableHandoffs=1; presentationRetiredHandoffs=1; survivingCoreRecords=unknown/);
+});
+
+test('an operator shutdown that fails while the helper is exhausted reports the helper refusal with its restart remedy', async () => {
+  // Arrange
+  const exhausted = { exhausted: true };
+  const serving = { exhausted: false };
+  const startupFailure = new Error('Native process metadata is unavailable.');
+  const bindRefusal = new NativeHelperUnavailableError('bindFailed');
+  const shutdownFailure = new Error('Shutdown could not prove quiescence.');
+  const failingShutdown = async (): Promise<void> => { throw shutdownFailure; };
+
+  // Act
+  const [afterFailure, afterRefusal, afterSuccess, whileServing, clean] = await Promise.allSettled([
+    finishOperatorRun({ failure: startupFailure }, failingShutdown, exhausted),
+    finishOperatorRun({ failure: bindRefusal }, failingShutdown, exhausted),
+    finishOperatorRun({ exitCode: 0 }, failingShutdown, exhausted),
+    finishOperatorRun({ failure: startupFailure }, failingShutdown, serving),
+    finishOperatorRun({ exitCode: 1 }, async () => {}, exhausted)]);
+
+  // Assert
+  const reason = (settled: PromiseSettledResult<number>): unknown => settled.status === 'rejected' ? settled.reason : assert.fail('The run did not fail.');
+  const refusal = reason(afterFailure);
+  assert.ok(refusal instanceof NativeHelperUnavailableError && refusal.reason === 'unavailable' && refusal.cause === startupFailure);
+  assert.match(formatCliError(refusal), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
+  assert.equal(reason(afterRefusal), bindRefusal);
+  const afterSuccessRefusal = reason(afterSuccess);
+  assert.ok(afterSuccessRefusal instanceof NativeHelperUnavailableError && afterSuccessRefusal.reason === 'unavailable' && afterSuccessRefusal.cause === shutdownFailure);
+  assert.equal(reason(whileServing), shutdownFailure);
+  assert.deepEqual(clean, { status: 'fulfilled', value: 1 });
 });

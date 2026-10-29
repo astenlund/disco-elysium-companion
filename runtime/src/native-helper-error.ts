@@ -16,7 +16,7 @@ export const nativeHelperReasons = {
   serviceStart: 'The native helper service did not start or verify. Rerun chat, which rebuilds the image when it fails its pin.',
   imageIdentityMismatch: 'The running native helper image differs from the one verified before launch. Rerun chat, which rebuilds the image when it fails its pin.',
   bindFailed: 'The native helper could not bind this scope. End any other runtime of this scope and retry.',
-  unavailable: 'The native helper service can no longer serve: its single restart is spent, its replacement failed, or it was closed. Restart the runtime.',
+  unavailable: 'The native helper service can no longer serve: its single restart is spent, a replacement failed or could not observe its retired service exit, or it was closed. Restart the runtime.',
 } as const;
 
 export type NativeHelperReason = keyof typeof nativeHelperReasons;
@@ -28,8 +28,19 @@ export class NativeHelperUnavailableError extends Error {
   readonly reason: NativeHelperReason;
 
   /** A detail, such as the build directory a leftover process holds, follows the reason's remedy in the message. */
-  constructor(reason: NativeHelperReason, detail?: string) {
-    super(detail === undefined ? nativeHelperReasons[reason] : `${nativeHelperReasons[reason]} ${detail}`);
+  constructor(reason: NativeHelperReason, detail?: string, options?: ErrorOptions) {
+    super(detail === undefined ? nativeHelperReasons[reason] : `${nativeHelperReasons[reason]} ${detail}`, options);
     this.reason = reason;
   }
+}
+
+/**
+ * The exhausted-helper classification of a reported failure. While the helper reports itself exhausted, a failure that is
+ * itself a helper refusal keeps its reason and any other becomes the unavailable refusal, keeping the failure as its
+ * cause; otherwise the failure is returned unchanged. Exhaustion is read from the helper, never from a cause chain.
+ */
+export function classifyHelperFailure(failure: unknown, helper: { readonly exhausted: boolean } | null): unknown {
+  if (helper === null || !helper.exhausted || failure instanceof NativeHelperUnavailableError) { return failure; }
+
+  return new NativeHelperUnavailableError('unavailable', undefined, { cause: failure });
 }

@@ -16,7 +16,7 @@ const repository = fileURLToPath(new URL('../../', import.meta.url));
 const fakeService = fileURLToPath(new URL('./support/fake-helper-service.ts', import.meta.url));
 const binding = { token: '1'.repeat(32), companionRoot: 'C:\\companion', dataRoot: 'C:\\companion\\data' };
 
-type Launch = Partial<Pick<FakeScenario, 'hello' | 'maxSeq'>> & { readonly ops?: Readonly<Record<string, readonly FakeAction[]>> };
+type Launch = Partial<Pick<FakeScenario, 'hello' | 'maxSeq' | 'created'>> & { readonly ops?: Readonly<Record<string, readonly FakeAction[]>> };
 interface LoggedRequest { readonly pid: number; readonly op: string; readonly seq: number; readonly deadlineMs: number; readonly owner: { readonly pid: number } | null }
 
 /** A fake image file and a launcher that starts one scripted service per launch, in the order given. */
@@ -169,8 +169,13 @@ describe('native helper service client', () => {
       assert.deepEqual((await recovering.requests()).filter(request => request.pid === recovering.children[1]!.pid).map(request => request.op), ['jobStates', 'bindScope']);
       await assert.rejects(refused, error => error instanceof NativeHelperUnavailableError && error.reason === 'unavailable');
       assert.equal(exhausted.bound, false);
+      assert.equal(exhausted.exhausted, true);
+      assert.equal(helper.exhausted, false);
       await helper.close();
       await exhausted.close();
+      // Exhaustion is one-way: a close neither clears it nor sets it.
+      assert.equal(exhausted.exhausted, true);
+      assert.equal(helper.exhausted, false);
     } finally {
       await recovering.close();
       await exhausting.close();
@@ -496,16 +501,36 @@ describe('native helper service client', () => {
 
   it('checks liveness against the handshake identity and observes the exit on close', { timeout: 60000 }, async () => {
     // Arrange
-    const fake = await fakeHelper([{ ops: { processIdentity: [{ kind: 'ok' }, { kind: 'ok', result: { exists: true, pid: 1, created: '7654321' } }] } }]);
+    const fake = await fakeHelper([{ ops: { processIdentity: [{ kind: 'ok' }, { kind: 'ok', result: { exists: true, pid: 1, created: '7654321' } },
+      { kind: 'ok', result: { exists: true, pid: 1, created: '1234567' } }] } }]);
     try {
       const helper = await fake.start();
 
-      // Act and assert
+      // Act and assert: a reply naming another creation time or another process is refused.
       await helper.verifyLive();
-      await rejectsUnavailable(helper.verifyLive());
+      await assert.rejects(helper.verifyLive(), error => error instanceof NativeHelperUnavailableError && error.reason === 'serviceStart');
+      await assert.rejects(helper.verifyLive(), error => error instanceof NativeHelperUnavailableError && error.reason === 'serviceStart');
       await helper.close();
       assert.ok(exited(fake.children[0]!));
-      await rejectsUnavailable(helper.request('hash', {}, 5000));
+      await assert.rejects(helper.request('hash', {}, 5000), error => error instanceof NativeHelperUnavailableError && error.reason === 'unavailable');
+      await assert.rejects(helper.verifyLive(), error => error instanceof NativeHelperUnavailableError && error.reason === 'unavailable');
+    } finally { await fake.close(); }
+  });
+
+  it('proves a replacement that starts during a liveness check against its own identity within the deadline', { timeout: 60000 }, async () => {
+    // Arrange: the first service fails the liveness check; the replacement has its own creation identity, which it reports
+    // for every process it is asked about.
+    const fake = await fakeHelper([{ ops: { processIdentity: [{ kind: 'exit' }] } }, { created: '2222222' }]);
+    try {
+      const helper = await fake.start();
+
+      // Act
+      await helper.verifyLive();
+
+      // Assert: the check waited for the replacement and passed on its proof, and the replacement answered both proofs.
+      assert.equal(fake.children.length, 2);
+      assert.equal((await fake.requests()).filter(request => request.pid === fake.children[1]!.pid && request.op === 'processIdentity').length, 2);
+      await helper.close();
     } finally { await fake.close(); }
   });
 });

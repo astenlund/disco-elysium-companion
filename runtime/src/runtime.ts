@@ -2,6 +2,7 @@ import { openBackend } from './backend/index.ts';
 import type { RuntimeBackend } from './backend/api.ts';
 import { ClaudeProvider } from './claude-provider.ts';
 import { FileToolAdapter } from './file-tool-adapter.ts';
+import { classifyHelperFailure } from './native-helper-error.ts';
 import type { HelperImage } from './native-image.ts';
 import { assembleInstructions } from './instructions.ts';
 import { PendingProviderStart, selectPendingProviderStart } from './provider-lifecycle.ts';
@@ -10,7 +11,7 @@ import { AttachmentProviderUnavailableError, SessionHost } from './session-host.
 import type { Correction } from './session-host-contract.ts';
 import { reportStartupPhase, type StartupPhase } from './startup-progress.ts';
 
-export type ChatRuntime = { readonly result: 'ready'; readonly host: SessionHost }
+export type ChatRuntime = { readonly result: 'ready'; readonly host: SessionHost; readonly helper: { readonly exhausted: boolean } }
   | { readonly result: 'notOwner' } | { readonly result: 'providerUnavailable' };
 
 export const privateRuntimeStartup = Symbol('privateRuntimeStartup');
@@ -40,10 +41,15 @@ export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeB
   catch (failure) { candidateFailure = { reason: failure }; }
   let cleanupFailed = false;
   let cleanupFailure: unknown;
+  // A cleanup step that fails while the helper is exhausted failed because the helper cannot serve, so the start's own
+  // failure stands, reported as the helper's refusal; the guard stays held either way, since a failed cleanup never
+  // reaches its release.
+  const helper = backend?.supervisor?.nativeHelper ?? null;
+  const helperExhausted = (): boolean => helper?.exhausted === true;
   if (backend !== null) { reportStartupPhase(onStartupPhase, 'startupWorkerClosure'); }
   try { await backend?.closeStartupWorkers(); }
   catch (failure) { cleanupFailed = true; cleanupFailure = failure; }
-  if (candidateFailure !== null) { throw candidateFailure.reason; }
+  if (candidateFailure !== null) { throw classifyHelperFailure(helperExhausted() ? error : candidateFailure.reason, helper); }
   try {
     if (host !== null) { await host.shutdown(); }
     else if (backend !== null) {
@@ -54,8 +60,7 @@ export async function cleanupFailedChatRuntime(error: unknown, backend: RuntimeB
       await files?.release();
     }
   } catch (failure) { cleanupFailed = true; cleanupFailure = failure; }
-  if (cleanupFailed) { throw cleanupFailure; }
-  throw error;
+  throw classifyHelperFailure(cleanupFailed && !helperExhausted() ? cleanupFailure : error, helper);
 }
 
 const attachmentPreparationAttempts = 3;
@@ -98,7 +103,7 @@ export async function startChatProvider(host: SessionHost, backend: RuntimeBacke
   if (providerStarted) { reportPhase?.('attachmentSafety'); await finalizeAttachmentSafety(host, backend); }
   reportPhase?.('startupWorkerClosure');
   await backend.closeStartupWorkers();
-  return { result: 'ready', host };
+  return { result: 'ready', host, helper: backend.supervisor.nativeHelper };
 }
 
 export async function createChatRuntime(companionRoot: string, onStartupPhase?: (phase: StartupPhase) => void,

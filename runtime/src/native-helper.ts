@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonBudget, type JsonValue } from './json.ts';
 import { NativeHelperUnavailableError } from './native-helper-error.ts';
+import { SupervisorError } from './supervisor-error.ts';
 import { observeImageFile, type HelperImage } from './native-image.ts';
 
 /** Requests a caller may send; bindScope belongs to this module. */
@@ -237,6 +238,7 @@ export class NativeHelper {
   private readonly companionRoot: string;
   private current: ServiceProcess | null = null;
   private phase: Phase = 'ready';
+  private everExhausted = false;
   private restartsLeft = 1;
   private binding: HelperBinding | null = null;
   private exclusive = false;
@@ -258,6 +260,24 @@ export class NativeHelper {
     const helper = new NativeHelper(image, companionRoot, sequenceLimit, launcher);
     helper.current = await helper.launch();
     return helper;
+  }
+
+  /**
+   * Whether the helper can no longer serve: its single restart is spent, a replacement failed, or a replacement could not
+   * observe its retired service's exit. Exhaustion is one-way, and a close neither sets nor clears it, so a failure
+   * classified after the helper closed sees the same answer as one classified before.
+   */
+  get exhausted(): boolean { return this.everExhausted; }
+
+  private exhaust(): void {
+    this.phase = 'exhausted';
+    this.everExhausted = true;
+    this.notify();
+  }
+
+  /** The refusal of a request this helper cannot serve now: unavailable once exhausted or closed, otherwise a service start. */
+  private refusal(): NativeHelperUnavailableError {
+    return new NativeHelperUnavailableError(this.phase === 'exhausted' || this.phase === 'closed' ? 'unavailable' : 'serviceStart');
   }
 
   private notify(): void {
@@ -347,7 +367,7 @@ export class NativeHelper {
     for (;;) {
       const observed = await stopping.stop();
       if (this.phase !== 'replacing') { return; }
-      if (!observed || !renewal && this.restartsLeft < 1) { this.phase = 'exhausted'; this.notify(); return; }
+      if (!observed || !renewal && this.restartsLeft < 1) { this.exhaust(); return; }
       if (!renewal) { this.restartsLeft -= 1; }
       let replacement: ServiceProcess | null = null;
       try {
@@ -361,7 +381,7 @@ export class NativeHelper {
         // A replacement that failed to start, verify or bind is a service failure: it takes the single restart, once
         // its own exit has been observed.
         if (replacement === null) {
-          if (this.phase === 'replacing' && (renewal ? this.restartsLeft < 1 : true)) { this.phase = 'exhausted'; this.notify(); return; }
+          if (this.phase === 'replacing' && (renewal ? this.restartsLeft < 1 : true)) { this.exhaust(); return; }
           renewal = false;
           continue;
         }
@@ -451,7 +471,7 @@ export class NativeHelper {
    * rejects only after the service's exit has been observed, so no caller inspects a target the service may still change.
    */
   async request(op: HelperOperation, fields: Record<string, unknown>, budgetMs: number): Promise<HelperReply> {
-    if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 3_600_000) { throw new NativeHelperUnavailableError('unavailable'); }
+    requireBudget(budgetMs);
     const deadline = performance.now() + budgetMs;
     const proof = proofOperations.has(op);
     let retried = false;
@@ -488,7 +508,8 @@ export class NativeHelper {
    * Binds the service to one scope, while no other request is in flight, after the caller has proven the helper job absent.
    * A service that fails before or while binding is replaced like any other: bind waits within its budget for the
    * replacement and binds it once a fresh observation proves the failed service's helper job absent. It refuses as
-   * unavailable once the single restart is spent, and when the budget passes while the replacement is still starting.
+   * unavailable once the helper is exhausted, and with the service-start reason when the budget passes while a replacement
+   * is still starting.
    */
   async bind(binding: HelperBinding, budgetMs = 30_000): Promise<void> {
     if (this.binding !== null) { throw new NativeHelperUnavailableError('bindFailed'); }
@@ -516,20 +537,20 @@ export class NativeHelper {
         } finally { this.exclusive = false; this.notify(); }
         continue;
       }
-      if (!await this.waitChange(deadline)) { throw new NativeHelperUnavailableError(this.phase === 'ready' ? 'bindFailed' : 'unavailable'); }
+      if (!await this.waitChange(deadline)) { throw this.phase === 'ready' ? new NativeHelperUnavailableError('bindFailed') : this.refusal(); }
     }
   }
 
   /** The bound service as the owner of its scope's helper job, for owned job observations. */
   owner(): HelperOwner {
-    if (this.current === null || this.phase !== 'ready') { throw new NativeHelperUnavailableError('unavailable'); }
+    if (this.current === null || this.phase !== 'ready') { throw this.refusal(); }
 
     return this.ownerOf(this.current);
   }
 
   private ownerOf(service: ServiceProcess): HelperOwner {
     const identity = service.identity;
-    if (identity === null || this.binding === null) { throw new NativeHelperUnavailableError('unavailable'); }
+    if (identity === null || this.binding === null) { throw this.refusal(); }
 
     return { name: this.helperJobName(this.binding.token), pid: identity.pid, created: identity.created };
   }
@@ -548,18 +569,32 @@ export class NativeHelper {
       if (observed !== null && observed.sha256 === this.image.sha256 && observed.volume === this.image.volume && observed.fileId === this.image.fileId) {
         return this.image.path;
       }
+      throw new NativeHelperUnavailableError('imageIdentityMismatch');
     }
-    throw new NativeHelperUnavailableError('unavailable');
+    throw this.refusal();
   }
 
-  /** Checks that the current service is the process its handshake named, through its own processIdentity request. */
+  /**
+   * Checks that the current service is the process its handshake named, through its own processIdentity request. When a
+   * replacement takes over while the proof is outstanding, the replacement is proved against its own identity instead,
+   * within the same budget.
+   */
   async verifyLive(budgetMs = 5_000): Promise<void> {
-    const identity = this.current?.identity;
-    if (identity === null || identity === undefined) { throw new NativeHelperUnavailableError('unavailable'); }
-    const reply = await this.request('processIdentity', { pid: identity.pid }, budgetMs);
-    if (reply.status !== 'ok' || !hasExactKeys(reply.result, ['exists', 'pid', 'created']) || reply.result['exists'] !== true
-      || reply.result['created'] !== identity.created || this.current?.identity !== identity) {
-      throw new NativeHelperUnavailableError('unavailable');
+    requireBudget(budgetMs);
+    const deadline = performance.now() + budgetMs;
+    for (;;) {
+      const identity = this.current?.identity;
+      if (identity === null || identity === undefined) { throw this.refusal(); }
+      const remaining = Math.floor(deadline - performance.now());
+      const reply = remaining < 1 ? deadlineExceeded : await this.request('processIdentity', { pid: identity.pid }, remaining);
+      // A check that outlasts its budget, as one overlapping a replacement can, takes the caller's deadline failure.
+      if (reply.status === 'error' && reply.code === 'deadlineExceeded') { throw new SupervisorError('deadline', 'The native helper liveness check ran out of time.'); }
+      if (this.current?.identity !== identity) { continue; }
+      if (reply.status !== 'ok' || !hasExactKeys(reply.result, ['exists', 'pid', 'created']) || reply.result['exists'] !== true || asInteger(reply.result['pid']) !== identity.pid
+        || reply.result['created'] !== identity.created) {
+        throw new NativeHelperUnavailableError('serviceStart');
+      }
+      return;
     }
   }
 
@@ -572,8 +607,12 @@ export class NativeHelper {
     this.notify();
     await this.retiring;
     const service = this.current;
-    if (service !== null && !await service.stop()) { throw new NativeHelperUnavailableError('unavailable'); }
+    if (service !== null && !await service.stop()) { throw new SupervisorError('termination-unverified', 'The native helper service exit could not be observed.'); }
   }
+}
+
+function requireBudget(budgetMs: number): void {
+  if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 3_600_000) { throw new RangeError('A native helper request budget is a safe integer from 1 to 3600000 milliseconds.'); }
 }
 
 /** Requires an ok reply and returns its result, mapping every failure to the caller's own error. */

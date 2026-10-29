@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 import { openBackend } from '../../src/backend/index.ts';
 import type { Kernel } from '../../src/backend/kernel.ts';
+import { formatCliError } from '../../src/cli.ts';
+import { classifyHelperFailure, NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { SupervisorError } from '../../src/process.ts';
 import { companionFixture } from '../support/companion.ts';
 import { helperProxies, testHelperImage } from '../support/native-helper.ts';
@@ -58,14 +60,44 @@ describe('chat lifecycle on the native helper', () => {
       assert.throws(() => chat.backend.supervisor.spawn('provider', childOptions), SupervisorError);
       await assert.rejects(chat.backend.inspector.inspect(chat.backend.scope.dataRoot, path.join(chat.backend.scope.dataRoot, 'runtime.json')));
 
-      // Act and assert: shutdown cannot prove quiescence, so the marker stays unclean and the guard stays held.
-      await assert.rejects(chat.host.shutdown());
+      // Act and assert: shutdown cannot prove quiescence, so the marker stays unclean and the guard stays held, and the chat
+      // exit the CLI reports carries the helper refusal with its restart remedy.
+      const shutdown = await Promise.allSettled([chat.host.shutdown()]);
+      assert.equal(shutdown[0]!.status, 'rejected');
+      assert.equal(helper.exhausted, true);
+      const reported = classifyHelperFailure((shutdown[0] as PromiseRejectedResult).reason, helper);
+      assert.ok(reported instanceof NativeHelperUnavailableError && reported.reason === 'unavailable');
+      assert.match(formatCliError(reported), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
       const marker = JSON.parse(await fs.readFile(path.join(chat.backend.scope.dataRoot, 'runtime.json'), 'utf8')) as { cleanShutdown: boolean };
       assert.equal(marker.cleanShutdown, false);
       assert.equal((chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.held, true);
     } finally {
       await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
       await fixture.close();
+    }
+  });
+
+  it('reports the binding refusal, not dataRootUnavailable, when binding spends the restart, and keeps the guard', { timeout: 600000 }, async () => {
+    // Arrange: both the first service and its replacement die on bindScope, so binding exhausts the helper.
+    const fixture = await companionFixture('runtime-owned');
+    const scratch = path.join(repository, '.tmp', `chat-lifecycle-${randomUUID()}`);
+    await fs.mkdir(scratch, { recursive: true });
+    const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { bindScope: [{ die: 'beforeForward' }] } }, { rules: { bindScope: [{ die: 'beforeForward' }] } }]);
+    try {
+      // Act
+      const opened = await Promise.allSettled([openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
+      const again = await Promise.allSettled([openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage() })]);
+
+      // Assert: the start reports the helper refusal with its restart remedy, and the failed cleanup kept the guard held.
+      assert.equal(opened[0]!.status, 'rejected');
+      const refusal = (opened[0] as PromiseRejectedResult).reason;
+      assert.ok(refusal instanceof NativeHelperUnavailableError && refusal.reason === 'unavailable', String(refusal));
+      assert.match(formatCliError(refusal), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
+      assert.equal(again[0]!.status, 'rejected');
+      assert.equal(((again[0] as PromiseRejectedResult).reason as { code?: unknown }).code, 'runtimeAlreadyRunning');
+    } finally {
+      await fixture.close();
+      await fs.rm(scratch, { recursive: true, force: true });
     }
   });
 

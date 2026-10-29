@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import type { RuntimeBackend } from '../../src/backend/api.ts';
 import type { FileToolAdapter } from '../../src/file-tool-adapter.ts';
+import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { cleanupFailedChatRuntime } from '../../src/runtime.ts';
 import type { SessionHost } from '../../src/session-host.ts';
 
@@ -82,4 +83,37 @@ test('cleanup without an opened backend reports no worker closure', async () => 
   const startupFailure = new Error('Backend open failed.');
   await assert.rejects(cleanupFailedChatRuntime(startupFailure, null, null, null, phase => phases.push(phase)), error => error === startupFailure);
   assert.deepEqual(phases, []);
+});
+
+function exhaustibleBackend(exhausted: boolean): RuntimeBackend {
+  return { closeStartupWorkers: async () => {}, supervisor: { nativeHelper: { exhausted } } } as unknown as RuntimeBackend;
+}
+
+test('a cleanup that fails while the helper is exhausted keeps the start failure as the helper refusal', async () => {
+  // Arrange
+  const startupFailure = new Error('Provider launch refused.');
+  const shutdownFailure = new Error('Native process metadata is unavailable.');
+  const host = { shutdown: async () => { throw shutdownFailure; } } as unknown as SessionHost;
+
+  // Act
+  const [exhausted, serving] = await Promise.allSettled([cleanupFailedChatRuntime(startupFailure, exhaustibleBackend(true), host, null),
+    cleanupFailedChatRuntime(startupFailure, exhaustibleBackend(false), host, null)]);
+
+  // Assert
+  assert.ok(exhausted.status === 'rejected' && exhausted.reason instanceof NativeHelperUnavailableError && exhausted.reason.reason === 'unavailable'
+    && exhausted.reason.cause === startupFailure);
+  assert.ok(serving.status === 'rejected' && serving.reason === shutdownFailure);
+});
+
+test('an unproved pending provider stop while the helper is exhausted keeps the start failure as the helper refusal', async () => {
+  // Arrange
+  const startupFailure = new NativeHelperUnavailableError('bindFailed');
+  const pending = { cancel: async () => { throw new Error('The pending provider could not be positively stopped.'); } };
+  const host = { shutdown: async () => { assert.fail('An unproved candidate stop must not shut down.'); } } as unknown as SessionHost;
+
+  // Act
+  const reported = cleanupFailedChatRuntime(startupFailure, exhaustibleBackend(true), host, null, undefined, pending);
+
+  // Assert
+  await assert.rejects(reported, error => error === startupFailure);
 });

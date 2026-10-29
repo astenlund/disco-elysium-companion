@@ -6,6 +6,7 @@ import { PassThrough, type Writable } from 'node:stream';
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
 import { boundServiceOwner, withoutHome, type NativeHelper } from './native-helper.ts';
+import { SupervisorError, type SupervisorReason } from './supervisor-error.ts';
 
 /** Roles the supervisor launches through a broker. */
 export const processRoles = ['core', 'provider', 'watcher', 'metadata', 'startupCoreReply'] as const;
@@ -14,12 +15,7 @@ export type ProcessRole = typeof processRoles[number];
 export const retiredJobRoles = ['publication', 'startupMetadata', 'startupMutation'] as const;
 export type RetiredJobRole = typeof retiredJobRoles[number];
 export type JobRole = ProcessRole | RetiredJobRole | 'helper';
-export type SupervisorReason = 'deadline' | 'capture-overflow' | 'abnormal-exit' | 'result-invalid' | 'termination-unverified';
-export class SupervisorError extends Error {
-  override readonly name = 'SupervisorError';
-  readonly reason: SupervisorReason;
-  constructor(reason: SupervisorReason, message: string, options?: ErrorOptions) { super(message, options); this.reason = reason; }
-}
+export { SupervisorError, type SupervisorReason } from './supervisor-error.ts';
 export interface ProcessIdentity { readonly pid: number; readonly created: string }
 export interface OwnedSpawnOptions {
   readonly command: string;
