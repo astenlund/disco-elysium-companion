@@ -7,6 +7,7 @@ import type { Provider, ProviderCapabilities, ProviderExitReason, ProviderOutcom
 import type { StateSafety } from '../../src/safety-records.ts';
 import { admitNamedSession, indexCurrentBinding, type AgentSessionBinding, type AgentSessionIndex } from '../../src/session-records.ts';
 import { initialCapacity } from '../../src/capacity.ts';
+import type { SessionHost } from '../../src/session-host.ts';
 import type { BoundSession, SessionBindingProof, SessionStore } from '../../src/session-store.ts';
 import type { StoredDocument } from '../../src/storage.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
@@ -24,6 +25,16 @@ export function deferred<T>(): { readonly promise: Promise<T>; readonly resolve:
   let resolve: (value: T) => void = () => {};
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
+}
+/** Invalidates the host once, from the first status change that reports its provider ready; `invalidated` says whether it fired. */
+export function invalidateWhenReady(host: SessionHost): { readonly invalidated: boolean } {
+  const statusChanged = host.statusChanged.bind(host);
+  const hook = { invalidated: false };
+  host.statusChanged = () => {
+    if (!hook.invalidated && host.status.provider.state === 'ready') { hook.invalidated = true; host.invalidate('contextUncertain'); }
+    statusChanged();
+  };
+  return hook;
 }
 
 export class FakeSession implements ProviderSession {

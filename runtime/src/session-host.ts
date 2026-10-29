@@ -8,7 +8,7 @@ import { utcNow } from './json.ts';
 import { ProviderLifecycle, type PendingProviderStart } from './provider-lifecycle.ts';
 import type { Provider, ProviderReconnectReason, ProviderSession, ProviderSignal } from './provider.ts';
 import { SerialQueue } from './serial.ts';
-import type { ClientSink, Correction, HostEvent, HostSnapshot, HostStatus, Interaction, ResumeResult, SessionHostV1, SubmitResult, TurnFailure } from './session-host-contract.ts';
+import type { ClientSink, Correction, HostEvent, HostSnapshot, HostStatus, Interaction, ResumeResult, SafetyRefusalRemedy, SessionHostV1, SubmitResult, TurnFailure } from './session-host-contract.ts';
 import type { StartupPhase } from './startup-progress.ts';
 import { recoveryFingerprint, WindowRecovery, type WindowAttempt } from './window-recovery.ts';
 
@@ -84,9 +84,11 @@ export class SessionHost implements SessionHostV1 {
   private active: Turn | null = null;
   private ingressOrder = 0;
   private ready = false;
+  private safetyRefusal: SafetyRefusalRemedy | null = null;
   private pendingCheckBlocked = false;
   private initialStartCompleted = false;
   private initialStartupInvalidated = false;
+  private invalidations = 0;
   private invalidatedAfterStart = false;
   private finalSafetyBlocked = false;
   private failingUnobservedProvider = false;
@@ -125,7 +127,7 @@ export class SessionHost implements SessionHostV1 {
   }
 
   get status(): HostStatus {
-    return { ...this.options.backend.status, provider: this.lifecycle.status, windowRecovery: this.recovery.summary() };
+    return { ...this.options.backend.status, provider: { ...this.lifecycle.status, safetyRefusal: this.safetyRefusal }, windowRecovery: this.recovery.summary() };
   }
   get turnInProgress(): boolean { return this.active !== null; }
   get requiresVerifiedAttach(): boolean { return this.options.requireVerifiedAttach ?? false; }
@@ -142,8 +144,7 @@ export class SessionHost implements SessionHostV1 {
     this.initialStartPromise = starting;
     try {
       const started = await starting;
-      this.ready = started && !this.initialStartupInvalidated;
-      if (!this.ready && this.lifecycle.status.state !== 'failed') { this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: this.safetyRefusalRemedy() }); }
+      if (!this.settleReady(started && !this.initialStartupInvalidated) && this.lifecycle.status.state !== 'failed') { this.refuseSafety(this.safetyRefusalRemedy()); }
       return this.ready;
     } finally {
       this.initialStartCompleted = true;
@@ -163,6 +164,23 @@ export class SessionHost implements SessionHostV1 {
     if (this.initialStartupInvalidated || refusal === null) { return 'restartRequired'; }
 
     return transientReadCodes.has((refusal.error as NodeJS.ErrnoException | null)?.code ?? '') ? 'retryable' : 'restartRequired';
+  }
+
+  /**
+   * Records host readiness; only the host becoming ready clears a kept safety-refusal remedy. A provider that became ready
+   * after an invalidation since `invalidations` was read, as one raised from its own ready status change, leaves the host unready.
+   */
+  private settleReady(ready: boolean, invalidations = this.invalidations): boolean {
+    this.ready = ready && invalidations === this.invalidations;
+    if (this.ready) { this.safetyRefusal = null; }
+
+    return this.ready;
+  }
+
+  /** Keeps the remedy on the live status beside the one-off notice that names it. */
+  private refuseSafety(remedy: SafetyRefusalRemedy): void {
+    this.safetyRefusal = remedy;
+    this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: remedy });
   }
 
   async prepareAttachmentWitness(): Promise<void> {
@@ -239,9 +257,10 @@ export class SessionHost implements SessionHostV1 {
     this.latchFinalSafetyBlock();
     await this.transition;
     await this.lifecycle.failCurrent();
+    this.safetyRefusal = 'restartRequired';
     this.statusChanged();
     // The latched block refuses /new for the rest of this process.
-    this.emit({ type: 'notice', code: 'providerSafetyRefused', reason: 'restartRequired' });
+    this.refuseSafety('restartRequired');
   }
 
   attach(sink: ClientSink): ReturnType<SessionHostV1['attach']> {
@@ -414,6 +433,7 @@ export class SessionHost implements SessionHostV1 {
 
   invalidate(reason: Correction['reason']): void {
     this.attachmentSafetyWitness = null;
+    this.invalidations += 1;
     this.lifecycle.suppress();
     this.ready = false;
     // A latched final-safety block or startup invalidation keeps any replacement out of this process, so none is queued.
@@ -591,11 +611,12 @@ export class SessionHost implements SessionHostV1 {
       await this.maintenance.idle();
       if (this.closing || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted || this.active !== null
         || this.switching || this.sessionControl !== null) { return; }
-      if (this.replacement) { this.replacement = false; this.reconnect = null; this.ready = await this.lifecycle.replace('stateInvalidated'); }
+      const invalidations = this.invalidations;
+      if (this.replacement) { this.replacement = false; this.reconnect = null; this.settleReady(await this.lifecycle.replace('stateInvalidated'), invalidations); }
       else {
         const pending = this.reconnect;
         this.reconnect = null;
-        if (pending !== null && this.lifecycle.session?.providerInstanceId === pending.instance) { this.ready = await this.lifecycle.reconnect(pending.reason); }
+        if (pending !== null && this.lifecycle.session?.providerInstanceId === pending.instance) { this.settleReady(await this.lifecycle.reconnect(pending.reason), invalidations); }
       }
     }).catch(() => { this.ready = false; }).finally(() => { this.transition = null; this.statusChanged(); if (!this.closing) { this.scheduleTransition(); } });
   }
@@ -605,7 +626,12 @@ export class SessionHost implements SessionHostV1 {
     if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'providerUnavailable'; }
     if (this.closing || this.switching || this.transition !== null) { return 'providerUnavailable'; }
     this.switching = true;
-    const control = (async () => { await this.maintenance.idle(); this.ready = await this.lifecycle.replace('requested'); return this.ready ? 'started' as const : 'providerUnavailable' as const; })();
+    const control = (async () => {
+      await this.maintenance.idle();
+      const invalidations = this.invalidations;
+
+      return this.settleReady(await this.lifecycle.replace('requested'), invalidations) ? 'started' as const : 'providerUnavailable' as const;
+    })();
     this.sessionControl = control;
     try { return await control; }
     finally { this.sessionControl = null; this.switching = false; this.statusChanged(); this.scheduleTransition(); }
@@ -615,7 +641,15 @@ export class SessionHost implements SessionHostV1 {
     if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'stateInvalidated'; }
     if (this.closing || this.switching || this.transition !== null || this.lifecycle.status.state === 'failed') { return 'providerUnavailable'; }
     this.switching = true;
-    const control = (async () => { await this.maintenance.idle(); const result = await this.lifecycle.resume(sessionId); this.ready = this.lifecycle.status.state === 'ready'; return result; })();
+    const control = (async () => {
+      await this.maintenance.idle();
+      const invalidations = this.invalidations;
+      const result = await this.lifecycle.resume(sessionId);
+      // A resumed provider that an invalidation overtook does not make the host ready, so the resume reports the invalidation.
+      const ready = this.settleReady(this.lifecycle.status.state === 'ready', invalidations);
+
+      return result === 'resumed' && !ready && invalidations !== this.invalidations ? 'stateInvalidated' as const : result;
+    })();
     this.sessionControl = control;
     try { return await control; }
     finally { this.sessionControl = null; this.switching = false; this.statusChanged(); this.scheduleTransition(); }

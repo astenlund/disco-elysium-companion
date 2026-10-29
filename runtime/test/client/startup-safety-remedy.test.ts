@@ -5,8 +5,8 @@ import test from 'node:test';
 import { startChatProvider } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
-import { runTextClient } from '../../src/text-client.ts';
-import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
+import { formatStatus, runTextClient } from '../../src/text-client.ts';
+import { FakeBackend, FakeProvider, instructionHash, invalidateWhenReady, until } from './support.ts';
 
 function startupModel() {
   const backend = new FakeBackend();
@@ -138,6 +138,156 @@ test('a final attachment safety block requires a restart', async () => {
   assert.equal(started.result, 'ready');
   assert.deepEqual(refusals(events), ['restartRequired']);
   assert.equal(retried, 'providerUnavailable');
+  await host.shutdown();
+});
+
+const restartText = 'Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit.';
+const recheckText = '/new rechecks it; if it stays unavailable, use /quit and run repair after exit.';
+
+test('the live status keeps a retryable refusal through a failed recheck and clears it once the host becomes ready', async () => {
+  // Arrange
+  const { backend, host } = startupModel();
+  const busy = busySafety(backend);
+
+  // Act
+  await startChatProvider(host, backend.asRuntime());
+  await attachNotices(host);
+  const afterRefusal = host.status.provider.safetyRefusal;
+  const failedRecheck = await host.startNewAgentSession();
+  const afterFailedRecheck = host.status;
+  busy.clear();
+  const recovered = await host.startNewAgentSession();
+
+  // Assert
+  assert.equal(afterRefusal, 'retryable');
+  assert.equal(failedRecheck, 'providerUnavailable');
+  assert.equal(afterFailedRecheck.provider.safetyRefusal, 'retryable');
+  assert.ok(formatStatus(afterFailedRecheck).includes(recheckText));
+  assert.equal(recovered, 'started');
+  assert.equal(host.status.provider.safetyRefusal, null);
+  assert.ok(!formatStatus(host.status).includes('Provider start refused'));
+  await host.shutdown();
+});
+
+test('the live status keeps a durable refusal through the recheck path of /new', async () => {
+  // Arrange
+  const { backend, host } = startupModel();
+  backend.safetyValue = { ...backend.safetyValue, pendingCheck: '7'.repeat(32) };
+
+  // Act
+  await startChatProvider(host, backend.asRuntime());
+  await attachNotices(host);
+  const retried = await host.startNewAgentSession();
+
+  // Assert
+  assert.equal(retried, 'providerUnavailable');
+  assert.equal(host.status.provider.state, 'failed');
+  assert.equal(host.status.provider.safetyRefusal, 'restartRequired');
+  assert.ok(formatStatus(host.status).includes(restartText));
+  await host.shutdown();
+});
+
+test('the live status keeps the refusal of an invalidated initial start through the outright refusal of /new', async () => {
+  // Arrange
+  const { backend, host } = startupModel();
+  host.invalidate('contextUncertain');
+
+  // Act
+  await startChatProvider(host, backend.asRuntime());
+  await attachNotices(host);
+  const retried = await host.startNewAgentSession();
+
+  // Assert
+  assert.equal(retried, 'providerUnavailable');
+  assert.equal(host.status.provider.safetyRefusal, 'restartRequired');
+  assert.ok(formatStatus(host.status).includes(restartText));
+  await host.shutdown();
+});
+
+test('the live status keeps a final attachment refusal, and /status repeats it after the notice', async () => {
+  // Arrange
+  const { backend, host } = startupModel();
+  let safetyCalls = 0;
+  const providerSafety = backend.providerSafety.bind(backend);
+  Object.assign(backend, { providerSafety: async () => { safetyCalls += 1; if (safetyCalls === 3) { throw new Error('Final safety refused.'); } return providerSafety(); } });
+  await startChatProvider(host, backend.asRuntime());
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let rendered = '';
+  output.on('data', (chunk: Buffer) => { rendered += chunk.toString('utf8'); });
+
+  // Act
+  const running = runTextClient(host, { input, output, terminal: false });
+  await until(() => rendered.includes('[Provider start refused'));
+  const beforeStatus = rendered.length;
+  input.write('/status\n');
+  await until(() => rendered.length > beforeStatus && rendered.slice(beforeStatus).includes(restartText));
+  input.write('/quit\n');
+  await running;
+
+  // Assert
+  assert.equal(host.status.provider.safetyRefusal, 'restartRequired');
+  assert.ok(rendered.slice(beforeStatus).includes('provider: failed'), rendered);
+});
+
+test('the remedy persists while the lifecycle reports a started provider but an invalidation keeps the host unready', async () => {
+  // Arrange: the host is invalidated in the status change that reports the bound provider ready, before start resolves.
+  const { backend, host } = startupModel();
+  const hook = invalidateWhenReady(host);
+
+  // Act
+  await startChatProvider(host, backend.asRuntime());
+  const events = await attachNotices(host);
+
+  // Assert
+  assert.equal(hook.invalidated, true);
+  assert.deepEqual(refusals(events), ['restartRequired']);
+  assert.equal(host.status.provider.state, 'ready');
+  assert.equal(host.status.provider.safetyRefusal, 'restartRequired');
+  assert.ok(formatStatus(host.status).includes(restartText));
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'notReady');
+  await host.shutdown();
+});
+
+test('an invalidation in the status change that reports the /new provider ready keeps the remedy and refuses /new', async () => {
+  // Arrange: a retryable refusal is kept; once the safety read clears, /new is invalidated as its provider reports ready.
+  const { backend, host } = startupModel();
+  const busy = busySafety(backend);
+  await startChatProvider(host, backend.asRuntime());
+  await attachNotices(host);
+  busy.clear();
+  const hook = invalidateWhenReady(host);
+
+  // Act
+  const retried = await host.startNewAgentSession();
+
+  // Assert
+  assert.equal(hook.invalidated, true);
+  assert.equal(retried, 'providerUnavailable');
+  assert.equal(host.status.provider.safetyRefusal, 'retryable');
+  assert.ok(formatStatus(host.status).includes(recheckText));
+  await host.shutdown();
+});
+
+test('the attach snapshot and every later status change carry the kept remedy', async () => {
+  // Arrange
+  const { backend, host } = startupModel();
+  busySafety(backend);
+  await startChatProvider(host, backend.asRuntime());
+  const events: HostEvent[] = [];
+
+  // Act
+  const attached = await host.attachVerified(event => { events.push(event); });
+  await until(() => events.some(event => event.type === 'notice' && event.code === 'providerSafetyRefused'));
+  const retried = await host.startNewAgentSession();
+
+  // Assert
+  assert.equal(attached.result, 'attached');
+  assert.equal(attached.result === 'attached' ? attached.snapshot.status.provider.safetyRefusal : null, 'retryable');
+  assert.equal(retried, 'providerUnavailable');
+  const changes = events.flatMap(event => event.type === 'status.changed' ? [event.status] : []);
+  assert.ok(changes.length > 0);
+  assert.ok(changes.every(status => status.provider.safetyRefusal === 'retryable'));
   await host.shutdown();
 });
 

@@ -3,7 +3,7 @@ import type { Readable, Writable } from 'node:stream';
 
 import { capacityTransitions, type CapacityOwed, type CapacityReason, type CapacityStatus } from './capacity.ts';
 import type { VerifiedAttachResult } from './session-host.ts';
-import type { HostDialog, HostEvent, HostStatus, SessionHostV1 } from './session-host-contract.ts';
+import type { HostDialog, HostEvent, HostStatus, SafetyRefusalRemedy, SessionHostV1 } from './session-host-contract.ts';
 
 export function credentialSourceLabel(source: string | null): string {
   if (source === null) { return 'unavailable'; }
@@ -56,11 +56,19 @@ function formatOperational(operational: HostStatus['operational']): string {
 
 const restartRemedy = 'Use /quit and restart chat to attempt recovery; if it remains unavailable, run repair after exit.';
 
+/** The remedy of a provider start that provider safety refused, shared by the notice and the status line. */
+export function formatSafetyRefusal(remedy: SafetyRefusalRemedy): string {
+  return remedy === 'retryable'
+    ? 'Provider start refused: context safety is temporarily unavailable. /new rechecks it; if it stays unavailable, use /quit and run repair after exit.'
+    : `Provider start refused: state safety needs startup recovery. ${restartRemedy}`;
+}
+
 export function formatStatus(status: HostStatus): string {
   const fault = status.journal.fault === null ? '' : ` (${status.journal.fault})`;
   // A live repairFailed fault means an unfinished repair that resumes only at the next chat or repair start.
   const repairRemedy = status.journal.fault === 'repairFailed' ? ` State validation waits for an unfinished repair. ${restartRemedy}` : '';
-  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}`;
+  const safetyRemedy = status.provider.safetyRefusal === null ? '' : ` ${formatSafetyRefusal(status.provider.safetyRefusal)}`;
+  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}${safetyRemedy}`;
 }
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean; readonly onAttached?: () => void }
@@ -112,11 +120,7 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
     else if (event.type === 'context.compacted') { line('[Provider context compacted; current state is wanted again.]'); }
     else if (event.type === 'notice') {
       if (event.code === 'stateContextInvalidated') { line('[Earlier state-based guidance may be unreliable. A clean session must revalidate it.]'); }
-      else if (event.code === 'providerSafetyRefused') {
-        line(event.reason === 'retryable'
-          ? '[Provider start refused: context safety is temporarily unavailable. /new rechecks it; if it stays unavailable, use /quit and run repair after exit.]'
-          : `[Provider start refused: state safety needs startup recovery. ${restartRemedy}]`);
-      }
+      else if (event.code === 'providerSafetyRefused') { line(`[${formatSafetyRefusal(event.reason)}]`); }
       else { line(`[${event.code}${event.reason === null ? '' : `: ${event.reason}`}]`); }
     }
   };

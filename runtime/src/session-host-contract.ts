@@ -18,8 +18,11 @@ export interface HostIdentities {
 }
 
 export interface Correction { readonly correctionId: string; readonly reason: 'coreRejected' | 'contextUncertain' }
+/** The remedy of a provider start that provider safety refused: recheck with /new, or restart chat. */
+export type SafetyRefusalRemedy = 'retryable' | 'restartRequired';
 export interface HostStatus extends BackendStatus {
-  readonly provider: { readonly state: 'starting' | 'ready' | 'reconnecting' | 'failed'; readonly credentialSource: string | null };
+  /** `safetyRefusal` keeps the latest providerSafetyRefused remedy until the host itself becomes ready. */
+  readonly provider: { readonly state: 'starting' | 'ready' | 'reconnecting' | 'failed'; readonly credentialSource: string | null; readonly safetyRefusal: SafetyRefusalRemedy | null };
   readonly windowRecovery: WindowSummary | null;
 }
 export interface AgentSessionSummary {
@@ -46,7 +49,7 @@ export type HostNotice =
   | { readonly type: 'notice'; readonly code: 'sessionReconnected'; readonly reason: 'subprocessExited' | 'overrideReset' }
   | { readonly type: 'notice'; readonly code: 'stateRedelivered'; readonly reason: null }
   | { readonly type: 'notice'; readonly code: 'stateContextInvalidated'; readonly reason: Correction['reason'] }
-  | { readonly type: 'notice'; readonly code: 'providerSafetyRefused'; readonly reason: 'retryable' | 'restartRequired' };
+  | { readonly type: 'notice'; readonly code: 'providerSafetyRefused'; readonly reason: SafetyRefusalRemedy };
 export type TurnFailure = 'interrupted' | 'subprocessExited' | 'providerError' | 'authenticationFailed' | 'rateLimited' | 'contextExhausted' | 'capacityBlocked' | 'stateInvalidated';
 export type HostEvent = HostNotice
   | ({ readonly type: 'turn.started' } & Interaction)

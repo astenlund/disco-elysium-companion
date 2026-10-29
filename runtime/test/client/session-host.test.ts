@@ -8,7 +8,7 @@ import type { HostEvent } from '../../src/session-host-contract.ts';
 import { indexCurrentBinding } from '../../src/session-records.ts';
 import type { StartupPhase } from '../../src/startup-progress.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
-import { deferred, FakeBackend, FakeProvider, flush, generation, instructionHash, timestamp, until } from './support.ts';
+import { deferred, FakeBackend, FakeProvider, flush, generation, instructionHash, invalidateWhenReady, timestamp, until } from './support.ts';
 
 async function fixture(declarations: ConstructorParameters<typeof FakeProvider>[0] = {}): Promise<{ host: SessionHost; backend: FakeBackend; provider: FakeProvider; events: HostEvent[] }> {
   const backend = new FakeBackend();
@@ -260,6 +260,22 @@ test('named resumes admit index, generation and instructions before calling prov
   assert.equal(await host.resumeAgentSession('valid-session'), 'resumed');
   assert.equal(backend.binding?.needsState, true);
   assert.equal(backend.binding?.stateGeneration, generation);
+  await host.shutdown();
+});
+
+test('a named resume overtaken by an invalidation in its ready status change reports the invalidation and leaves the host unready', async () => {
+  // Arrange: the host is invalidated in the status change that reports the resumed provider ready.
+  const { host, backend } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+
+  // Act
+  const hook = invalidateWhenReady(host);
+  const result = await host.resumeAgentSession('valid-session');
+
+  // Assert
+  assert.equal(hook.invalidated, true);
+  assert.equal(result, 'stateInvalidated');
+  assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
   await host.shutdown();
 });
 

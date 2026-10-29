@@ -15,3 +15,5 @@ Make the provider status reflect immediate suppression, including the bind-then-
 ## Status
 
 Deferred under the user's minor-finding instruction. No fix or publication is authorized by this entry.
+
+[Startup remedy persistence](runtime-startup-remedy-persistence.md) landed first, on 2026-10-25, so its contract is the one this fix adopts: `provider.safetyRefusal` keeps the remedy of the latest `providerSafetyRefused` notice and clears only when the host itself becomes ready, never because the lifecycle reports a started provider while the host stays unready. A corrected provider label must keep that field independent of `provider.state`, which start and attachment read to decide whether to exit or attach.
