@@ -4,7 +4,7 @@ import { Deadline } from '../deadline.ts';
 import { newIdentity, newOperationId } from '../identity.ts';
 import { utcNow } from '../json.ts';
 import { effectivelyUnfinished, pendingOperationSafety, type FullOperation, type HandoverOperation, type ReleaseOperation, type OperationSafety } from '../operation-records.ts';
-import { requireRepair, type StoredOperation } from '../operations.ts';
+import { requireRepair, unownedInvalidOperations, type StoredOperation } from '../operations.ts';
 import { abandonRecovery } from '../recovery-progress.ts';
 import type { SkippedRange } from '../recovery-provenance.ts';
 import { sameRecoveryOwner, type RecoveryWitness } from '../safety-records.ts';
@@ -84,7 +84,7 @@ export class ConsumerCoordinator {
   private async transferPendingOwned(): Promise<boolean> {
     const k = this.kernel;
     const inventory = await k.operations.list();
-    requireControl(inventory.invalid.length === 0);
+    requireControl(unownedInvalidOperations(inventory).length === 0);
     const pending = inventory.records.filter(item => pendingOperationSafety(item.record));
     if (pending.length === 0) { return false; }
     const first = pending[0]!.record;

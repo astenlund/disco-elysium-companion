@@ -10,6 +10,16 @@ import { SerialQueue } from './serial.ts';
 export interface StoredOperation { readonly record: OperationRecord; readonly sha256: string }
 export interface OperationInventory { readonly records: readonly StoredOperation[]; readonly invalid: readonly { readonly name: string; readonly sha256: string | null }[]; readonly handoffCount: number; readonly fullTerminalCount: number }
 
+/**
+ * Invalid operation files that no unfinished repair owns. An unfinished repair whose plan names a file's exact name and
+ * hash among its lost operations moves that file to quarantine when it resumes, so the file does not refuse that resumption.
+ */
+export function unownedInvalidOperations(inventory: OperationInventory): OperationInventory['invalid'] {
+  const owned = inventory.records.flatMap(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record) ? entry.record.plan.lostOperations : []);
+
+  return inventory.invalid.filter(item => !owned.some(lost => lost.name === item.name && lost.sha256 === item.sha256));
+}
+
 function serialize(value: unknown): string { return stringifyJson(value, 'state-event'); }
 function equal(left: unknown, right: unknown): boolean { return serialize(left) === serialize(right); }
 function fileName(id: string): string {

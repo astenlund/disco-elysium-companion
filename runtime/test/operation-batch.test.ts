@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { ControlDocumentError } from '../src/control-values.ts';
 import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
 import { parseStrictJson, stringifyJson, type JsonValue } from '../src/json.ts';
-import { OperationStore } from '../src/operations.ts';
+import { OperationStore, unownedInvalidOperations, type OperationInventory, type StoredOperation } from '../src/operations.ts';
 import type { CompactOperation } from '../src/operation-records.ts';
 import type { ScopeStorage } from '../src/storage.ts';
 
@@ -61,5 +61,27 @@ describe('operation batch inventory', () => {
     const deadline = Deadline.after(20, () => now);
     const storage = { scope: { bindingSha256: scopeSha256 }, list: async () => [], readMany: async () => { now = 20; return []; } } as unknown as ScopeStorage;
     await assert.rejects(new OperationStore(storage).list(deadline), DeadlineExceededError);
+  });
+});
+
+describe('invalid operation ownership', () => {
+  const lostHash = '1'.repeat(64);
+  const repair = (completedAt: string | null): StoredOperation => ({ sha256: '2'.repeat(64), record: { compacted: false, kind: 'repair', completedAt,
+    recovery: { activeEpisode: completedAt === null ? 0 : null, episodes: [] }, plan: { lostOperations: [{ name: 'jr-lost.json', sha256: lostHash, destination: 'quarantine/jr-lost.json.q' }] } } } as unknown as StoredOperation);
+
+  it('lets an unfinished repair own the exact invalid file it quarantines, and nothing else', () => {
+    // Arrange
+    const invalid = [{ name: 'jr-lost.json', sha256: lostHash }, { name: 'jr-lost.json', sha256: '3'.repeat(64) }, { name: 'jr-other.json', sha256: lostHash }, { name: 'jr-unread.json', sha256: null }];
+    const inventory = (records: readonly StoredOperation[]): OperationInventory => ({ records, invalid, handoffCount: 0, fullTerminalCount: 0 });
+
+    // Act
+    const owned = unownedInvalidOperations(inventory([repair(null)]));
+    const finished = unownedInvalidOperations(inventory([repair(startedAt)]));
+    const none = unownedInvalidOperations(inventory([]));
+
+    // Assert
+    assert.deepEqual(owned, invalid.slice(1));
+    assert.deepEqual(finished, invalid);
+    assert.deepEqual(none, invalid);
   });
 });
