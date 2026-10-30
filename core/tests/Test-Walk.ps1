@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'WarningAndAge', 'ResultProtocol', 'FoundResultSemantics', 'NoStateOnConfigFailure', 'DuplicateSurfaceMatrix', 'AmbientWalkPast')]
+    [ValidateSet('All', 'WarningAndAge', 'ResultProtocol', 'FoundResultSemantics', 'NoStateOnConfigFailure', 'DuplicateSurfaceMatrix', 'AmbientWalkPast', 'DryTraversal')]
     [string] $Only = 'All'
 )
 
@@ -186,28 +186,28 @@ try {
             [ordered]@{ domainId = $Config.SourceDomainId; saveFile = 'newest.ntwtf.zip'; savedAt = '2026-08-10T12:00:00.0000000Z' }
             [ordered]@{ domainId = $Config.SourceDomainId; saveFile = 'oldest.ntwtf.zip'; savedAt = '2026-08-06T12:00:00.0000000Z' }
         )
-        Assert-WalkResultSemantics -Result $Document -TraversalEvidence ([WalkTraversalEvidence]::new($candidates, 2, 72, @())) -AdapterConfig $Config
+        Assert-WalkResultSemantics -Result $Document -TraversalEvidence (New-WalkTraversalEvidence -Candidates $candidates -EffectiveMaxSaves 2 -EffectiveMaxAgeHours 72 -Receipts @()) -AdapterConfig $Config
     }
 }
 finally {
     $ageConfig.Dispose()
 }
 
-if ($Only -eq 'AmbientWalkPast') {
-    function Assert-SingleWalkJson {
-        param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text, [Parameter(Mandatory)] [string] $Message)
+function Assert-SingleWalkJson {
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text, [Parameter(Mandatory)] [string] $Message)
 
-        try {
-            $value = $Text | ConvertFrom-Json -AsHashtable -DateKind String -ErrorAction Stop
-        } catch {
-            throw [System.InvalidOperationException]::new("Assertion failed: $Message. Output could not be parsed as JSON: $($_.Exception.Message)")
-        }
-
-        Assert-True -Condition ($value -is [hashtable]) -Message $Message
-
-        return $value
+    try {
+        $value = $Text | ConvertFrom-Json -AsHashtable -DateKind String -ErrorAction Stop
+    } catch {
+        throw [System.InvalidOperationException]::new("Assertion failed: $Message. Output could not be parsed as JSON: $($_.Exception.Message)")
     }
 
+    Assert-True -Condition ($value -is [hashtable]) -Message $Message
+
+    return $value
+}
+
+if ($Only -eq 'AmbientWalkPast') {
     $stubRoot = New-ScratchCompanionRoot -Prefix 'walk-ambient'
     $stubCore = Join-Path $stubRoot 'core'
     $stubSaves = Join-Path $stubRoot 'saves'
@@ -298,6 +298,40 @@ $digest = [ordered]@{
     Assert-True -Condition $excludeJson.found -Message 'Exclude-empty stub walk finds the first pair.'
     Assert-Equal -Actual ([long] $excludeJson.walkedSaves) -Expected ([long] 2) -Message 'Exclude-empty stub walk stops at the first pair (walkedSaves 2).'
 
+    Write-Output 'PASS: walk'
+    exit 0
+}
+
+# A walk that evaluates no save pair (a lone save, an empty save directory, or a
+# predecessor already past the age bound) returns the dry result with empty evidence.
+function Assert-DryWalkWithoutPairs {
+    param([Parameter(Mandatory)] [pscustomobject] $Fixture, [Parameter(Mandatory)] [string] $ExpectedBoundHit, [Parameter(Mandatory)] [string] $Label)
+
+    # Act
+    $run = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $Fixture.Core 'Find-LastEventfulSpan.ps1'), '-CompanionRoot', $Fixture.Root) -WorkingDirectory $Fixture.Root
+
+    # Assert
+    Assert-Equal -Expected 0 -Actual $run.ExitCode -Message "The $Label walk exits 0 (stderr: $($run.StdErr.Trim()))"
+    $json = Assert-SingleWalkJson -Text $run.StdOut -Message "The $Label walk writes one JSON object."
+    Assert-False -Condition $json.found -Message "The $Label walk is dry."
+    Assert-Equal -Expected ([long] 0) -Actual ([long] $json.walkedSaves) -Message "The $Label walk digests no save."
+    Assert-OrdinalEqual -Expected $ExpectedBoundHit -Actual $json.boundHit -Message "The $Label walk names its bound."
+}
+
+# Arrange
+$loneFixture = New-StagedStubAcquisitionRoot -Prefix 'walk-lone' -EntryScripts @('Find-LastEventfulSpan.ps1')
+$emptyFixture = New-StagedStubAcquisitionRoot -Prefix 'walk-empty' -EntryScripts @('Find-LastEventfulSpan.ps1')
+[IO.File]::Delete($emptyFixture.Save)
+$ageFixture = New-StagedStubAcquisitionRoot -Prefix 'walk-age' -EntryScripts @('Find-LastEventfulSpan.ps1')
+$overAgeSave = Join-Path $ageFixture.Saves 's-old.zip'
+[IO.File]::WriteAllText($overAgeSave, 'save-old', [Text.UTF8Encoding]::new($false, $true))
+[IO.File]::SetLastWriteTimeUtc($overAgeSave, [IO.File]::GetLastWriteTimeUtc($ageFixture.Save).AddHours(-73))
+
+# Act and Assert
+Assert-DryWalkWithoutPairs -Fixture $loneFixture -ExpectedBoundHit 'exhausted' -Label 'lone-save'
+Assert-DryWalkWithoutPairs -Fixture $emptyFixture -ExpectedBoundHit 'exhausted' -Label 'empty-directory'
+Assert-DryWalkWithoutPairs -Fixture $ageFixture -ExpectedBoundHit 'age' -Label 'immediate-age'
+if ($Only -eq 'DryTraversal') {
     Write-Output 'PASS: walk'
     exit 0
 }

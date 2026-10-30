@@ -373,10 +373,10 @@ class WalkTraversalEvidence {
 
 function New-WalkTraversalEvidence {
     param(
-        [Parameter(Mandatory)] [object[]] $Candidates,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Candidates,
         [Parameter(Mandatory)] [int] $EffectiveMaxSaves,
         [Parameter(Mandatory)] [int] $EffectiveMaxAgeHours,
-        [Parameter(Mandatory)] [object[]] $Receipts
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Receipts
     )
 
     $receiptArray = [WalkPairReceipt[]] @($Receipts)
