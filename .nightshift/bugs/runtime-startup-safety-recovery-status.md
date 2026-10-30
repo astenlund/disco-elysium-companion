@@ -16,4 +16,4 @@ Track a precise startup-unavailable status and recovery contract, documenting wh
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
 
-Fixed on 2026-10-24 and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md), which records the fix and its commits. Keeping the remedy on the live status surface is tracked as [Startup remedy persistence](runtime-startup-remedy-persistence.md).
+Fixed on 2026-10-24 and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md), which records the fix and its commits. Keeping the remedy on the live status surface was fixed separately as [Startup remedy persistence](runtime-startup-remedy-persistence.md), also archived.
