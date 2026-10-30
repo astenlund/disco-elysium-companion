@@ -1386,10 +1386,11 @@ if ($Only -eq 'WrapperTransactionSelection') {
     exit 0
 }
 
-if ($Only -eq 'ZeroByteStateFiles') {
+if ($Only -in @('All', 'ZeroByteStateFiles')) {
     # A truncated state file is invalid content, not an unreadable one: the one-shot
     # refresh self-heals a zero-byte current, and the turn context resets a zero-byte
-    # baseline instead of failing with baseline-read-failed.
+    # baseline instead of failing with baseline-read-failed. A regression guard for the
+    # zero-byte reader fix, so it runs under All.
     $zeroFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-zero-byte' -EntryScripts @('Get-TurnContext.ps1', 'Update-CompanionState.ps1')
     $zeroTurn = @('-File', (Join-Path $zeroFixture.Core 'Get-TurnContext.ps1'))
     $zeroOneShot = @('-File', (Join-Path $zeroFixture.Core 'Update-CompanionState.ps1'), '-CompanionRoot', $zeroFixture.Root)
@@ -1417,8 +1418,10 @@ if ($Only -eq 'ZeroByteStateFiles') {
     $healedEnvelope = Invoke-InCompanionModule { param($Json) Read-TurnContextEnvelope -Json $Json -TransportOnly } @($healed.StdOut)
     Assert-False -Condition $healedEnvelope.RootElement.GetProperty('baselineReset').GetBoolean() -Message 'Refreshing a zero-byte current keeps the valid baseline.'
 
-    Write-Output 'PASS: turn context'
-    exit 0
+    if ($Only -eq 'ZeroByteStateFiles') {
+        Write-Output 'PASS: turn context'
+        exit 0
+    }
 }
 
 # The live wrapper is an entry script and must honor the migration entry fence
