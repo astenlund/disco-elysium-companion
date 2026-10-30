@@ -66,20 +66,22 @@ if ($Only -eq 'Quiescence') {
     exit 0
 }
 
-$duplicateBookkeeping = Invoke-InCompanionModule {
-    param($Root)
+# Content-invalid bookkeeping, read through the production reader, triggers one cycle that
+# rewrites it instead of failing every poll.
+$invokeBookkeepingRewrite = { param([string] $Prefix, [string] $BookkeepingText) Invoke-InCompanionModule {
+    param($Root, $Text)
     $state = Join-Path $Root 'state'
     [IO.Directory]::CreateDirectory($state) | Out-Null
     $save = Join-Path $Root 'save.ntwtf.zip'
     [IO.File]::WriteAllText($save, 'x', [Text.UTF8Encoding]::new($false, $true))
     [IO.File]::SetLastWriteTimeUtc($save, [datetime]::Parse('2026-08-10T00:00:00.0000000Z', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind))
     $bookkeepingPath = Join-Path $state 'last-processed.json'
-    [IO.File]::WriteAllText($bookkeepingPath, '{"domainId":"domain","domainId":"other","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}', [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::WriteAllText($bookkeepingPath, $Text, [Text.UTF8Encoding]::new($false, $true))
     $cycles = [Collections.Generic.List[int]]::new()
     $spec = @{
         ResolveConfig = { param($Token) [pscustomobject]@{ SourceDomainId = 'domain' } }
         GetCandidates = { param($Config,$Token) @([IO.FileInfo]::new($save)) }
-        ReadBookkeeping = { param($Config,$Token) try { [WatcherBookkeepingReadResult]::new('valid', (Read-CompanionJson -Path $bookkeepingPath -Budget config)) } catch [CompanionContentException] { [WatcherBookkeepingReadResult]::new('content-invalid', $null) } }
+        ReadBookkeeping = (New-WatcherRuntimeServices -AdapterName 'example' -CompanionRoot $Root).ReadBookkeeping
         ReadCurrent = { param($Config,$Token) [WatcherCurrentReadResult]::new('valid', (Read-CompanionJson -Json '{"source":{"domainId":"domain","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}}' -Budget digest)) }
         TestStable = { param($Config,$File,$Token) [pscustomobject]@{ status = 'stable'; candidate = $File } }
         TryAcquireCycleLock = { param($CompanionRoot,$Token) [pscustomobject]@{ status = 'acquired'; owner = [IO.MemoryStream]::new() } }
@@ -90,11 +92,16 @@ $duplicateBookkeeping = Invoke-InCompanionModule {
     $second = Invoke-WatcherPoll -PriorSample $first.sample -Services $services -CompanionRoot $Root -CancellationToken ([Threading.CancellationToken]::None)
     $bookkeeping = Read-CompanionJson -Path $bookkeepingPath -Budget config
     return [pscustomobject]@{ first = $first.disposition; second = $second.disposition; cycles = $cycles.Count; fields = @($bookkeeping.Materialized.Keys) }
-} @((New-ScratchCompanionRoot -Prefix 'watcher-duplicate-bookkeeping'))
-Assert-Equal -Actual $duplicateBookkeeping.first -Expected 'sampled' -Message 'Duplicate bookkeeping fixture first records the candidate sample.'
-Assert-Equal -Actual $duplicateBookkeeping.second -Expected 'cycled' -Message 'Duplicate bookkeeping is not accepted as a completed watcher record.'
-Assert-Equal -Actual $duplicateBookkeeping.cycles -Expected 1 -Message 'Duplicate bookkeeping triggers exactly one reprocessing cycle.'
-Assert-Equal -Actual ($duplicateBookkeeping.fields -join ',') -Expected 'domainId,saveFile,savedAt' -Message 'The reprocessing cycle replaces bookkeeping with the exact three-field record.'
+} @((New-ScratchCompanionRoot -Prefix $Prefix), $BookkeepingText) }
+foreach ($case in @(
+        @{ Label = 'Duplicate'; Prefix = 'watcher-duplicate-bookkeeping'; Text = '{"domainId":"domain","domainId":"other","saveFile":"save.ntwtf.zip","savedAt":"2026-08-10T00:00:00.0000000Z"}' },
+        @{ Label = 'Zero-byte'; Prefix = 'watcher-empty-bookkeeping'; Text = '' })) {
+    $rewrite = & $invokeBookkeepingRewrite $case.Prefix $case.Text
+    Assert-Equal -Actual $rewrite.first -Expected 'sampled' -Message "$($case.Label) bookkeeping fixture first records the candidate sample."
+    Assert-Equal -Actual $rewrite.second -Expected 'cycled' -Message "$($case.Label) bookkeeping is not accepted as a completed watcher record."
+    Assert-Equal -Actual $rewrite.cycles -Expected 1 -Message "$($case.Label) bookkeeping triggers exactly one reprocessing cycle."
+    Assert-Equal -Actual ($rewrite.fields -join ',') -Expected 'domainId,saveFile,savedAt' -Message "The reprocessing cycle replaces $($case.Label.ToLowerInvariant()) bookkeeping with the exact three-field record."
+}
 if ($Only -eq 'DuplicateBookkeepingRewrite') {
     Write-Output 'PASS: watcher'
     exit 0

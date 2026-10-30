@@ -120,7 +120,7 @@ function Get-CompanionJsonBudget {
 }
 
 function Test-CompanionJsonBytes {
-    param([Parameter(Mandatory)] [byte[]] $Bytes, [Parameter(Mandatory)] $Budget)
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes, [Parameter(Mandatory)] $Budget)
 
     if ($Bytes.LongLength -gt $Budget.MaxBytes) {
         throw [CompanionJsonParseException]::new('Companion JSON exceeds its byte budget.')
@@ -137,7 +137,7 @@ function Read-CompanionJson {
     [CmdletBinding(DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'Path')] [string] $Path,
-        [Parameter(Mandatory, ParameterSetName = 'Json')] [string] $Json,
+        [Parameter(Mandatory, ParameterSetName = 'Json')] [AllowEmptyString()] [string] $Json,
         [Parameter(Mandatory)] $Budget
     )
 

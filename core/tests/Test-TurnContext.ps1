@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome', 'ZeroByteStateFiles')]
     [string] $Only = 'All'
 )
 
@@ -1381,6 +1381,41 @@ if ($Only -eq 'WrapperTransactionSelection') {
     finally {
         $txLock.Dispose()
     }
+
+    Write-Output 'PASS: turn context'
+    exit 0
+}
+
+if ($Only -eq 'ZeroByteStateFiles') {
+    # A truncated state file is invalid content, not an unreadable one: the one-shot
+    # refresh self-heals a zero-byte current, and the turn context resets a zero-byte
+    # baseline instead of failing with baseline-read-failed.
+    $zeroFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-zero-byte' -EntryScripts @('Get-TurnContext.ps1', 'Update-CompanionState.ps1')
+    $zeroTurn = @('-File', (Join-Path $zeroFixture.Core 'Get-TurnContext.ps1'))
+    $zeroOneShot = @('-File', (Join-Path $zeroFixture.Core 'Update-CompanionState.ps1'), '-CompanionRoot', $zeroFixture.Root)
+    $zeroCurrent = Join-Path $zeroFixture.State 'current.json'
+    $zeroBaseline = Join-Path $zeroFixture.State 'baseline.json'
+    $opening = Invoke-BoundedPwsh -Arguments $zeroTurn -WorkingDirectory $zeroFixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $opening.ExitCode -Expected 0 -Message "The opening turn context succeeds (stderr: $($opening.StdErr.Trim()))"
+
+    [IO.File]::WriteAllBytes($zeroCurrent, [byte[]]@())
+    $oneShot = Invoke-BoundedPwsh -Arguments $zeroOneShot -WorkingDirectory $zeroFixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $oneShot.ExitCode -Expected 0 -Message "The one-shot refresh succeeds over a zero-byte current (stderr: $($oneShot.StdErr.Trim()))"
+    $healedCurrent = Read-DigestDocument -Path $zeroCurrent
+    Assert-OrdinalEqual -Actual $healedCurrent.RootElement.GetProperty('source').GetProperty('saveFile').GetString() -Expected 's-a.zip' -Message 'The one-shot refresh rewrites the zero-byte current.'
+
+    [IO.File]::WriteAllBytes($zeroBaseline, [byte[]]@())
+    $reset = Invoke-BoundedPwsh -Arguments $zeroTurn -WorkingDirectory $zeroFixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $reset.ExitCode -Expected 0 -Message "The turn context succeeds over a zero-byte baseline (stderr: $($reset.StdErr.Trim()))"
+    $resetEnvelope = Invoke-InCompanionModule { param($Json) Read-TurnContextEnvelope -Json $Json -TransportOnly } @($reset.StdOut)
+    Assert-True -Condition $resetEnvelope.RootElement.GetProperty('baselineReset').GetBoolean() -Message 'A zero-byte baseline takes the baseline reset route.'
+    Assert-OrdinalEqual -Actual (Read-DigestDocument -Path $zeroBaseline).RootElement.GetProperty('source').GetProperty('saveFile').GetString() -Expected 's-a.zip' -Message 'The reset rewrites the zero-byte baseline.'
+
+    [IO.File]::WriteAllBytes($zeroCurrent, [byte[]]@())
+    $healed = Invoke-BoundedPwsh -Arguments $zeroTurn -WorkingDirectory $zeroFixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $healed.ExitCode -Expected 0 -Message "The turn context succeeds over a zero-byte current (stderr: $($healed.StdErr.Trim()))"
+    $healedEnvelope = Invoke-InCompanionModule { param($Json) Read-TurnContextEnvelope -Json $Json -TransportOnly } @($healed.StdOut)
+    Assert-False -Condition $healedEnvelope.RootElement.GetProperty('baselineReset').GetBoolean() -Message 'Refreshing a zero-byte current keeps the valid baseline.'
 
     Write-Output 'PASS: turn context'
     exit 0

@@ -157,13 +157,10 @@ function Read-StateEventFileBytes {
     return [pscustomobject]@{ bytes = $buffer.ToArray(); sha256 = $sha256 }
 }
 
-# Parses the bytes of a 7.6 file. A zero-byte file was read completely and then fails to parse,
-# which 7.6 defines as invalid content, so it raises the parse failure here; the shared reader
-# would reject its empty input at parameter binding, which callers report as unreadable.
+# Parses the bytes of a 7.6 file; a zero-byte file fails to parse, which 7.6 defines as invalid content.
 function ConvertFrom-StateEventJsonBytes {
     param([Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes, [Parameter(Mandatory)] [string] $Budget)
 
-    if ($Bytes.Length -eq 0) { throw [CompanionJsonParseException]::new('Companion JSON is empty.') }
     try { $json = $script:CompanionJsonUtf8.GetString($Bytes) }
     catch { throw [CompanionJsonParseException]::new('Companion JSON is not strict UTF-8.', $_.Exception) }
 

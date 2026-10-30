@@ -22,6 +22,10 @@ Invoke-InCompanionModule {
     [IO.File]::WriteAllText($target, '{}')
     Assert-Equal -Actual (Read-CompanionBaseline -CompanionRoot $Root).outcome -Expected 'content-invalid' -Message 'Invalid baseline bytes classify as content-invalid.'
     Assert-Equal -Actual (Read-CompanionCurrent -CompanionRoot $Root).outcome -Expected 'content-invalid' -Message 'Invalid current bytes classify as content-invalid.'
+    [IO.File]::WriteAllBytes((Join-Path $State 'baseline.json'), [byte[]]@())
+    [IO.File]::WriteAllBytes($target, [byte[]]@())
+    Assert-Equal -Actual (Read-CompanionBaseline -CompanionRoot $Root).outcome -Expected 'content-invalid' -Message 'A zero-byte baseline classifies as content-invalid.'
+    Assert-OrdinalEqual -Actual (Read-CompanionCurrent -CompanionRoot $Root).reason -Expected 'target-invalid' -Message 'A zero-byte current carries target-invalid.'
     $validDigest = '{"schemaVersion":2,"adapterVersion":2,"game":"example","generatedAt":"2026-08-10T12:00:00.0000000Z","source":{"domainId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","saveFile":"B.ntwtf.zip","savedAt":"2026-08-10T11:00:00.0000000Z","byteLength":1,"contentSha256":"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"},"session":{"day":1,"time":"08:09","location":"place","playtimeNote":null},"character":{"level":1,"xp":0,"unspentPoints":0,"money":{"amount":1.25,"minorUnits":125,"minorUnitsPerUnit":100,"currency":"real"},"vitals":[{"name":"health","value":1}],"skills":[{"name":"Logic","value":1,"group":"Intellect"}]},"objectives":[{"id":"TASK.example","title":"example","status":"active","acquired":{"day":1,"time":"08:09"},"resolved":null,"subobjectives":[]}],"inventory":{"owned":["item"],"equipped":["item"],"highlights":[]},"extra":{}}'
     [IO.File]::WriteAllText($target, $validDigest, [Text.UTF8Encoding]::new($false, $true))
     Assert-Equal -Actual (Read-CompanionCurrent -CompanionRoot $Root).outcome -Expected 'valid' -Message 'Valid current digest is admitted.'

@@ -22,7 +22,7 @@ function Test-ReadRejectsEscapeEquivalentDuplicate {
 function Test-ReadBoundaryMatrixForBothInputs {
     $path = Join-Path (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tmp') "companion-json-$PID-matrix.json"
     try {
-        foreach ($json in @('{"x":1,"x":2}', '{"x":1,"\u0078":2}', '{"x":')) {
+        foreach ($json in @('{"x":1,"x":2}', '{"x":1,"\u0078":2}', '{"x":', '')) {
             [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
             Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $json -Budget config }
             Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget config }
