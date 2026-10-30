@@ -37,21 +37,9 @@ Reconcile the section 7.1 no-overwrite promise with the existing state writer af
 
 **Requires:** none.
 
-### [Empty-receipt history walk](bugs/walk-empty-receipts.md)
-
-Return the specified dry result when a history walk has no save pair, with lone-save, empty-directory, and age-stop cases.
-
-**Requires:** none.
-
 ### [Source-domain identifier recipe](bugs/domain-id-recipe-mismatch.md)
 
 Settle the spec and code hash recipes before changing identifiers, since a code change would reset existing baselines.
-
-**Requires:** none.
-
-### [Zero-byte shared state readers](bugs/zero-byte-shared-readers.md)
-
-Classify empty state and bookkeeping files as invalid content through bridge and watcher recovery paths.
 
 **Requires:** none.
 
