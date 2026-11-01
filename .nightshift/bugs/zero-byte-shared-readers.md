@@ -15,3 +15,5 @@ Track it as a bug: make the shared byte validator and the digest reader classify
 ## Status
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+
+Fixed on 2026-10-30 and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md), which records the fix and its commit.
