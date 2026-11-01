@@ -16,3 +16,5 @@ Decide whether these checks should defer to an unfinished repair that owns the i
 ## Status
 
 Tracked at the user's triage on 2026-10-30. No fix or publication is authorized by this entry.
+
+Fixed on 2026-11-01 in Nightshift run d76963c9-e811-44b6-911d-f99b3bf8c53d; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the delivered behavior.
