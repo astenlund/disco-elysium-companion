@@ -15,9 +15,21 @@ export interface OperationInventory { readonly records: readonly StoredOperation
  * hash among its lost operations moves that file to quarantine when it resumes, so the file does not refuse that resumption.
  */
 export function unownedInvalidOperations(inventory: OperationInventory): OperationInventory['invalid'] {
-  const owned = inventory.records.flatMap(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record) ? entry.record.plan.lostOperations : []);
+  const owned = unfinishedRepairs(inventory).flatMap(record => record.plan.lostOperations);
 
   return inventory.invalid.filter(item => !owned.some(lost => lost.name === item.name && lost.sha256 === item.sha256));
+}
+
+/** Unfinished repairs that between them own every invalid operation file; empty when no file is invalid or any is unowned. */
+export function invalidOperationOwners(inventory: OperationInventory): readonly string[] {
+  if (inventory.invalid.length === 0 || unownedInvalidOperations(inventory).length > 0) { return []; }
+
+  return unfinishedRepairs(inventory).filter(record => record.plan.lostOperations.some(lost => inventory.invalid.some(item => item.name === lost.name && item.sha256 === lost.sha256)))
+    .map(record => record.operationId);
+}
+
+function unfinishedRepairs(inventory: OperationInventory): readonly RepairOperation[] {
+  return inventory.records.flatMap(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record) ? [entry.record] : []);
 }
 
 function serialize(value: unknown): string { return stringifyJson(value, 'state-event'); }

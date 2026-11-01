@@ -1,5 +1,5 @@
 import { coreAttemptToken, pendingOperationSafety, type RepairOperation } from '../operation-records.ts';
-import type { OperationInventory } from '../operations.ts';
+import { unownedInvalidOperations, type OperationInventory } from '../operations.ts';
 import { carryReleaseRemovalIndex, carryReleaseState, type RecoveryPrerequisite } from '../recovery-manifest.ts';
 import { sameRecoveryOwner, type RecoveryOwner, type StateSafety } from '../safety-records.ts';
 
@@ -56,10 +56,21 @@ function hasDesignatedCarryBinding(record: RepairOperation, ordinal: number, pla
     && carryReleaseRemovalIndex(episode.prerequisite) >= 0 && (episode.replacementAttempt ?? episode.attemptAtStart) === bound.attemptOrdinal && allocation(index));
 }
 
-export function deferredCarryAuthority(inventory: OperationInventory): DeferredCarryAuthority {
+/**
+ * Which invalid operation files make carry ownership unavailable. `strict` refuses on any. `repairOwned` lets an
+ * invalid file that an unfinished repair owns pass, since that repair quarantines it when it resumes; only the
+ * reconciliation that runs before that resume opts in, so ordinary admission keeps refusing every invalid file.
+ */
+export type InvalidOwnership = 'strict' | 'repairOwned';
+
+function blockingInvalid(inventory: OperationInventory, ownership: InvalidOwnership): OperationInventory['invalid'] {
+  return ownership === 'repairOwned' ? unownedInvalidOperations(inventory) : inventory.invalid;
+}
+
+export function deferredCarryAuthority(inventory: OperationInventory, ownership: InvalidOwnership = 'strict'): DeferredCarryAuthority {
   const protectedOperations = new Set<string>();
   const unavailable = (): DeferredCarryAuthority => ({ state: 'unavailable', owner: null, carrySha256: null, protectedOperations });
-  if (inventory.invalid.length > 0) { return unavailable(); }
+  if (blockingInvalid(inventory, ownership).length > 0) { return unavailable(); }
   const byId = new Map(inventory.records.map(entry => [entry.record.operationId, entry.record]));
   if (byId.size !== inventory.records.length) { return unavailable(); }
   const entries: { record: RepairOperation; ordinal: number; plan: RecoveryPrerequisite }[] = [];
@@ -112,8 +123,8 @@ export function deferredCarryAuthority(inventory: OperationInventory): DeferredC
   return { state: carryReleaseState(owner.plan), owner: { operationId: owner.record.operationId, episodeOrdinal: owner.ordinal }, carrySha256: owner.plan.carry!.sha256, protectedOperations };
 }
 
-export function hasCarryAuthority(sha256: string | null, inventory: OperationInventory): boolean {
-  const deferred = deferredCarryAuthority(inventory);
+export function hasCarryAuthority(sha256: string | null, inventory: OperationInventory, ownership: InvalidOwnership = 'strict'): boolean {
+  const deferred = deferredCarryAuthority(inventory, ownership);
   if (deferred.state === 'unavailable') { return false; }
   if (deferred.owner !== null) {
     if (sha256 !== null && sha256 !== deferred.carrySha256) { return false; }

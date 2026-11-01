@@ -13,7 +13,7 @@ import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
-import { OperationStore } from '../operations.ts';
+import { invalidOperationOwners, OperationStore } from '../operations.ts';
 import { NativeHelper } from '../native-helper.ts';
 import { classifyHelperFailure, NativeHelperUnavailableError } from '../native-helper-error.ts';
 import { ensureNativeHelperImage } from '../native-image.ts';
@@ -133,6 +133,7 @@ export class CoordinatorBackend implements RuntimeBackend {
           try { await k.resources.reserve('release'); }
           catch (error) {
             if (!(error instanceof RuntimeCapacityError)) { throw error; }
+            await this.requireRetentionProof(error);
             await this.retention(false);
             await k.resources.reserve('release');
           }
@@ -241,6 +242,20 @@ export class CoordinatorBackend implements RuntimeBackend {
 
   private async retention(reevaluate = true): Promise<void> {
     await maintainRuntimeStorage(this.kernel, undefined, { reevaluate });
+  }
+
+  /**
+   * Retention cannot prove what an invalid operation file protects. When every such file belongs to an unfinished repair,
+   * the pass cannot succeed before that repair resumes, so the capacity refusal stays the classified failure and the
+   * owning repair is named. Any other inventory, including one that cannot be read, leaves the pass to its own checks.
+   */
+  private async requireRetentionProof(refusal: RuntimeCapacityError): Promise<void> {
+    let owners: readonly string[] = [];
+    try { owners = invalidOperationOwners(await this.kernel.operations.list()); }
+    catch { /* The retention pass re-reads the inventory and refuses on its own. */ }
+    if (owners.length === 0) { return; }
+    this.kernel.diagnose('startupRetention', new Error(`Retention is skipped until unfinished repair ${owners.join(', ')} quarantines the invalid operation files it owns.`));
+    throw refusal;
   }
 
   beginShutdown(): Promise<void> {

@@ -473,8 +473,8 @@ export class RecoveryCoordinator {
     const inventory = await k.operations.list(deadline);
     const sha256 = await k.carryHash(deadline);
     if (sha256 === null) { return; }
-    if (deferredCarryAuthority(inventory).state === 'unavailable') { throw new SafetyUnavailableError('Present carry has unavailable ownership.'); }
-    if (hasCarryAuthority(sha256, inventory)) { return; }
+    if (deferredCarryAuthority(inventory, 'repairOwned').state === 'unavailable') { throw new SafetyUnavailableError('Present carry has unavailable ownership.'); }
+    if (hasCarryAuthority(sha256, inventory, 'repairOwned')) { return; }
     const unfinished = inventory.records.filter(entry => !entry.record.compacted && entry.record.kind === 'repair' && effectivelyUnfinished(entry.record));
     if (inventory.invalid.length === 0 && unfinished.length === 1) {
       const record = requireRepair(unfinished[0]!.record);

@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { ControlDocumentError } from '../src/control-values.ts';
 import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
 import { parseStrictJson, stringifyJson, type JsonValue } from '../src/json.ts';
-import { OperationStore, unownedInvalidOperations, type OperationInventory, type StoredOperation } from '../src/operations.ts';
+import { invalidOperationOwners, OperationStore, unownedInvalidOperations, type OperationInventory, type StoredOperation } from '../src/operations.ts';
 import type { CompactOperation } from '../src/operation-records.ts';
 import type { ScopeStorage } from '../src/storage.ts';
 
@@ -66,7 +66,7 @@ describe('operation batch inventory', () => {
 
 describe('invalid operation ownership', () => {
   const lostHash = '1'.repeat(64);
-  const repair = (completedAt: string | null): StoredOperation => ({ sha256: '2'.repeat(64), record: { compacted: false, kind: 'repair', completedAt,
+  const repair = (completedAt: string | null): StoredOperation => ({ sha256: '2'.repeat(64), record: { operationId: 'jr-owner', compacted: false, kind: 'repair', completedAt,
     recovery: { activeEpisode: completedAt === null ? 0 : null, episodes: [] }, plan: { lostOperations: [{ name: 'jr-lost.json', sha256: lostHash, destination: 'quarantine/jr-lost.json.q' }] } } } as unknown as StoredOperation);
 
   it('lets an unfinished repair own the exact invalid file it quarantines, and nothing else', () => {
@@ -83,5 +83,23 @@ describe('invalid operation ownership', () => {
     assert.deepEqual(owned, invalid.slice(1));
     assert.deepEqual(finished, invalid);
     assert.deepEqual(none, invalid);
+  });
+
+  it('names owning repairs only when they own every invalid file', () => {
+    // Arrange
+    const inventory = (records: readonly StoredOperation[], invalid: OperationInventory['invalid']): OperationInventory => ({ records, invalid, handoffCount: 0, fullTerminalCount: 0 });
+    const ownedFile = [{ name: 'jr-lost.json', sha256: lostHash }];
+
+    // Act
+    const owners = invalidOperationOwners(inventory([repair(null)], ownedFile));
+    const mixed = invalidOperationOwners(inventory([repair(null)], [...ownedFile, { name: 'jr-other.json', sha256: lostHash }]));
+    const finished = invalidOperationOwners(inventory([repair(startedAt)], ownedFile));
+    const clean = invalidOperationOwners(inventory([repair(null)], []));
+
+    // Assert
+    assert.deepEqual(owners, ['jr-owner']);
+    assert.deepEqual(mixed, []);
+    assert.deepEqual(finished, []);
+    assert.deepEqual(clean, []);
   });
 });

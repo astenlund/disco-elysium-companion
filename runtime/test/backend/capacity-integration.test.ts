@@ -190,6 +190,51 @@ describe('capacity phase-E selection and command result', () => {
     assert.equal(initialized, 1);
     assert.deepEqual(retention, [false, true]);
   });
+  for (const ownership of ['owned', 'unowned'] as const) {
+    it(`keeps the release capacity refusal when an invalid operation file is ${ownership} by an unfinished repair`, async () => {
+      // Arrange
+      const value = model();
+      const lostId = `jr-${'8'.repeat(32)}`;
+      const lostBytes = Buffer.from('content-invalid predecessor root');
+      const ownedHash = ownership === 'owned' ? bytesHash(lostBytes) : '3'.repeat(64);
+      const owning = repair({ plan: { ...repair().plan, lostOperations: [{ name: `${lostId}.json`, sha256: ownedHash, destination: `quarantine/${lostId}.json.${'9'.repeat(32)}.quarantined` }] } });
+      value.memory.seed(`operations/${owning.operationId}.json`, owning);
+      value.memory.files.set(`operations/${lostId}.json`, lostBytes);
+      const exhausted = refusal('release', 'exhausted');
+      let releaseReservations = 0;
+      const reserve = value.resources.reserve.bind(value.resources);
+      value.resources.reserve = async (...args) => {
+        if (args[0] === 'release' && ++releaseReservations === 1) { throw exhausted; }
+        await reserve(...args);
+      };
+      const diagnostics: { phase: string; error: unknown }[] = [];
+      value.kernel.diagnose = (phase, error) => { diagnostics.push({ phase, error }); };
+      const internal = value.backend as unknown as { cleanup(): Promise<void>; initializeStorage(): Promise<void>; consumer: ConsumerCoordinator; recovery: RecoveryCoordinator };
+      let initialized = 0; let consumerStarted = 0;
+      internal.cleanup = async () => {};
+      internal.initializeStorage = async () => { initialized++; };
+      internal.consumer.startup = async () => { consumerStarted++; return null; };
+
+      // Act
+      const result = await value.backend.startup({ kind: 'chat' });
+
+      // Assert
+      const failure = diagnostics.find(item => item.phase === 'startupOrAdmission')?.error;
+      assert.equal(result.requiredWorkCompleted, false);
+      assert.equal(initialized, 0);
+      assert.equal(consumerStarted, 0);
+      assert.equal(value.kernel.status.freshness.state, 'failed');
+      if (ownership === 'owned') {
+        assert.equal(failure, exhausted, 'The capacity refusal stays the classified failure instead of a retention control error.');
+        assert.equal(releaseReservations, 1, 'Retention cannot prove what an owned invalid file protects, so the reservation is not retried.');
+        const blocked = diagnostics.find(item => item.phase === 'startupRetention')?.error;
+        assert.ok(blocked instanceof Error && blocked.message.includes(owning.operationId));
+      } else {
+        assert.notEqual(failure, exhausted);
+        assert.equal(diagnostics.some(item => item.phase === 'startupRetention'), false);
+      }
+    });
+  }
   it('runs repair retention before fresh ordinary assessment and starts no root on admission', async () => {
     const value = model(); const recovery = new RecoveryCoordinator(value.kernel); const calls: string[] = [];
     const reserve = value.resources.reserve.bind(value.resources);

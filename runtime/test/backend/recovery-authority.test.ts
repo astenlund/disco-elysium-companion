@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { deferredCarryAuthority, hasCarryAuthority, hasProviderAuthority } from '../../src/backend/provider-authority.ts';
 import { reservedWitnessMatches } from '../../src/backend/recovery-authority.ts';
 import { handoffFor, RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import type { Kernel } from '../../src/backend/kernel.ts';
@@ -583,5 +584,64 @@ describe('successor plan resume ordering', () => {
         read: async () => ({ status: 'invalid', sha256: 'c'.repeat(64) }) } } as unknown as Kernel;
     await assert.rejects(new RecoveryCoordinator(kernel).reconcileSafety(), SafetyUnavailableError);
     assert.equal(writes, 0);
+  });
+});
+
+describe('repair-owned invalid operations before resume', () => {
+  const lostId = `jr-${'7'.repeat(32)}`;
+  const lostBytes = Buffer.from('content-invalid predecessor root');
+
+  function ownedInvalidCarryModel(ownedHash: string) {
+    const model = pendingCarryModel(false);
+    const owning = repair({ ...model.record, plan: { ...model.record.plan,
+      lostOperations: [{ name: `${lostId}.json`, sha256: ownedHash, destination: `quarantine/${lostId}.json.${'6'.repeat(32)}.quarantined` }] } });
+    model.memory.seed(`operations/${owner.operationId}.json`, owning);
+    model.memory.files.set(`operations/${lostId}.json`, lostBytes);
+
+    return model;
+  }
+
+  it('reconciles a present carry when the unfinished repair owns the invalid file', async () => {
+    // Arrange
+    const model = ownedInvalidCarryModel(bytesHash(lostBytes));
+
+    // Act
+    const reconciled = model.coordinator().reconcileSafety();
+
+    // Assert
+    await assert.doesNotReject(reconciled);
+    assert.deepEqual(model.memory.files.get('journal/recovery-event.json'), model.carry);
+    assert.deepEqual(model.memory.files.get(`operations/${lostId}.json`), lostBytes);
+  });
+
+  it('keeps strict carry and provider authority refusing the owned invalid file', async () => {
+    // Arrange
+    const model = ownedInvalidCarryModel(bytesHash(lostBytes));
+    const inventory = await model.kernel.operations.list();
+    const safety = await model.kernel.safety();
+
+    // Act
+    const strict = deferredCarryAuthority(inventory);
+    const owned = deferredCarryAuthority(inventory, 'repairOwned');
+    const provider = hasProviderAuthority(safety, inventory);
+
+    // Assert
+    assert.equal(inventory.invalid.length, 1);
+    assert.equal(strict.state, 'unavailable');
+    assert.notEqual(owned.state, 'unavailable');
+    assert.equal(hasCarryAuthority(bytesHash(model.carry), inventory), false);
+    assert.equal(hasCarryAuthority(bytesHash(model.carry), inventory, 'repairOwned'), true);
+    assert.equal(provider, false);
+  });
+
+  it('still refuses a present carry when the invalid file does not match the owned hash', async () => {
+    // Arrange
+    const model = ownedInvalidCarryModel('3'.repeat(64));
+
+    // Act
+    const reconciled = model.coordinator().reconcileCarry();
+
+    // Assert
+    await assert.rejects(reconciled, SafetyUnavailableError);
   });
 });
