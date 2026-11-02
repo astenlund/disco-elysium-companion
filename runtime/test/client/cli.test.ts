@@ -114,31 +114,19 @@ test('repair extent renders only the typed plan result, preserving unknown and e
   assert.match(rendered, /retainedHandoffs=2; replayableHandoffs=1; presentationRetiredHandoffs=1; survivingCoreRecords=unknown/);
 });
 
-test('an operator shutdown that fails while the helper is exhausted reports the helper refusal with its restart remedy', async () => {
-  // Arrange
-  const exhausted = { exhausted: true };
-  const serving = { exhausted: false };
+test('an operator run settles through the shared cleanup rule, mapping its exit code and classifying a failed shutdown', async () => {
+  // Arrange: the cleanup rule's full case matrix is tested on finishAfterCleanup itself; this pins the operator wiring.
   const startupFailure = new Error('Native process metadata is unavailable.');
-  const bindRefusal = new NativeHelperUnavailableError('bindFailed');
-  const shutdownFailure = new Error('Shutdown could not prove quiescence.');
-  const failingShutdown = async (): Promise<void> => { throw shutdownFailure; };
+  const failingShutdown = async (): Promise<void> => { throw new Error('Shutdown could not prove quiescence.'); };
 
   // Act
-  const [afterFailure, afterRefusal, afterSuccess, whileServing, clean] = await Promise.allSettled([
-    finishOperatorRun({ failure: startupFailure }, failingShutdown, exhausted),
-    finishOperatorRun({ failure: bindRefusal }, failingShutdown, exhausted),
-    finishOperatorRun({ exitCode: 0 }, failingShutdown, exhausted),
-    finishOperatorRun({ failure: startupFailure }, failingShutdown, serving),
-    finishOperatorRun({ exitCode: 1 }, async () => {}, exhausted)]);
+  const [failed, clean] = await Promise.allSettled([
+    finishOperatorRun({ failure: startupFailure }, failingShutdown, { exhausted: true }),
+    finishOperatorRun({ exitCode: 1 }, async () => {}, { exhausted: true })]);
 
   // Assert
-  const reason = (settled: PromiseSettledResult<number>): unknown => settled.status === 'rejected' ? settled.reason : assert.fail('The run did not fail.');
-  const refusal = reason(afterFailure);
+  assert.equal(failed.status, 'rejected');
+  const refusal = (failed as PromiseRejectedResult).reason;
   assert.ok(refusal instanceof NativeHelperUnavailableError && refusal.reason === 'unavailable' && refusal.cause === startupFailure);
-  assert.match(formatCliError(refusal), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
-  assert.equal(reason(afterRefusal), bindRefusal);
-  const afterSuccessRefusal = reason(afterSuccess);
-  assert.ok(afterSuccessRefusal instanceof NativeHelperUnavailableError && afterSuccessRefusal.reason === 'unavailable' && afterSuccessRefusal.cause === shutdownFailure);
-  assert.equal(reason(whileServing), shutdownFailure);
   assert.deepEqual(clean, { status: 'fulfilled', value: 1 });
 });
