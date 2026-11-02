@@ -97,7 +97,8 @@ export class SessionStore {
    * Writes back the binding a failed named start replaced, and reports whether it wrote. The captured binding was durable
    * before that start, so no live-session proof applies; the startup resume still requires its generation. Only a current
    * binding that names the replaced session and differs from the capture is overwritten, and the index is upserted as on
-   * every binding write.
+   * every binding write. The binding is written back with needsState true: a compaction binding of the captured session can
+   * land after the capture, and every later rebind of that session needs state anyway.
    */
   restore(captured: DurableBinding, replaced: SessionIdentity, deadline?: Deadline): Promise<boolean> {
     const owned = () => this.restoreOwned(captured, replaced, deadline);
@@ -113,9 +114,10 @@ export class SessionStore {
     let index: AgentSessionIndex | null = null;
     try { const stored = await this.readIndex(deadline); if (stored.status === 'valid') { index = stored.value; } }
     catch { /* A binding write may reconstruct this derived index alone. */ }
-    for (const prior of index?.sessions ?? []) { sameSessionHistory(prior, captured.value); }
-    const bindingSha256 = await this.storage.write('agent-session.json', captured.value, 'config', current.sha256, deadline);
-    await this.storage.replaceSessionIndex(indexCurrentBinding(index, captured.value, utcNow()), bindingSha256, deadline);
+    const restored: AgentSessionBinding = { ...captured.value, needsState: true };
+    for (const prior of index?.sessions ?? []) { sameSessionHistory(prior, restored); }
+    const bindingSha256 = await this.storage.write('agent-session.json', restored, 'config', current.sha256, deadline);
+    await this.storage.replaceSessionIndex(indexCurrentBinding(index, restored, utcNow()), bindingSha256, deadline);
 
     return true;
   }

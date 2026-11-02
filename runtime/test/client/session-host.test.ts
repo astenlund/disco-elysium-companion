@@ -534,7 +534,7 @@ test('a named resume after an initial safety refusal restores the binding that s
   // Assert
   assert.equal(result, 'unknownSession');
   assert.ok(backend.events.includes('bind:lost-session:2:true'), 'the named start wrote its binding');
-  assert.deepEqual(backend.binding, stored);
+  assert.deepEqual(backend.binding, { ...stored, needsState: true });
   assert.equal(backend.events.at(-1), 'restore:stored-session');
   assert.equal(host.status.provider.state, 'failed');
   await host.shutdown();

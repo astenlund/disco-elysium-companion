@@ -127,8 +127,8 @@ export class FakeBackend {
       if (current === null || JSON.stringify(current) === JSON.stringify(captured.value)
         || current.providerId !== replaced.providerId || current.providerSessionId !== replaced.providerSessionId) { return false; }
       this.events.push(`restore:${captured.value.providerSessionId}`);
-      this.binding = captured.value;
-      this.index = indexCurrentBinding(this.index, captured.value, timestamp);
+      this.binding = { ...captured.value, needsState: true };
+      this.index = indexCurrentBinding(this.index, this.binding, timestamp);
       return true;
     },
   } as SessionStore;

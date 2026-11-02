@@ -187,10 +187,10 @@ describe('immutable runtime scope', () => {
   it('restores a captured binding only over the replaced session, keeping the index consistent', { timeout: 360000 }, async context => {
     context.diagnostic('Initializing an isolated scope.');
     const fixture = await openScopeFixture();
-    const { sessions, binding, sessionProof } = fixture;
+    const { sessions, binding, sessionProof, storage } = fixture;
     try {
-      // Arrange: a durable binding is captured, then a named session's binding replaces it.
-      await sessions.bind(binding, sessionProof);
+      // Arrange: a durable binding that needs no state is captured, then a named session's binding replaces it.
+      await sessions.bind({ ...binding, needsState: false }, sessionProof);
       const captured = await sessions.readBinding();
       assert.equal(captured.status, 'valid');
       if (captured.status !== 'valid') { return; }
@@ -205,6 +205,12 @@ describe('immutable runtime scope', () => {
       const overOther = await sessions.restore(captured, named);
       const afterOther = await sessions.readBinding();
       const overReplaced = await sessions.restore(captured, other);
+      const afterReplaced = await sessions.ready(sessionProof);
+      const index = await sessions.readIndex();
+      const beforeInvalid = await sessions.readBinding();
+      const invalidSha256 = await storage.write('agent-session.json', { bindingVersion: 1 }, 'config', beforeInvalid.status === 'valid' ? beforeInvalid.sha256 : null);
+      const overInvalid = await sessions.restore(captured, binding);
+      const afterInvalid = await sessions.readBinding();
 
       // Assert
       assert.equal(restored, true);
@@ -212,9 +218,10 @@ describe('immutable runtime scope', () => {
       assert.equal(overOther, false);
       assert.ok(afterOther.status === 'valid' && afterOther.value.providerSessionId === 'other');
       assert.equal(overReplaced, true);
-      assert.deepEqual((await sessions.ready(sessionProof))?.binding, binding);
-      const index = await sessions.readIndex();
+      assert.deepEqual(afterReplaced?.binding, { ...captured.value, needsState: true });
       assert.ok(index.status === 'valid' && ['session', 'named', 'other'].every(id => index.value.sessions.some(entry => entry.providerSessionId === id)));
+      assert.equal(overInvalid, false);
+      assert.ok(afterInvalid.status === 'invalid' && afterInvalid.sha256 === invalidSha256);
     } finally {
       context.diagnostic('Closing the owned scope fixture.');
       await fixture.close();
