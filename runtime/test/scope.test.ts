@@ -194,6 +194,7 @@ describe('immutable runtime scope', () => {
       const captured = await sessions.readBinding();
       assert.equal(captured.status, 'valid');
       if (captured.status !== 'valid') { return; }
+      const unchanged = await sessions.restore(captured, binding);
       const named = { ...binding, providerSessionId: 'named' };
       await sessions.bind(named, sessionProof);
 
@@ -212,7 +213,8 @@ describe('immutable runtime scope', () => {
       const overInvalid = await sessions.restore(captured, binding);
       const afterInvalid = await sessions.readBinding();
 
-      // Assert
+      // Assert: a current binding byte-identical to the capture is never rewritten, even when it names the replaced session.
+      assert.equal(unchanged, false);
       assert.equal(restored, true);
       assert.equal(repeated, false);
       assert.equal(overOther, false);
