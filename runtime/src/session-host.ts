@@ -641,12 +641,12 @@ export class SessionHost implements SessionHostV1 {
     if (this.resumeBlocked()) { return 'stateInvalidated'; }
     if (this.closing || this.switching || this.transition !== null || this.lifecycle.status.state === 'failed') { return 'providerUnavailable'; }
     this.switching = true;
-    const admitted = this.invalidations;
+    const invalidationsAtAdmission = this.invalidations;
     const control = (async () => {
       await this.maintenance.idle();
       // The provider lifecycle records its invalidation epoch only when the resume reaches it, so admission is checked
       // again, synchronously, for an invalidation, a latched block or a shutdown that landed during the wait.
-      if (this.invalidations !== admitted || this.resumeBlocked()) { return 'stateInvalidated' as const; }
+      if (this.invalidations !== invalidationsAtAdmission || this.resumeBlocked()) { return 'stateInvalidated' as const; }
       if (this.closing) { return 'providerUnavailable' as const; }
       const invalidations = this.invalidations;
       const result = await this.lifecycle.resume(sessionId);

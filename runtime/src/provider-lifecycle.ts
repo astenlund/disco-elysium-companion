@@ -409,7 +409,7 @@ export class ProviderLifecycle {
       // earlier binding has nothing to write back, so the named session stays bound for the next startup to resume or replace.
       if (durable.status === 'valid') {
         try { await this.options.backend.sessions.restore(durable, admitted.binding); }
-        catch { /* A binding left naming the failed session makes the next startup resume fail over to a new session. */ }
+        catch { /* A binding left naming the failed session goes through the next startup's ordinary binding selection. */ }
       }
       return invalidated ? 'stateInvalidated' : 'unknownSession';
     }
