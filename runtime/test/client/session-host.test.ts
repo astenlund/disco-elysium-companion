@@ -316,6 +316,59 @@ test('a named resume overtaken by an invalidation during its provider safety rea
   await host.shutdown();
 });
 
+/** Holds the host's maintenance queue on a compaction binding until the returned release is called. */
+function holdMaintenance(host: SessionHost, backend: FakeBackend, provider: FakeProvider): () => void {
+  const held = deferred<void>();
+  const sessions = backend.sessions as { bind: FakeBackend['sessions']['bind'] };
+  const bind = sessions.bind;
+  sessions.bind = async (binding, proof) => { sessions.bind = bind; await held.promise; return bind(binding, proof); };
+  host.passiveSignal(provider.current.providerInstanceId, { kind: 'compaction' });
+
+  return () => held.resolve();
+}
+
+test('a named resume overtaken by an invalidation during its maintenance wait reports the invalidation without a provider change', async () => {
+  // Arrange: a compaction binding holds maintenance, so the resume waits before the provider lifecycle sees it.
+  const { host, backend, provider } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+  const release = holdMaintenance(host, backend, provider);
+  const starts = provider.calls.length;
+
+  // Act
+  const resuming = host.resumeAgentSession('valid-session');
+  await flush();
+  host.invalidate('contextUncertain');
+  release();
+  const result = await resuming;
+
+  // Assert
+  assert.equal(result, 'stateInvalidated');
+  assert.equal(provider.calls.slice(starts).includes('valid-session'), false);
+  assert.notEqual(backend.binding?.providerSessionId, 'valid-session');
+  await host.shutdown();
+});
+
+test('a named resume overtaken by a final-safety block during its maintenance wait reports the invalidation without a provider change', async () => {
+  // Arrange: a compaction binding holds maintenance, so the resume waits before the provider lifecycle sees it.
+  const { host, backend, provider } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+  const release = holdMaintenance(host, backend, provider);
+  const starts = provider.calls.length;
+
+  // Act
+  const resuming = host.resumeAgentSession('valid-session');
+  await flush();
+  const blocked = host.blockAfterFinalSafety();
+  release();
+  const result = await resuming;
+  await blocked;
+
+  // Assert
+  assert.equal(result, 'stateInvalidated');
+  assert.equal(provider.calls.slice(starts).includes('valid-session'), false);
+  await host.shutdown();
+});
+
 test('a named resume overtaken by the host shutdown during its provider change reports the invalidation', async () => {
   // Arrange: the host starts shutting down while the provider starts the named session.
   const { host, backend, provider } = await fixture();

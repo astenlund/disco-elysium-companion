@@ -638,11 +638,16 @@ export class SessionHost implements SessionHostV1 {
   }
   async resumeAgentSession(sessionId: string): Promise<ResumeResult> {
     if (this.active !== null) { return 'turnInProgress'; }
-    if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'stateInvalidated'; }
+    if (this.resumeBlocked()) { return 'stateInvalidated'; }
     if (this.closing || this.switching || this.transition !== null || this.lifecycle.status.state === 'failed') { return 'providerUnavailable'; }
     this.switching = true;
+    const admitted = this.invalidations;
     const control = (async () => {
       await this.maintenance.idle();
+      // The provider lifecycle records its invalidation epoch only when the resume reaches it, so admission is checked
+      // again, synchronously, for an invalidation, a latched block or a shutdown that landed during the wait.
+      if (this.invalidations !== admitted || this.resumeBlocked()) { return 'stateInvalidated' as const; }
+      if (this.closing) { return 'providerUnavailable' as const; }
       const invalidations = this.invalidations;
       const result = await this.lifecycle.resume(sessionId);
       // A resumed provider that an invalidation overtook does not make the host ready, so the resume reports the invalidation.
@@ -653,6 +658,10 @@ export class SessionHost implements SessionHostV1 {
     this.sessionControl = control;
     try { return await control; }
     finally { this.sessionControl = null; this.switching = false; this.statusChanged(); this.scheduleTransition(); }
+  }
+
+  private resumeBlocked(): boolean {
+    return this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted;
   }
 
   shutdown(): Promise<void> { this.shutdownPromise ??= this.close(); return this.shutdownPromise; }
