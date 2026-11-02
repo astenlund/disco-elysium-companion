@@ -184,6 +184,43 @@ describe('immutable runtime scope', () => {
     }
   });
 
+  it('restores a captured binding only over the replaced session, keeping the index consistent', { timeout: 360000 }, async context => {
+    context.diagnostic('Initializing an isolated scope.');
+    const fixture = await openScopeFixture();
+    const { sessions, binding, sessionProof } = fixture;
+    try {
+      // Arrange: a durable binding is captured, then a named session's binding replaces it.
+      await sessions.bind(binding, sessionProof);
+      const captured = await sessions.readBinding();
+      assert.equal(captured.status, 'valid');
+      if (captured.status !== 'valid') { return; }
+      const named = { ...binding, providerSessionId: 'named' };
+      await sessions.bind(named, sessionProof);
+
+      // Act
+      const restored = await sessions.restore(captured, named);
+      const repeated = await sessions.restore(captured, named);
+      const other = { ...binding, providerSessionId: 'other' };
+      await sessions.bind(other, sessionProof);
+      const overOther = await sessions.restore(captured, named);
+      const afterOther = await sessions.readBinding();
+      const overReplaced = await sessions.restore(captured, other);
+
+      // Assert
+      assert.equal(restored, true);
+      assert.equal(repeated, false);
+      assert.equal(overOther, false);
+      assert.ok(afterOther.status === 'valid' && afterOther.value.providerSessionId === 'other');
+      assert.equal(overReplaced, true);
+      assert.deepEqual((await sessions.ready(sessionProof))?.binding, binding);
+      const index = await sessions.readIndex();
+      assert.ok(index.status === 'valid' && ['session', 'named', 'other'].every(id => index.value.sessions.some(entry => entry.providerSessionId === id)));
+    } finally {
+      context.diagnostic('Closing the owned scope fixture.');
+      await fixture.close();
+    }
+  });
+
   it('initializes only an empty journal and preserves exact quarantine bytes', { timeout: 360000 }, async context => {
     context.diagnostic('Initializing an isolated scope.');
     const fixture = await openScopeFixture();

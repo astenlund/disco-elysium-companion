@@ -378,13 +378,17 @@ export class ProviderLifecycle {
     if (!this.capabilities.resume) { return 'capabilityUnavailable'; }
     if (!isOpaqueToken(sessionId)) { return 'unknownSession'; }
     let admitted;
+    let durable;
     try {
       const safety = await this.options.backend.providerSafety();
       this.requireEpoch(epoch);
       admitted = await this.options.backend.sessions.admitNamed(this.options.provider.providerId, sessionId, safety.generation, this.options.instructionsSha256);
       this.requireEpoch(epoch);
+      if (admitted.result !== 'admitted') { return admitted.result; }
+      // The durable binding before any change, which a failed named start writes back if its own binding replaced it.
+      durable = await this.options.backend.sessions.readBinding();
+      this.requireEpoch(epoch);
     } catch { return 'providerUnavailable'; }
-    if (admitted.result !== 'admitted') { return admitted.result; }
     const previous = this.bound;
     this.state('starting');
     try {
@@ -401,6 +405,12 @@ export class ProviderLifecycle {
       // must be re-established because the provider owns one process namespace.
       try { await this.endCurrent(); this.requireEpoch(epoch); if (previous !== null) { await this.establish(previous, undefined, epoch); } else { this.state('failed'); } }
       catch { this.state('failed'); }
+      // When that re-establishment wrote nothing, the named start's own binding may still be durable. An absent or invalid
+      // earlier binding has nothing to write back, so the named session stays bound for the next startup to resume or replace.
+      if (durable.status === 'valid') {
+        try { await this.options.backend.sessions.restore(durable, admitted.binding); }
+        catch { /* A binding left naming the failed session makes the next startup resume fail over to a new session. */ }
+      }
       return invalidated ? 'stateInvalidated' : 'unknownSession';
     }
   }

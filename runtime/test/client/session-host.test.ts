@@ -5,7 +5,7 @@ import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
-import { indexCurrentBinding } from '../../src/session-records.ts';
+import { indexCurrentBinding, type AgentSessionBinding } from '../../src/session-records.ts';
 import type { StartupPhase } from '../../src/startup-progress.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
 import { deferred, FakeBackend, FakeProvider, type FakeSession, flush, generation, instructionHash, invalidateWhenReady, timestamp, until } from './support.ts';
@@ -440,6 +440,103 @@ test('failed admitted named resume restores the previous logical binding', async
   assert.equal(backend.binding?.providerSessionId, previous.providerSessionId);
   assert.deepEqual(provider.calls, [null, 'unavailable-session', previous.providerSessionId]);
   assert.equal(host.status.provider.state, 'ready');
+  await host.shutdown();
+});
+
+/** Makes the named session's start fail after its binding write, at the liveness check that follows the bind. */
+function failAfterNamedBind(provider: FakeProvider, named: string): void {
+  const start = provider.start.bind(provider);
+  provider.start = async resume => {
+    const session = await start(resume);
+    if (resume === named) {
+      const verifyLive = session.verifyLive.bind(session);
+      let checks = 0;
+      session.verifyLive = async () => { await verifyLive(); checks += 1; if (checks === 2) { throw new Error('Named session lost after binding.'); } };
+    }
+    return session;
+  };
+}
+
+test('a named resume that fails after its binding write restores the earlier durable binding when re-establishment fails before writing', async () => {
+  // Arrange: the named start fails after writing its binding, and the previous session then fails to start again.
+  const { host, backend, provider } = await fixture();
+  const previous = backend.binding!;
+  backend.index = indexCurrentBinding(backend.index, { ...previous, providerSessionId: 'lost-session' }, timestamp);
+  failAfterNamedBind(provider, 'lost-session');
+  provider.failures.add(previous.providerSessionId);
+
+  // Act
+  const result = await host.resumeAgentSession('lost-session');
+
+  // Assert
+  assert.equal(result, 'unknownSession');
+  assert.ok(backend.events.includes('bind:lost-session:0:true'), 'the named start wrote its binding');
+  assert.deepEqual(backend.binding, previous);
+  assert.equal(backend.events.at(-1), `restore:${previous.providerSessionId}`);
+  await host.shutdown();
+});
+
+test('a named resume that fails after its binding write writes nothing back when re-establishment rebinds the earlier session', async () => {
+  // Arrange: the named start fails after writing its binding, and the previous session starts and binds again.
+  const { host, backend, provider } = await fixture();
+  const previous = backend.binding!;
+  backend.index = indexCurrentBinding(backend.index, { ...previous, providerSessionId: 'lost-session' }, timestamp);
+  failAfterNamedBind(provider, 'lost-session');
+
+  // Act
+  const result = await host.resumeAgentSession('lost-session');
+
+  // Assert
+  assert.equal(result, 'unknownSession');
+  assert.equal(backend.binding?.providerSessionId, previous.providerSessionId);
+  assert.equal(backend.events.some(event => event.startsWith('restore:')), false);
+  assert.equal(host.status.provider.state, 'ready');
+  await host.shutdown();
+});
+
+test('a named resume that fails after its binding write leaves the named session bound when no earlier binding was durable', async () => {
+  // Arrange: no binding is durable when the resume starts, and the previous session fails to start again.
+  const { host, backend, provider } = await fixture();
+  const previous = backend.binding!;
+  backend.index = indexCurrentBinding(backend.index, { ...previous, providerSessionId: 'lost-session' }, timestamp);
+  backend.binding = null;
+  failAfterNamedBind(provider, 'lost-session');
+  provider.failures.add(previous.providerSessionId);
+
+  // Act
+  const result = await host.resumeAgentSession('lost-session');
+
+  // Assert
+  assert.equal(result, 'unknownSession');
+  const stored = await backend.sessions.readBinding();
+  assert.ok(stored.status === 'valid' && stored.value.providerSessionId === 'lost-session');
+  assert.equal(backend.events.some(event => event.startsWith('restore:')), false);
+  await host.shutdown();
+});
+
+test('a named resume after an initial safety refusal restores the binding that startup never read when the named start fails after its write', async () => {
+  // Arrange: startup is refused at its safety read, leaving a durable binding unread and no session bound in the provider.
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const stored: AgentSessionBinding = { agentSessionVersion: 1, providerId: 'fake', providerSessionId: 'stored-session', createdAt: timestamp,
+    turnsCompleted: 2, needsState: false, instructionsSha256: instructionHash, stateGeneration: generation };
+  backend.binding = stored;
+  backend.index = indexCurrentBinding(indexCurrentBinding(null, { ...stored, providerSessionId: 'lost-session' }, timestamp), stored, timestamp);
+  backend.unavailable = true;
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), false);
+  backend.unavailable = false;
+  failAfterNamedBind(provider, 'lost-session');
+
+  // Act
+  const result = await host.resumeAgentSession('lost-session');
+
+  // Assert
+  assert.equal(result, 'unknownSession');
+  assert.ok(backend.events.includes('bind:lost-session:2:true'), 'the named start wrote its binding');
+  assert.deepEqual(backend.binding, stored);
+  assert.equal(backend.events.at(-1), 'restore:stored-session');
+  assert.equal(host.status.provider.state, 'failed');
   await host.shutdown();
 });
 

@@ -8,7 +8,7 @@ import type { StateSafety } from '../../src/safety-records.ts';
 import { admitNamedSession, indexCurrentBinding, type AgentSessionBinding, type AgentSessionIndex } from '../../src/session-records.ts';
 import { initialCapacity } from '../../src/capacity.ts';
 import type { SessionHost } from '../../src/session-host.ts';
-import type { BoundSession, SessionBindingProof, SessionStore } from '../../src/session-store.ts';
+import type { BoundSession, DurableBinding, SessionBindingProof, SessionStore } from '../../src/session-store.ts';
 import type { StoredDocument } from '../../src/storage.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
 
@@ -121,6 +121,15 @@ export class FakeBackend {
       this.binding = binding;
       this.index = indexCurrentBinding(this.index, binding, timestamp);
       return { binding, bindingSha256: 'e'.repeat(64), indexSha256: 'f'.repeat(64) };
+    },
+    restore: async (captured: DurableBinding, replaced: Pick<AgentSessionBinding, 'providerId' | 'providerSessionId'>): Promise<boolean> => {
+      const current = this.binding;
+      if (current === null || JSON.stringify(current) === JSON.stringify(captured.value)
+        || current.providerId !== replaced.providerId || current.providerSessionId !== replaced.providerSessionId) { return false; }
+      this.events.push(`restore:${captured.value.providerSessionId}`);
+      this.binding = captured.value;
+      this.index = indexCurrentBinding(this.index, captured.value, timestamp);
+      return true;
     },
   } as SessionStore;
 

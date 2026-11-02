@@ -11,6 +11,8 @@ export interface SessionBindingProof {
 }
 export interface BoundSession { readonly binding: AgentSessionBinding; readonly bindingSha256: string; readonly indexSha256: string }
 export interface SessionDocuments { readonly binding: StoredDocument<AgentSessionBinding>; readonly index: StoredDocument<AgentSessionIndex> }
+export type DurableBinding = Extract<StoredDocument<AgentSessionBinding>, { readonly status: 'valid' }>;
+type SessionIdentity = Pick<AgentSessionBinding, 'providerId' | 'providerSessionId'>;
 
 const sameBinding = (left: AgentSessionBinding, right: AgentSessionBinding): boolean => stringifyJson(left) === stringifyJson(right);
 
@@ -89,6 +91,33 @@ export class SessionStore {
       return { binding, bindingSha256, indexSha256 };
     };
     return this.queue.run(this.options.bind?.(action) ?? action);
+  }
+
+  /**
+   * Writes back the binding a failed named start replaced, and reports whether it wrote. The captured binding was durable
+   * before that start, so no live-session proof applies; the startup resume still requires its generation. Only a current
+   * binding that names the replaced session and differs from the capture is overwritten, and the index is upserted as on
+   * every binding write.
+   */
+  restore(captured: DurableBinding, replaced: SessionIdentity, deadline?: Deadline): Promise<boolean> {
+    const owned = () => this.restoreOwned(captured, replaced, deadline);
+    const action = () => this.queue.run(this.options.bind?.(owned) ?? owned);
+    return this.options.mutation?.(action, deadline) ?? action();
+  }
+
+  private async restoreOwned(captured: DurableBinding, replaced: SessionIdentity, deadline?: Deadline): Promise<boolean> {
+    deadline?.check();
+    const current = await this.readBinding(deadline);
+    if (current.status !== 'valid' || current.sha256 === captured.sha256
+      || current.value.providerId !== replaced.providerId || current.value.providerSessionId !== replaced.providerSessionId) { return false; }
+    let index: AgentSessionIndex | null = null;
+    try { const stored = await this.readIndex(deadline); if (stored.status === 'valid') { index = stored.value; } }
+    catch { /* A binding write may reconstruct this derived index alone. */ }
+    for (const prior of index?.sessions ?? []) { sameSessionHistory(prior, captured.value); }
+    const bindingSha256 = await this.storage.write('agent-session.json', captured.value, 'config', current.sha256, deadline);
+    await this.storage.replaceSessionIndex(indexCurrentBinding(index, captured.value, utcNow()), bindingSha256, deadline);
+
+    return true;
   }
 
   ready(proof: SessionBindingProof, deadline?: Deadline): Promise<BoundSession | null> {
