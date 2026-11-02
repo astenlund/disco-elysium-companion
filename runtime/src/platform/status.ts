@@ -11,8 +11,9 @@ import { EventReader, type EventRead } from '../event-reader.ts';
 import { operationIdPattern } from '../identity.ts';
 import { eventFileSequence, JournalDocumentError, parseJournalCursor, parseJournalHeader, type JournalCursor, type JournalHeader } from '../journal-records.ts';
 import { jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, utcNow, type JsonProfile, type JsonValue } from '../json.ts';
-import { NativeHelper } from '../native-helper.ts';
-import { ensureNativeHelperImage } from '../native-image.ts';
+import { NativeHelper, type ServiceSpawn } from '../native-helper.ts';
+import { finishAfterCleanup, type SettledStep } from '../native-helper-error.ts';
+import { ensureNativeHelperImage, type HelperImage } from '../native-image.ts';
 import { effectivelyUnfinished, parseOperation, pendingOperationSafety, type OperationRecord } from '../operation-records.ts';
 import type { OperationInventory } from '../operations.ts';
 import { carryReleaseState } from '../recovery-manifest.ts';
@@ -296,29 +297,50 @@ export async function readAdmittedRuntimeStatus(scope: RuntimeScope, inspector: 
     agentSession: session, operations: { records: operations, unavailable }, ...volatile };
 }
 
+/** Test seams for the helper standalone status starts; production passes neither. */
+export interface StatusHelperOptions {
+  readonly nativeImage?: HelperImage;
+  readonly nativeLauncher?: ServiceSpawn;
+}
+
 /**
  * Standalone status is a read-only reader: it starts its own helper service from a verified image without any build
  * step and never binds it, so it can never mutate. An absent or failing image refuses before scope discovery.
  */
-export async function readRuntimeStatus(companionRoot: string): Promise<StandaloneRuntimeStatus> {
+export async function readRuntimeStatus(companionRoot: string, options: StatusHelperOptions = {}): Promise<StandaloneRuntimeStatus> {
   const config = await loadRuntimeConfig(path.join(companionRoot, 'runtime', 'companion.config.json'));
-  const helper = await NativeHelper.start(await ensureNativeHelperImage({ build: false }), companionRoot);
-  try { return await readStatusWithHelper(companionRoot, config, helper); }
-  finally { await helper.close(); }
+  const helper = await NativeHelper.start(options.nativeImage ?? await ensureNativeHelperImage({ build: false }), companionRoot, undefined, options.nativeLauncher);
+
+  return settleStatusRead(() => readStatusWithHelper(companionRoot, config, helper), () => helper.close(), helper);
+}
+
+/**
+ * @internal Runs one step of standalone status and then its cleanup, under the cleanup rule and exhausted-helper
+ * classification that the commands opening the backend apply (`finishAfterCleanup`).
+ */
+export async function settleStatusRead<T>(read: () => Promise<T>, cleanup: () => Promise<void>, helper: { readonly exhausted: boolean }): Promise<T> {
+  let outcome: SettledStep<T>;
+  try { outcome = { value: await read() }; }
+  catch (failure) { outcome = { failure }; }
+
+  return finishAfterCleanup(outcome, cleanup, helper);
 }
 
 async function readStatusWithHelper(companionRoot: string, config: RuntimeConfig, helper: NativeHelper): Promise<StandaloneRuntimeStatus> {
   const inspection = await createReadOnlyInspection(companionRoot, helper);
-  try {
-    let principal: string;
-    try { principal = await resolvePrincipal(inspection.inspector); }
-    catch { throw new StatusIdentityError('Windows principal is unavailable.'); }
-    const candidate = await discoverScope(inspection.inspector, companionRoot, config.game, principal);
-    const scope = await readScope(inspection.inspector, candidate);
-    if (scope !== null) { return await readAdmittedRuntimeStatus(scope, inspection.inspector, config); }
-    const absent = { status: 'absent' } as const;
-    return { mode: 'readOnly', initialized: false, observedAt: utcNow(), consistency: 'stable', config, runtime: absent,
-      journal: { state: 'notInitialized', fault: null, integrity: 'unavailable', historyVerified: null, unacknowledgedEvents: null, retainedEvents: 0, unrecordedEvent: false },
-      stateSafety: { state: 'unavailable', record: absent, pendingOperationSafety: false, carryRelease: 'unavailable' }, agentSession: absent, operations: { records: [], unavailable: [] }, ...volatile };
-  } finally { await inspection.close(); }
+
+  return settleStatusRead(() => readInspectedStatus(companionRoot, config, inspection.inspector), () => inspection.close(), helper);
+}
+
+async function readInspectedStatus(companionRoot: string, config: RuntimeConfig, inspector: PathInspector): Promise<StandaloneRuntimeStatus> {
+  let principal: string;
+  try { principal = await resolvePrincipal(inspector); }
+  catch (error) { throw new StatusIdentityError('Windows principal is unavailable.', { cause: error }); }
+  const candidate = await discoverScope(inspector, companionRoot, config.game, principal);
+  const scope = await readScope(inspector, candidate);
+  if (scope !== null) { return await readAdmittedRuntimeStatus(scope, inspector, config); }
+  const absent = { status: 'absent' } as const;
+  return { mode: 'readOnly', initialized: false, observedAt: utcNow(), consistency: 'stable', config, runtime: absent,
+    journal: { state: 'notInitialized', fault: null, integrity: 'unavailable', historyVerified: null, unacknowledgedEvents: null, retainedEvents: 0, unrecordedEvent: false },
+    stateSafety: { state: 'unavailable', record: absent, pendingOperationSafety: false, carryRelease: 'unavailable' }, agentSession: absent, operations: { records: [], unavailable: [] }, ...volatile };
 }

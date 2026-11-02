@@ -4,20 +4,22 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { DataRootUnavailableError, PathInspector } from '../../src/admission.ts';
+import { formatCliError } from '../../src/cli.ts';
 import type { RuntimeConfig } from '../../src/config.ts';
 import { resolvePrincipal } from '../../src/core-client.ts';
 import { Deadline } from '../../src/deadline.ts';
 import { FilePublisher } from '../../src/files.ts';
 import { takeInstanceGuard } from '../../src/guard.ts';
 import { stringifyJson } from '../../src/json.ts';
+import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { readProcessIdentity, SupervisorError } from '../../src/process.ts';
 import { readScope, scopeComponents, type RuntimeScope } from '../../src/scope.ts';
 import { cleanupPublicationResidue } from '../../src/platform/publication-residue.ts';
-import { readAdmittedRuntimeStatus, readRuntimeStatus } from '../../src/platform/status.ts';
+import { readAdmittedRuntimeStatus, readRuntimeStatus, StatusIdentityError } from '../../src/platform/status.ts';
 import { reconcileWatcherOrphan } from '../../src/platform/watcher-supervisor.ts';
 import { companionFixture } from '../support/companion.ts';
 import { deferredRepair, repair } from '../backend/authority-fixtures.ts';
-import { createTestNative } from '../support/native-helper.ts';
+import { createTestNative, helperProxies, testHelperImage } from '../support/native-helper.ts';
 import { startOrphanWatcher } from '../support/orphan-watcher.ts';
 
 const idlePublisher = { quiesce: async () => true };
@@ -190,6 +192,43 @@ describe('native runtime platform', () => {
         assert.equal(damaged.stateSafety.pendingOperationSafety, true);
         assert.equal(await fs.readFile(path.join(scope.dataRoot, 'operations', broken), 'utf8'), '{');
       } finally { await guard.release(); }
+    } finally { await fixture.close(); }
+  });
+
+  it('reports the helper refusal with its restart remedy when the status helper spends its restart', { timeout: 240000 }, async () => {
+    // Arrange: the first service dies on the principal request and its replacement on its first principal or job request.
+    const fixture = await companionFixture();
+    await fs.mkdir(path.join(fixture.root, 'runtime'));
+    await fs.writeFile(path.join(fixture.root, 'runtime', 'companion.config.json'), stringifyJson(config));
+    const die = [{ die: 'beforeForward' as const }];
+    const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: die } }, { rules: { principal: die, jobStates: die } }]);
+    try {
+      // Act
+      const read = await Promise.allSettled([readRuntimeStatus(fixture.root, { nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
+
+      // Assert
+      assert.equal(read[0]!.status, 'rejected');
+      const failure = (read[0] as PromiseRejectedResult).reason;
+      assert.ok(failure instanceof NativeHelperUnavailableError && failure.reason === 'unavailable', String(failure));
+      assert.match(formatCliError(failure), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
+    } finally { await fixture.close(); }
+  });
+
+  it('keeps identityUnavailable with its cause for a principal failure while the status helper can still serve', { timeout: 240000 }, async () => {
+    // Arrange: only the first service dies on the principal request, so its replacement serves and the helper is not exhausted.
+    const fixture = await companionFixture();
+    await fs.mkdir(path.join(fixture.root, 'runtime'));
+    await fs.writeFile(path.join(fixture.root, 'runtime', 'companion.config.json'), stringifyJson(config));
+    const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
+    try {
+      // Act
+      const read = await Promise.allSettled([readRuntimeStatus(fixture.root, { nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
+
+      // Assert
+      assert.equal(read[0]!.status, 'rejected');
+      const failure = (read[0] as PromiseRejectedResult).reason;
+      assert.ok(failure instanceof StatusIdentityError && failure.cause !== undefined, String(failure));
+      assert.match(formatCliError(failure), /^identityUnavailable: /);
     } finally { await fixture.close(); }
   });
 

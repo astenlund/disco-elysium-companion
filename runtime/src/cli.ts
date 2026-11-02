@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
-import { classifyHelperFailure, NativeHelperUnavailableError } from './native-helper-error.ts';
+import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from './native-helper-error.ts';
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
 import { createChatRuntime } from './runtime.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
@@ -131,18 +131,9 @@ async function runCliInternal(args: readonly string[], givenRoot: string,
 
 export type OperatorOutcome = { readonly exitCode: number } | { readonly failure: unknown };
 
-/**
- * @internal Shuts an operator command's backend down after its startup settled. A shutdown that fails while the helper is
- * exhausted failed because the helper cannot serve, so an earlier failure stands; any other shutdown failure replaces the
- * outcome. Every reported failure then takes the exhausted-helper classification.
- */
+/** @internal Shuts an operator command's backend down after its startup settled, under the cleanup rule of `finishAfterCleanup`. */
 export async function finishOperatorRun(outcome: OperatorOutcome, shutdown: () => Promise<void>, helper: { readonly exhausted: boolean }): Promise<number> {
-  let settled = outcome;
-  try { await shutdown(); }
-  catch (shutdownFailure) { if (!('failure' in settled) || !helper.exhausted) { settled = { failure: shutdownFailure }; } }
-  if ('failure' in settled) { throw classifyHelperFailure(settled.failure, helper); }
-
-  return settled.exitCode;
+  return finishAfterCleanup('failure' in outcome ? outcome : { value: outcome.exitCode }, shutdown, helper);
 }
 
 export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),

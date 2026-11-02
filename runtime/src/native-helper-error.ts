@@ -44,3 +44,19 @@ export function classifyHelperFailure(failure: unknown, helper: { readonly exhau
 
   return new NativeHelperUnavailableError('unavailable', undefined, { cause: failure });
 }
+
+export type SettledStep<T> = { readonly value: T } | { readonly failure: unknown };
+
+/**
+ * Runs the cleanup that follows a settled step. A cleanup that fails while the helper reports itself exhausted failed
+ * because the helper cannot serve, so an earlier failure stands; any other cleanup failure replaces the outcome. Every
+ * reported failure then takes the exhausted-helper classification.
+ */
+export async function finishAfterCleanup<T>(outcome: SettledStep<T>, cleanup: () => Promise<void>, helper: { readonly exhausted: boolean }): Promise<T> {
+  let settled = outcome;
+  try { await cleanup(); }
+  catch (cleanupFailure) { if (!('failure' in settled) || !helper.exhausted) { settled = { failure: cleanupFailure }; } }
+  if ('failure' in settled) { throw classifyHelperFailure(settled.failure, helper); }
+
+  return settled.value;
+}
