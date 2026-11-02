@@ -101,6 +101,30 @@ describe('chat lifecycle on the native helper', () => {
     }
   });
 
+  it('keeps identityUnavailable with the helper fault as its cause for a principal failure while the helper can still serve', { timeout: 600000 }, async () => {
+    // Arrange: only the first service dies on the principal request, so its replacement serves and the helper is not exhausted.
+    const fixture = await companionFixture('runtime-owned');
+    const scratch = path.join(repository, '.tmp', `chat-lifecycle-${randomUUID()}`);
+    await fs.mkdir(scratch, { recursive: true });
+    const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
+    try {
+      // Act
+      const opened = await Promise.allSettled([openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
+
+      // Assert: the start keeps its fatal code, and the cause chain reaches the helper's own fault.
+      assert.equal(opened[0]!.status, 'rejected');
+      const failure = (opened[0] as PromiseRejectedResult).reason as Error & { code?: unknown };
+      assert.equal(failure.code, 'identityUnavailable', String(failure));
+      assert.match(formatCliError(failure), /^identityUnavailable: /);
+      const principal = failure.cause;
+      assert.ok(principal instanceof Error && principal.message === 'identityUnavailable', String(principal));
+      assert.ok(principal.cause instanceof Error, 'the helper fault survives as the principal failure cause');
+    } finally {
+      await fixture.close();
+      await fs.rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('retries at once after a start that fails once the service is bound, and reaches attachment', { timeout: 600000 }, async () => {
     // Arrange: the first start's service dies on its first publication, after binding.
     const fixture = await companionFixture('runtime-owned');

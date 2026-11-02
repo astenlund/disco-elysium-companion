@@ -73,11 +73,11 @@ function parseFailure(reply: ValidatedReply): CoreFailure {
   return { success: false, class: reply.class, reason: reply.reason, consumptionState: consumption as CoreFailure['consumptionState'], generationTimestamp: generated, warnings: warnings(data['warnings']) };
 }
 
-/** Every command resolves the principal through the helper; any failure is identityUnavailable. */
-export async function resolvePrincipal(inspector: PathInspector): Promise<string> {
+/** Every command resolves the principal through the helper; any failure is identityUnavailable, carrying the helper's fault as its cause. */
+export async function resolvePrincipal(inspector: Pick<PathInspector, 'native'>): Promise<string> {
   let value: JsonValue;
   try { value = await inspector.native('principal', {}); }
-  catch { throw new Error('identityUnavailable'); }
+  catch (error) { throw new Error('identityUnavailable', { cause: error }); }
   if (!hasExactKeys(value, ['sid']) || !isOpaqueToken(value['sid'])) { throw new Error('identityUnavailable'); }
   return value['sid'];
 }

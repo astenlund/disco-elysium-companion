@@ -326,7 +326,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
   try {
     let principal: string;
     try { principal = await resolvePrincipal(bootstrap.inspector); }
-    catch { throw Object.assign(new Error('Windows principal identity is unavailable.'), { code: 'identityUnavailable' }); }
+    catch (error) { throw Object.assign(new Error('Windows principal identity is unavailable.', { cause: error }), { code: 'identityUnavailable' }); }
     const candidate = await discoverScope(bootstrap.inspector, options.companionRoot, config.game, principal);
     options.onStartupPhase?.('instanceGuard');
     guard = await takeInstanceGuard(candidate.dataRoot, () => { kernel?.journal.invalidate(); kernel?.resources.invalidate(); options.onInvalidated?.('contextUncertain'); });

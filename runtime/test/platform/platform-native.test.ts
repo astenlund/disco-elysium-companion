@@ -231,7 +231,8 @@ describe('native runtime platform', () => {
       // Assert
       assert.equal(read[0]!.status, 'rejected');
       const failure = (read[0] as PromiseRejectedResult).reason;
-      assert.ok(failure instanceof StatusIdentityError && failure.cause !== undefined, String(failure));
+      assert.ok(failure instanceof StatusIdentityError && failure.cause instanceof Error, String(failure));
+      assert.ok(failure.cause.cause instanceof Error, 'the helper fault survives as the principal failure cause');
       assert.match(formatCliError(failure), /^identityUnavailable: /);
     } finally { await fixture.close(); }
   });

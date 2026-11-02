@@ -86,4 +86,19 @@ describe('validated core command boundary', () => {
       await assert.rejects(client.publish('fixture-principal'), error => error instanceof SupervisorError && error.reason === 'result-invalid');
     } finally { await client.idle(); await fixture.close(); }
   });
+
+  it('keeps the helper fault as the cause of an unavailable principal', async () => {
+    // Arrange
+    const fault = new Error('principal request failed');
+    const inspector = { native: async () => { throw fault; } };
+
+    // Act
+    const resolved = await Promise.allSettled([resolvePrincipal(inspector)]);
+
+    // Assert
+    assert.equal(resolved[0]!.status, 'rejected');
+    const failure = (resolved[0] as PromiseRejectedResult).reason;
+    assert.ok(failure instanceof Error && failure.message === 'identityUnavailable', String(failure));
+    assert.equal(failure.cause, fault);
+  });
 });
