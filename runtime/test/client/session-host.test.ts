@@ -298,6 +298,43 @@ test('a named resume overtaken by an invalidation during its provider change rep
   await host.shutdown();
 });
 
+test('a named resume overtaken by an invalidation during its provider safety read reports the provider unavailable before any provider change', async () => {
+  // Arrange: the host is invalidated while the resume reads provider safety, before admission.
+  const { host, backend, provider } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+  const providerSafety = backend.providerSafety.bind(backend);
+  let reads = 0;
+  backend.providerSafety = async () => { reads += 1; if (reads === 1) { host.invalidate('contextUncertain'); } return providerSafety(); };
+  const starts = provider.calls.length;
+
+  // Act
+  const result = await host.resumeAgentSession('valid-session');
+
+  // Assert
+  assert.equal(result, 'providerUnavailable');
+  assert.equal(provider.calls.slice(starts).includes('valid-session'), false);
+  await host.shutdown();
+});
+
+test('a named resume overtaken by the host shutdown during its provider change reports the invalidation', async () => {
+  // Arrange: the host starts shutting down while the provider starts the named session.
+  const { host, backend, provider } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+  const start = provider.start.bind(provider);
+  let shutdown: Promise<void> | null = null;
+  provider.start = async resume => {
+    if (resume === 'valid-session') { shutdown = host.shutdown(); }
+    return start(resume);
+  };
+
+  // Act
+  const result = await host.resumeAgentSession('valid-session');
+
+  // Assert
+  assert.equal(result, 'stateInvalidated');
+  await shutdown;
+});
+
 test('a named resume whose provider exits incompatible during its binding reports an unknown session, not an invalidation', async () => {
   // Arrange: the named session exits as incompatible at its liveness check after binding, while no invalidation occurs.
   const { host, backend, provider } = await fixture();
