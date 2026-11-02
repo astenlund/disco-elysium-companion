@@ -37,6 +37,12 @@ async function seedScope(root: string, inspector: PathInspector, principal = 'fi
   return scope!;
 }
 
+/** Writes the runtime config standalone status loads from the companion root. */
+async function stageRuntimeConfig(root: string): Promise<void> {
+  await fs.mkdir(path.join(root, 'runtime'));
+  await fs.writeFile(path.join(root, 'runtime', 'companion.config.json'), stringifyJson(config));
+}
+
 async function snapshot(root: string): Promise<readonly [string, string][]> {
   const files: [string, string][] = [];
   async function visit(relative: string): Promise<void> {
@@ -142,8 +148,7 @@ describe('native runtime platform', () => {
     const fixture = await companionFixture();
     const supervisor = (await createTestNative(fixture.root)).supervisor;
     const inspector = new PathInspector(supervisor);
-    await fs.mkdir(path.join(fixture.root, 'runtime'));
-    await fs.writeFile(path.join(fixture.root, 'runtime', 'companion.config.json'), stringifyJson(config));
+    await stageRuntimeConfig(fixture.root);
     try {
       const initial = await snapshot(fixture.root);
       const empty = await readRuntimeStatus(fixture.root);
@@ -198,8 +203,7 @@ describe('native runtime platform', () => {
   it('reports the helper refusal with its restart remedy when the status helper spends its restart', { timeout: 240000 }, async () => {
     // Arrange: the first service dies on the principal request and its replacement on its first principal or job request.
     const fixture = await companionFixture();
-    await fs.mkdir(path.join(fixture.root, 'runtime'));
-    await fs.writeFile(path.join(fixture.root, 'runtime', 'companion.config.json'), stringifyJson(config));
+    await stageRuntimeConfig(fixture.root);
     const die = [{ die: 'beforeForward' as const }];
     const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: die } }, { rules: { principal: die, jobStates: die } }]);
     try {
@@ -210,6 +214,7 @@ describe('native runtime platform', () => {
       assert.equal(read[0]!.status, 'rejected');
       const failure = (read[0] as PromiseRejectedResult).reason;
       assert.ok(failure instanceof NativeHelperUnavailableError && failure.reason === 'unavailable', String(failure));
+      assert.ok(failure.cause instanceof StatusIdentityError, 'the principal failure survives the failing inspection close');
       assert.match(formatCliError(failure), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
     } finally { await fixture.close(); }
   });
@@ -217,8 +222,7 @@ describe('native runtime platform', () => {
   it('keeps identityUnavailable with its cause for a principal failure while the status helper can still serve', { timeout: 240000 }, async () => {
     // Arrange: only the first service dies on the principal request, so its replacement serves and the helper is not exhausted.
     const fixture = await companionFixture();
-    await fs.mkdir(path.join(fixture.root, 'runtime'));
-    await fs.writeFile(path.join(fixture.root, 'runtime', 'companion.config.json'), stringifyJson(config));
+    await stageRuntimeConfig(fixture.root);
     const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
     try {
       // Act
