@@ -175,7 +175,11 @@ export class ProviderLifecycle {
     }
   }
 
-  /** Classifies a failed start by epoch as well as type: a start that fails after an invalidation is that invalidation's refusal, whatever the provider raised. */
+  /**
+   * Classifies a failed start by epoch as well as type: a start that fails after an invalidation is that invalidation's
+   * refusal, whatever the provider raised. The type also matches the refusal requireEpoch raises for a closed or
+   * incompatible lifecycle or a lost guard, which stops the start the same way, so it does not prove an invalidation.
+   */
   private refusedByInvalidation(error: unknown, epoch: number): boolean {
     return error instanceof ProviderStartInvalidatedError || this.invalidationEpoch !== epoch;
   }
@@ -389,11 +393,15 @@ export class ProviderLifecycle {
       await this.establish(admitted.binding, undefined, epoch);
       return 'resumed';
     } catch {
+      // A named start that a suppression (a state invalidation or shutdown) overtook failed because of it, so the session
+      // is not reported unknown. Only the epoch, which every suppression advances, says so: requireEpoch raises the same
+      // error for an incompatible exit, which leaves the epoch unchanged.
+      const invalidated = this.invalidationEpoch !== epoch;
       // A failed named start preserves the old durable binding. Its subprocess
       // must be re-established because the provider owns one process namespace.
       try { await this.endCurrent(); this.requireEpoch(epoch); if (previous !== null) { await this.establish(previous, undefined, epoch); } else { this.state('failed'); } }
       catch { this.state('failed'); }
-      return 'unknownSession';
+      return invalidated ? 'stateInvalidated' : 'unknownSession';
     }
   }
 

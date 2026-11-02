@@ -8,7 +8,7 @@ import type { HostEvent } from '../../src/session-host-contract.ts';
 import { indexCurrentBinding } from '../../src/session-records.ts';
 import type { StartupPhase } from '../../src/startup-progress.ts';
 import { recoveryFingerprint } from '../../src/window-recovery.ts';
-import { deferred, FakeBackend, FakeProvider, flush, generation, instructionHash, invalidateWhenReady, timestamp, until } from './support.ts';
+import { deferred, FakeBackend, FakeProvider, type FakeSession, flush, generation, instructionHash, invalidateWhenReady, timestamp, until } from './support.ts';
 
 async function fixture(declarations: ConstructorParameters<typeof FakeProvider>[0] = {}): Promise<{ host: SessionHost; backend: FakeBackend; provider: FakeProvider; events: HostEvent[] }> {
   const backend = new FakeBackend();
@@ -276,6 +276,68 @@ test('a named resume overtaken by an invalidation in its ready status change rep
   assert.equal(hook.invalidated, true);
   assert.equal(result, 'stateInvalidated');
   assert.notEqual(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await host.shutdown();
+});
+
+test('a named resume overtaken by an invalidation during its provider change reports the invalidation, not an unknown session', async () => {
+  // Arrange: the host is invalidated while the provider starts the named session.
+  const { host, backend, provider } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+  const start = provider.start.bind(provider);
+  provider.start = async resume => {
+    if (resume === 'valid-session') { host.invalidate('contextUncertain'); }
+    return start(resume);
+  };
+
+  // Act
+  const result = await host.resumeAgentSession('valid-session');
+
+  // Assert
+  assert.equal(result, 'stateInvalidated');
+  assert.notEqual(backend.binding?.providerSessionId, 'valid-session');
+  await host.shutdown();
+});
+
+test('a named resume whose provider exits incompatible during its binding reports an unknown session, not an invalidation', async () => {
+  // Arrange: the named session exits as incompatible at its liveness check after binding, while no invalidation occurs.
+  const { host, backend, provider } = await fixture();
+  backend.index = indexCurrentBinding(backend.index, { ...backend.binding!, providerSessionId: 'valid-session' }, timestamp);
+  const start = provider.start.bind(provider);
+  provider.start = async resume => {
+    const session = await start(resume);
+    if (resume === 'valid-session') {
+      const verifyLive = session.verifyLive.bind(session);
+      let checks = 0;
+      session.verifyLive = async () => { await verifyLive(); checks += 1; if (checks === 2) { (session as FakeSession).exit('providerUnavailable'); } };
+    }
+    return session;
+  };
+
+  // Act
+  const result = await host.resumeAgentSession('valid-session');
+
+  // Assert
+  assert.equal(result, 'unknownSession');
+  await host.shutdown();
+});
+
+test('a named resume that fails on its own reports an unknown session even when an invalidation lands while the previous session is restored', async () => {
+  // Arrange: the named start fails by itself, and the invalidation arrives during the restore of the previous binding.
+  const { host, backend, provider } = await fixture();
+  const previous = backend.binding!;
+  backend.index = indexCurrentBinding(backend.index, { ...previous, providerSessionId: 'unavailable-session' }, timestamp);
+  provider.failures.add('unavailable-session');
+  const start = provider.start.bind(provider);
+  provider.start = async resume => {
+    if (resume === previous.providerSessionId) { host.invalidate('contextUncertain'); }
+    return start(resume);
+  };
+
+  // Act
+  const result = await host.resumeAgentSession('unavailable-session');
+
+  // Assert
+  assert.equal(result, 'unknownSession');
   await host.shutdown();
 });
 

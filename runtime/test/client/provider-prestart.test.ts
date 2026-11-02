@@ -410,7 +410,7 @@ for (const controlKind of ['requested', 'namedResume'] as const) {
     backend.safetyValue = { ...backend.safetyValue, generation: 'f'.repeat(32) };
     assert.equal(provider.calls.length, 2);
     release.resolve();
-    assert.equal(await control, controlKind === 'requested' ? 'providerUnavailable' : 'unknownSession');
+    assert.equal(await control, controlKind === 'requested' ? 'providerUnavailable' : 'stateInvalidated');
     await until(() => provider.calls.length === 3 && backend.binding?.stateGeneration === 'f'.repeat(32) && host.status.provider.state === 'ready');
     assert.equal(overlapping, false);
     assert.equal(provider.sessions[1]?.closed, true);
