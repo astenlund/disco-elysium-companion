@@ -369,6 +369,51 @@ test('a named resume overtaken by a final-safety block during its maintenance wa
   await host.shutdown();
 });
 
+test('a new session request overtaken by an invalidation during its maintenance wait leaves only the queued clean replacement', async () => {
+  // Arrange: a compaction binding holds maintenance, so the request waits before the provider lifecycle sees it.
+  const { host, backend, provider, events } = await fixture();
+  const release = holdMaintenance(host, backend, provider);
+  const starts = provider.calls.length;
+
+  const started = (reason: string) => events.some(event => event.type === 'notice' && event.code === 'agentSessionStarted' && event.reason === reason);
+
+  // Act: the invalidation advances the safety generation, as a safety-store correction does.
+  const replacing = host.startNewAgentSession();
+  await flush();
+  backend.safetyValue = { ...backend.safetyValue, generation: 'f'.repeat(32) };
+  host.invalidate('contextUncertain');
+  release();
+  const result = await replacing;
+  await until(() => started('stateInvalidated'));
+
+  // Assert: the request changed no provider session; the invalidation's own replacement is the only start.
+  assert.equal(result, 'providerUnavailable');
+  assert.equal(started('requested'), false);
+  assert.equal(provider.calls.length, starts + 1);
+  await host.shutdown();
+});
+
+test('a new session request overtaken by the host shutdown during its maintenance wait changes no provider session', async () => {
+  // Arrange: a compaction binding holds maintenance, so the request waits before the provider lifecycle sees it.
+  const { host, backend, provider } = await fixture();
+  const release = holdMaintenance(host, backend, provider);
+  const starts = provider.calls.length;
+  const original = provider.current;
+
+  // Act
+  const replacing = host.startNewAgentSession();
+  await flush();
+  const closing = host.shutdown();
+  release();
+  const result = await replacing;
+  await closing;
+
+  // Assert
+  assert.equal(result, 'providerUnavailable');
+  assert.equal(provider.calls.length, starts);
+  assert.equal(provider.current, original);
+});
+
 test('a named resume overtaken by the host shutdown during its provider change reports the invalidation', async () => {
   // Arrange: the host starts shutting down while the provider starts the named session.
   const { host, backend, provider } = await fixture();

@@ -623,11 +623,15 @@ export class SessionHost implements SessionHostV1 {
 
   async startNewAgentSession(): ReturnType<SessionHostV1['startNewAgentSession']> {
     if (this.active !== null) { return 'turnInProgress'; }
-    if (this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted) { return 'providerUnavailable'; }
+    if (this.sessionControlBlocked()) { return 'providerUnavailable'; }
     if (this.closing || this.switching || this.transition !== null) { return 'providerUnavailable'; }
     this.switching = true;
+    const invalidationsAtAdmission = this.invalidations;
     const control = (async () => {
       await this.maintenance.idle();
+      // As for a named resume, admission is checked again after the wait; an invalidation that landed during it leaves
+      // its own clean-session replacement queued, so the request does not replace the session a second time.
+      if (this.invalidations !== invalidationsAtAdmission || this.sessionControlBlocked() || this.closing) { return 'providerUnavailable' as const; }
       const invalidations = this.invalidations;
 
       return this.settleReady(await this.lifecycle.replace('requested'), invalidations) ? 'started' as const : 'providerUnavailable' as const;
@@ -638,7 +642,7 @@ export class SessionHost implements SessionHostV1 {
   }
   async resumeAgentSession(sessionId: string): Promise<ResumeResult> {
     if (this.active !== null) { return 'turnInProgress'; }
-    if (this.resumeBlocked()) { return 'stateInvalidated'; }
+    if (this.sessionControlBlocked()) { return 'stateInvalidated'; }
     if (this.closing || this.switching || this.transition !== null || this.lifecycle.status.state === 'failed') { return 'providerUnavailable'; }
     this.switching = true;
     const invalidationsAtAdmission = this.invalidations;
@@ -646,7 +650,7 @@ export class SessionHost implements SessionHostV1 {
       await this.maintenance.idle();
       // The provider lifecycle records its invalidation epoch only when the resume reaches it, so admission is checked
       // again, synchronously, for an invalidation, a latched block or a shutdown that landed during the wait.
-      if (this.invalidations !== invalidationsAtAdmission || this.resumeBlocked()) { return 'stateInvalidated' as const; }
+      if (this.invalidations !== invalidationsAtAdmission || this.sessionControlBlocked()) { return 'stateInvalidated' as const; }
       if (this.closing) { return 'providerUnavailable' as const; }
       const invalidations = this.invalidations;
       const result = await this.lifecycle.resume(sessionId);
@@ -660,7 +664,8 @@ export class SessionHost implements SessionHostV1 {
     finally { this.sessionControl = null; this.switching = false; this.statusChanged(); this.scheduleTransition(); }
   }
 
-  private resumeBlocked(): boolean {
+  /** A latched block, or an initial start not yet completed, that keeps a requested session change out of this process. */
+  private sessionControlBlocked(): boolean {
     return this.pendingCheckBlocked || this.finalSafetyBlocked || this.initialStartupInvalidated || !this.initialStartCompleted;
   }
 
