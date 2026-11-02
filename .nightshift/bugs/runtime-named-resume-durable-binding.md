@@ -19,3 +19,5 @@ Decide which binding a failed named resume should leave durable (the previous bi
 ## Status
 
 Open. No fix is authorized by this entry.
+
+Fixed on 2026-11-02 as direct work (`fix(runtime): restore the earlier binding after a failed named resume`), after the user chose to restore the binding that was durable before the named start; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the delivered behavior. The trace the evidence above left open was done for the fix: a named resume with no previous binding is reachable after an initial start refused at its provider safety read, whether its remedy is retryable or a restart, because `SessionHost.start` marks the initial start completed and the refused `ProviderLifecycle.start` leaves the provider `starting` rather than `failed`, so `resumeAgentSession` admits the request once safety reads succeed again unless one of its blocks latched (an initial-startup invalidation, a final-safety block or a pending-check block); `agent-session.json` then still holds the binding that the refused startup never read.
