@@ -143,6 +143,16 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+## Named resume deferred bugs
+
+These findings came from Nightshift run b6bd3335-9981-4976-a7b5-4764868a8b35 and were tracked by the user in triage; tracking does not authorize a fix.
+
+### [Named resume durable binding](bugs/runtime-named-resume-durable-binding.md)
+
+A named resume that fails after writing `agent-session.json` can leave it naming the failed session when the previous binding is not written back, contrary to the design's "keeps the current binding"; decide the intended binding first.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
