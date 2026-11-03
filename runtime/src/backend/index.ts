@@ -15,7 +15,7 @@ import { initializeJournal } from '../journal-initialization.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
 import { invalidOperationOwners, OperationStore } from '../operations.ts';
 import { NativeHelper } from '../native-helper.ts';
-import { classifyHelperFailure, NativeHelperUnavailableError } from '../native-helper-error.ts';
+import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from '../native-helper-error.ts';
 import { ensureNativeHelperImage } from '../native-image.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { cleanupPublicationResidue, WatcherSupervisor } from '../platform/index.ts';
@@ -368,8 +368,7 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
     await bootstrap.close();
     return new CoordinatorBackend(kernel, { value: runtime, sha256 }, options.onStartupPhase);
   } catch (error) {
-    let failure: unknown = resources?.captureFailure(error) ?? error;
-    try {
+    return finishFailedStart(resources?.captureFailure(error) ?? error, async () => {
       const closed = await Promise.allSettled([startupInspector?.closeStartupSession(), startupGroup?.close()]);
       const closeFailure = closed.find(result => result.status === 'rejected');
       await bootstrap.close();
@@ -382,15 +381,20 @@ export async function openBackend(options: BackendOptions): Promise<RuntimeBacke
         await guard.release();
       } else {
         await helper.close();
+        if (closeFailure?.status === 'rejected') { throw closeFailure.reason; }
       }
-      if (closeFailure?.status === 'rejected' && !helper.exhausted) { failure = closeFailure.reason; }
-    } catch (cleanupFailure) {
-      // A cleanup that fails while the helper is exhausted failed because the helper cannot serve: the start's own failure
-      // stands, and the guard stays held because the release was not reached.
-      if (!helper.exhausted) { failure = cleanupFailure; }
-    }
-    throw phaseFatalError(failure, helper);
+    }, helper);
   }
+}
+
+/**
+ * @internal Cleans up after a failed backend start under the cleanup rule of `finishAfterCleanup`, then reports the outcome
+ * under the phase A through C fatal codes. A cleanup failure while the helper reports itself exhausted leaves the start's
+ * own failure standing, and the guard stays held when its release was not reached.
+ */
+export async function finishFailedStart(failure: unknown, cleanup: () => Promise<void>, helper: { readonly exhausted: boolean }): Promise<never> {
+  try { return await finishAfterCleanup<never>({ failure }, cleanup, helper); }
+  catch (reported) { throw phaseFatalError(reported, helper); }
 }
 
 const phaseFatalCodes: ReadonlySet<unknown> = new Set(['configurationInvalid', 'identityUnavailable', 'dataRootUnavailable', 'runtimeAlreadyRunning',

@@ -4,7 +4,7 @@ import { CapacityObservation, capacitySlot, capacityTransitions, initialCapacity
 import { DataRootUnavailableError } from '../../src/admission.ts';
 import { ResourceAuthority, type ResourceObservation } from '../../src/resource-lifecycle/resources.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
-import { CoordinatorBackend, phaseFatalError } from '../../src/backend/index.ts';
+import { CoordinatorBackend, finishFailedStart, phaseFatalError } from '../../src/backend/index.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { RuntimeAlreadyRunningError } from '../../src/guard.ts';
 import { SupervisorError } from '../../src/process.ts';
@@ -84,6 +84,43 @@ describe('bounded capacity presentation', () => {
       assert.ok(reported instanceof DataRootUnavailableError);
       assert.equal(reported.message, failure.message); assert.equal(reported.cause, failure);
     }
+  });
+
+  it('reports a failure that is not a helper refusal as the unavailable refusal while the helper is exhausted', () => {
+    // Arrange
+    const failure = new Error('An unlisted startup failure.');
+    const listed = new RuntimeAlreadyRunningError('Another runtime owns this scope.');
+    const refusal = new NativeHelperUnavailableError('bindFailed');
+
+    // Act
+    const [unlisted, coded, refused] = [failure, listed, refusal].map(error => phaseFatalError(error, { exhausted: true }));
+
+    // Assert
+    for (const [reported, cause] of [[unlisted, failure], [coded, listed]] as const) {
+      assert.ok(reported instanceof NativeHelperUnavailableError && reported.reason === 'unavailable', String(reported));
+      assert.equal(reported.cause, cause);
+    }
+    assert.equal(refused, refusal);
+  });
+
+  it('settles a failed start through the shared cleanup rule before reporting it under the fatal codes', async () => {
+    // Arrange: the cleanup rule's full case matrix is tested on finishAfterCleanup itself; this pins the openBackend wiring.
+    const startFailure = new Error('The scope binding could not be published.');
+    const cleanupFailure = new Error('Startup worker close failed.');
+    const failingCleanup = async (): Promise<void> => { throw cleanupFailure; };
+
+    // Act
+    const [serving, exhausted, clean] = await Promise.allSettled([
+      finishFailedStart(startFailure, failingCleanup, { exhausted: false }),
+      finishFailedStart(startFailure, failingCleanup, { exhausted: true }),
+      finishFailedStart(startFailure, async () => {}, { exhausted: false })]);
+
+    // Assert: a cleanup that fails while the helper serves replaces the start's failure; one that fails while it is exhausted
+    // leaves the start's failure standing as the refusal's cause.
+    const reported = [serving, exhausted, clean].map(result => { assert.equal(result.status, 'rejected'); return (result as PromiseRejectedResult).reason as Error; });
+    assert.ok(reported[0] instanceof DataRootUnavailableError && reported[0].cause === cleanupFailure, String(reported[0]));
+    assert.ok(reported[1] instanceof NativeHelperUnavailableError && reported[1].reason === 'unavailable' && reported[1].cause === startFailure, String(reported[1]));
+    assert.ok(reported[2] instanceof DataRootUnavailableError && reported[2].cause === startFailure, String(reported[2]));
   });
 
   it('emits unavailable and measured exhaustion distinctly from actual resource assessments', async () => {

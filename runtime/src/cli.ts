@@ -104,8 +104,7 @@ async function runCliInternal(args: readonly string[], givenRoot: string,
       const runtime = await createChatRuntime(companionRoot, phase => progress.phase(phase), {}, image);
       if (runtime.result === 'notOwner') { progress.finish('notOwner'); write('notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.'); return 1; }
       if (runtime.result === 'providerUnavailable') { progress.finish('providerUnavailable'); write('providerUnavailable: The provider could not start.'); return 1; }
-      try { await runTextClient(runtime.host, { onAttached: () => progress.finish('ready') }); }
-      catch (error) { throw classifyHelperFailure(error, runtime.helper); }
+      await runChatClient(runtime, host => runTextClient(host, { onAttached: () => progress.finish('ready') }));
       return 0;
     } catch (error) { progress.finish('failed'); throw error; }
   }
@@ -134,6 +133,12 @@ export type OperatorOutcome = { readonly exitCode: number } | { readonly failure
 /** @internal Shuts an operator command's backend down after its startup settled, under the cleanup rule of `finishAfterCleanup`. */
 export async function finishOperatorRun(outcome: OperatorOutcome, shutdown: () => Promise<void>, helper: { readonly exhausted: boolean }): Promise<number> {
   return finishAfterCleanup('failure' in outcome ? outcome : { value: outcome.exitCode }, shutdown, helper);
+}
+
+/** @internal Runs chat's client on its started runtime; a failure, its shutdown's included, takes the exhausted-helper classification. */
+export async function runChatClient<H>(runtime: { readonly host: H; readonly helper: { readonly exhausted: boolean } }, client: (host: H) => Promise<void>): Promise<void> {
+  try { await client(runtime.host); }
+  catch (error) { throw classifyHelperFailure(error, runtime.helper); }
 }
 
 export async function runCli(args: readonly string[], companionRoot = fileURLToPath(new URL('../../', import.meta.url)),

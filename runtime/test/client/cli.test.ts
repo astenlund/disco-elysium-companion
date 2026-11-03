@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError } from '../../src/admission.ts';
-import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runCli } from '../../src/cli.ts';
+import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runChatClient, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
@@ -129,4 +129,23 @@ test('an operator run settles through the shared cleanup rule, mapping its exit 
   const refusal = (failed as PromiseRejectedResult).reason;
   assert.ok(refusal instanceof NativeHelperUnavailableError && refusal.reason === 'unavailable' && refusal.cause === startupFailure);
   assert.deepEqual(clean, { status: 'fulfilled', value: 1 });
+});
+
+test('the chat client exit takes the exhausted-helper classification only while the helper is exhausted', async () => {
+  // Arrange
+  const clientFailure = new Error('Shutdown could not prove quiescence.');
+  const failingClient = async (): Promise<void> => { throw clientFailure; };
+
+  // Act
+  const [exhausted, serving, clean] = await Promise.allSettled([
+    runChatClient({ host: null, helper: { exhausted: true } }, failingClient),
+    runChatClient({ host: null, helper: { exhausted: false } }, failingClient),
+    runChatClient({ host: null, helper: { exhausted: true } }, async () => {})]);
+
+  // Assert
+  assert.equal(exhausted.status, 'rejected');
+  const refusal = (exhausted as PromiseRejectedResult).reason;
+  assert.ok(refusal instanceof NativeHelperUnavailableError && refusal.reason === 'unavailable' && refusal.cause === clientFailure);
+  assert.deepEqual(serving, { status: 'rejected', reason: clientFailure });
+  assert.deepEqual(clean, { status: 'fulfilled', value: undefined });
 });

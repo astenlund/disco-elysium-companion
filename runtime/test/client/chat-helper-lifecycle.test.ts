@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 import { openBackend } from '../../src/backend/index.ts';
 import type { Kernel } from '../../src/backend/kernel.ts';
-import { formatCliError } from '../../src/cli.ts';
-import { classifyHelperFailure, NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
+import { formatCliError, runChatClient } from '../../src/cli.ts';
+import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { SupervisorError } from '../../src/process.ts';
 import { companionFixture } from '../support/companion.ts';
 import { helperProxies, testHelperImage } from '../support/native-helper.ts';
@@ -61,12 +61,12 @@ describe('chat lifecycle on the native helper', () => {
       await assert.rejects(chat.backend.inspector.inspect(chat.backend.scope.dataRoot, path.join(chat.backend.scope.dataRoot, 'runtime.json')));
 
       // Act and assert: shutdown cannot prove quiescence, so the marker stays unclean and the guard stays held, and the chat
-      // exit the CLI reports carries the helper refusal with its restart remedy.
-      const shutdown = await Promise.allSettled([chat.host.shutdown()]);
+      // exit the CLI reports through its client wrapper carries the helper refusal with its restart remedy.
+      const shutdown = await Promise.allSettled([runChatClient({ host: chat.host, helper }, host => host.shutdown())]);
       assert.equal(shutdown[0]!.status, 'rejected');
       assert.equal(helper.exhausted, true);
-      const reported = classifyHelperFailure((shutdown[0] as PromiseRejectedResult).reason, helper);
-      assert.ok(reported instanceof NativeHelperUnavailableError && reported.reason === 'unavailable');
+      const reported = (shutdown[0] as PromiseRejectedResult).reason;
+      assert.ok(reported instanceof NativeHelperUnavailableError && reported.reason === 'unavailable', String(reported));
       assert.match(formatCliError(reported), /^nativeHelperUnavailable \(unavailable\): .*Restart the runtime\.$/);
       const marker = JSON.parse(await fs.readFile(path.join(chat.backend.scope.dataRoot, 'runtime.json'), 'utf8')) as { cleanShutdown: boolean };
       assert.equal(marker.cleanShutdown, false);
