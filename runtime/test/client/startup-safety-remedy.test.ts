@@ -5,8 +5,9 @@ import test from 'node:test';
 import { startChatProvider } from '../../src/runtime.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
+import { indexCurrentBinding } from '../../src/session-records.ts';
 import { formatStatus, runTextClient } from '../../src/text-client.ts';
-import { FakeBackend, FakeProvider, instructionHash, invalidateWhenReady, until } from './support.ts';
+import { FakeBackend, FakeProvider, generation, instructionHash, invalidateWhenReady, timestamp, until } from './support.ts';
 
 function startupModel() {
   const backend = new FakeBackend();
@@ -267,6 +268,37 @@ test('an invalidation in the status change that reports the /new provider ready 
   assert.equal(host.status.provider.safetyRefusal, 'retryable');
   assert.ok(formatStatus(host.status).includes(recheckText));
   await host.shutdown();
+});
+
+test('no status change shows the provider ready beside the kept remedy while the host becomes ready again', async () => {
+  const recoveries: readonly { readonly name: string; readonly recover: (host: SessionHost, backend: FakeBackend) => Promise<unknown> }[] = [
+    { name: '/new', recover: host => host.startNewAgentSession() },
+    { name: 'named resume', recover: (host, backend) => {
+      backend.index = indexCurrentBinding(backend.index, { agentSessionVersion: 1, providerId: 'fake', providerSessionId: 'valid-session', createdAt: timestamp, turnsCompleted: 0,
+        needsState: true, instructionsSha256: instructionHash, stateGeneration: generation }, timestamp);
+      return host.resumeAgentSession('valid-session');
+    } },
+    { name: 'replacement after an invalidation', recover: async host => { host.invalidate('contextUncertain'); await until(() => host.status.provider.safetyRefusal === null); } },
+  ];
+  for (const item of recoveries) {
+    // Arrange: a retryable refusal is kept, then the safety read clears.
+    const { backend, host } = startupModel();
+    const busy = busySafety(backend);
+    await startChatProvider(host, backend.asRuntime());
+    const events = await attachNotices(host);
+    busy.clear();
+
+    // Act
+    await item.recover(host, backend);
+
+    // Assert
+    const statuses = events.flatMap(event => event.type === 'status.changed' ? [event.status.provider] : []);
+    assert.equal(host.status.provider.state, 'ready', item.name);
+    assert.equal(host.status.provider.safetyRefusal, null, item.name);
+    assert.deepEqual(statuses.filter(provider => provider.state === 'ready' && provider.safetyRefusal !== null), [], item.name);
+    assert.deepEqual(statuses.at(-1), host.status.provider, item.name);
+    await host.shutdown();
+  }
 });
 
 test('the attach snapshot and every later status change carry the kept remedy', async () => {

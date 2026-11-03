@@ -177,6 +177,16 @@ export class SessionHost implements SessionHostV1 {
     return this.ready;
   }
 
+  /**
+   * A provider that reports ready while a start, transition or session change is still settling the host would otherwise show
+   * beside the kept remedy for one status change. Each of those paths reports status once it settles, so holding the change
+   * lets that report carry the cleared remedy, or the kept one when an invalidation leaves the host unready.
+   */
+  private settlingReadyBesideRemedy(): boolean {
+    return this.safetyRefusal !== null && !this.ready && this.lifecycle.status.state === 'ready'
+      && (this.initialStartPromise !== null || this.transition !== null || this.sessionControl !== null);
+  }
+
   /** Keeps the remedy on the live status beside the one-off notice that names it. */
   private refuseSafety(remedy: SafetyRefusalRemedy): void {
     this.safetyRefusal = remedy;
@@ -378,7 +388,7 @@ export class SessionHost implements SessionHostV1 {
   }
   statusChanged(): void {
     // Provider construction can report a transition before its field is assigned.
-    if (this.lifecycle === undefined) { return; }
+    if (this.lifecycle === undefined || this.settlingReadyBesideRemedy()) { return; }
     const status = this.status;
     const serialized = JSON.stringify(status);
     if (serialized === this.lastStatus) { return; }
