@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
+import { ReleaseRefusedError } from './backend/consumer.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from './native-helper-error.ts';
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
@@ -44,6 +45,7 @@ export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityO
 
 export function formatCliError(error: unknown): string {
   if (error instanceof NativeHelperUnavailableError) { return `${error.code} (${error.reason}): ${error.message}`; }
+  if (error instanceof ReleaseRefusedError) { return error.details.length === 0 ? `${error.code}: ${error.message}` : `${error.code}: ${error.message} Reasons: ${error.details.join(', ')}.`; }
   const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
   const capacity = error instanceof RuntimeCapacityError ? error : error instanceof Error && error.cause instanceof RuntimeCapacityError ? error.cause : null;
   return capacity === null ? `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}` : `${code}: ${formatCapacityError(capacity)}`;

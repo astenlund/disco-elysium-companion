@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError } from '../../src/admission.ts';
+import { ReleaseRefusedError } from '../../src/backend/consumer.ts';
 import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runChatClient, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
@@ -83,6 +84,23 @@ test('startup capacity errors retain the outer fatal code and unknown owed value
   const wrapped = new DataRootUnavailableError('internal path must not appear', { cause: unavailable });
   assert.match(formatCliError(wrapped), /^dataRootUnavailable: capacity unavailable \(runtimeMarker: scopeAuthority\)/);
   assert.doesNotMatch(formatCliError(wrapped), /internal path/);
+});
+
+test('a refused bridge release names its known reasons while other errors keep their format', () => {
+  // Arrange
+  const refusal = new ReleaseRefusedError(['2 outbox records', '3 unacknowledged events', 'repair-0123456789abcdef0123456789abcdef', 'recoveryDisclosureOwed']);
+  const coded = Object.assign(new Error('Another runtime holds the root.'), { code: 'runtimeAlreadyRunning' });
+
+  // Act
+  const rendered = formatCliError(refusal);
+
+  // Assert
+  assert.equal(rendered, 'undelivered: Explicit abandonment is required before releasing undelivered state. '
+    + 'Reasons: 2 outbox records, 3 unacknowledged events, repair-0123456789abcdef0123456789abcdef, recoveryDisclosureOwed.');
+  assert.equal(formatCliError(new ReleaseRefusedError([])), 'undelivered: Explicit abandonment is required before releasing undelivered state.');
+  assert.equal(formatCliError(coded), 'runtimeAlreadyRunning: Another runtime holds the root.');
+  assert.equal(formatCliError(new Error('plain failure')), 'runtimeUnavailable: plain failure');
+  assert.equal(formatCliError('not an error'), 'runtimeUnavailable: Runtime operation failed.');
 });
 
 test('repair prints a generic caution before opening backend and stops on synchronous writer failure', async () => {

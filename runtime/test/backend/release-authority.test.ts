@@ -102,7 +102,9 @@ describe('release obligation evidence', () => {
     const stop = new Error('Stop after observing the complete intent.');
     const intents: ReleaseOperation[] = [];
     let reservations = 0;
+    let consumerSwitches = 0;
     const kernel = { scope: { bindingSha256: scope }, journal: { read: async () => ({ ...journal(), header: { status: 'invalid' }, fault: 'header' }) },
+      core: { consumer: async () => { consumerSwitches++; throw new Error('A refused release must not switch the consumer.'); } },
       operations: { list: async () => ({ records: [{ record: active, sha256: '7'.repeat(64) }], invalid: [], fullTerminalCount: 0, handoffCount: 0 }),
         create: async (record: ReleaseOperation) => {
           const validated = parseOperation(parseStrictJson(Buffer.from(stringifyJson(record, 'state-event')), 'state-event'), scope);
@@ -113,9 +115,12 @@ describe('release obligation evidence', () => {
       outbox: { list: async () => [] }, storage: { list: async (relative: string) => { assert.equal(relative, 'journal/events'); return names; } },
       resources: { ...admittedCapacityFixture(), reserve: async () => { reservations++; } } } as unknown as Kernel;
     const consumer = new ConsumerCoordinator(kernel);
-    await assert.rejects(consumer.switch('bridge', false), ReleaseRefusedError);
+    const refusal: unknown = await consumer.switch('bridge', false).then(() => null, error => error);
+    assert.ok(refusal instanceof ReleaseRefusedError);
+    assert.deepEqual(refusal.details, ['recoveryCarryUnavailable', 'journalUnverified', '2 unacknowledged events', owner.operationId, 'recoveryDisclosureOwed']);
     assert.equal(reservations, 0);
     assert.equal(intents.length, 0);
+    assert.equal(consumerSwitches, 0);
     await assert.rejects(consumer.switch('bridge', true), error => error === stop);
     assert.equal(reservations, 1);
     assert.deepEqual(intents[0]!.plan.abandonedSequences, [1, 2, 5]);
