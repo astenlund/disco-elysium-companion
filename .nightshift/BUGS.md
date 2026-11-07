@@ -43,12 +43,6 @@ Settle the spec and code hash recipes before changing identifiers, since a code 
 
 **Requires:** none.
 
-### [Exact shared document grammars](bugs/shared-grammar-anchors.md)
-
-Make shared validator and adapter checks reject uppercase or trailing-line-feed values outside their documented closed grammars.
-
-**Requires:** none.
-
 ### [Adapter resolution reasons](bugs/adapter-resolution-reasons.md)
 
 Reconcile adapter package and configuration error reasons across the publisher, bridge, and one-shot commands.
