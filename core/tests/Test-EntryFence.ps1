@@ -221,6 +221,12 @@ try {
     Write-Sentinel -Root $lineFeedRoot -BypassToken ($token + [char]92 + 'n')
     Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Invoke-WithToken -Root $lineFeedRoot -Value ($token + "`n") }
 
+    # An uppercase sentinel token matched by the same environment value can only be
+    # refused by the lowercase hex grammar, not by the ordinal token comparison.
+    $uppercaseRoot = New-FenceFixture
+    Write-Sentinel -Root $uppercaseRoot -BypassToken $token.ToUpperInvariant()
+    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Invoke-WithToken -Root $uppercaseRoot -Value $token.ToUpperInvariant() }
+
     $checkpointRoot = New-FenceFixture
     Write-Checkpoint -Root $checkpointRoot
     Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Invoke-WithToken -Root $checkpointRoot -Value $token }

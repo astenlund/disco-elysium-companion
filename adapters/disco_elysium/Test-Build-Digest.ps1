@@ -273,6 +273,7 @@ function Test-MapperExactGrammars {
     $uppercaseReceipt = New-ValidDump
     $uppercaseReceipt.source.contentSha256 = 'B' * 64
     Assert-MapperRefusal -Run (Invoke-Mapper $uppercaseReceipt -SourceSha256 ('B' * 64)) -Reason $sourceHashReason -Message 'uppercase source content hash is rejected'
+    Assert-MapperRefusal -Run (Invoke-Mapper (New-ValidDump) -SourceSha256 (('b' * 64) + "`n")) -Reason $sourceHashReason -Message 'source content hash with a trailing line feed is rejected'
 
     $dumpSourceReason = 'dump source has an invalid field set'
     $trailingReceipt = New-ValidDump
