@@ -103,12 +103,6 @@ Define a safe operator procedure for content-invalid runtime metadata without as
 
 **Requires:** none.
 
-### [Prototype-named dialog answer](bugs/runtime-prototype-dialog-answer.md)
-
-Create own answer properties for allowed question text such as __proto__ and cover selection, retry, and cancellation.
-
-**Requires:** none.
-
 ### [Retained-handoff merge after abandon](bugs/runtime-retained-handoff-merge.md)
 
 Test and correct recovery refusal after unsettled reappend and explicit abandon without weakening original settlement binding.
@@ -118,12 +112,6 @@ Test and correct recovery refusal after unsettled reappend and explicit abandon 
 ### [Prepared-context invalidation assertion](bugs/runtime-prepared-context-invalidation-assertion.md)
 
 Investigate extra fixture-root invalidations before changing the assertion or production behavior.
-
-**Requires:** none.
-
-### [Release refusal details](bugs/runtime-release-refusal-details.md)
-
-Show known refusal facts in the CLI and test that refusal creates no intent or consumer switch.
 
 **Requires:** none.
 

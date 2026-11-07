@@ -15,3 +15,5 @@ Later, render ReleaseRefusedError.details with its stable code and message at th
 ## Status
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+
+Fixed on 2026-11-07 in Nightshift run 319473ef-d1c4-4a85-b1c1-6d31e6495f34; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the delivered behavior.
