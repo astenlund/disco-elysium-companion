@@ -21,7 +21,7 @@ Run the entry point as `node runtime/src/cli.ts <command>` from the companion ch
 | `status` | Reads persisted status without taking the runtime writer guard or running a core command. Volatile chat values are reported unavailable. |
 | `chat` or no argument | Starts the coordinator and text client. It refuses state consumption when the runtime does not own it. |
 | `consumer runtime` | Explicitly transfers consumption to the runtime through the core ownership command. |
-| `consumer bridge` | Attempts confirmed release to the bridge while preserving undelivered obligations. |
+| `consumer bridge` | Attempts confirmed release to the bridge while preserving undelivered obligations. While undelivered obligations remain, it refuses before writing a release intent or switching ownership, exits 1 and prints `undelivered` on stderr with each known reason, such as outbox record and unacknowledged event counts, unfinished repair operation ids and unverified or unavailable authority. |
 | `consumer bridge --abandon-undelivered` | Performs explicit abandon release, preserving correction and recovery evidence as required by the design. |
 | `repair` | Runs startup reconciliation and repair under runtime ownership. |
 
