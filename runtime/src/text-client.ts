@@ -73,6 +73,9 @@ export function formatStatus(status: HostStatus): string {
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean; readonly onAttached?: () => void }
 
+// Question text keys the answers, and the dialog grammar admits any text, so no inherited accessor such as __proto__ may intercept one.
+function emptyAnswers(): Record<string, string> { return Object.create(null) as Record<string, string>; }
+
 // Rendering and input routing own no provider or state authority. Dialog answers
 // remain one correlated host operation, including across a detach and reattach.
 export async function runTextClient(host: SessionHostV1, options: TextClientOptions = {}): Promise<void> {
@@ -81,7 +84,7 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
   const line = (text: string): void => { output.write(`${text}\n`); };
   let dialog: HostDialog | null = null;
   let question = 0;
-  let answers: Record<string, string> = {};
+  let answers = emptyAnswers();
   let running = false;
   let streamed = false;
   let quitting = false;
@@ -115,8 +118,8 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
           : event.code === 'contextExhausted'
           ? `The attempted combined input exceeded provider capacity. ${event.retryable ? 'Another player submission may attempt a smaller context.' : 'No further attempt is currently admitted for this unchanged input.'} Changing the question, an available model choice, or /new may help; none is guaranteed.`
           : `Turn failed: ${event.code}.`);
-    } else if (event.type === 'dialog.requested') { dialog = event; question = 0; answers = {}; renderQuestion(); }
-    else if (event.type === 'dialog.closed') { if (dialog?.dialogId === event.dialogId) { dialog = null; answers = {}; } }
+    } else if (event.type === 'dialog.requested') { dialog = event; question = 0; answers = emptyAnswers(); renderQuestion(); }
+    else if (event.type === 'dialog.closed') { if (dialog?.dialogId === event.dialogId) { dialog = null; answers = emptyAnswers(); } }
     else if (event.type === 'context.compacted') { line('[Provider context compacted; current state is wanted again.]'); }
     else if (event.type === 'notice') {
       if (event.code === 'stateContextInvalidated') { line('[Earlier state-based guidance may be unreliable. A clean session must revalidate it.]'); }
@@ -159,7 +162,7 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
       if (question < dialog.questions.length) { renderQuestion(); }
       else {
         const result = host.answerDialog({ dialogId: dialog.dialogId, answers });
-        if (result !== 'accepted') { line(`Dialog answer: ${result}.`); question = 0; answers = {}; renderQuestion(); }
+        if (result !== 'accepted') { line(`Dialog answer: ${result}.`); question = 0; answers = emptyAnswers(); renderQuestion(); }
       }
       return;
     }

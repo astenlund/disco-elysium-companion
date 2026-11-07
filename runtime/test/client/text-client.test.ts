@@ -6,6 +6,7 @@ import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { SessionHostV1 } from '../../src/session-host-contract.ts';
 import { initialCapacity } from '../../src/capacity.ts';
+import type { DialogAnswer } from '../../src/provider.ts';
 import { credentialSourceLabel, formatCapacity, runTextClient } from '../../src/text-client.ts';
 import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
 
@@ -59,6 +60,111 @@ test('text client renders previews and routes numbered, free-text and override i
   assert.equal(attached, 1);
   assert.equal(backend.acquisitionCount, 1);
   assert.equal(backend.events.at(-1), 'shutdown');
+});
+
+const prototypeNamedQuestions = [
+  { question: '__proto__', header: 'Prototype', multiSelect: false, options: [{ label: 'First', description: 'one' }, { label: 'Second', description: 'two' }] },
+  { question: 'Explain?', header: 'Explanation', multiSelect: false, options: [{ label: 'Option A', description: 'a' }, { label: 'Option B', description: 'b' }] },
+];
+
+function prototypeDialogHost() {
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  return { provider, host };
+}
+
+function onlyAnswers(received: readonly DialogAnswer[]): Readonly<Record<string, string>> {
+  assert.equal(received.length, 1);
+  const [answer] = received;
+  assert.ok(answer !== undefined && 'answers' in answer, 'the dialog was answered rather than cancelled');
+  return answer.answers;
+}
+
+function assertOwnAnswer(answers: Readonly<Record<string, string>>, question: string, expected: string): void {
+  assert.ok(Object.hasOwn(answers, question), `answer for ${question} is an own property`);
+  assert.equal(Object.getOwnPropertyDescriptor(answers, question)?.value, expected);
+}
+
+test('text client answers a question whose text is __proto__ by number', async () => {
+  // Arrange
+  const { provider, host } = prototypeDialogHost();
+  await host.start();
+  const received: DialogAnswer[] = [];
+  provider.current.action = async request => { received.push(await request.askUser(prototypeNamedQuestions)); return { kind: 'completed', text: 'done' }; };
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+
+  // Act
+  input.write('Ask me.\n');
+  await until(() => read().includes('2. Second: two'));
+  input.write('2\n');
+  await until(() => read().includes('Explain?'));
+  input.write('free text\n');
+  await until(() => read().includes('done'));
+  input.write('/quit\n');
+  await running;
+
+  // Assert
+  const answers = onlyAnswers(received);
+  assertOwnAnswer(answers, '__proto__', 'Second');
+  assertOwnAnswer(answers, 'Explain?', 'free text');
+  assert.doesNotMatch(read(), /Dialog answer: invalidAnswer/);
+});
+
+test('text client re-asks a __proto__ dialog from a fresh answer set after a refused answer', async () => {
+  // Arrange
+  const { provider, host } = prototypeDialogHost();
+  await host.start();
+  const answerDialog = host.answerDialog.bind(host);
+  let refusals = 1;
+  host.answerDialog = input => { if (refusals > 0 && !('cancelled' in input)) { refusals -= 1; return 'invalidAnswer'; } return answerDialog(input); };
+  const received: DialogAnswer[] = [];
+  provider.current.action = async request => { received.push(await request.askUser(prototypeNamedQuestions)); return { kind: 'completed', text: 'done' }; };
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+
+  // Act
+  input.write('Ask me.\n');
+  await until(() => read().includes('2. Second: two'));
+  input.write('2\n');
+  await until(() => read().includes('Explain?'));
+  input.write('first attempt\n');
+  await until(() => read().includes('Dialog answer: invalidAnswer.'));
+  await until(() => read().split('2. Second: two').length === 3);
+  input.write('1\n');
+  await until(() => read().split('Explain?').length === 3);
+  input.write('second attempt\n');
+  await until(() => read().includes('done'));
+  input.write('/quit\n');
+  await running;
+
+  // Assert
+  assert.equal(refusals, 0);
+  const answers = onlyAnswers(received);
+  assertOwnAnswer(answers, '__proto__', 'First');
+  assertOwnAnswer(answers, 'Explain?', 'second attempt');
+});
+
+test('text client cancels a __proto__ dialog', async () => {
+  // Arrange
+  const { provider, host } = prototypeDialogHost();
+  await host.start();
+  const received: DialogAnswer[] = [];
+  provider.current.action = async request => { received.push(await request.askUser(prototypeNamedQuestions)); return { kind: 'completed', text: 'done' }; };
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+
+  // Act
+  input.write('Ask me.\n');
+  await until(() => read().includes('2. Second: two'));
+  input.write('/cancel\n');
+  await until(() => read().includes('done'));
+  input.write('/quit\n');
+  await running;
+
+  // Assert
+  assert.deepEqual(received, [{ cancelled: true }]);
 });
 
 test('text client explains the blocked pending-check restart without resending', async () => {
