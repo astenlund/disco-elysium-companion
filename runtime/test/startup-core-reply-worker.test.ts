@@ -114,7 +114,8 @@ test('startup core reply worker matches the one-shot validator for consumer, pub
 
 test('startup core reply worker refuses a nonce or request id outside its lowercase hex grammar', { timeout: 360000 }, async () => {
   const lineFeed = (value: string): string => `${value}\n`;
-  const uppercase = (value: string): string => value.toUpperCase();
+  // Replacing the first character keeps the length and guarantees an uppercase hex letter even for an all-digit value.
+  const uppercase = (value: string): string => `A${value.slice(1).toUpperCase()}`;
   for (const [variant, malform] of [['nonce', lineFeed], ['id', lineFeed], ['nonce', uppercase], ['id', uppercase]] as const) {
     const fixture = await companionFixture('runtime-owned-empty');
     let backend: Awaited<ReturnType<typeof openBackend>> | null = null;
