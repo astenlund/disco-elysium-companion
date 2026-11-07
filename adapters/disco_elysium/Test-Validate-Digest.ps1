@@ -107,6 +107,9 @@ $objectiveJson = ConvertTo-CompanionJson -InputObject $objectiveCandidate -Budge
 Invoke-Validator -Document (Read-DigestDocument -Json $objectiveJson)
 $objectiveMutations = @(
     @{ Name = 'invalid objective namespace'; Apply = { param($value) $value.objectives[0].id = 'task.example' } },
+    @{ Name = 'lowercase objective prefix with a matching title'; Apply = { param($value) $value.objectives[0].id = 'task.example_task' } },
+    @{ Name = 'lowercase subobjective prefix with a matching title'; Apply = { param($value) $value.objectives[0].subobjectives[0].id = 'task.child_task' } },
+    @{ Name = 'empty objective suffix'; Apply = { param($value) $value.objectives[0].id = 'TASK.'; $value.objectives[0].title = '' } },
     @{ Name = 'wrong objective title'; Apply = { param($value) $value.objectives[0].title = 'wrong' } },
     @{ Name = 'unsupported objective status'; Apply = { param($value) $value.objectives[0].status = 'failed' } },
     @{ Name = 'active objective resolution'; Apply = { param($value) $value.objectives[0].resolved = @{ day = 1; time = '08:01' } } },

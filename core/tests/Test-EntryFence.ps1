@@ -214,6 +214,13 @@ try {
     Assert-True -Condition (Invoke-WithToken -Root $sentinelRoot -Value $token) -Message 'exact bypass token admits a sentinel-gated entry'
     Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Invoke-WithToken -Root $sentinelRoot -Value $token.ToUpperInvariant() }
 
+    # The sentinel token grammar ends at the true end of the string: a token carrying a
+    # trailing line feed (a JSON escape built from its code point) is refused even when the
+    # environment value matches it exactly.
+    $lineFeedRoot = New-FenceFixture
+    Write-Sentinel -Root $lineFeedRoot -BypassToken ($token + [char]92 + 'n')
+    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Invoke-WithToken -Root $lineFeedRoot -Value ($token + "`n") }
+
     $checkpointRoot = New-FenceFixture
     Write-Checkpoint -Root $checkpointRoot
     Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Invoke-WithToken -Root $checkpointRoot -Value $token }

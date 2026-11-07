@@ -50,7 +50,7 @@ function Test-GateAdmission {
     if (-not $sentinel.ContainsKey('result') -or $sentinel.result -isnot [string] -or
         -not [string]::Equals($sentinel.result, 'maintenance', [System.StringComparison]::Ordinal) -or
         -not $sentinel.ContainsKey('bypassToken') -or $sentinel.bypassToken -isnot [string] -or
-        $sentinel.bypassToken -cnotmatch '^[0-9a-f]{64}$') {
+        $sentinel.bypassToken -cnotmatch '^[0-9a-f]{64}\z') {
         Stop-MaintenanceEntry
     }
 

@@ -35,7 +35,9 @@ $copStyleMap = [ordered]@{
 
 function ConvertTo-Clock([int] $dayMinutes) { if ($dayMinutes -lt 0 -or $dayMinutes -gt 1439) { Fail 'dayMinutes is outside the clock range' }; '{0:D2}:{1:D2}' -f [int][math]::Floor($dayMinutes / 60), ($dayMinutes % 60) }
 
-function ConvertTo-Title([string] $id) { ($id -replace '^TASK\.', '') -replace '_', ' ' }
+function ConvertTo-Title([string] $id) { ($id -creplace '^TASK\.', '') -replace '_', ' ' }
+function Test-TaskId([string] $id) { $id.StartsWith('TASK.', [StringComparison]::Ordinal) -and $id.Length -gt 'TASK.'.Length }
+function Test-Sha256Hex([string] $value) { $value -cmatch '^[0-9a-f]{64}\z' }
 
 function ConvertTo-CanonicalInt64([string] $Value, [string] $Name, [bool] $Positive) {
     $pattern = if ($Positive) { '^[1-9][0-9]*$' } else { '^(0|-?[1-9][0-9]*)$' }
@@ -45,7 +47,7 @@ function ConvertTo-CanonicalInt64([string] $Value, [string] $Name, [bool] $Posit
     return $parsed
 }
 
-if ($SourceDomainId -notmatch '^[0-9a-f]{64}$' -or $SourceSha256 -notmatch '^[0-9a-f]{64}$') { Fail 'source hash is not lowercase SHA-256 hex' }
+if (-not (Test-Sha256Hex $SourceDomainId) -or -not (Test-Sha256Hex $SourceSha256)) { Fail 'source hash is not lowercase SHA-256 hex' }
 if ([IO.Path]::GetFileName($SourceName) -cne $SourceName -or [string]::IsNullOrEmpty($SourceName)) { Fail 'source name is not a file name' }
 $sourceLengthValue = ConvertTo-CanonicalInt64 $SourceLength 'SourceLength' $true
 $adapterVersionValue = ConvertTo-CanonicalInt64 $AdapterVersion 'AdapterVersion' $false
@@ -78,7 +80,7 @@ function Read-DiscoDumpDocument {
     }
     $source = $root.GetProperty('source')
     $sourceNames = @($source.EnumerateObject() | ForEach-Object Name)
-    if (-not (Test-OrdinalFieldSet $sourceNames @('zipName', 'byteLength', 'contentSha256', 'entries')) -or $source.GetProperty('zipName').ValueKind -ne [Text.Json.JsonValueKind]::String -or $source.GetProperty('contentSha256').ValueKind -ne [Text.Json.JsonValueKind]::String -or $source.GetProperty('contentSha256').GetString() -notmatch '^[0-9a-f]{64}$' -or $source.GetProperty('entries').ValueKind -ne [Text.Json.JsonValueKind]::Array) { Fail 'dump source has an invalid field set' }
+    if (-not (Test-OrdinalFieldSet $sourceNames @('zipName', 'byteLength', 'contentSha256', 'entries')) -or $source.GetProperty('zipName').ValueKind -ne [Text.Json.JsonValueKind]::String -or $source.GetProperty('contentSha256').ValueKind -ne [Text.Json.JsonValueKind]::String -or -not (Test-Sha256Hex $source.GetProperty('contentSha256').GetString()) -or $source.GetProperty('entries').ValueKind -ne [Text.Json.JsonValueKind]::Array) { Fail 'dump source has an invalid field set' }
     $length = 0L
     if ($source.GetProperty('byteLength').ValueKind -ne [Text.Json.JsonValueKind]::Number -or -not $source.GetProperty('byteLength').TryGetInt64([ref] $length) -or $length -le 0) { Fail 'dump source byte length is invalid' }
     $tlv = $root.GetProperty('tlv')
@@ -107,17 +109,17 @@ function Read-DiscoDumpDocument {
     if (-not $journal.TryGetProperty('TaskAquisitions', [ref] $acquisitions) -or -not $journal.TryGetProperty('TaskResolutions', [ref] $resolutions) -or -not $journal.TryGetProperty('SubtaskAquisitions', [ref] $subtasks) -or $acquisitions.ValueKind -ne [Text.Json.JsonValueKind]::Object -or $resolutions.ValueKind -ne [Text.Json.JsonValueKind]::Object -or $subtasks.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail 'dump journal has invalid containers' }
     $acquiredIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($property in $acquisitions.EnumerateObject()) {
-        if ($property.Name -notmatch '^TASK\..+$' -or -not $acquiredIds.Add($property.Name) -or $property.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail 'dump journal acquisitions are invalid' }
+        if (-not (Test-TaskId $property.Name) -or -not $acquiredIds.Add($property.Name) -or $property.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail 'dump journal acquisitions are invalid' }
     }
     $resolvedIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($property in $resolutions.EnumerateObject()) {
-        if ($property.Name -notmatch '^TASK\..+$' -or -not $resolvedIds.Add($property.Name) -or ($property.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object -and $property.Value.ValueKind -ne [Text.Json.JsonValueKind]::Null)) { Fail 'dump journal resolutions are invalid' }
+        if (-not (Test-TaskId $property.Name) -or -not $resolvedIds.Add($property.Name) -or ($property.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object -and $property.Value.ValueKind -ne [Text.Json.JsonValueKind]::Null)) { Fail 'dump journal resolutions are invalid' }
     }
     if (-not $acquiredIds.SetEquals($resolvedIds)) { Fail 'dump journal acquisition and resolution keys differ' }
     foreach ($parent in $subtasks.EnumerateObject()) {
         if (-not $acquiredIds.Contains($parent.Name) -or $parent.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail 'dump journal subtask parent is invalid' }
         foreach ($child in $parent.Value.EnumerateObject()) {
-            if ($child.Name -notmatch '^TASK\..+$' -or $child.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail 'dump journal subtask is invalid' }
+            if (-not (Test-TaskId $child.Name) -or $child.Value.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail 'dump journal subtask is invalid' }
         }
     }
     $sheet = [Text.Json.JsonElement]::new()

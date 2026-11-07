@@ -181,7 +181,10 @@ function Test-AmbientExtraPathsValidation {
             $baseWithSaveDir.Replace('"ambientExtraPaths":[]', '"ambientExtraPaths":["/extra/dayPhase"]'),
             $baseWithSaveDir.Replace('"ambientExtraPaths":[]', '"ambientExtraPaths":["/extra/a~1b"]'),
             $baseWithSaveDir.Replace('"ambientExtraPaths":[]', '"ambientExtraPaths":["/extra/a~0b"]'),
-            $baseWithSaveDir.Replace('"ambientExtraPaths":[]', '"ambientExtraPaths":["/extra/dayPhase/hasSlept"]'))) {
+            $baseWithSaveDir.Replace('"ambientExtraPaths":[]', '"ambientExtraPaths":["/extra/dayPhase/hasSlept"]'),
+            # Only a pure digit token is an array-index shape; a digit token followed by a
+            # line feed (a JSON escape built from its code point) is an ordinary object key.
+            $baseWithSaveDir.Replace('"ambientExtraPaths":[]', '"ambientExtraPaths":["/extra/1' + [char]92 + 'n"]'))) {
         $root = New-ScratchCompanionRoot -Prefix 'ambient-extra-valid-item'
         New-AdapterFixture -Root $root -AdapterJson $valid
         $config = Get-AdapterConfig -CompanionRoot $root -Profile Acquisition

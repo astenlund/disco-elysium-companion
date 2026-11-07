@@ -111,3 +111,41 @@ test('startup core reply worker matches the one-shot validator for consumer, pub
     await fixture.close();
   }
 });
+
+test('startup core reply worker refuses a nonce or request id ending in a line feed', { timeout: 180000 }, async () => {
+  for (const variant of ['nonce', 'id'] as const) {
+    const fixture = await companionFixture('runtime-owned-empty');
+    let backend: Awaited<ReturnType<typeof openBackend>> | null = null;
+    try {
+      await fs.mkdir(path.join(fixture.root, '.tmp'), { recursive: true });
+      backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
+      const nonce = randomBytes(16).toString('hex');
+      const child = backend.supervisor.spawn('startupCoreReply', { command: 'pwsh',
+        args: ['-NoProfile', '-File', workerScript, '-CompanionRoot', fixture.root, '-DataRoot', backend.scope.dataRoot,
+          '-SourceRoot', repository, '-Nonce', variant === 'nonce' ? `${nonce}\n` : nonce], cwd: fixture.root,
+        env: { ...process.env, TEMP: path.join(fixture.root, '.tmp'), TMP: path.join(fixture.root, '.tmp') } });
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+      const replies = new FramedReplies(child);
+      try {
+        if (variant === 'id') {
+          await child.ready;
+          const hello = parseStrictJson(await replies.next(30000));
+          assert.ok(isObject(hello) && hello['nonce'] === nonce);
+          child.stdin.write(encodeStartupWorkerFrame({ version: 1, id: `${randomBytes(16).toString('hex')}\n`, op: 'validateCore', root: fixture.root,
+            remainingMs: 30000, operation: 'Consumer', exitCode: 0, stdout: '', stderr: '' }));
+        }
+        await assert.rejects(replies.next(30000), `A ${variant} ending in a line feed was admitted.`);
+      } finally {
+        replies.close();
+        child.stdin.end();
+        await child.terminated;
+        await backend.supervisor.verifyQuiescent('startupCoreReply');
+      }
+      assert.ok(stderr.includes('startup-core-reply-unavailable'), `The worker did not refuse the ${variant}.`);
+    } finally {
+      if (backend !== null) { await backend.shutdown(true); }
+      await fixture.close();
+    }
+  }
+});

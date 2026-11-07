@@ -92,7 +92,7 @@ function Get-AdapterPointerArray {
         $tokens = ConvertFrom-DiffPointer -Pointer $pointer
         if ($tokens.Count -lt 2 -or -not [string]::Equals($tokens[0], 'extra', [StringComparison]::Ordinal)) { Fail-AdapterConfiguration }
         # Reference tokens are object keys beneath /extra; a pure-array-index shape is not valid title grammar.
-        for ($index = 1; $index -lt $tokens.Count; $index++) { if ($tokens[$index] -match '^[0-9]+$') { Fail-AdapterConfiguration } }
+        for ($index = 1; $index -lt $tokens.Count; $index++) { if ($tokens[$index] -cmatch '^[0-9]+\z') { Fail-AdapterConfiguration } }
         if (-not $seen.Add($pointer)) { Fail-AdapterConfiguration }
         $values.Add($pointer)
     }

@@ -70,7 +70,7 @@ function Get-BundleHash {
 }
 
 try {
-    if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}$') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
+    if (-not $IsWindows -or $Nonce -cnotmatch '^[a-f0-9]{32}\z') { throw [IO.InvalidDataException]::new('Invalid worker startup.') }
     $sourceLocks = [Collections.Generic.List[IO.FileStream]]::new()
     try {
         foreach ($name in $runtimeNames) {
@@ -125,7 +125,7 @@ try {
                 throw [IO.InvalidDataException]::new('Invalid core validation operation.')
             }
             $id = Read-String -Element ($request.GetProperty('id'))
-            if ($id -cnotmatch '^[a-f0-9]{32}$' -or -not $seenIds.Add($id) -or $seenIds.Count -gt 8192) {
+            if ($id -cnotmatch '^[a-f0-9]{32}\z' -or -not $seenIds.Add($id) -or $seenIds.Count -gt 8192) {
                 throw [IO.InvalidDataException]::new('Invalid request identity.')
             }
             $root = Read-String -Element ($request.GetProperty('root'))

@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'MapperSemanticOutput', 'MapperPublication', 'MapperCharacterClosure', 'MapperSkillCompleteness', 'MapperThoughtOrdering', 'MapperOrdinalCaseSensitivity', 'MapperMoneyDecimal', 'MapperReputationSemantics', 'MapperReputationDataSafety')]
+    [ValidateSet('All', 'MapperSemanticOutput', 'MapperPublication', 'MapperExactGrammars', 'MapperCharacterClosure', 'MapperSkillCompleteness', 'MapperThoughtOrdering', 'MapperOrdinalCaseSensitivity', 'MapperMoneyDecimal', 'MapperReputationSemantics', 'MapperReputationDataSafety')]
     [string] $Only = 'All'
 )
 
@@ -54,7 +54,7 @@ function New-ValidDump {
     }
 }
 
-function Invoke-Mapper([hashtable] $Dump) {
+function Invoke-Mapper([hashtable] $Dump, [string] $SourceDomainId = ('a' * 64), [string] $SourceSha256 = ('b' * 64)) {
     $id = [guid]::NewGuid().ToString('N')
     $dumpPath = Join-Path $scratch "$id.dump.json"
     $outPath = Join-Path $scratch "$id.digest.json"
@@ -64,7 +64,7 @@ function Invoke-Mapper([hashtable] $Dump) {
     $psi.UseShellExecute = $false
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardOutput = $true
-    foreach ($argument in @('-NoProfile', '-File', $mapper, '-DumpPath', $dumpPath, '-SourceDomainId', ('a' * 64), '-SourceName', 'fixture.ntwtf.zip', '-SavedAt', '2026-08-10T00:00:00.0000000Z', '-SourceLength', '1', '-SourceSha256', ('b' * 64), '-AdapterVersion', '2', '-OutPath', $outPath)) { $psi.ArgumentList.Add($argument) }
+    foreach ($argument in @('-NoProfile', '-File', $mapper, '-DumpPath', $dumpPath, '-SourceDomainId', $SourceDomainId, '-SourceName', 'fixture.ntwtf.zip', '-SavedAt', '2026-08-10T00:00:00.0000000Z', '-SourceLength', '1', '-SourceSha256', $SourceSha256, '-AdapterVersion', '2', '-OutPath', $outPath)) { $psi.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($psi)
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
@@ -256,6 +256,54 @@ function Test-MapperReputationSemantics {
     Assert-MapperFailedWithoutPublication -Dump $wrongKind -Message 'a string reputation store value is rejected without coercion'
 }
 
+function Assert-MapperRefusal {
+    param(
+        [Parameter(Mandatory)] [hashtable] $Run,
+        [Parameter(Mandatory)] [string] $Reason,
+        [Parameter(Mandatory)] [string] $Message
+    )
+
+    Assert ($Run.ExitCode -eq 1 -and -not [IO.File]::Exists($Run.OutPath) -and $Run.StdErr.Contains("builddigest: $Reason", [StringComparison]::Ordinal)) $Message
+}
+
+function Test-MapperExactGrammars {
+    $sourceHashReason = 'source hash is not lowercase SHA-256 hex'
+    Assert-MapperRefusal -Run (Invoke-Mapper (New-ValidDump) -SourceDomainId ('A' * 64)) -Reason $sourceHashReason -Message 'uppercase source domain id is rejected'
+    Assert-MapperRefusal -Run (Invoke-Mapper (New-ValidDump) -SourceDomainId (('a' * 64) + "`n")) -Reason $sourceHashReason -Message 'source domain id with a trailing line feed is rejected'
+    $uppercaseReceipt = New-ValidDump
+    $uppercaseReceipt.source.contentSha256 = 'B' * 64
+    Assert-MapperRefusal -Run (Invoke-Mapper $uppercaseReceipt -SourceSha256 ('B' * 64)) -Reason $sourceHashReason -Message 'uppercase source content hash is rejected'
+
+    $dumpSourceReason = 'dump source has an invalid field set'
+    $trailingReceipt = New-ValidDump
+    $trailingReceipt.source.contentSha256 = ('b' * 64) + "`n"
+    Assert-MapperRefusal -Run (Invoke-Mapper $trailingReceipt) -Reason $dumpSourceReason -Message 'dump receipt hash with a trailing line feed is rejected'
+    $uppercaseDumpReceipt = New-ValidDump
+    $uppercaseDumpReceipt.source.contentSha256 = 'B' * 64
+    Assert-MapperRefusal -Run (Invoke-Mapper $uppercaseDumpReceipt) -Reason $dumpSourceReason -Message 'uppercase dump receipt hash is rejected'
+
+    $stamp = @{ dayCounter = 1; dayMinutes = 480 }
+    $validJournal = New-ValidDump
+    $validJournal.world.aquiredJournalTasks.TaskAquisitions['TASK.one'] = $stamp
+    $validJournal.world.aquiredJournalTasks.TaskResolutions['TASK.one'] = $null
+    $validJournal.world.aquiredJournalTasks.SubtaskAquisitions['TASK.one'] = @{ 'TASK.child' = $stamp }
+    Assert ((Invoke-Mapper $validJournal).ExitCode -eq 0) 'uppercase journal task and subtask keys are accepted'
+
+    $lowercaseTask = New-ValidDump
+    $lowercaseTask.world.aquiredJournalTasks.TaskAquisitions['task.one'] = $stamp
+    $lowercaseTask.world.aquiredJournalTasks.TaskResolutions['task.one'] = $null
+    Assert-MapperRefusal -Run (Invoke-Mapper $lowercaseTask) -Reason 'dump journal acquisitions are invalid' -Message 'lowercase journal task prefix is rejected'
+    $emptySuffix = New-ValidDump
+    $emptySuffix.world.aquiredJournalTasks.TaskAquisitions['TASK.'] = $stamp
+    $emptySuffix.world.aquiredJournalTasks.TaskResolutions['TASK.'] = $null
+    Assert-MapperRefusal -Run (Invoke-Mapper $emptySuffix) -Reason 'dump journal acquisitions are invalid' -Message 'empty journal task suffix is rejected'
+    $lowercaseSubtask = New-ValidDump
+    $lowercaseSubtask.world.aquiredJournalTasks.TaskAquisitions['TASK.one'] = $stamp
+    $lowercaseSubtask.world.aquiredJournalTasks.TaskResolutions['TASK.one'] = $null
+    $lowercaseSubtask.world.aquiredJournalTasks.SubtaskAquisitions['TASK.one'] = @{ 'task.child' = $stamp }
+    Assert-MapperRefusal -Run (Invoke-Mapper $lowercaseSubtask) -Reason 'dump journal subtask is invalid' -Message 'lowercase journal subtask prefix is rejected'
+}
+
 function Test-MapperPublication {
     $badRoot = New-ValidDump
     $badRoot.extra = @{}
@@ -308,6 +356,7 @@ try {
     $tests = [ordered]@{
         MapperSemanticOutput = ${function:Test-MapperSemanticOutput}
         MapperPublication = ${function:Test-MapperPublication}
+        MapperExactGrammars = ${function:Test-MapperExactGrammars}
         MapperCharacterClosure = ${function:Test-MapperCharacterClosure}
         MapperSkillCompleteness = ${function:Test-MapperSkillCompleteness}
         MapperThoughtOrdering = ${function:Test-MapperThoughtOrdering}

@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DigestAdmission', 'DiffAdmission', 'DocumentEmission', 'SourceIdentity', 'WarningSink', 'NullDetailWarning', 'DuplicateSurfaceMatrix', 'SchemaMirror')]
+    [ValidateSet('All', 'DigestAdmission', 'DiffAdmission', 'ClosedGrammars', 'DocumentEmission', 'SourceIdentity', 'WarningSink', 'NullDetailWarning', 'DuplicateSurfaceMatrix', 'SchemaMirror')]
     [string] $Only = 'All'
 )
 
@@ -44,6 +44,29 @@ function Test-DiffAdmissionIsExact {
             $script:DiffJson.Replace('"extraChanges":[]', '"extraChanges":[{"path":"/extra/x","fromPresent":false,"toPresent":false,"from":null,"to":null}]'),
             $script:DiffJson.Replace('"currentSource":{', '"currentSource":{"unexpected":1,'),
             $script:DiffJson.Replace('"moneyDelta":0', '"moneyDelta":"0"'))) {
+        Assert-ThrowsType -TypeName 'CompanionDocumentValidationException' -Action { Read-DiffDocument -Json $invalid }
+    }
+}
+
+function Test-ClosedGrammarsAreExact {
+    # A JSON line-feed escape built from its code point, so the value reaches the
+    # validator as a decoded trailing line feed.
+    $lineFeed = [string][char]92 + 'n'
+    $domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    $contentSha256 = 'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+    foreach ($invalid in @(
+            $script:DigestJson.Replace($domainId, $domainId.ToUpperInvariant()),
+            $script:DigestJson.Replace($contentSha256, $contentSha256 + $lineFeed),
+            $script:DigestJson.Replace('"time":"08:09","location"', '"time":"08:09' + $lineFeed + '","location"'))) {
+        Assert-ThrowsType -TypeName 'CompanionDocumentValidationException' -Action { Read-DigestDocument -Json $invalid }
+    }
+
+    $changed = $script:DiffJson.Replace('"hasChanges":false', '"hasChanges":true').Replace('"baselineGeneratedAt":null', '"baselineGeneratedAt":"2026-08-10T10:00:00.0000000Z"').Replace('"extraChanges":[]', '"extraChanges":[{"path":"/extra/x","fromPresent":true,"toPresent":true,"from":1,"to":2}]')
+    $document = @(Read-DiffDocument -Json $changed)[-1]
+    Assert-True -Condition ($null -ne $document.RootElement) -Message 'a lowercase /extra pointer is admitted'
+    foreach ($invalid in @(
+            $changed.Replace('"path":"/extra/x"', '"path":"/EXTRA/x"'),
+            $changed.Replace('"path":"/extra/x"', '"path":"/extra' + $lineFeed + '"'))) {
         Assert-ThrowsType -TypeName 'CompanionDocumentValidationException' -Action { Read-DiffDocument -Json $invalid }
     }
 }
@@ -156,6 +179,7 @@ function Test-DuplicatePropertiesFailAtDigestAndDiffSurfaces {
 $tests = [ordered]@{
     DigestAdmission = ${function:Test-DigestAdmissionIsExact}
     DiffAdmission = ${function:Test-DiffAdmissionIsExact}
+    ClosedGrammars = ${function:Test-ClosedGrammarsAreExact}
     DocumentEmission = ${function:Test-SuccessfulAdmissionEmitsOnlyTheDocument}
     SourceIdentity = ${function:Test-SourceIdentityOrdering}
     WarningSink = ${function:Test-WarningSinkIsProfileBoundAndImmutable}

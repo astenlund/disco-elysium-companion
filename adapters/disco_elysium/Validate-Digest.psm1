@@ -5,6 +5,12 @@ function Fail-AdapterDigestValidation {
     throw [AdapterDigestValidationException]::new('Disco Elysium digest semantic validation failed.')
 }
 
+function Test-AdapterTaskId {
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Id)
+
+    return $Id.StartsWith('TASK.', [System.StringComparison]::Ordinal) -and $Id.Length -gt 'TASK.'.Length
+}
+
 function Get-AdapterProperty {
     param([Parameter(Mandatory)] [System.Text.Json.JsonElement] $Element, [Parameter(Mandatory)] [string] $Name)
 
@@ -124,7 +130,7 @@ function Assert-AdapterDigestSemantics {
 
         foreach ($objective in (Get-AdapterProperty $root 'objectives').EnumerateArray()) {
             $id = Get-AdapterString (Get-AdapterProperty $objective 'id')
-            if ($id -notmatch '^TASK\..+$' -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $objective 'title') -AllowEmpty), (($id -replace '^TASK\.', '') -replace '_', ' '), [StringComparison]::Ordinal)) {
+            if (-not (Test-AdapterTaskId $id) -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $objective 'title') -AllowEmpty), (($id -creplace '^TASK\.', '') -replace '_', ' '), [StringComparison]::Ordinal)) {
                 Fail-AdapterDigestValidation
             }
             $status = Get-AdapterString (Get-AdapterProperty $objective 'status')
@@ -134,7 +140,7 @@ function Assert-AdapterDigestSemantics {
             }
             foreach ($subobjective in (Get-AdapterProperty $objective 'subobjectives').EnumerateArray()) {
                 $subId = Get-AdapterString (Get-AdapterProperty $subobjective 'id')
-                if ($subId -notmatch '^TASK\..+$' -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $subobjective 'title') -AllowEmpty), (($subId -replace '^TASK\.', '') -replace '_', ' '), [StringComparison]::Ordinal) -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $subobjective 'status')), $status, [StringComparison]::Ordinal) -or (Get-AdapterProperty $subobjective 'resolved').ValueKind -ne [System.Text.Json.JsonValueKind]::Null) {
+                if (-not (Test-AdapterTaskId $subId) -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $subobjective 'title') -AllowEmpty), (($subId -creplace '^TASK\.', '') -replace '_', ' '), [StringComparison]::Ordinal) -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $subobjective 'status')), $status, [StringComparison]::Ordinal) -or (Get-AdapterProperty $subobjective 'resolved').ValueKind -ne [System.Text.Json.JsonValueKind]::Null) {
                     Fail-AdapterDigestValidation
                 }
             }
