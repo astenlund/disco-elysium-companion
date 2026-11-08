@@ -17,9 +17,9 @@ Packaged checks that still use the earlier case-insensitive or line-feed-toleran
 - Executed by the packaged mapper on values the core supplies: the source hash checks at the top of `Build-Digest.ps1`. The core passes its own lowercase hashes there, so the looser form changes no outcome.
 - Executed by the packaged mapper on its own output: the source hash and time checks of the packaged `DocumentValidation.ps1`, which its `Read-DigestDocument` reaches. The tracked core checks the same digest again with its exact copies.
 - Executed by the packaged validator on every digest: the objective and subobjective `TASK.` id checks in `Validate-Digest.psm1`, with a case-insensitive `-replace` for the title prefix. The tracked core's `Test-Objective` checks ids only as strings, so this is the one place where a `task.` prefix in another case can reach admitted state.
-
-For the `TASK.` checks the difference is case only. The tracked checks (`Test-TaskId` in `Build-Digest.ps1`, `Test-AdapterTaskId` in `Validate-Digest.psm1`) require the ordinal `TASK.` prefix and a non-empty suffix and do not inspect the suffix, so a new release still admits an id ending in a line feed. Line feeds matter only for the hash and time checks.
 - Retained but not executed on the acquisition path: the packaged `Test-Pointer` and its `/extra` equality, reached only through `Read-DiffDocument`, which the mapper does not call (it uses the JSON helpers, `Read-DigestDocument` and `Assert-AdapterDigestSemantics`), and the packaged `AdapterConfig.ps1` array-index token check. The packaged `EntryFence.psm1` is imported by nothing; the tracked entry scripts import their own copy.
+
+For the `TASK.` checks the difference is case only. The tracked checks (`Test-TaskId` in `Build-Digest.ps1`, `Test-AdapterTaskId` in `Validate-Digest.psm1`) require the ordinal `TASK.` prefix and a non-empty suffix and do not inspect the suffix, so a new release still admits an id ending in a line feed. Among the executed checks, line feeds matter only for the hash and time checks.
 
 The core's own post-digest document checks run from the tracked tree and are already exact, so malformed hash and time values the packaged mapper emits are still refused there.
 
