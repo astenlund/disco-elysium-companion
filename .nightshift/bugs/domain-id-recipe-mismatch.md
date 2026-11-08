@@ -10,7 +10,7 @@ Noticed by a skeptic on 2026-10-06 and verified: state extraction (the source.do
 
 ## Proposed follow-up
 
-Track it as a bug: decide which side is authoritative. Aligning the spec to the code is free; aligning the code to the spec costs one disclosed reset per install and should ride a version bump.
+Track it as a bug: decide which side is authoritative. Aligning the spec to the code is free; aligning the code to the spec costs one disclosed reset per install and should ride a version bump. [Installed package keeps loose grammar checks](installed-package-loose-grammars.md) also needs a new `adapterVersion` release and a baseline reset; consider landing the two together so installs see one reset rather than two.
 
 ## Status
 

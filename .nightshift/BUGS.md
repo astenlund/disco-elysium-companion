@@ -131,7 +131,7 @@ These findings concern the installed, immutable adapter releases under `adapters
 
 ### [Installed package keeps loose grammar checks](bugs/installed-package-loose-grammars.md)
 
-The installed adapter release still runs case-insensitive, line-feed-tolerant `TASK.` id checks that the tracked sources no longer have; fix it with a new `adapterVersion` release, which changes the config receipt and costs one baseline reset.
+The installed adapter release still admits a `TASK.` id prefix in any case, which the tracked checks now refuse; fix it with a new `adapterVersion` release, which changes the config receipt and costs one baseline reset.
 
 **Requires:** none.
 
