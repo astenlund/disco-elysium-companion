@@ -64,7 +64,7 @@ function Invoke-Mapper([hashtable] $Dump, [string] $SourceDomainId = ('a' * 64),
     $psi.UseShellExecute = $false
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardOutput = $true
-    foreach ($argument in @('-NoProfile', '-File', $mapper, '-DumpPath', $dumpPath, '-SourceDomainId', $SourceDomainId, '-SourceName', 'fixture.ntwtf.zip', '-SavedAt', '2026-08-10T00:00:00.0000000Z', '-SourceLength', '1', '-SourceSha256', $SourceSha256, '-AdapterVersion', '2', '-OutPath', $outPath)) { $psi.ArgumentList.Add($argument) }
+    foreach ($argument in @('-NoProfile', '-File', $mapper, '-DumpPath', $dumpPath, '-SourceDomainId', $SourceDomainId, '-SourceName', 'fixture.ntwtf.zip', '-SavedAt', '2026-08-10T00:00:00.0000000Z', '-SourceLength', '1', '-SourceSha256', $SourceSha256, '-AdapterVersion', '3', '-OutPath', $outPath)) { $psi.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($psi)
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()

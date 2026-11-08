@@ -51,8 +51,14 @@ function Get-NormalizedPath {
     return [System.IO.Path]::GetFullPath($Path)
 }
 
+function Get-ActiveAdapterVersion {
+    $adapterJson = [System.IO.File]::ReadAllText((Join-Path (Get-AdapterRoot) 'adapter.json'), [System.Text.UTF8Encoding]::new($false, $true))
+
+    return [long] ($adapterJson | ConvertFrom-Json -AsHashtable)['adapterVersion']
+}
+
 function Get-InstalledReleaseRoot {
-    $release = Join-Path (Get-AdapterRoot) 'releases/2/schema-2'
+    $release = Join-Path (Get-AdapterRoot) "releases/$(Get-ActiveAdapterVersion)/schema-2"
     Assert-True -Condition (Test-Path -LiteralPath $release -PathType Container) -Message "Installed release root is absent: $release"
 
     return $release
@@ -279,12 +285,12 @@ function Test-Section11-07 {
         $digestOut = Join-Path $probeRoot 'probe-digest.json'
         $mapper = Join-Path (Get-InstalledReleaseRoot) 'adapters/disco_elysium/Build-Digest.ps1'
         $savedAt = $save.LastWriteTimeUtc.ToString('o')
-        & pwsh -NoProfile -File $mapper -DumpPath $dumpOut -SourceDomainId $domainId -SourceName $save.Name -SavedAt $savedAt -SourceLength $length -SourceSha256 $sha -AdapterVersion 2 -OutPath $digestOut
+        & pwsh -NoProfile -File $mapper -DumpPath $dumpOut -SourceDomainId $domainId -SourceName $save.Name -SavedAt $savedAt -SourceLength $length -SourceSha256 $sha -AdapterVersion (Get-ActiveAdapterVersion) -OutPath $digestOut
         Assert-True -Condition ($LASTEXITCODE -eq 0) -Message 'the release mapper failed on the real-save dump.'
 
         $digest = Read-JsonFile -Path $digestOut
         Assert-True -Condition ([int] $digest['schemaVersion'] -eq 2) -Message 'the digest schemaVersion must be 2.'
-        Assert-True -Condition ([int] $digest['adapterVersion'] -eq 2) -Message 'the digest adapterVersion must be 2.'
+        Assert-True -Condition ([long] $digest['adapterVersion'] -eq (Get-ActiveAdapterVersion)) -Message 'the digest adapterVersion must match adapter.json.'
         Assert-True -Condition (@($digest['character']['skills']).Count -eq 24) -Message 'the digest must carry exactly 24 skills.'
         Assert-True -Condition ([string] $digest['source']['domainId'] -ceq $domainId) -Message 'the digest source domainId must match the probe domain.'
 

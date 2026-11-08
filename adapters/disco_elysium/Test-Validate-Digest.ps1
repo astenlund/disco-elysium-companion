@@ -49,7 +49,7 @@ $skills = foreach ($skill in $skillMap.Materialized.skills) {
 }
 
 $digest = [ordered]@{
-    schemaVersion = 2; adapterVersion = 2; game = 'disco_elysium'; generatedAt = '2026-08-10T00:00:00.0000000Z'
+    schemaVersion = 2; adapterVersion = 3; game = 'disco_elysium'; generatedAt = '2026-08-10T00:00:00.0000000Z'
     source = @{ domainId = ('a' * 64); saveFile = 'fixture.ntwtf.zip'; savedAt = '2026-08-10T00:00:00.0000000Z'; byteLength = 1; contentSha256 = ('b' * 64) }
     session = @{ day = 1; time = '08:00'; location = 'test'; playtimeNote = $null }
     character = @{ level = 0; xp = 0; unspentPoints = 0; money = @{ amount = [decimal]0; minorUnits = 0; minorUnitsPerUnit = 100; currency = 'real' }; vitals = @(@{ name = 'health'; value = 1 }, @{ name = 'morale'; value = 1 }); skills = @($skills) }

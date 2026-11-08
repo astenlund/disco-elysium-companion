@@ -87,7 +87,7 @@ function Assert-AdapterDigestSemantics {
 
     try {
         $root = $Document.RootElement
-        if ((Test-AdapterInteger (Get-AdapterProperty $root 'schemaVersion')) -ne 2 -or (Test-AdapterInteger (Get-AdapterProperty $root 'adapterVersion')) -ne 2 -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $root 'game')), 'disco_elysium', [StringComparison]::Ordinal)) {
+        if ((Test-AdapterInteger (Get-AdapterProperty $root 'schemaVersion')) -ne 2 -or (Test-AdapterInteger (Get-AdapterProperty $root 'adapterVersion')) -ne 3 -or -not [string]::Equals((Get-AdapterString (Get-AdapterProperty $root 'game')), 'disco_elysium', [StringComparison]::Ordinal)) {
             Fail-AdapterDigestValidation
         }
 
