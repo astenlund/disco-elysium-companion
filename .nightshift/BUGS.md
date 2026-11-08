@@ -127,9 +127,11 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 ## Adapter release bugs
 
+These findings concern the installed, immutable adapter releases under `adapters/disco_elysium/releases/`, which acquisition executes in place of the tracked sources. Installed releases never change in place, so a fix ships as a new `adapterVersion` release; tracking does not authorize one.
+
 ### [Installed package keeps loose grammar checks](bugs/installed-package-loose-grammars.md)
 
-The installed adapter package still runs the case-insensitive, line-feed-tolerant grammar checks the tracked sources no longer have; find out what a re-stage invalidates, then re-stage it.
+The installed adapter release still runs case-insensitive, line-feed-tolerant `TASK.` id checks that the tracked sources no longer have; fix it with a new `adapterVersion` release, which changes the config receipt and costs one baseline reset.
 
 **Requires:** none.
 
