@@ -10,8 +10,9 @@ Noticed by a skeptic on 2026-10-06 and verified: state extraction (the source.do
 
 ## Proposed follow-up
 
-Track it as a bug: decide which side is authoritative. Aligning the spec to the code is free; aligning the code to the spec costs one disclosed reset per install and should ride a version bump. [Installed package keeps loose grammar checks](installed-package-loose-grammars.md) also needs a new `adapterVersion` release and a baseline reset; consider landing the two together so installs see one reset rather than two.
-
+Track it as a bug: decide which side is authoritative. Aligning the spec to the code is free; aligning the code to the spec costs one disclosed reset per install and should ride a version bump.
 ## Status
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+
+Fixed on 2026-11-08 as direct work: the user chose to keep the implemented recipe, and state extraction now states it as authoritative and retires the framed recipe, with no code change; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the decision.

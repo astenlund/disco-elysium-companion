@@ -37,12 +37,6 @@ Reconcile the section 7.1 no-overwrite promise with the existing state writer af
 
 **Requires:** none.
 
-### [Source-domain identifier recipe](bugs/domain-id-recipe-mismatch.md)
-
-Settle the spec and code hash recipes before changing identifiers, since a code change would reset existing baselines.
-
-**Requires:** none.
-
 ### [Adapter resolution reasons](bugs/adapter-resolution-reasons.md)
 
 Reconcile adapter package and configuration error reasons across the publisher, bridge, and one-shot commands.
@@ -124,16 +118,6 @@ A correction can leave a status-only snapshot labeled provider ready, or after a
 Text entered while the asynchronous attachment proof is pending can be lost before the readline listener is registered.
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
-
-## Adapter release bugs
-
-These findings concern the installed, immutable adapter releases under `adapters/disco_elysium/releases/`, which acquisition executes in place of the tracked sources. Installed releases never change in place, so a fix ships as a new `adapterVersion` release; tracking does not authorize one.
-
-### [Installed package keeps loose grammar checks](bugs/installed-package-loose-grammars.md)
-
-The installed adapter release still admits a `TASK.` id prefix in any case, which the tracked checks now refuse; fix it with a new `adapterVersion` release, which changes the config receipt and costs one baseline reset.
-
-**Requires:** none.
 
 ## History
 

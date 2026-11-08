@@ -16,4 +16,4 @@ Track it as a bug: make the shared closed-grammar validators exact (case-sensiti
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
 
-Fixed on 2026-11-07 in Nightshift run 508c0e0e-906e-49c1-94e1-f0f3e748c98f; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the delivered behavior. The installed adapter release keeps the earlier checks; replacing it is tracked separately as [Installed package keeps loose grammar checks](installed-package-loose-grammars.md).
+Fixed on 2026-11-07 in Nightshift run 508c0e0e-906e-49c1-94e1-f0f3e748c98f; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the delivered behavior. The installed adapter release kept the earlier checks until adapter release 3 replaced it on 2026-11-08, as recorded under [Installed package keeps loose grammar checks](installed-package-loose-grammars.md).

@@ -27,8 +27,10 @@ On 2026-11-08 the live `state/current.json` and `state/baseline.json` held no ob
 
 ## Proposed follow-up
 
-Ship the fix through a new adapter release, not an in-place change. State extraction section 8 makes installed release directories immutable ("an active release never change in place") and requires a new `adapterVersion` and release for any runnable-artifact change outside a core-schema lockstep upgrade. The new release therefore changes `adapter.json`, and with it the Acquisition-config receipt, which is the SHA-256 of those bytes, and the core then rejects a baseline carrying the old `adapterVersion`, so the cutover costs one deliberate baseline reset. A release built from the current tracked sources also carries tracked changes made after the installed release, not only this fix; for example, the tracked `DocumentValidation.ps1` has the `Test-SourceIdentityGrammar` helper the packaged copy lacks. Consider riding the same version bump as [Source-domain identifier recipe](domain-id-recipe-mismatch.md), whose code alignment also needs one. Still open: the cutover and disclosure steps for the version bump.
+Ship the fix through a new adapter release, not an in-place change. State extraction section 8 makes installed release directories immutable ("an active release never change in place") and requires a new `adapterVersion` and release for any runnable-artifact change outside a core-schema lockstep upgrade. The new release therefore changes `adapter.json`, and with it the Acquisition-config receipt, which is the SHA-256 of those bytes, and the core then rejects a baseline carrying the old `adapterVersion`, so the cutover costs one deliberate baseline reset. A release built from the current tracked sources also carries tracked changes made after the installed release, not only this fix; for example, the tracked `DocumentValidation.ps1` has the `Test-SourceIdentityGrammar` helper the packaged copy lacks. Still open: the cutover and disclosure steps for the version bump.
 
 ## Status
 
 The user chose to track this item on 2026-11-08 in that run's follow-up triage. No new release was authorized by that choice.
+
+Fixed on 2026-11-08 as direct work: adapter release 3 is installed from the tracked sources and active; [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) records the delivered behavior and the cutover.
