@@ -228,7 +228,7 @@ Fields that are legitimately absent early in a playthrough map to their document
 ```jsonc
 {
   "schemaVersion": 2,                            // core schema version
-  "adapterVersion": 2,                            // adapter-owned; bumped when adapter semantics require existing digests to be rebuilt
+  "adapterVersion": 3,                            // adapter-owned; bumped when adapter semantics require existing digests to be rebuilt
   "game": "disco_elysium",
   "generatedAt": "2026-08-07T10:00:00.0000000Z", // digest generation time, UTC 'o' format like every timestamp in this schema
   "source": {
@@ -326,11 +326,11 @@ Schema version 2 adds the acquisition-domain identifier, verified byte receipt, 
 
 Before objective construction, the mapper validates the three journal containers as objects and builds ordinal key sets. Every acquisition key, resolution key, `SubtaskAquisitions` parent key, and nested subobjective key must begin ordinally with literal `TASK.` and contain at least one character after the prefix. `TaskAquisitions` and `TaskResolutions` must have exactly equal keys, including case; every `SubtaskAquisitions` parent key must belong to that acquisition set. Each present resolution value is null or an object; arbitrary other JSON kinds fail. Present null and an object without `dayCounter`, including `{}`, remain the two unresolved shapes. Missing, extra, case-only, invalid-namespace, empty-suffix, or orphan keys fail before digest construction instead of collapsing into active or disappearing.
 
-Statuses `failed` and `locked` are defined by the core schema but not emitted by the DE adapter at `adapterVersion: 2`: the save's journal model does not distinguish failed from done resolutions, and unacquired tasks are deliberately not surfaced (spoiler discipline). Recorded as a known limitation in knowledge.md; revisit only if a reliable failed marker is found in the `TASK.*` variable layer.
+Statuses `failed` and `locked` are defined by the core schema but not emitted by the DE adapter at `adapterVersion: 3`: the save's journal model does not distinguish failed from done resolutions, and unacquired tasks are deliberately not surfaced (spoiler discipline). Recorded as a known limitation in knowledge.md; revisit only if a reliable failed marker is found in the `TASK.*` variable layer.
 
 Spoiler rule for the mapper: it only ever emits ids and humanized titles of tasks the player has ALREADY acquired (they are in the in-game journal), item and thought ids the player possesses or has encountered (filtered through the `characterSheet` owned arrays), and mechanical counters. It never reads the catalog-shaped lists (`itemListState`, `thoughtListState`) except for the ownership-filtered highlights badge, and never emits unacquired task metadata, dialogue text, conversation titles, or `SeenWhiteCheckCache` precondition expressions.
 
-### 6.3 `extra` content (DE `adapterVersion: 2`)
+### 6.3 `extra` content (DE `adapterVersion: 3`)
 
 ```jsonc
 {
@@ -344,7 +344,7 @@ Spoiler rule for the mapper: it only ever emits ids and humanized titles of task
 }
 ```
 
-This is the exact normative DE `extra` schema for adapter version 2. The root contains exactly `party`, `reputation`, `thoughts`, `whiteChecks`, and `dayPhase`; null is illegal throughout. `party` contains exactly Boolean `kimInParty` and `cunoInParty`. `reputation` contains exactly signed Int64 `communist`, `moralist`, `ultraliberal`, `nationalist`, and `kim`, plus object `copStyle`; `copStyle` contains exactly signed Int64 `sorry`, `superstar`, `apocalypse`, `boring`, and `art`. `thoughts` contains exactly arrays `cooking`, `fixed`, `forgotten`, and `known`; every entry is a non-empty string, each array is ordinally unique and sorted ordinally, and the four arrays are pairwise disjoint under ordinal comparison. `whiteChecks` contains exactly nonnegative Int64 `retryable` and `seenOnly`. `dayPhase` contains exactly Boolean `hasSlept` and `canSleep`. The mapper validates this complete object through `RootElement` before writing the digest, and the release's independent `Assert-AdapterDigestSemantics` repeats the same check whenever core admits that digest. The game-neutral 6.1 structural validator still treats `extra` as opaque adapter-owned JSON.
+This is the exact normative DE `extra` schema for adapter version 3. The root contains exactly `party`, `reputation`, `thoughts`, `whiteChecks`, and `dayPhase`; null is illegal throughout. `party` contains exactly Boolean `kimInParty` and `cunoInParty`. `reputation` contains exactly signed Int64 `communist`, `moralist`, `ultraliberal`, `nationalist`, and `kim`, plus object `copStyle`; `copStyle` contains exactly signed Int64 `sorry`, `superstar`, `apocalypse`, `boring`, and `art`. `thoughts` contains exactly arrays `cooking`, `fixed`, `forgotten`, and `known`; every entry is a non-empty string, each array is ordinally unique and sorted ordinally, and the four arrays are pairwise disjoint under ordinal comparison. `whiteChecks` contains exactly nonnegative Int64 `retryable` and `seenOnly`. `dayPhase` contains exactly Boolean `hasSlept` and `canSleep`. The mapper validates this complete object through `RootElement` before writing the digest, and the release's independent `Assert-AdapterDigestSemantics` repeats the same check whenever core admits that digest. The game-neutral 6.1 structural validator still treats `extra` as opaque adapter-owned JSON.
 
 The DE adapter assertion also closes every single-digest invariant from 6.2 that the core schema intentionally leaves game-neutral. Its complete fixed-schema checks are: `session.playtimeNote` is null; money has `minorUnitsPerUnit: 100` and ordinal currency `real`; vitals are exactly `health` then `morale`; skills contain exactly the 24 ordinal names and matching groups in `skill_key_map.json`; every objective and subobjective id has a nonempty `TASK.` suffix and its title is the exact humanization of that id; only `active` and `done` occur; a top-level done objective has a non-null resolution while an active one has null; each subobjective has null resolution and the same status as its parent; and every `extra` invariant in the preceding paragraph holds. Inventory ownership cannot be re-derived from one digest, so its complete single-document invariants remain the core uniqueness and subset rules in 6.1. Provenance equality remains core-owned.
 
@@ -469,7 +469,7 @@ All state-file writes everywhere in the pipeline are write-to-temp-then-replace 
 ```jsonc
 {
   "schemaVersion": 2,
-  "adapterVersion": 2,
+  "adapterVersion": 3,
   "game": "disco_elysium",
   "hasChanges": true,                             // represented gameplay delta exists
   "hasUnrepresentedChanges": false,                // ignored or excluded game-state fields changed
@@ -603,7 +603,7 @@ Contract:
 Output (stdout, exit 0), one JSON object:
 
     {
-      "provenance": { "game": "...", "adapterVersion": 2,
+      "provenance": { "game": "...", "adapterVersion": 3,
                       "sourceDomainId": "<lowercase SHA-256 hex>",
                       "walkPolicyId": "<lowercase SHA-256 hex>" },
       "found": true | false,
@@ -666,7 +666,7 @@ The stdout envelope has exactly these fields:
 ```jsonc
 {
   "turnContextVersion": 2,
-  "adapterVersion": 2,
+  "adapterVersion": 3,
   "game": "disco_elysium",
   "sourceFloor": { "domainId": "...", "saveFile": "...", "savedAt": "..." },
   "refresh": { "attempted": true, "commitObserved": true, "attempts": 1 },
@@ -854,7 +854,7 @@ A record is immutable once committed and has exactly these root fields:
   "createdAt": "...",                 // canonical UTC o
   "principal": "...",                 // caller-supplied opaque token
   "repairOperationId": null,          // opaque token for kind resync, otherwise null
-  "adapterVersion": 2,
+  "adapterVersion": 3,
   "game": "disco_elysium",
   "baseline": { "generatedAt": "...", "source": { /* exact five-field source */ } },  // or null
   "sourceFloor": { "domainId": "...", "saveFile": "...", "savedAt": "..." },
@@ -1055,6 +1055,8 @@ Any command-template, runnable artifact, vendored-data, or adapter-owned depende
 
 `adapterVersion` is an opaque equality token, not an ordered counter. Core never compares versions by magnitude, so the complete signed Int64 domain is accepted. In this document "bump" means changing the token, not necessarily incrementing it.
 
+The current DE release is `adapterVersion` 3, which replaced release 2 on 2026-11-08 to ship the exact closed-grammar checks in the packaged mapper and validator: an ordinal `TASK.` id prefix with a non-empty suffix, a case-sensitive title prefix strip, and lowercase hash checks with true end anchors. For every dump and digest both releases accept, release 3 emits the same documents apart from the `adapterVersion` value itself; the version change costs the one baseline reset that any `adapterVersion` change causes.
+
 Native Int32 conversion for `MaxSaves`, `MaxAgeHours`, and `IntervalSeconds` is intentional: these are transient current-process operator budgets, and neither their original token nor normalized value enters durable identity or provenance. Mapper receipt and version arguments cross a command boundary and are stamped into durable state, so their canonical decimal grammar remains deliberately stricter. `-IntervalSeconds` below 2 is clamped to 2 with a stderr note (the write-stability gate needs 2-second sample spacing). Get-Diff reads `diffExcludePaths`, `adapterVersion`, and `game` plus derived `sourceDomainId` from its held compatibility snapshot and the state files. Get-TurnContext holds a complete acquisition snapshot and invokes commands only when freshness requires a pipeline cycle.
 
 The watcher never passes the accepted interval directly to `Start-Sleep` or one `Task.Delay`. One watcher-owned `Wait-WatcherInterval -IntervalSeconds <Int32> -CancellationToken <token>` helper stores the remaining seconds in Int64 and waits in chunks of at most 86,400 seconds through the cancellation token's wait handle. It never multiplies the complete interval into Int32 milliseconds. Cancellation during any chunk returns the typed graceful-stop signal; otherwise the helper subtracts the completed chunk and continues until the full interval elapses. Every ordinary end-of-poll idle wait uses this helper. The one-day chunk is deliberately below both PowerShell sleep and .NET timer ceilings, preserving the accepted Int32.MaxValue domain without a runtime-specific upper clamp.
@@ -1139,7 +1141,7 @@ The full reaper also deletes orphaned state temps older than one hour. A state t
 ```jsonc
 {
   "game": "disco_elysium",
-  "adapterVersion": 2,
+  "adapterVersion": 3,
   "saveDirectory": "C:\\Users\\asten\\AppData\\LocalLow\\ZAUM Studio\\Disco Elysium\\SaveGames",
   "saveGlob": "*.ntwtf.zip",
   "maxSourceBytes": 1073741824,

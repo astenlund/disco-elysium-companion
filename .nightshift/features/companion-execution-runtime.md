@@ -189,7 +189,7 @@ One journal event is one file with exactly these fields:
   "coreRepairOperationId": null,     // null for ordinary records; exact opaque core token for resync
   "attemptRef": null,                // null or { operationId, attemptOrdinal }; verified runtime association
   "schemaVersion": 2,                // copied from the record's nested documents
-  "adapterVersion": 2,               // copied from the record
+  "adapterVersion": 3,               // copied from the record
   "settlement": "pending",           // pending | accepted | unknown; latest outcome
   "acceptance": null,                // null | { journalId, eventId, generation }; positive exact-byte evidence
   "acknowledgedAt": null,            // set when the event is acknowledged

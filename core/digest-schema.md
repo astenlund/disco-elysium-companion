@@ -7,7 +7,7 @@ Extracted verbatim from .nightshift/features/state-extraction.md sections 6.1 an
 ```jsonc
 {
   "schemaVersion": 2,                            // core schema version
-  "adapterVersion": 2,                            // adapter-owned; bumped when adapter semantics require existing digests to be rebuilt
+  "adapterVersion": 3,                            // adapter-owned; bumped when adapter semantics require existing digests to be rebuilt
   "game": "disco_elysium",
   "generatedAt": "2026-08-07T10:00:00.0000000Z", // digest generation time, UTC 'o' format like every timestamp in this schema
   "source": {
@@ -91,7 +91,7 @@ Schema version 2 adds the acquisition-domain identifier, verified byte receipt, 
 ```jsonc
 {
   "schemaVersion": 2,
-  "adapterVersion": 2,
+  "adapterVersion": 3,
   "game": "disco_elysium",
   "hasChanges": true,                             // represented gameplay delta exists
   "hasUnrepresentedChanges": false,                // ignored or excluded game-state fields changed

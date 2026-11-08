@@ -98,7 +98,7 @@ SaveGames" is unreliable as a save selector; always filter by `*.ntwtf.zip`.
 
 ## Digest semantics and admission
 
-The current DE contract is `adapterVersion: 2`. `session.location` is the engine area id
+The current DE contract is `adapterVersion: 3`. `session.location` is the engine area id
 from `header.areaId`. The core schema admits the game-neutral shape, then the immutable
 release's `Assert-AdapterDigestSemantics` independently enforces the DE contract before a
 digest can become current or baseline state, enter a comparison, suppress a watcher
