@@ -14,4 +14,4 @@ Track a narrow contract clarification and focused boundary fixture: retain the m
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. On 2026-11-09 tests pinned the proposed contract with no production change, and the [runtime design](../features/companion-execution-runtime.md) states it. Resolved and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09.

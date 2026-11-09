@@ -1021,6 +1021,44 @@ test('the close for a binding failure never reaches the session that replaced th
   await host.shutdown();
 });
 
+test('a refusal at candidate selection never raises the sent mark', async () => {
+  const { host, backend, provider, events } = await fixture();
+  backend.disclosureOnly = true;
+  provider.current.action = async () => ({ kind: 'failed', code: 'contextExhausted', retryable: true });
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const marksBeforeRefusal = backend.events.filter(event => event === 'markSent').length;
+  assert.equal(marksBeforeRefusal, 1);
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const last = events.filter(event => event.type === 'turn.failed').at(-1);
+  assert.deepEqual([last?.code, last?.retryable], ['contextExhausted', false]);
+  assert.equal(backend.events.filter(event => event === 'markSent').length, marksBeforeRefusal);
+  assert.equal(provider.current.requests.length, 1);
+  assert.equal(backend.ackCount, 0);
+  await host.shutdown();
+});
+
+test('a refusal inside the send gate keeps the raised mark and only a later actual send reports redelivery', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const first = provider.current;
+  returnRefusalsAsOutcomes(first);
+  const copy = backend.copyForSend.bind(backend);
+  backend.copyForSend = async (handle, binding, identity) => ({ ...await copy(handle, binding, identity), redelivery: true });
+  compactDuringSendTimeCopy(host, backend, first);
+  const redelivered = (): number => events.filter(event => event.type === 'notice' && event.code === 'stateRedelivered').length;
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(backend.events.filter(event => event === 'markSent').length, 1);
+  assert.equal(redelivered(), 0);
+  assert.equal(backend.ackCount, 0);
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(redelivered(), 1);
+  assert.equal(backend.ackCount, 1);
+  await host.shutdown();
+});
+
 test('a turn interrupted before enqueue is a classified unsent refusal', async () => {
   const { host, provider } = await fixture();
   const capture = captureSendFailure(provider.current);

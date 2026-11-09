@@ -67,12 +67,6 @@ Define the missing content baseline after a failed first disclosure while preser
 
 **Requires:** none.
 
-### [Sent mark after unsent refusal](bugs/runtime-unsent-window-sent-mark.md)
-
-Assert sent-mark and later redelivery-notice behavior when a window refusal occurs before or after marking.
-
-**Requires:** none.
-
 ### [Deep helper working directories](bugs/runtime-helper-cwd-length.md)
 
 Investigate measured Windows helper launch failures in deep private working directories without weakening containment or quiescence.

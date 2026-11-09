@@ -422,8 +422,54 @@ async function preparedModel() {
   cache.preparer.discard = async () => {};
   const preview = await coordinator.preview(snapshot, binding, null);
   const handle = await coordinator.prepare(snapshot, preview, candidate);
-  return { ...value, coordinator, handle, redeliveryText, provider: { providerId: binding.providerId, providerSessionId: binding.providerSessionId, isCurrent: () => true } };
+  return { ...value, coordinator, handle, redeliveryText, cache, candidate, provider: { providerId: binding.providerId, providerSessionId: binding.providerSessionId, isCurrent: () => true } };
 }
+
+describe('sent mark across an unsent refusal', () => {
+  /** A later interaction through the real acquisition path, with only the capacity reservation, core publication and settlement drain stubbed. */
+  async function laterSend(value: Awaited<ReturnType<typeof preparedModel>>): Promise<{ readonly redelivery: boolean; readonly events: readonly { readonly redelivery: boolean }[] }> {
+    value.resources.reserve = async () => {};
+    const settled = await value.kernel.journal.read();
+    const publish = async (_required: boolean, _snapshot: null, _deadline: unknown, _lease: undefined, afterChild: (result: unknown, terminatedAt: number) => unknown) => {
+      const receipt = { success: true, value: { outcome: 'changed', game: 'stubgame', targetIdentitySha256: '1'.repeat(64) } };
+      afterChild(receipt, performance.now());
+      return receipt;
+    };
+    Object.assign(value.kernel, { publish, drain: async () => settled });
+    Object.defineProperty(value.kernel.operational, 'current', { value: { state: 'current', warnings: [] } });
+    const snapshot = await value.coordinator.acquire({ interactionId: 'later', requestReceivedAt: at });
+    assert.equal(snapshot.disclosureOnly, false, JSON.stringify(snapshot.freshness));
+    let events: readonly { readonly redelivery: boolean }[] = [];
+    const preview = value.cache.preparer.preview.bind(value.cache.preparer);
+    value.cache.preparer.preview = async request => { events = (request as unknown as { events: readonly { readonly redelivery: boolean }[] }).events; return preview(request); };
+    const later = await value.coordinator.preview(snapshot, binding, null);
+    const handle = await value.coordinator.prepare(snapshot, later, value.candidate);
+    await value.coordinator.markSent(handle);
+    return { redelivery: (await value.coordinator.copyForSend(handle, binding, value.provider)).redelivery, events };
+  }
+
+  it('labels events as redeliveries on a later send after a refusal that followed the mark', async () => {
+    const value = await preparedModel();
+    value.kernel.journal.markSent = async () => {};
+    assert.equal(await value.coordinator.markSent(value.handle), true);
+    assert.equal(value.kernel.sentMark, 1);
+    await value.coordinator.discard(value.handle);
+    assert.equal(value.kernel.sentMark, 1);
+    const sent = await laterSend(value);
+    assert.equal(sent.redelivery, true);
+    assert.deepEqual(sent.events.map(event => event.redelivery), [true]);
+  });
+
+  it('labels events as first deliveries when the refused turn never raised the mark', async () => {
+    const value = await preparedModel();
+    value.kernel.journal.markSent = async () => {};
+    await value.coordinator.discard(value.handle);
+    assert.equal(value.kernel.sentMark, 0);
+    const sent = await laterSend(value);
+    assert.equal(sent.redelivery, false);
+    assert.deepEqual(sent.events.map(event => event.redelivery), [false]);
+  });
+});
 
 describe('optional sent-mark and mandatory send boundaries', () => {
   for (const state of ['unavailable', 'exhausted'] as const) {
