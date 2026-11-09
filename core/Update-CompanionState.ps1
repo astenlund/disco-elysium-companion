@@ -84,7 +84,7 @@ catch {
         Write-OneShotFailure -Class 'source' -Reason "source-$($_.Exception.SourceDisposition)"
     }
     if ($_.Exception.GetType().Name -ceq 'AdapterConfigurationException') {
-        Write-OneShotFailure -Class 'config' -Reason 'adapter-config-invalid'
+        Write-OneShotFailure -Class 'config' -Reason (Get-AdapterResolutionReason -Exception $_.Exception)
     }
     Write-OneShotFailure -Class 'source' -Reason 'save-enumeration-failed'
 }

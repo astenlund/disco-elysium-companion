@@ -1,5 +1,5 @@
 $script:TurnContextReasons = @{
-    config = @('adapter-resolution-failed', 'adapter-config-invalid', 'adapter-release-corrupt', 'adapter-config-confirmation-failed', 'adapter-config-changed', 'companion-root-invalid', 'consumer-not-owner', 'consumer-owner-invalid', 'consumer-owner-unreadable', 'consumer-outbox-pending')
+    config = @('adapter-resolution-failed', 'adapter-config-invalid', 'adapter-release-corrupt', 'adapter-config-changed', 'companion-root-invalid', 'consumer-not-owner', 'consumer-owner-invalid', 'consumer-owner-unreadable', 'consumer-outbox-pending')
     busy = @('lock-timeout')
     lock = @('lock-open-failed')
     'stale-target' = @('target-precedes-baseline')

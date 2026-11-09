@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'SaveCandidates', 'FileWriteStable', 'FileWriteStableUnstable', 'FileWriteStableCancellation', 'FileWriteStableClassification', 'MissingSource','CopyFidelityReasons', 'CopyFidelitySizeLimit', 'AdapterFailureReason', 'OutcomeClosure', 'OutcomeFreeze', 'StagedOneShot', 'ScratchDefault', 'CopyFailure', 'AdapterFailures', 'CurrentReadFailure', 'CurrentWriteFailure', 'CacheWriteFailure', 'BookkeepingFailure', 'GuardDiscard', 'BaselineFallback', 'Cancellation', 'CheckpointCancellation', 'CurrentWriteCancellation', 'CheckpointPropagation', 'SaveCandidatesEnumerationFailure', 'PackageMemberRemediation', 'CacheClassification', 'DigestInfrastructure')]
+    [ValidateSet('All', 'ResolutionReasons', 'SaveCandidates', 'FileWriteStable', 'FileWriteStableUnstable', 'FileWriteStableCancellation', 'FileWriteStableClassification', 'MissingSource','CopyFidelityReasons', 'CopyFidelitySizeLimit', 'AdapterFailureReason', 'OutcomeClosure', 'OutcomeFreeze', 'StagedOneShot', 'ScratchDefault', 'CopyFailure', 'AdapterFailures', 'CurrentReadFailure', 'CurrentWriteFailure', 'CacheWriteFailure', 'BookkeepingFailure', 'GuardDiscard', 'BaselineFallback', 'Cancellation', 'CheckpointCancellation', 'CurrentWriteCancellation', 'CheckpointPropagation', 'SaveCandidatesEnumerationFailure', 'PackageMemberRemediation', 'CacheClassification', 'DigestInfrastructure')]
     [string] $Only = 'All'
 )
 
@@ -734,7 +734,7 @@ function Get-ReleaseConfigReason {
     }
     catch {
         if ([string]::Equals($_.Exception.GetType().Name, 'AdapterConfigurationException', [StringComparison]::Ordinal)) {
-            return $_.Exception.Message
+            return Get-AdapterResolutionReason -Exception $_.Exception
         }
 
         throw
@@ -746,11 +746,6 @@ function Test-PackageMemberRemediation {
         param($Message)
         Assert-OrdinalEqual -Actual $Message -Expected 'adapter-release-corrupt' -Message 'the release validator is classified by the typed corrupt-release reason before save enumeration'
     }
-    $assertNotCorrupt = {
-        param($Message)
-        Assert-True -Condition ($null -ne $Message -and $Message -ne 'adapter-release-corrupt') -Message 'the missing declared member stays the ordinary config class, never release corruption'
-    }
-
     # A healthy release resolves its exact single-export validator set.
     $healthy = New-ScratchCompanionRoot -Prefix 'release-corrupt'
     New-AdapterFixture -Root $healthy
@@ -787,24 +782,71 @@ function Test-PackageMemberRemediation {
     New-AdapterFixture -Root $second -Name 'xeno' -ValidatorModule 'function Assert-AdapterDigestSemantics { ' -SaveDirectory $secondSaves
     & $assertCorrupt (Get-ReleaseConfigReason -Root $second -Profile Acquisition)
 
-    # Removing the release validator module itself is the ordinary config class.
+    # Removing the release validator module is a damaged release, not an ordinary config error.
     $removed = New-ScratchCompanionRoot -Prefix 'release-corrupt-removed'
     New-AdapterFixture -Root $removed
     [IO.File]::Delete((Join-Path $removed 'adapters/example/releases/-9223372036854775808/schema-2/adapters/example/Validate-Digest.psm1'))
-    & $assertNotCorrupt (Get-ReleaseConfigReason -Root $removed)
+    & $assertCorrupt (Get-ReleaseConfigReason -Root $removed)
 
-    # An artifact-root member named by dumpCommand that is absent is rejected at the
-    # config surface before spawn and is not misclassified as release corruption.
+    # An artifact-root member named by dumpCommand that is absent is a damaged release, reported
+    # at the config surface before spawn.
     $saveDirRoot = New-ScratchCompanionRoot -Prefix 'release-corrupt-save'
     $saveDir = Join-Path $saveDirRoot 'saves'
     [void] [IO.Directory]::CreateDirectory($saveDir)
     $absent = New-ScratchCompanionRoot -Prefix 'release-corrupt-absent'
     New-AdapterFixture -Root $absent -OmitDumpTool -SaveDirectory $saveDir
-    & $assertNotCorrupt (Get-ReleaseConfigReason -Root $absent -Profile Acquisition)
+    & $assertCorrupt (Get-ReleaseConfigReason -Root $absent -Profile Acquisition)
+
+    # Invalid adapter.json content stays the ordinary config class.
+    $invalid = New-ScratchCompanionRoot -Prefix 'release-corrupt-invalid'
+    New-AdapterFixture -Root $invalid
+    [IO.File]::WriteAllText((Join-Path $invalid 'adapters/example/adapter.json'), '{}', [Text.UTF8Encoding]::new($false))
+    Assert-OrdinalEqual -Actual (Get-ReleaseConfigReason -Root $invalid) -Expected 'adapter-config-invalid' -Message 'invalid adapter.json content is the ordinary config reason'
+
+    # An adapter.json that cannot be read was never validated, so it is a location failure.
+    $locked = New-ScratchCompanionRoot -Prefix 'release-corrupt-locked'
+    New-AdapterFixture -Root $locked
+    $stream = [IO.File]::Open((Join-Path $locked 'adapters/example/adapter.json'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        Assert-OrdinalEqual -Actual (Get-ReleaseConfigReason -Root $locked) -Expected 'adapter-resolution-failed' -Message 'an I/O failure before adapter.json is read reports a location failure'
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Test-ResolutionReasonsAcrossEntryPoints {
+    # Arrange: one staged root holds a damaged release, invalid content and no adapter named 'absent'.
+    $root = New-ScratchCompanionRoot -Prefix 'resolution-reasons'
+    Copy-CompanionCoreTree -Destination (Join-Path $root 'core') -EntryScripts @('Update-CompanionState.ps1', 'Get-TurnContext.ps1')
+    New-AdapterFixture -Root $root
+    [IO.File]::Delete((Join-Path $root 'adapters/example/releases/-9223372036854775808/schema-2/adapters/example/Validate-Digest.psm1'))
+    $invalidDirectory = Join-Path $root 'adapters/bad'
+    [void] [IO.Directory]::CreateDirectory($invalidDirectory)
+    [IO.File]::WriteAllText((Join-Path $invalidDirectory 'adapter.json'), '{}', [Text.UTF8Encoding]::new($false))
+    $missingFileDirectory = Join-Path $root 'adapters/nofile'
+    [void] [IO.Directory]::CreateDirectory($missingFileDirectory)
+
+    foreach ($case in @(
+            @{ Adapter = 'example'; Reason = 'adapter-release-corrupt' },
+            @{ Adapter = 'bad'; Reason = 'adapter-config-invalid' },
+            @{ Adapter = 'absent'; Reason = 'adapter-resolution-failed' },
+            @{ Adapter = 'nofile'; Reason = 'adapter-resolution-failed' })) {
+        # Act
+        $oneShot = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $root 'core/Update-CompanionState.ps1'), '-Adapter', $case.Adapter) -WorkingDirectory $root
+        $bridge = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $root 'core/Get-TurnContext.ps1'), '-Adapter', $case.Adapter) -WorkingDirectory $root
+
+        # Assert
+        Assert-Equal -Actual $oneShot.ExitCode -Expected 1 -Message "the one-shot fails closed for adapter $($case.Adapter)"
+        Assert-OrdinalEqual -Actual $oneShot.StdErr.Trim() -Expected "[config] $($case.Reason)" -Message "the one-shot reports $($case.Reason) for adapter $($case.Adapter)"
+        Assert-Equal -Actual $bridge.ExitCode -Expected 1 -Message "the bridge fails closed for adapter $($case.Adapter)"
+        Assert-True -Condition $bridge.StdErr.StartsWith('[turn-context:config] ', [StringComparison]::Ordinal) -Message "the bridge reports the config class for adapter $($case.Adapter)"
+        Assert-True -Condition $bridge.StdErr.Contains("`"detail`":`"$($case.Reason)`"", [StringComparison]::Ordinal) -Message "the bridge reports $($case.Reason) for adapter $($case.Adapter)"
+    }
 }
 
 $tests = [ordered]@{
-    SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; FileWriteStableClassification = ${function:Test-FileWriteStableClassifiesSamplingFailures}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}; CacheClassification = ${function:Test-CycleClassifiesCachePhaseFailures}; DigestInfrastructure = ${function:Test-SaveDigestClassifiesValidatorInfrastructure}
+    ResolutionReasons = ${function:Test-ResolutionReasonsAcrossEntryPoints}; SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; FileWriteStableClassification = ${function:Test-FileWriteStableClassifiesSamplingFailures}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}; CacheClassification = ${function:Test-CycleClassifiesCachePhaseFailures}; DigestInfrastructure = ${function:Test-SaveDigestClassifiesValidatorInfrastructure}
 }
 
 if ($Only -eq 'All') {

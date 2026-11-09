@@ -37,12 +37,6 @@ Reconcile the section 7.1 no-overwrite promise with the existing state writer af
 
 **Requires:** none.
 
-### [Adapter resolution reasons](bugs/adapter-resolution-reasons.md)
-
-Reconcile adapter package and configuration error reasons across the publisher, bridge, and one-shot commands.
-
-**Requires:** none.
-
 ### [Concurrent scratch cleanup](bugs/parallel-scratch-cleanup.md)
 
 Reproduce the intermittent concurrent test scratch removal failure before changing shared cleanup logic.

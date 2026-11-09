@@ -14,4 +14,4 @@ Track it as a bug: decide the resolution-reason contract (the spec's split, or t
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. The evidence above describes the code before the fix. `Get-AdapterConfig` now raises the location and release reasons by name, the turn-context wrapper, one-shot and publisher share `Get-AdapterResolutionReason`, and [state extraction](../features/state-extraction.md) section 7.5 states the split. Fixed and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09.

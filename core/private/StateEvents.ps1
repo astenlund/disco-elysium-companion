@@ -233,17 +233,6 @@ function Test-StateEventLogicalOutboxIdText {
     return Test-StateEventSequenceValue -Value $sequence
 }
 
-# The 7.5 configuration reason for a failed adapter resolution: a corrupt validator package,
-# which Get-AdapterConfig raises with the reason token as its message, keeps
-# adapter-release-corrupt; every other failure is adapter-resolution-failed.
-function Get-StateEventAdapterResolutionReason {
-    param([Parameter(Mandatory)] [Exception] $Exception)
-
-    if ($Exception -is [AdapterConfigurationException] -and [string]::Equals($Exception.Message, 'adapter-release-corrupt', [StringComparison]::Ordinal)) { return 'adapter-release-corrupt' }
-
-    return 'adapter-resolution-failed'
-}
-
 function Test-StateEventSha256Text {
     param([AllowNull()] [object] $Value)
 

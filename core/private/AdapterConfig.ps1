@@ -6,6 +6,23 @@ $script:AdapterPlaceholders = [Collections.Generic.HashSet[string]]::new([String
 foreach ($name in 'artifactRoot', 'save', 'dump', 'digest', 'adapterVersion', 'sourceDomainId', 'saveName', 'savedAt', 'sourceLength', 'sourceSha256') { [void] $script:AdapterPlaceholders.Add($name) }
 
 function Fail-AdapterConfiguration { throw [AdapterConfigurationException]::new('Adapter configuration is invalid.') }
+function Fail-AdapterResolution { throw [AdapterConfigurationException]::new('adapter-resolution-failed') }
+function Fail-AdapterRelease { throw [AdapterConfigurationException]::new('adapter-release-corrupt') }
+
+# The 7.5 configuration reason for a failed adapter resolution. Get-AdapterConfig raises the
+# release and location reasons with the reason token as the message, and any other configuration
+# failure means adapter.json was read and is invalid. A failure outside Get-AdapterConfig never
+# reached the adapter, so it is a location failure.
+function Get-AdapterResolutionReason {
+    param([Parameter(Mandatory)] [Exception] $Exception)
+
+    if ($Exception -isnot [AdapterConfigurationException]) { return 'adapter-resolution-failed' }
+    foreach ($reason in 'adapter-release-corrupt', 'adapter-resolution-failed') {
+        if ([string]::Equals($Exception.Message, $reason, [StringComparison]::Ordinal)) { return $reason }
+    }
+
+    return 'adapter-config-invalid'
+}
 function Get-AdapterSha256 {
     param([Parameter(Mandatory)] [byte[]] $Bytes)
 
@@ -139,7 +156,8 @@ function Test-AdapterEntrypoint {
     if ($entry.IndexOf('{artifactRoot}', [StringComparison]::Ordinal) -lt 0) { Fail-AdapterConfiguration }
     $expanded = $entry.Replace('{artifactRoot}', $ArtifactRoot)
     $fullEntry = [IO.Path]::GetFullPath($expanded)
-    if (-not (Test-AdapterPathDescendant -Path $fullEntry -Root $ArtifactRoot) -or -not (Test-Path -LiteralPath $fullEntry -PathType Leaf)) { Fail-AdapterConfiguration }
+    if (-not (Test-AdapterPathDescendant -Path $fullEntry -Root $ArtifactRoot)) { Fail-AdapterConfiguration }
+    if (-not (Test-Path -LiteralPath $fullEntry -PathType Leaf)) { Fail-AdapterRelease }
     if ($Index -eq 3 -and -not $fullEntry.EndsWith('.ps1', [StringComparison]::Ordinal)) { Fail-AdapterConfiguration }
 }
 function Invoke-AdapterValidatorTeardown {
@@ -205,24 +223,27 @@ function Get-AdapterConfig {
         [Parameter(Mandatory)] [ValidateSet('StateCompatibility', 'Acquisition')] [string] $Profile
     )
 
+    $adapterJsonRead = $false
     try {
-        if (-not [IO.Path]::IsPathFullyQualified($CompanionRoot)) { Fail-AdapterConfiguration }
+        if (-not [IO.Path]::IsPathFullyQualified($CompanionRoot)) { Fail-AdapterResolution }
         $root = [IO.Path]::GetFullPath($CompanionRoot)
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) { Fail-AdapterConfiguration }
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { Fail-AdapterResolution }
         $adaptersRoot = Join-Path $root 'adapters'
-        if (-not (Test-Path -LiteralPath $adaptersRoot -PathType Container)) { Fail-AdapterConfiguration }
+        if (-not (Test-Path -LiteralPath $adaptersRoot -PathType Container)) { Fail-AdapterResolution }
         $directories = @([IO.Directory]::EnumerateDirectories($adaptersRoot))
-        if ([string]::IsNullOrEmpty($Adapter)) { if ($directories.Count -ne 1) { Fail-AdapterConfiguration }; $adapterDirectory = $directories[0] }
+        if ([string]::IsNullOrEmpty($Adapter)) { if ($directories.Count -ne 1) { Fail-AdapterResolution }; $adapterDirectory = $directories[0] }
         else {
-            if ($Adapter -eq '.' -or $Adapter -eq '..' -or $Adapter.IndexOfAny([char[]]'\\/') -ge 0 -or [IO.Path]::IsPathFullyQualified($Adapter)) { Fail-AdapterConfiguration }
+            if ($Adapter -eq '.' -or $Adapter -eq '..' -or $Adapter.IndexOfAny([char[]]'\\/') -ge 0 -or [IO.Path]::IsPathFullyQualified($Adapter)) { Fail-AdapterResolution }
             $matches = @($directories | Where-Object { [string]::Equals([IO.Path]::GetFileName($_), $Adapter, [StringComparison]::OrdinalIgnoreCase) })
-            if ($matches.Count -ne 1) { Fail-AdapterConfiguration }
+            if ($matches.Count -ne 1) { Fail-AdapterResolution }
             $adapterDirectory = $matches[0]
         }
         $adapterDirectory = [IO.Path]::GetFullPath($adapterDirectory)
-        if (-not [string]::Equals([IO.Directory]::GetParent($adapterDirectory).FullName, [IO.Path]::GetFullPath($adaptersRoot), [StringComparison]::OrdinalIgnoreCase)) { Fail-AdapterConfiguration }
+        if (-not [string]::Equals([IO.Directory]::GetParent($adapterDirectory).FullName, [IO.Path]::GetFullPath($adaptersRoot), [StringComparison]::OrdinalIgnoreCase)) { Fail-AdapterResolution }
         $jsonPath = Join-Path $adapterDirectory 'adapter.json'
+        if (-not (Test-Path -LiteralPath $jsonPath -PathType Leaf)) { Fail-AdapterResolution }
         $bytes = [IO.File]::ReadAllBytes($jsonPath)
+        $adapterJsonRead = $true
         $document = Read-CompanionJson -Json ($script:CompanionJsonUtf8.GetString($bytes)) -Budget config
         $json = $document.RootElement
         if ($json.ValueKind -ne [Text.Json.JsonValueKind]::Object) { Fail-AdapterConfiguration }
@@ -237,7 +258,7 @@ function Get-AdapterConfig {
         $artifactRoot = [IO.Path]::GetFullPath($artifactRoot)
         $adapterName = [IO.Path]::GetFileName($adapterDirectory)
         $validatorPath = Join-Path $artifactRoot "adapters/$adapterName/Validate-Digest.psm1"
-        if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) { Fail-AdapterConfiguration }
+        if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) { Fail-AdapterRelease }
         $config = if ($Profile -eq 'Acquisition') { [AdapterConfig]::new() } else { [AdapterCompatibilityConfig]::new() }
         $config.AdapterName = $adapterName; $config.AdapterDirectory = $adapterDirectory; $config.Game = $game; $config.AdapterVersion = $version; $config.SaveDirectory = [IO.Path]::GetFullPath($saveDirectory); $config.SaveGlob = $saveGlob; $config.DiffExcludePaths = $exclusions
         $config.SourceDomainId = Get-AdapterSha256 -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($config.SaveDirectory + [char]0 + $saveGlob))
@@ -267,7 +288,10 @@ function Get-AdapterConfig {
         catch { $lease.Dispose(); throw }
     }
     catch [AdapterConfigurationException] { throw }
-    catch { throw [AdapterConfigurationException]::new('Adapter configuration is invalid.', $_.Exception) }
+    catch {
+        if (-not $adapterJsonRead) { throw [AdapterConfigurationException]::new('adapter-resolution-failed', $_.Exception) }
+        throw [AdapterConfigurationException]::new('Adapter configuration is invalid.', $_.Exception)
+    }
 }
 function Assert-AdapterDigestDocument {
     param([Parameter(Mandatory)] [CompanionJsonValue] $Document, [Parameter(Mandatory)] [AdapterCompatibilityConfig] $AdapterConfig)

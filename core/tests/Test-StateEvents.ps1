@@ -320,8 +320,8 @@ if (Test-Selected 'Arguments') {
     }
 
     # A corrupt validator package keeps its 7.5 configuration reason through the publisher, and
-    # the refusal comes before any consumed state changes; other resolution failures stay
-    # adapter-resolution-failed.
+    # the refusal comes before any consumed state changes; the other resolution failures keep
+    # their own 7.5 reasons.
     $releaseFixture = New-RuntimeFixture -Prefix 'state-event-release-corrupt'
     $validatorPath = Join-Path $releaseFixture.Adapter 'releases/2/schema-2/adapters/stub/Validate-Digest.psm1'
     foreach ($case in @(
@@ -333,8 +333,12 @@ if (Test-Selected 'Arguments') {
         Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-release-corrupt -Message "Publish with $($case.Name)"
         Assert-OrdinalEqual -Actual (Get-ConsumedStateFingerprint -Fixture $releaseFixture) -Expected $before -Message "A publish refused for $($case.Name) mutates nothing."
     }
+    [IO.File]::Delete($validatorPath)
+    Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-release-corrupt -Message 'Publish with a missing validator'
     [IO.File]::WriteAllText((Join-Path $releaseFixture.Adapter 'adapter.json'), '{', $script:Utf8)
-    Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-resolution-failed -Message 'Publish with an unparseable adapter.json'
+    Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-config-invalid -Message 'Publish with an unparseable adapter.json'
+    [IO.File]::Delete((Join-Path $releaseFixture.Adapter 'adapter.json'))
+    Assert-Terminal -Result (Invoke-Publish -Fixture $releaseFixture) -Script Publish -Class config -Detail adapter-resolution-failed -Message 'Publish with no adapter.json to locate'
 }
 
 # ---------------------------------------------------------------------------------

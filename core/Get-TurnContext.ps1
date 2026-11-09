@@ -34,8 +34,9 @@ try {
     $config = Get-AdapterConfig -CompanionRoot ([IO.Path]::GetFullPath($CompanionRoot)) -Adapter $Adapter -Profile Acquisition
 }
 catch {
+    $reason = Get-AdapterResolutionReason -Exception $_.Exception
     $sink = New-CompanionWarningSink -Profile TurnOperational
-    Write-TurnContextTerminal (New-TurnContextDiagnosticObject -Class 'config' -ConsumptionState 'none' -Detail (New-TurnContextDetail -Class config -Reason adapter-resolution-failed) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $sink)
+    Write-TurnContextTerminal (New-TurnContextDiagnosticObject -Class 'config' -ConsumptionState 'none' -Detail (New-TurnContextDetail -Class config -Reason $reason) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $sink)
 }
 
 try {
