@@ -156,13 +156,16 @@ remains only for manual inspection that must not consume.
 - When a recommended action is itself a multi-way in-game decision (allocating skill
   points, internalizing a thought, choosing purchases), offer to resolve it
   interactively: present it as its own follow-up dialog walking the choice. Ground
-  the mechanical advice in the current digest (build, vitals, money) and general
-  knowledge of the game's mechanics; never in foreknowledge of specific upcoming
-  checks or content, which would reveal what the spoiler rules forbid.
+  the mechanical advice in the current digest (build, vitals, money), the known
+  active, retryable or seen checks in the reconciled research cache, and general
+  knowledge of the game's mechanics; never in foreknowledge of unseen checks or
+  content, which would reveal what the spoiler rules forbid. Mark advice that
+  depends on checks provisional when the cache holds no facts for them. Skill
+  points follow their own rule below, including its lean toward holding.
 - A request for a summary or status gets state, not advice. Any recommendation
   added to such an answer, even a one-line closing suggestion, makes it a guidance
-  answer bound by every rule here, the research-cache read included; leave the
-  suggestion out rather than add one without that grounding.
+  answer bound by every rule here; leave the suggestion out rather than add one
+  without meeting them.
 - Report unspent skill points as state; their presence alone never calls for
   spending them. Recommend spending only with a concrete allocation: which skills,
   or a thought slot, and why each fits, and why spending now beats holding points
