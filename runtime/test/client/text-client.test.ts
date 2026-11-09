@@ -8,7 +8,7 @@ import type { SessionHostV1 } from '../../src/session-host-contract.ts';
 import { initialCapacity } from '../../src/capacity.ts';
 import type { DialogAnswer } from '../../src/provider.ts';
 import { credentialSourceLabel, formatCapacity, runTextClient } from '../../src/text-client.ts';
-import { FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
+import { deferred, FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
 
 function clientStreams() {
   const input = new PassThrough();
@@ -193,6 +193,66 @@ test('text client explains the blocked pending-check restart without resending',
   input.write('Resubmit without restart.\n');
   await until(() => read().includes('Question not sent: notReady'));
   assert.equal(backend.acquisitionCount, 1);
+  input.write('/quit\n');
+  await running;
+});
+
+test('text client names what may still be finishing after an interrupt during acquisition', async () => {
+  // Arrange
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  const acquisition = deferred<void>();
+  backend.acquireWait = acquisition.promise;
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+  input.write('Original question.\n');
+  await until(() => backend.acquisitionCount === 1);
+
+  // Act
+  assert.equal(await host.interrupt(), 'interrupted');
+  await until(() => read().includes('Turn interrupted'));
+  input.write('Second question.\n');
+  await until(() => read().includes('Question not sent: turnInProgress'));
+  acquisition.resolve();
+  await until(() => !host.turnInProgress);
+
+  // Assert
+  assert.match(read(), /state check or the provider may still be finishing/);
+  assert.match(read(), /was not automatically resent/);
+  assert.doesNotMatch(read(), /Turn failed: interrupted/);
+  assert.equal(provider.current.requests.length, 0);
+  input.write('/quit\n');
+  await running;
+});
+
+test('text client gives the same interrupt notice while the provider is still settling', async () => {
+  // Arrange
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  const settled = deferred<void>();
+  let sent = false;
+  provider.current.interrupt = async () => true;
+  provider.current.action = async () => { sent = true; await settled.promise; return { kind: 'failed', code: 'interrupted', retryable: true }; };
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+  input.write('Original question.\n');
+  await until(() => sent);
+
+  // Act
+  assert.equal(await host.interrupt(), 'interrupted');
+  await until(() => read().includes('Turn interrupted'));
+  input.write('Second question.\n');
+  await until(() => read().includes('Question not sent: turnInProgress'));
+  settled.resolve();
+  await until(() => !host.turnInProgress);
+
+  // Assert
+  assert.match(read(), /state check or the provider may still be finishing/);
+  assert.doesNotMatch(read(), /Turn failed: interrupted/);
   input.write('/quit\n');
   await running;
 });

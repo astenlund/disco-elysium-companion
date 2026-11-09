@@ -168,6 +168,12 @@ test('interrupt during acquisition emits one terminal and sends and acknowledges
   host.submitChat({ text: 'question', questionOverride: false });
   await until(() => backend.acquisitionCount === 1);
   assert.equal(await host.interrupt(), 'interrupted');
+  const terminal = events.find(event => event.type === 'turn.failed');
+  assert.ok(terminal?.type === 'turn.failed' && terminal.code === 'interrupted' && terminal.retryable);
+  assert.equal(host.turnInProgress, true);
+  assert.deepEqual(host.submitChat({ text: 'second', questionOverride: false }), { result: 'turnInProgress' });
+  assert.equal(await host.interrupt(), 'noTurnInProgress');
+  assert.equal(events.filter(event => event.type === 'turn.started').length, 1);
   wait.resolve();
   await until(() => !host.turnInProgress);
   assert.equal(backend.ackCount, 0);

@@ -117,6 +117,8 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
           ? 'Runtime capacity blocked this turn. The current status names the refused transition and any known obligations. The question was not automatically resent.'
           : event.code === 'contextExhausted'
           ? `The attempted combined input exceeded provider capacity. ${event.retryable ? 'Another player submission may attempt a smaller context.' : 'No further attempt is currently admitted for this unchanged input.'} Changing the question, an available model choice, or /new may help; none is guaranteed.`
+          : event.code === 'interrupted' && event.retryable
+          ? 'Turn interrupted. A state check or the provider may still be finishing, and a new question is refused until it does. The question was not automatically resent.'
           : `Turn failed: ${event.code}.`);
     } else if (event.type === 'dialog.requested') { dialog = event; question = 0; answers = emptyAnswers(); renderQuestion(); }
     else if (event.type === 'dialog.closed') { if (dialog?.dialogId === event.dialogId) { dialog = null; answers = emptyAnswers(); } }

@@ -14,4 +14,4 @@ Track a precise pre-provider interrupt contract and matching client wording or t
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. The evidence above describes the code before the fix. The immediate terminal is now the stated contract, the [runtime design](../features/companion-execution-runtime.md) describes the occupied interval, and the text client explains it. Fixed and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09.

@@ -49,12 +49,6 @@ Reproduce the intermittent concurrent test scratch removal failure before changi
 
 **Requires:** none.
 
-### [Pre-provider interrupt status](bugs/runtime-preprovider-interrupt-status.md)
-
-Define client terminal timing and turnInProgress behavior while a cancelled turn still has acquisition in flight.
-
-**Requires:** none.
-
 ### [Fixture cleanup contract](bugs/fixture-cleanup-contract.md)
 
 Investigate a retained private fixture directory while distinguishing helper exit, process quiescence, and physical removal.
