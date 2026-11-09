@@ -14,4 +14,4 @@ Track an explicit null-baseline rule for content change and compaction, with dis
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. The evidence above describes the code before the fix. `WindowRecovery` now grants the revalidation only after an ordinary ladder attempt has failed, and the [runtime design](../features/companion-execution-runtime.md) states the rule. Fixed and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09.

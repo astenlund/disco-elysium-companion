@@ -115,7 +115,7 @@ describe('request-scoped window recovery', () => {
       assert.equal(attempt.revalidation, false);
     });
 
-    it('keeps the full descending ladder and the one revalidation within the shared ceiling', () => {
+    it('leaves three counted failures for the ordinary ladder and the one revalidation after an ordinary failure', () => {
       // Arrange
       const recovery = afterFailedDisclosure();
 

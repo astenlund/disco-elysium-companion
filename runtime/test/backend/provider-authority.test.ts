@@ -484,7 +484,7 @@ describe('codec-owned relevance lifecycle', () => {
       window.sent(first, 'instance'); window.finished(first, 'instance', 'contextExhausted');
       const current = window.prepare(preview.preview.candidates, preview.relevanceFingerprint);
       assert.ok(current);
-      assert.equal(current.revalidation, true);
+      assert.equal(current.revalidation, false);
       assert.equal(current.candidate.shape, 1);
       assert.equal(window.summary()?.descendingFailures, 1);
       window.cancelBeforeSend(current);
