@@ -6,9 +6,9 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { companionFixture } from '../support/companion.ts';
-import { createTestNative, testHelperImage } from '../support/native-helper.ts';
-import { startOrphanWatcher } from '../support/orphan-watcher.ts';
-import { openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
+import { testHelperImage } from '../support/native-helper.ts';
+import { plantOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
+import { openSyntheticChat, startAndStopSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 const openChild = fileURLToPath(new URL('../backend/fixtures/open-backend-child.ts', import.meta.url));
 
@@ -26,13 +26,10 @@ describe('operator recovery from a content-invalid runtime marker', () => {
     // Arrange: a first start shuts down cleanly, so an unclean reading afterward can only come from the marker's absence.
     const fixture = await companionFixture('runtime-owned');
     const image = await testHelperImage();
-    let orphan: Awaited<ReturnType<typeof startOrphanWatcher>> | null = null;
+    let orphan: OrphanWatcher | null = null;
     let second: SyntheticChat | null = null;
     try {
-      const first = await openSyntheticChat(fixture.root, image);
-      const jobName = first.backend.supervisor.jobName('watcher');
-      const marker = path.join(first.backend.scope.dataRoot, 'runtime.json');
-      await first.host.shutdown();
+      const { watcherJob, marker } = await startAndStopSyntheticChat(fixture.root, image);
       const invalid = '{"runtimeInstanceId":"not a marker"}';
       await fs.writeFile(marker, invalid);
 
@@ -43,9 +40,7 @@ describe('operator recovery from a content-invalid runtime marker', () => {
       // Act and assert: the operator moves it out of the scope; a live watcher job, which no marker now names, still refuses.
       const evidence = path.join(fixture.root, 'runtime.json.invalid');
       await fs.rename(marker, evidence);
-      const probe = await createTestNative(fixture.root);
-      try { orphan = await startOrphanWatcher(fixture.root, jobName, probe.helper); }
-      finally { await probe.close(); }
+      orphan = await plantOrphanWatcher(fixture.root, watcherJob);
       assert.deepEqual(await openInChild(fixture.root), { opened: false, code: 'dataRootUnavailable' });
       await assert.rejects(fs.access(marker));
 

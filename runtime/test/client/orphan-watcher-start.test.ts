@@ -5,9 +5,9 @@ import { describe, it } from 'node:test';
 
 import { readProcessIdentity } from '../../src/process.ts';
 import { companionFixture } from '../support/companion.ts';
-import { createTestNative, testHelperImage } from '../support/native-helper.ts';
-import { startOrphanWatcher } from '../support/orphan-watcher.ts';
-import { openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
+import { testHelperImage } from '../support/native-helper.ts';
+import { plantOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
+import { openSyntheticChat, startAndStopSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 describe('chat start over an orphaned watcher', () => {
   it('terminates a live watcher its prior marker records and reaches attachment', { timeout: 600000 }, async () => {
@@ -15,16 +15,11 @@ describe('chat start over an orphaned watcher', () => {
     // scope's watcher job and the marker is rewritten as an unclean runtime that recorded it as its watcher.
     const fixture = await companionFixture('runtime-owned');
     const image = await testHelperImage();
-    let orphan: Awaited<ReturnType<typeof startOrphanWatcher>> | null = null;
+    let orphan: OrphanWatcher | null = null;
     let second: SyntheticChat | null = null;
     try {
-      const first = await openSyntheticChat(fixture.root, image);
-      const jobName = first.backend.supervisor.jobName('watcher');
-      const marker = path.join(first.backend.scope.dataRoot, 'runtime.json');
-      await first.host.shutdown();
-      const probe = await createTestNative(fixture.root);
-      try { orphan = await startOrphanWatcher(fixture.root, jobName, probe.helper); }
-      finally { await probe.close(); }
+      const { watcherJob, marker } = await startAndStopSyntheticChat(fixture.root, image);
+      orphan = await plantOrphanWatcher(fixture.root, watcherJob);
       await fs.rm(path.join(fixture.root, 'descendant.json'), { force: true });
       const previous = JSON.parse(await fs.readFile(marker, 'utf8')) as Record<string, unknown>;
       await fs.writeFile(marker, JSON.stringify({ ...previous, cleanShutdown: false, watcher: orphan.identity }));

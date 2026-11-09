@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { NativeHelper } from '../../src/native-helper.ts';
 import { readProcessIdentity, type ProcessIdentity } from '../../src/process.ts';
-import { testHelperImage } from './native-helper.ts';
+import { createTestNative, testHelperImage } from './native-helper.ts';
 
 const ownerScript = fileURLToPath(new URL('../fixtures/job-owner.ps1', import.meta.url));
 
@@ -17,6 +17,13 @@ export interface OrphanWatcher {
   /** Settles when the job owner exits, which it does once the broker in the job has ended. */
   readonly closed: Promise<void>;
   kill(): void;
+}
+
+/** Starts an orphan watcher through a transient native probe, for a test that holds no helper of its own. */
+export async function plantOrphanWatcher(fixtureRoot: string, jobName: string): Promise<OrphanWatcher> {
+  const probe = await createTestNative(fixtureRoot);
+  try { return await startOrphanWatcher(fixtureRoot, jobName, probe.helper); }
+  finally { await probe.close(); }
 }
 
 /**

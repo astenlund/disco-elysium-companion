@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import type { RuntimeBackend } from '../../src/backend/api.ts';
 import type { HelperImage } from '../../src/native-image.ts';
 import { createChatRuntime, privateRuntimeStartup } from '../../src/runtime.ts';
@@ -33,4 +35,14 @@ export async function openSyntheticChat(companionRoot: string, image: HelperImag
   if (backend === null || provider === null) { throw new Error('The fixture provider was never created.'); }
 
   return { host: opened.host, backend, provider };
+}
+
+/** A clean first chat start and shutdown, naming the watcher job and runtime marker of the scope it leaves behind. */
+export async function startAndStopSyntheticChat(companionRoot: string, image: HelperImage): Promise<{ readonly watcherJob: string; readonly marker: string }> {
+  const first = await openSyntheticChat(companionRoot, image);
+  const watcherJob = first.backend.supervisor.jobName('watcher');
+  const marker = path.join(first.backend.scope.dataRoot, 'runtime.json');
+  await first.host.shutdown();
+
+  return { watcherJob, marker };
 }
