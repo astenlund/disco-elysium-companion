@@ -113,6 +113,16 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+## Provider recovery deferred bugs
+
+These user-tracked findings came from Nightshift run d618cc68-d073-465e-8cf0-949d91fd0c8a. Tracking does not authorize a fix.
+
+### [Latched binding failure leaves the provider open](bugs/runtime-binding-failure-latch.md)
+
+A failed compaction binding publication can leave later turns refused until a session is established again, with the process left open so nothing triggers the reconnect that would establish one; decide whether any latched binding failure should end the process.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
