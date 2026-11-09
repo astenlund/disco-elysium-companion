@@ -161,7 +161,8 @@ remains only for manual inspection that must not consume.
   knowledge of the game's mechanics; never in foreknowledge of unseen checks or
   content, which would reveal what the spoiler rules forbid. Without cache-backed
   facts for the checks it depends on, mark that advice provisional. Skill points
-  follow their own rule below, including its lean toward holding.
+  follow their own rule below, including its lean toward holding, and a thought's
+  recommendation follows the thought notice rule above.
 - A request for a summary or status gets state, not advice. Any recommendation
   added to such an answer, even a one-line closing suggestion, makes it a guidance
   answer bound by every rule here; leave the suggestion out rather than add one
