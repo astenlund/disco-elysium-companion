@@ -6,7 +6,7 @@ import { Dialogs } from './dialogs.ts';
 import { newIdentity } from './identity.ts';
 import { utcNow } from './json.ts';
 import { ProviderLifecycle, type PendingProviderStart } from './provider-lifecycle.ts';
-import type { Provider, ProviderReconnectReason, ProviderSession, ProviderSignal } from './provider.ts';
+import { UnsentTurnRefusal, type Provider, type ProviderReconnectReason, type ProviderSession, type ProviderSignal } from './provider.ts';
 import { SerialQueue } from './serial.ts';
 import type { ClientSink, Correction, HostEvent, HostSnapshot, HostStatus, Interaction, ResumeResult, SafetyRefusalRemedy, SessionHostV1, SubmitResult, TurnFailure } from './session-host-contract.ts';
 import type { StartupPhase } from './startup-progress.ts';
@@ -426,8 +426,12 @@ export class SessionHost implements SessionHostV1 {
     this.dialogs.endTurn(turn.interactionId);
     this.emit({ type: 'turn.failed', ...this.interaction(turn), code, retryable });
   }
+  private turnInactive(turn: Turn): boolean { return turn.invalidated || turn.interrupted || turn.terminal || this.closing; }
   private requireTurn(turn: Turn): void {
-    if (turn.invalidated || turn.interrupted || turn.terminal || this.closing) { throw new Error('The admitted turn is no longer active.'); }
+    if (this.turnInactive(turn)) { throw new Error('The admitted turn is no longer active.'); }
+  }
+  private refuseInactiveTurn(turn: Turn): void {
+    if (this.turnInactive(turn)) { throw new UnsentTurnRefusal('The admitted turn is no longer active.'); }
   }
 
   async interrupt(): ReturnType<SessionHostV1['interrupt']> {
@@ -517,27 +521,27 @@ export class SessionHost implements SessionHostV1 {
         askUser: questions => this.lifecycle.capabilities.dialogs && !turn.terminal ? this.dialogs.ask(turn.interactionId, questions) : Promise.resolve({ cancelled: true }),
         onSignal: signal => this.signal(selectedSession.providerInstanceId, signal),
         beforeSend: async () => {
-          this.requireTurn(turn);
+          this.refuseInactiveTurn(turn);
           const compactionToken = this.compactionToken;
           await this.maintenance.idle();
           this.requireMaintenance();
-          if (this.compactionToken !== compactionToken) { throw new Error('Provider context changed before send.'); }
+          if (this.compactionToken !== compactionToken) { throw new UnsentTurnRefusal('Provider context changed before send.'); }
           const latestBinding = this.lifecycle.binding;
           if (latestBinding === null) { throw new Error('Session binding is unavailable.'); }
           const current = await this.options.backend.copyForSend(selectedHandle, latestBinding, this.lifecycle.identity(selectedSession));
           redelivery = current.redelivery;
-          this.requireTurn(turn);
+          this.refuseInactiveTurn(turn);
           if (current.candidate.fingerprint !== ticket!.candidate.fingerprint || current.candidate.bytes !== ticket!.candidate.bytes || current.disclosureOnly !== ticket!.disclosureOnly
             || current.relevanceFingerprint !== preview.relevanceFingerprint) {
             this.recovery.cancelBeforeSend(ticket!);
             ticket = this.recovery.prepare([current.candidate], current.relevanceFingerprint, current.disclosureOnly);
-            if (ticket === null) { this.fail(turn, 'contextExhausted', false); throw new Error('The disclosure candidate is exhausted.'); }
+            if (ticket === null) { this.fail(turn, 'contextExhausted', false); throw new UnsentTurnRefusal('The disclosure candidate is exhausted.'); }
           }
           admitEnqueue = () => {
-            this.requireTurn(turn);
+            this.refuseInactiveTurn(turn);
             this.requireMaintenance();
             if (!this.lifecycle.isCurrent(selectedSession.providerInstanceId) || this.compactionToken !== compactionToken || this.lifecycle.binding !== latestBinding) {
-              throw new Error('Provider context changed before enqueue.');
+              throw new UnsentTurnRefusal('Provider context changed before enqueue.');
             }
           };
           return current.text;
@@ -553,6 +557,9 @@ export class SessionHost implements SessionHostV1 {
         },
       });
       await this.maintenance.idle();
+      // An unsent refusal leaves the process open because nothing changed for it. A binding failure landing afterward refuses
+      // every later turn until a new binding clears it, so end the process and let the reconnect produce that binding.
+      if (!turn.sent && this.maintenanceFailure !== null) { void selectedSession.close().catch(() => { this.ready = false; }); }
       if (turn.sent) { this.recovery.finished(ticket!, selectedSession.providerInstanceId, outcome.kind === 'completed' ? 'success' : outcome.code === 'contextExhausted' ? 'contextExhausted' : 'otherFailure'); }
       else { this.recovery.cancelBeforeSend(ticket!); }
       ticket = null;

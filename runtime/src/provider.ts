@@ -16,6 +16,9 @@ export type ProviderFailureCode = 'interrupted' | 'subprocessExited' | 'provider
 export type ProviderOutcome = { readonly kind: 'completed'; readonly text: string } | { readonly kind: 'failed'; readonly code: ProviderFailureCode; readonly retryable: boolean };
 export type ProviderSignal = { readonly kind: 'text'; readonly fragment: string } | { readonly kind: 'compaction' } | { readonly kind: 'source'; readonly credentialSource: string | null };
 
+/** A turn callback's refusal of a turn that was never sent, in a state where the provider session itself stays usable. */
+export class UnsentTurnRefusal extends Error { override readonly name = 'UnsentTurnRefusal'; }
+
 export interface ProviderTurn {
   readonly contextBlock: string;
   readonly playerText: string;

@@ -20,7 +20,6 @@ These user-tracked cleanups came from Nightshift run cffcf94d-49be-4cab-afcb-3fa
 - **Core tombstone retention summary.** Correct the shared retention summary for protected tombstones and settlement-unknown after evidence pruning.
 - **Consolidate runtime repair prose.** State current repair rules directly and reconcile verification placement and consumer lists in the governing design.
 - **Opening history disclosure probe.** Probe whether hosted guidance explicitly says earlier save history was not checked on an uneventful opening.
-- **Unsent provider refusal reconnect.** Distinguish a beforeSend refusal from subprocess exit and keep the provider alive when safe.
 - **Tool-boundary fixture attribution.** Credit direct native admission tests for path containment and keep hook-to-native integration marked unverified.
 - **First-install correction disclosure.** Document the first-scope correction and recovering status created by conservative resync, with a focused discharge assertion.
 - **Bridge-consumed history notice.** Disclose missing intermediate bridge-consumed history when a provider session resumes at a later runtime snapshot.

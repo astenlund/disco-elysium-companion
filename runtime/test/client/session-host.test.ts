@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
+import { UnsentTurnRefusal } from '../../src/provider.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { indexCurrentBinding, type AgentSessionBinding } from '../../src/session-records.ts';
@@ -711,6 +712,147 @@ test('compaction during provider setup reaches the actual send gate with needsSt
   await until(() => !host.turnInProgress);
   assert.equal(needsStateAtSend, true);
   assert.equal(backend.binding?.needsState, true);
+  await host.shutdown();
+});
+
+function captureSendFailure(session: FakeSession): { error: unknown } {
+  const capture: { error: unknown } = { error: null };
+  const send = session.sendTurn.bind(session);
+  session.sendTurn = async request => {
+    try { return await send(request); }
+    catch (error) { capture.error = error; throw error; }
+  };
+
+  return capture;
+}
+
+test('provider context changing before enqueue is a classified unsent refusal with the usual retryable terminal', async () => {
+  const { host, provider, events } = await fixture();
+  const capture = captureSendFailure(provider.current);
+  provider.current.afterPrepare = async () => { host.passiveSignal(provider.current.providerInstanceId, { kind: 'compaction' }); };
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.ok(capture.error instanceof UnsentTurnRefusal);
+  const failures = events.filter(event => event.type === 'turn.failed');
+  assert.deepEqual(failures.map(event => [event.code, event.retryable]), [['providerError', true]]);
+  await host.shutdown();
+});
+
+/** FakeSession lets a refusal escape; ClaudeSession returns it as an outcome and stays open, which is the path these tests need. */
+function returnRefusalsAsOutcomes(session: FakeSession): void {
+  const send = session.sendTurn.bind(session);
+  session.sendTurn = async request => {
+    try { return await send(request); }
+    catch (error) {
+      if (error instanceof UnsentTurnRefusal) { return { kind: 'failed', code: 'providerError', retryable: true }; }
+      throw error;
+    }
+  };
+}
+
+function compactDuringSendTimeCopy(host: SessionHost, backend: FakeBackend, session: FakeSession, duringCopy: () => void = () => {}): void {
+  const copy = backend.copyForSend.bind(backend);
+  backend.copyForSend = async (handle, binding, identity) => {
+    backend.copyForSend = copy;
+    duringCopy();
+    const copied = await copy(handle, binding, identity);
+    host.passiveSignal(session.providerInstanceId, { kind: 'compaction' });
+    return copied;
+  };
+}
+
+test('a classified unsent refusal with no latched failure leaves the session open', async () => {
+  const { host, backend, provider } = await fixture();
+  const first = provider.current;
+  returnRefusalsAsOutcomes(first);
+  compactDuringSendTimeCopy(host, backend, first);
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  await flush();
+  assert.equal(first.closed, false);
+  assert.equal(provider.sessions.length, 1);
+  await host.shutdown();
+});
+
+test('a binding failure landing after a classified unsent refusal still ends the process so a later turn recovers', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const first = provider.current;
+  returnRefusalsAsOutcomes(first);
+  const close = first.close.bind(first);
+  first.close = async () => { await close(); first.exit('subprocessExited'); };
+  const sessions = backend.sessions as { bind: FakeBackend['sessions']['bind'] };
+  const bind = sessions.bind;
+  compactDuringSendTimeCopy(host, backend, first, () => { sessions.bind = async () => { sessions.bind = bind; await flush(); throw new Error('Binding publication failed.'); }; });
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  await until(() => first.closed && provider.sessions.length === 2 && host.status.provider.state === 'ready');
+  assert.equal(host.submitChat({ text: 'later', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(provider.current.requests.length, 1);
+  assert.ok(events.some(event => event.type === 'turn.completed'));
+  await host.shutdown();
+});
+
+test('a turn interrupted before enqueue is a classified unsent refusal', async () => {
+  const { host, provider } = await fixture();
+  const capture = captureSendFailure(provider.current);
+  provider.current.afterPrepare = async () => { await host.interrupt(); };
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.ok(capture.error instanceof UnsentTurnRefusal);
+  await host.shutdown();
+});
+
+type HostFixture = Awaited<ReturnType<typeof fixture>>;
+const classifiedSendRefusals: readonly { readonly name: string; readonly arrange: (context: HostFixture) => void }[] = [
+  { name: 'a turn interrupted as beforeSend begins', arrange: ({ host, provider }) => { provider.current.beforeSend = async () => { await host.interrupt(); }; } },
+  { name: 'a turn interrupted during the send-time copy', arrange: ({ host, backend }) => {
+    const copy = backend.copyForSend.bind(backend);
+    backend.copyForSend = async (handle, binding, identity) => { await host.interrupt(); return copy(handle, binding, identity); };
+  } },
+  { name: 'provider context changing during the before-send maintenance wait', arrange: ({ host, backend, provider }) => {
+    provider.current.beforeSend = async () => {
+      const release = holdMaintenance(host, backend, provider);
+      void flush().then(() => { host.passiveSignal(provider.current.providerInstanceId, { kind: 'compaction' }); release(); });
+    };
+  } },
+];
+
+for (const { name, arrange } of classifiedSendRefusals) {
+  test(`${name} is a classified unsent refusal`, async () => {
+    const context = await fixture();
+    const capture = captureSendFailure(context.provider.current);
+    arrange(context);
+    assert.equal(context.host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => !context.host.turnInProgress);
+    assert.ok(capture.error instanceof UnsentTurnRefusal);
+    await context.host.shutdown();
+  });
+}
+
+test('an exhausted disclosure candidate at send time is a classified unsent refusal with its own terminal', async () => {
+  const { host, backend, provider, events } = await fixture();
+  backend.fallback = true;
+  provider.current.action = async () => ({ kind: 'failed', code: 'contextExhausted', retryable: true });
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  const capture = captureSendFailure(provider.current);
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.ok(capture.error instanceof UnsentTurnRefusal);
+  const last = events.filter(event => event.type === 'turn.failed').at(-1);
+  assert.deepEqual([last?.code, last?.retryable], ['contextExhausted', false]);
+  await host.shutdown();
+});
+
+test('a failed send-time copy is not a classified unsent refusal', async () => {
+  const { host, backend, provider } = await fixture();
+  const capture = captureSendFailure(provider.current);
+  const failure = new Error('Copy failed.');
+  backend.copyForSend = async () => { throw failure; };
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(capture.error, failure);
   await host.shutdown();
 });
 

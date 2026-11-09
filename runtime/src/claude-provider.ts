@@ -13,7 +13,7 @@ import { readJsonFile } from './json.ts';
 import type { OwnedExit, OwnedSpawnOptions, ProcessIdentity } from './process.ts';
 import { boundedProviderControl, setModelChoice } from './provider-control.ts';
 import { assertDefaultProviderProfile, pinnedSdkVersion, PromptQueue, providerCapabilities, providerEnvironment, ProviderSource, ProviderUnavailableError, supportsVerbatim } from './provider-support.ts';
-import type { DialogAnswer, Provider, ProviderCapabilities, ProviderExitReason, ProviderFailureCode, ProviderOutcome, ProviderSession, ProviderSignal, ProviderTurn } from './provider.ts';
+import { UnsentTurnRefusal, type DialogAnswer, type Provider, type ProviderCapabilities, type ProviderExitReason, type ProviderFailureCode, type ProviderOutcome, type ProviderSession, type ProviderSignal, type ProviderTurn } from './provider.ts';
 import { hostedTools, type ToolBoundary } from './tool-boundary.ts';
 
 type QueryPort = Pick<Query, 'initializationResult' | 'setModel' | 'applyFlagSettings' | 'interrupt' | 'close'> & AsyncIterable<SDKMessage>;
@@ -280,6 +280,7 @@ class ClaudeSession implements ProviderSession {
         turn.sent = true;
         request.onSent();
       } catch (error) {
+        if (error instanceof UnsentTurnRefusal && !turn.sent) { return failure('providerError'); }
         this.closing = true;
         this.requestClose();
         if (error instanceof RuntimeCapacityError || error instanceof PendingStateCheckError) { throw error; }

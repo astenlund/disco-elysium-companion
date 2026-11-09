@@ -10,7 +10,7 @@ import { ClaudeProvider, ProviderUnavailableError, type ClaudeProviderOptions, t
 import type { RuntimeConfig } from '../src/config.ts';
 import { FileOperationGuard } from '../src/file-operation.ts';
 import type { OwnedExit } from '../src/process.ts';
-import type { ProviderTurn } from '../src/provider.ts';
+import { UnsentTurnRefusal, type ProviderTurn } from '../src/provider.ts';
 import { ToolBoundary } from '../src/tool-boundary.ts';
 
 function deferred<T>() {
@@ -349,6 +349,7 @@ describe('Claude provider state machine', () => {
       assert.deepEqual(await session.sendTurn(turn({ beforeSend: async () => { throw new Error('Generic host failure.'); } })),
         { kind: 'failed', code: 'providerError', retryable: true });
       assert.equal(generic.query.inputs.length, 0);
+      assert.equal(generic.query.closed, true);
     } finally { await session.close(); }
 
     const late = setup();
@@ -361,6 +362,41 @@ describe('Claude provider state machine', () => {
       assert.equal(sent, 0);
       assert.equal(late.query.closed, true);
     } finally { await lateSession.close(); }
+  });
+
+  it('keeps the session open after a classified unsent refusal and sends the next turn', async () => {
+    const refuse = (): never => { throw new UnsentTurnRefusal('Provider context changed.'); };
+    const refusals: Partial<ProviderTurn>[] = [{ beforeSend: async () => refuse() }, { beforeEnqueue: refuse }];
+    for (const refusal of refusals) {
+      const fixture = setup();
+      const session = await fixture.provider.start(null);
+      const exits: string[] = [];
+      session.onExit(reason => exits.push(reason));
+      let sent = 0;
+      try {
+        assert.deepEqual(await session.sendTurn(turn({ ...refusal, onSent: () => { sent++; } })), { kind: 'failed', code: 'providerError', retryable: true });
+        assert.equal(fixture.query.inputs.length, 0);
+        assert.equal(sent, 0);
+        assert.equal(fixture.query.closed, false);
+        assert.equal(session.isLive(), true);
+        const result = session.sendTurn(turn());
+        const input = await fixture.query.waitInput();
+        fixture.query.result(input);
+        assert.deepEqual(await result, { kind: 'completed', text: 'answer' });
+        assert.deepEqual(exits, []);
+      } finally { await session.close(); }
+    }
+  });
+
+  it('reverts a question override after a classified unsent refusal without ending the session', async () => {
+    const fixture = setup();
+    const session = await fixture.provider.start(null);
+    try {
+      const result = await session.sendTurn(turn({ override: { model: 'override', effort: 'high' }, beforeSend: async () => { throw new UnsentTurnRefusal('Provider context changed.'); } }));
+      assert.deepEqual(result, { kind: 'failed', code: 'providerError', retryable: true });
+      assert.deepEqual(fixture.query.controls, [{ model: 'override' }, { effortLevel: 'high' }, { model: 'base' }, { effortLevel: 'medium' }]);
+      assert.equal(fixture.query.closed, false);
+    } finally { await session.close(); }
   });
 
   it('sends the rechecked context and player text once and requires matching result identity', async () => {
