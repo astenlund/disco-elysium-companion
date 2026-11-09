@@ -14,4 +14,4 @@ Track a focused recovery fixture and correction for the retained-handoff merge a
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. The evidence above describes the code before the fix. An unsettled event that a repair plan recorded as the reappend of a retained record now keeps that record's settlement binding, and `mergeHandoff` is unchanged. Fixed and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09.

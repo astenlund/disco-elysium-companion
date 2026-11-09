@@ -3,16 +3,129 @@ import { describe, it } from 'node:test';
 
 import { ConsumerCoordinator, ReleaseRefusedError } from '../../src/backend/consumer.ts';
 import type { Kernel } from '../../src/backend/kernel.ts';
+import { RecoveryCoordinator } from '../../src/backend/recovery.ts';
 import { releaseJournalEvidence, releaseNamesWitness } from '../../src/backend/release-authority.ts';
 import { eventFileName } from '../../src/journal-records.ts';
 import type { JournalSnapshot } from '../../src/journal.ts';
-import { parseOperation, type HandoverOperation, type OperationRecord, type RepairOperation, type ReleaseOperation } from '../../src/operation-records.ts';
+import { parseOperation, type HandoverOperation, type OperationRecord, type RepairOperation, type ReleaseOperation, type RetainedHandoff } from '../../src/operation-records.ts';
 import { parseStrictJson, stringifyJson } from '../../src/json.ts';
 import { ControlDocumentError } from '../../src/control-values.ts';
 import { abandonRecovery } from '../../src/recovery-progress.ts';
 import type { RecoveryWitness, StateSafety } from '../../src/safety-records.ts';
 import type { SafetyProof } from '../../src/safety.ts';
-import { admittedCapacityFixture, at, authorityModel, correctionId, deferredRepair, generation, journal, owner, release, repair, scope, witness } from './authority-fixtures.ts';
+import { journalEvent } from '../support/journal-event.ts';
+import { admittedCapacityFixture, at, authorityModel, correctionId, deferredRepair, generation, installEventInspectionFixture, journal, owner, release, repair, scope, witness } from './authority-fixtures.ts';
+
+describe('retained handoff binding after an unsettled reappend and explicit abandon', () => {
+  const restoredEventId = '9'.repeat(32);
+  const carryHash = '7'.repeat(64);
+
+  function abandonedUnsettledCarry(deferredCarry = true): { abandoned: RepairOperation; original: RepairOperation['plan']['handoffs'][number] } {
+    const source = deferredRepair();
+    const episode = source.recovery.episodes[0]!;
+    const prerequisite = episode.prerequisite!;
+    const preserve = prerequisite.actions[0]!;
+    assert.ok(preserve.kind === 'preserveRecovery');
+    const unsettled = { ...preserve.metadata, acceptance: null, settlement: 'pending' as const };
+    const original = { ...source.plan.handoffs[0]!, journalId: unsettled.journalId, eventId: unsettled.eventId, acceptance: null };
+    const restored = { ...unsettled, journalId: 'restored-journal', eventId: restoredEventId, sequence: 2, acknowledgedAt: null };
+    const reappend = { kind: 'appendRecovery' as const, target: { path: 'journal/events/0000000000000002.json', before: null, after: 'a'.repeat(64) },
+      source: { root: 'scope' as const, path: 'journal/recovery-event.json', sha256: carryHash, payloadBindingSha256: original.payloadBindingSha256! }, metadata: restored };
+    const removeCarry = { kind: 'removeCarry' as const, target: { path: 'journal/recovery-event.json', before: carryHash, after: null } };
+    const actions = deferredCarry ? [{ ...preserve, metadata: unsettled }, reappend] : [{ ...preserve, metadata: unsettled }, reappend, removeCarry];
+    const abandoned = repair({ ...source, completedAt: at, outcome: 'abandonedByRelease', plan: { ...source.plan, handoffs: [original] }, recovery: { ...source.recovery, activeEpisode: null,
+      episodes: [{ ...episode, phase: 'abandonedByRelease', releaseOperationId: release().operationId, endedAt: at,
+        prerequisite: { ...prerequisite, nextAction: actions.length, carryRelease: deferredCarry ? prerequisite.carryRelease : null, actions } }] } });
+
+    return { abandoned, original };
+  }
+
+  function restoredJournal(original: RepairOperation['plan']['handoffs'][number], changes: Record<string, unknown> = {}) {
+    const event = journalEvent(2, { journalId: 'restored-journal', eventId: restoredEventId, type: 'state.resync', adapter: 'game', logicalOutboxId: original.logicalOutboxId, recordSha256: original.recordSha256,
+      payloadBindingSha256: original.payloadBindingSha256, coreRepairOperationId: original.coreRepairOperationId, attemptRef: original.attemptRef, settlement: 'pending', acceptance: null, ...changes });
+    const base = journal(2, 0);
+
+    return { ...base, events: new Map([[2, { metadata: event, sha256: 'a'.repeat(64) }]]) };
+  }
+
+  function replanModel(abandoned: RepairOperation) {
+    const model = authorityModel({ stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null });
+    model.memory.seed('operations/' + abandoned.operationId + '.json', abandoned);
+    model.memory.seed('operations/' + release().operationId + '.json', release());
+    model.kernel.carryHash = async () => carryHash;
+
+    return model;
+  }
+
+  it('keeps the original settlement binding when the carry was reappended under a new event identity', async () => {
+    // Arrange
+    const { abandoned, original } = abandonedUnsettledCarry();
+    const model = replanModel(abandoned);
+
+    // Act
+    const planned = await new RecoveryCoordinator(model.kernel).plan({ cause: 'gap', journal: restoredJournal(original) });
+
+    // Assert
+    const successor = planned.record as RepairOperation;
+    assert.deepEqual(successor.plan.inheritedRecovery, owner);
+    assert.equal(successor.plan.handoffs.length, 1);
+    assert.equal(successor.plan.handoffs[0]!.journalId, original.journalId);
+    assert.equal(successor.plan.handoffs[0]!.eventId, original.eventId);
+  });
+
+  it('keeps the original binding across records when the reappend carried no deferred release', async () => {
+    // Arrange
+    const { abandoned, original } = abandonedUnsettledCarry(false);
+    const model = replanModel(abandoned);
+    const coordinator = new RecoveryCoordinator(model.kernel);
+
+    // Act
+    const planned = await coordinator.plan({ cause: 'gap', journal: restoredJournal(original) });
+    const merged = await (model.kernel as unknown as { handoffs(inventory: unknown): Promise<readonly RetainedHandoff[]> }).handoffs(await model.kernel.operations.list());
+
+    // Assert
+    assert.equal((planned.record as RepairOperation).plan.handoffs[0]!.eventId, original.eventId);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0]!.eventId, original.eventId);
+  });
+
+  it('keeps the original binding when the reappended event is later rejected', async () => {
+    // Arrange
+    const { abandoned, original } = abandonedUnsettledCarry();
+    const model = replanModel(abandoned);
+    const coordinator = new RecoveryCoordinator(model.kernel);
+    const snapshot = restoredJournal(original);
+    installEventInspectionFixture(model.kernel, async () => ({ status: 'absent', sha256: null, metadata: null }));
+    model.kernel.outbox.read = async () => ({ status: 'absent' });
+    await coordinator.plan({ cause: 'gap', journal: snapshot });
+
+    // Act
+    const rejected = await coordinator.plan({ cause: 'coreRejected', journal: snapshot, rejectedEvent: snapshot.events.get(2)!.metadata });
+
+    // Assert
+    const handoff = (rejected.record as RepairOperation).plan.handoffs[0]!;
+    assert.equal(handoff.eventId, original.eventId);
+    assert.equal(handoff.presentation, 'rejected');
+  });
+
+  it('still refuses a same-record event whose new identity no reappend proves', async () => {
+    // Arrange
+    const { abandoned, original } = abandonedUnsettledCarry();
+    const model = replanModel(abandoned);
+
+    // Act and assert
+    await assert.rejects(new RecoveryCoordinator(model.kernel).plan({ cause: 'gap', journal: restoredJournal(original, { eventId: '8'.repeat(32) }) }), ControlDocumentError);
+  });
+
+  it('still refuses a proven reappend that changes the payload binding', async () => {
+    // Arrange
+    const { abandoned, original } = abandonedUnsettledCarry();
+    const model = replanModel(abandoned);
+
+    // Act and assert
+    await assert.rejects(new RecoveryCoordinator(model.kernel).plan({ cause: 'gap', journal: restoredJournal(original, { payloadBindingSha256: '6'.repeat(64) }) }), ControlDocumentError);
+  });
+});
 
 describe('release obligation evidence', () => {
   const names = [eventFileName(2), eventFileName(1)];

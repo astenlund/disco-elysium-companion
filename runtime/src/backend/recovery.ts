@@ -87,6 +87,24 @@ export function handoffFor(event: EventDescription, presentation: RetainedHandof
     presentation, coreRepairOperationId: event.coreRepairOperationId, attemptRef: event.attemptRef };
 }
 
+// An unsettled event has no acceptance, so its handoff takes the event's own identity. When a repair
+// plan recorded this event as the reappend of a retained record, it is the same obligation under a
+// new identity and keeps that record's settlement binding; any other difference stays a merge conflict.
+function settlementHandoffFor(event: EventDescription, inventory: OperationInventory, presentation: RetainedHandoff['presentation'] = 'replayable'): RetainedHandoff {
+  const observed = handoffFor(event, presentation);
+  if (observed.acceptance !== null) { return observed; }
+  for (const { record } of inventory.records) {
+    if (record.compacted || record.kind !== 'repair') { continue; }
+    const provenReappend = record.recovery.episodes.some(episode => episode.prerequisite?.actions.some(action => action.kind === 'appendRecovery'
+      && action.metadata.journalId === observed.journalId && action.metadata.eventId === observed.eventId
+      && action.metadata.logicalOutboxId === observed.logicalOutboxId && action.metadata.recordSha256 === observed.recordSha256));
+    const retained = provenReappend ? record.plan.handoffs.find(item => item.logicalOutboxId === observed.logicalOutboxId && item.recordSha256 === observed.recordSha256) : undefined;
+    if (retained !== undefined) { return { ...observed, journalId: retained.journalId, eventId: retained.eventId }; }
+  }
+
+  return observed;
+}
+
 export class RecoveryCoordinator {
   readonly kernel: Kernel;
   private running = false;
@@ -287,8 +305,8 @@ export class RecoveryCoordinator {
       const retained = [...candidate.plan.handoffs];
       for (const event of readableEvents) {
         const existing = retained.findIndex(item => item.logicalOutboxId === event.metadata.logicalOutboxId);
-        if (existing < 0) { retained.push(handoffFor(event.metadata)); }
-        else { retained[existing] = mergeHandoff(retained[existing]!, handoffFor(event.metadata)); }
+        if (existing < 0) { retained.push(settlementHandoffFor(event.metadata, inventory)); }
+        else { retained[existing] = mergeHandoff(retained[existing]!, settlementHandoffFor(event.metadata, inventory)); }
       }
       if (reservedWitness === null) { await k.safetyStore.prepareWitness(owner, deadline); }
       else { await k.safetyStore.prepareTransfer(owner, deadline); }
@@ -330,7 +348,7 @@ export class RecoveryCoordinator {
     const position = recoveryPlanPosition(prerequisite, request.journal, request.journal.cursor.status === 'valid' ? request.journal.cursor.value.lastAckedSequence : 0);
     const handoffs: RetainedHandoff[] = [...(inheritedCarry?.record.plan.handoffs ?? [])];
     for (const event of readableEvents) {
-      const handoff = handoffFor(event.metadata, request.rejectedEvent?.eventId === event.metadata.eventId ? request.cause === 'coreRejected' ? 'rejected' : 'unverified' : 'replayable');
+      const handoff = settlementHandoffFor(event.metadata, inventory, request.rejectedEvent?.eventId === event.metadata.eventId ? request.cause === 'coreRejected' ? 'rejected' : 'unverified' : 'replayable');
       const previous = handoffs.findIndex(item => item.logicalOutboxId === handoff.logicalOutboxId);
       if (previous < 0) { handoffs.push(handoff); }
       else { handoffs[previous] = mergeHandoff(handoffs[previous]!, handoff); }
@@ -704,8 +722,9 @@ export class RecoveryCoordinator {
     const index = record.recovery.activeEpisode;
     requireControl(index !== null);
     const handoffs = [...record.plan.handoffs];
+    const inventory = await this.kernel.operations.list(deadline);
     for (const value of this.readableEvents(snapshot)) {
-      const replacement = handoffFor(value.metadata, value.metadata.eventId === event.eventId ? presentation : 'replayable');
+      const replacement = settlementHandoffFor(value.metadata, inventory, value.metadata.eventId === event.eventId ? presentation : 'replayable');
       const prior = handoffs.findIndex(item => item.logicalOutboxId === replacement.logicalOutboxId);
       if (prior < 0) { handoffs.push(replacement); }
       else { handoffs[prior] = mergeHandoff(handoffs[prior]!, replacement); }
@@ -1267,8 +1286,8 @@ export class RecoveryCoordinator {
       const handoffs = [...repair.plan.handoffs];
       for (const event of readable) {
         const index = handoffs.findIndex(item => item.logicalOutboxId === event.metadata.logicalOutboxId);
-        if (index < 0) { handoffs.push(handoffFor(event.metadata)); }
-        else { handoffs[index] = mergeHandoff(handoffs[index]!, handoffFor(event.metadata)); }
+        if (index < 0) { handoffs.push(settlementHandoffFor(event.metadata, inventory)); }
+        else { handoffs[index] = mergeHandoff(handoffs[index]!, settlementHandoffFor(event.metadata, inventory)); }
       }
       if (transfer?.replacement?.handoff !== undefined) {
         const handoff = transfer.replacement.handoff;
@@ -1692,7 +1711,7 @@ export class RecoveryCoordinator {
                     requireControl(handoffs.filter(item => item.logicalOutboxId === event.metadata.logicalOutboxId).length <= 1
                       && (old < 0 || handoffs[old]!.recordSha256 === event.metadata.recordSha256));
                     const retired = event.metadata.schemaVersion !== result.value.schemaVersion || event.metadata.adapterVersion !== result.value.adapterVersion;
-                    let observed = handoffFor(event.metadata, retired ? 'rejected' : 'replayable');
+                    let observed = settlementHandoffFor(event.metadata, inventory, retired ? 'rejected' : 'replayable');
                     for (const historical of admitted.filter(item => item.logicalOutboxId === event.metadata.logicalOutboxId)) {
                       requireControl(historical.recordSha256 === event.metadata.recordSha256);
                       observed = mergeHandoff(historical, observed);
@@ -1879,7 +1898,7 @@ export class RecoveryCoordinator {
       for (const event of journal.events.values()) {
         if (event.metadata.logicalOutboxId !== source.metadata.logicalOutboxId) { continue; }
         requireControl(event.metadata.recordSha256 === source.sha256 && event.metadata.adapter === k.scope.game && event.metadata.principal === k.scope.principal);
-        const candidate = handoffFor(event.metadata);
+        const candidate = settlementHandoffFor(event.metadata, inventory);
         bound = bound === null ? candidate : mergeHandoff(bound, candidate);
       }
       if (bound === null) {
@@ -1929,7 +1948,7 @@ export class RecoveryCoordinator {
       requireControl(event.metadata.recordSha256 === previous.recordSha256 && event.metadata.type === 'state.resync'
         && event.metadata.coreRepairOperationId === oldToken && event.metadata.attemptRef?.operationId === record.operationId
         && event.metadata.attemptRef.attemptOrdinal === ordinal && event.metadata.adapter === k.scope.game && event.metadata.principal === k.scope.principal);
-      const handoff = handoffFor(event.metadata);
+      const handoff = settlementHandoffFor(event.metadata, inventory);
       bound = bound === null ? handoff : mergeHandoff(bound, handoff);
     }
     if (bound !== null) { return bound; }

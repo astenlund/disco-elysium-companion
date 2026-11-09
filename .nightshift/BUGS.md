@@ -61,12 +61,6 @@ Distinguish residue, unexpected owned entries, and helper transport failures wit
 
 **Requires:** none.
 
-### [Retained-handoff merge after abandon](bugs/runtime-retained-handoff-merge.md)
-
-Test and correct recovery refusal after unsettled reappend and explicit abandon without weakening original settlement binding.
-
-**Requires:** none.
-
 ### [Prepared-context invalidation assertion](bugs/runtime-prepared-context-invalidation-assertion.md)
 
 Investigate extra fixture-root invalidations before changing the assertion or production behavior.
