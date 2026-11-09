@@ -10,6 +10,9 @@ const provider = 'provider-instance';
 function candidates(content = 'content'): WindowCandidate[] {
   return ([1, 2, 3, 4] as const).map(shape => ({ shape, fingerprint: recoveryFingerprint(content, String(shape)), bytes: 500 - shape * 100, stateIncluded: shape !== 4 }));
 }
+function disclosure(name: string): WindowCandidate {
+  return { shape: 1, fingerprint: recoveryFingerprint(name), bytes: 70, stateIncluded: false };
+}
 function create(overrideKey = override): WindowRecovery {
   const recovery = new WindowRecovery('logical-session', ordinary, overrideKey);
   recovery.bind('logical-session', provider);
@@ -73,6 +76,81 @@ describe('request-scoped window recovery', () => {
     assert.equal(recovery.summary()?.descendingFailures, 4);
     assert.equal(recovery.summary()?.revalidationAvailable, false);
     assert.equal(recovery.prepare([changed], state, true), null);
+  });
+
+  describe('after a failed first disclosure, with no ordinary baseline yet', () => {
+    function afterFailedDisclosure(): WindowRecovery {
+      const recovery = create();
+      const ticket = recovery.prepare([disclosure('first disclosure')], recoveryFingerprint('unsettled input'), true);
+      assert.ok(ticket?.disclosureOnly);
+      finish(recovery, ticket);
+
+      return recovery;
+    }
+
+    it('runs the first state-bearing attempt as an ordinary shape 1 that spends no revalidation', () => {
+      // Arrange
+      const recovery = afterFailedDisclosure();
+      assert.equal(recovery.halfPrefixBytes, null);
+
+      // Act
+      const attempt = prepare(recovery, 1);
+      finish(recovery, attempt, 'success');
+
+      // Assert
+      assert.equal(attempt.revalidation, false);
+      assert.equal(recovery.summary()?.descendingFailures, 1);
+      assert.equal(recovery.summary()?.revalidationAvailable, true);
+    });
+
+    it('does not treat a compaction before the first ordinary failure as a revalidation trigger', () => {
+      // Arrange
+      const recovery = afterFailedDisclosure();
+      recovery.compacted(provider);
+
+      // Act
+      const attempt = prepare(recovery, 1);
+
+      // Assert
+      assert.equal(attempt.revalidation, false);
+    });
+
+    it('keeps the full descending ladder and the one revalidation within the shared ceiling', () => {
+      // Arrange
+      const recovery = afterFailedDisclosure();
+
+      // Act
+      finish(recovery, prepare(recovery, 1));
+      assert.equal(recovery.halfPrefixBytes, 200);
+      finish(recovery, prepare(recovery, 2));
+      finish(recovery, prepare(recovery, 3));
+      recovery.compacted(provider);
+      const revalidation = prepare(recovery, 1);
+      assert.equal(revalidation.revalidation, true);
+      finish(recovery, revalidation);
+      recovery.compacted(provider);
+
+      // Assert
+      assert.equal(recovery.prepare(candidates('new state'), recoveryFingerprint('new state')), null);
+      assert.deepEqual(recovery.summary(), { variant: 'ordinary', state: 'exhausted', descendingFailures: 4, revalidationAvailable: false });
+    });
+
+    it('refuses a state-bearing attempt once disclosures alone reach the ceiling', () => {
+      // Arrange
+      const recovery = afterFailedDisclosure();
+      for (const name of ['second disclosure', 'third disclosure', 'fourth disclosure']) {
+        const ticket = recovery.prepare([disclosure(name)], state, true);
+        assert.ok(ticket?.disclosureOnly);
+        finish(recovery, ticket);
+      }
+
+      // Act
+      const attempt = recovery.prepare(candidates(), state);
+
+      // Assert
+      assert.equal(attempt, null);
+      assert.deepEqual(recovery.summary(), { variant: 'ordinary', state: 'exhausted', descendingFailures: 4, revalidationAvailable: true });
+    });
   });
 
   it('rejects a state-bearing candidate labelled as disclosure', () => {

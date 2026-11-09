@@ -176,8 +176,9 @@ export class WindowRecovery {
     } else {
       const changedHistory = this.compaction > episode.failedCompaction;
       const changedContent = relevance !== episode.failedRelevance;
+      const ordinaryAttemptFailed = episode.failedRelevance !== null;
       const stateCandidate = candidates.find(item => item.stateIncluded && (changedHistory || item.fingerprint !== episode.failedCandidates.at(-1)));
-      revalidation = episode.failures > 0 && episode.revalidationAvailable && (changedHistory || changedContent) && stateCandidate !== undefined;
+      revalidation = ordinaryAttemptFailed && episode.revalidationAvailable && (changedHistory || changedContent) && stateCandidate !== undefined;
       candidate = revalidation ? stateCandidate : undefined;
       if (candidate === undefined && !episode.exhausted && episode.failures < 4) {
         candidate = candidates.find(item => item.shape >= episode.nextShape && !episode.failedCandidates.includes(item.fingerprint) && item.fingerprint !== episode.failedRevalidationCandidate && (episode.failedBytes === null || item.bytes < episode.failedBytes));

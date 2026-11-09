@@ -61,12 +61,6 @@ Investigate a retained private fixture directory while distinguishing helper exi
 
 **Requires:** none.
 
-### [Disclosure-first window baseline](bugs/runtime-disclosure-first-window-baseline.md)
-
-Define the missing content baseline after a failed first disclosure while preserving bounded retries and no automatic resend.
-
-**Requires:** none.
-
 ### [Deep helper working directories](bugs/runtime-helper-cwd-length.md)
 
 Investigate measured Windows helper launch failures in deep private working directories without weakening containment or quiescence.
