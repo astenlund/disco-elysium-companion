@@ -101,7 +101,7 @@ export class SessionHost implements SessionHostV1 {
   private transition: Promise<void> | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private lastStatus = '';
-  private maintenanceFailure: Error | null = null;
+  private maintenanceFailure: { readonly error: Error; readonly instance: string } | null = null;
   private compactionToken = Symbol();
 
   constructor(options: SessionHostOptions) {
@@ -464,7 +464,34 @@ export class SessionHost implements SessionHostV1 {
 
   passiveSignal(instance: string, signal: ProviderSignal): void { this.signal(instance, signal); }
   private requireMaintenance(): void {
-    if (this.maintenanceFailure !== null) { throw this.maintenanceFailure; }
+    if (this.maintenanceFailure !== null) { throw this.maintenanceFailure.error; }
+  }
+  /** The provider closes on a typed capacity error from its send gates, so a latched one is an unsent refusal there; the check after the send still reports it. */
+  private requireMaintenanceAtSend(): void {
+    this.refuseLatchedCapacity();
+    this.requireMaintenance();
+  }
+  private refuseLatchedCapacity(): void {
+    if (this.maintenanceFailure?.error instanceof RuntimeCapacityError) { throw new UnsentTurnRefusal('A required binding publication was refused for capacity.'); }
+  }
+  /** A binding refused for capacity during the copy can fail the copy, through its capacity check or a partial binding write, before the latch is seen. */
+  private async copyForSend(...args: Parameters<RuntimeBackend['copyForSend']>): ReturnType<RuntimeBackend['copyForSend']> {
+    try { return await this.options.backend.copyForSend(...args); }
+    catch (error) {
+      await this.maintenance.idle();
+      this.refuseLatchedCapacity();
+      throw error;
+    }
+  }
+  /**
+   * A latched binding failure refuses later turns until a session is established again, so end the failed session and let
+   * the reconnect establish one. A capacity refusal stays open: the capacity gate already refuses new turns and a
+   * reconnect's binding write would be refused the same way, leaving the provider failed.
+   */
+  private endLatchedSession(): void {
+    const latched = this.maintenanceFailure;
+    if (latched === null || latched.error instanceof RuntimeCapacityError || this.closing || !this.lifecycle.isCurrent(latched.instance)) { return; }
+    void this.lifecycle.session?.close().catch(() => { this.ready = false; });
   }
   private signal(instance: string, signal: ProviderSignal): void {
     if (!this.lifecycle.isCurrent(instance) || this.closing) { return; }
@@ -477,8 +504,9 @@ export class SessionHost implements SessionHostV1 {
       this.emit({ type: 'context.compacted' });
       void this.maintenance.run(async () => { if (this.lifecycle.isCurrent(instance)) { await this.lifecycle.compacted(); } })
         .catch(error => {
-          this.maintenanceFailure = error instanceof Error ? error : new Error('A required binding publication failed.', { cause: error });
+          this.maintenanceFailure = { error: error instanceof Error ? error : new Error('A required binding publication failed.', { cause: error }), instance };
           this.statusChanged();
+          if (this.active === null) { this.endLatchedSession(); }
         });
       this.statusChanged();
       return;
@@ -524,11 +552,11 @@ export class SessionHost implements SessionHostV1 {
           this.refuseInactiveTurn(turn);
           const compactionToken = this.compactionToken;
           await this.maintenance.idle();
-          this.requireMaintenance();
+          this.requireMaintenanceAtSend();
           if (this.compactionToken !== compactionToken) { throw new UnsentTurnRefusal('Provider context changed before send.'); }
           const latestBinding = this.lifecycle.binding;
           if (latestBinding === null) { throw new Error('Session binding is unavailable.'); }
-          const current = await this.options.backend.copyForSend(selectedHandle, latestBinding, this.lifecycle.identity(selectedSession));
+          const current = await this.copyForSend(selectedHandle, latestBinding, this.lifecycle.identity(selectedSession));
           redelivery = current.redelivery;
           this.refuseInactiveTurn(turn);
           if (current.candidate.fingerprint !== ticket!.candidate.fingerprint || current.candidate.bytes !== ticket!.candidate.bytes || current.disclosureOnly !== ticket!.disclosureOnly
@@ -539,7 +567,7 @@ export class SessionHost implements SessionHostV1 {
           }
           admitEnqueue = () => {
             this.refuseInactiveTurn(turn);
-            this.requireMaintenance();
+            this.requireMaintenanceAtSend();
             if (!this.lifecycle.isCurrent(selectedSession.providerInstanceId) || this.compactionToken !== compactionToken || this.lifecycle.binding !== latestBinding) {
               throw new UnsentTurnRefusal('Provider context changed before enqueue.');
             }
@@ -557,9 +585,6 @@ export class SessionHost implements SessionHostV1 {
         },
       });
       await this.maintenance.idle();
-      // An unsent refusal leaves the process open because nothing changed for it. A binding failure landing afterward refuses
-      // every later turn until a new binding clears it, so end the process and let the reconnect produce that binding.
-      if (!turn.sent && this.maintenanceFailure !== null) { void selectedSession.close().catch(() => { this.ready = false; }); }
       if (turn.sent) { this.recovery.finished(ticket!, selectedSession.providerInstanceId, outcome.kind === 'completed' ? 'success' : outcome.code === 'contextExhausted' ? 'contextExhausted' : 'otherFailure'); }
       else { this.recovery.cancelBeforeSend(ticket!); }
       ticket = null;
@@ -617,7 +642,7 @@ export class SessionHost implements SessionHostV1 {
       this.dialogs.endTurn(turn.interactionId);
       if (this.active === turn) { this.active = null; }
       this.statusChanged();
-      if (!this.closing) { this.scheduleTransition(); }
+      if (!this.closing) { this.endLatchedSession(); this.scheduleTransition(); }
     }
   }
 

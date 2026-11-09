@@ -793,6 +793,234 @@ test('a binding failure landing after a classified unsent refusal still ends the
   await host.shutdown();
 });
 
+/** ClaudeSession reports its exit once a close finishes; FakeSession needs telling. */
+function exitWhenClosed(session: FakeSession): void {
+  const close = session.close.bind(session);
+  session.close = async () => { await close(); session.exit('subprocessExited'); };
+}
+
+function failNextBinding(backend: FakeBackend, error: Error = new Error('Binding publication failed.')): void {
+  const sessions = backend.sessions as { bind: FakeBackend['sessions']['bind'] };
+  const bind = sessions.bind;
+  sessions.bind = async () => { sessions.bind = bind; await flush(); throw error; };
+}
+
+function refuseCapacityOnNextBinding(backend: FakeBackend): void {
+  const sessions = backend.sessions as { bind: FakeBackend['sessions']['bind'] };
+  const bind = sessions.bind;
+  sessions.bind = async () => {
+    sessions.bind = bind;
+    await flush();
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
+    throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'ordinary');
+  };
+}
+
+async function settle(): Promise<void> { for (let iteration = 0; iteration < 10; iteration += 1) { await flush(); } }
+
+async function assertReconnectedAndServing({ host, provider, events }: HostFixture, failed: FakeSession): Promise<void> {
+  await until(() => failed.closed && provider.sessions.length === 2 && host.status.provider.state === 'ready');
+  assert.equal(provider.calls.at(-1), failed.providerSessionId);
+  assert.equal(events.filter(event => event.type === 'notice' && event.code === 'sessionReconnected').length, 1);
+  assert.equal(host.submitChat({ text: 'later', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(provider.current.requests.length, 1);
+  assert.ok(events.some(event => event.type === 'turn.completed'));
+}
+
+test('a binding failure with no turn in flight ends the process so a later turn recovers', async () => {
+  const context = await fixture();
+  const { host, backend, provider } = context;
+  const first = provider.current;
+  exitWhenClosed(first);
+  failNextBinding(backend);
+  host.passiveSignal(first.providerInstanceId, { kind: 'compaction' });
+  await assertReconnectedAndServing(context, first);
+  await host.shutdown();
+});
+
+test('a binding failure during a sent turn lets the answer finish, then ends the process', async () => {
+  const context = await fixture();
+  const { host, backend, provider, events } = context;
+  const first = provider.current;
+  exitWhenClosed(first);
+  const release = deferred<void>();
+  let closedDuringAnswer: boolean | null = null;
+  first.action = async request => {
+    failNextBinding(backend);
+    request.onSignal({ kind: 'compaction' });
+    await settle();
+    closedDuringAnswer = first.closed;
+    await release.promise;
+    return { kind: 'completed', text: 'answer' };
+  };
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => closedDuringAnswer !== null);
+  assert.equal(closedDuringAnswer, false);
+  release.resolve();
+  await until(() => !host.turnInProgress);
+  assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => event.code), ['providerError']);
+  first.action = async () => ({ kind: 'completed', text: 'unused' });
+  await assertReconnectedAndServing(context, first);
+  await host.shutdown();
+});
+
+test('a binding failure while a turn is still acquiring ends the process once that turn has ended', async () => {
+  const context = await fixture();
+  const { host, backend, provider, events } = context;
+  const first = provider.current;
+  exitWhenClosed(first);
+  const release = deferred<void>();
+  backend.acquireWait = release.promise;
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => backend.acquisitionCount === 1);
+  failNextBinding(backend);
+  host.passiveSignal(first.providerInstanceId, { kind: 'compaction' });
+  await settle();
+  assert.equal(first.closed, false);
+  backend.acquireWait = null;
+  release.resolve();
+  await until(() => !host.turnInProgress);
+  assert.equal(first.requests.length, 0);
+  assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => event.code), ['providerError']);
+  await assertReconnectedAndServing(context, first);
+  await host.shutdown();
+});
+
+test('a capacity refusal of a binding with no turn in flight does not end the process', async () => {
+  const { host, backend, provider } = await fixture();
+  const first = provider.current;
+  exitWhenClosed(first);
+  refuseCapacityOnNextBinding(backend);
+  host.passiveSignal(first.providerInstanceId, { kind: 'compaction' });
+  await until(() => backend.status.capacity.ordinary.state === 'exhausted');
+  await settle();
+  assert.equal(first.closed, false);
+  assert.equal(provider.sessions.length, 1);
+  assert.equal(host.submitChat({ text: 'next', questionOverride: false }).result, 'notReady');
+  await host.shutdown();
+});
+
+test('a capacity refusal of a binding after an unsent refusal does not end the process', async () => {
+  const { host, backend, provider } = await fixture();
+  const first = provider.current;
+  returnRefusalsAsOutcomes(first);
+  exitWhenClosed(first);
+  compactDuringSendTimeCopy(host, backend, first, () => { refuseCapacityOnNextBinding(backend); });
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  await settle();
+  assert.equal(first.closed, false);
+  assert.equal(provider.sessions.length, 1);
+  await host.shutdown();
+});
+
+/** ClaudeSession closes on any send-gate error except an unsent refusal, which it returns as an outcome. */
+function closeOnSendGateErrors(session: FakeSession): void {
+  const send = session.sendTurn.bind(session);
+  session.sendTurn = async request => {
+    try { return await send(request); }
+    catch (error) {
+      if (error instanceof UnsentTurnRefusal) { return { kind: 'failed', code: 'providerError', retryable: true }; }
+      await session.close();
+      if (error instanceof RuntimeCapacityError) { throw error; }
+      return { kind: 'failed', code: 'providerError', retryable: true };
+    }
+  };
+}
+
+const latchedCapacityGates: readonly { readonly name: string; readonly arrange: (context: HostFixture, session: FakeSession) => void }[] = [
+  { name: 'before the send', arrange: ({ host, backend }, session) => {
+    session.beforeSend = async () => {
+      refuseCapacityOnNextBinding(backend);
+      host.passiveSignal(session.providerInstanceId, { kind: 'compaction' });
+    };
+  } },
+  { name: 'before the enqueue', arrange: ({ host, backend }, session) => {
+    const copy = backend.copyForSend.bind(backend);
+    backend.copyForSend = async (handle, binding, identity) => {
+      backend.copyForSend = copy;
+      const copied = await copy(handle, binding, identity);
+      refuseCapacityOnNextBinding(backend);
+      host.passiveSignal(session.providerInstanceId, { kind: 'compaction' });
+      await settle();
+      return copied;
+    };
+  } },
+  { name: 'during a send-time copy that the refusal itself fails', arrange: ({ host, backend }, session) => {
+    backend.copyForSend = async () => {
+      refuseCapacityOnNextBinding(backend);
+      host.passiveSignal(session.providerInstanceId, { kind: 'compaction' });
+      await flush();
+      await flush();
+      throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'ordinary');
+    };
+  } },
+  { name: 'during a send-time copy that a partial binding write fails with another error', arrange: ({ host, backend }, session) => {
+    backend.copyForSend = async () => {
+      refuseCapacityOnNextBinding(backend);
+      host.passiveSignal(session.providerInstanceId, { kind: 'compaction' });
+      await flush();
+      await flush();
+      throw new Error('The durable binding no longer matches its index.');
+    };
+  } },
+];
+
+for (const gate of latchedCapacityGates) {
+  test('a capacity refusal of a binding latched ' + gate.name + ' keeps the process open and the turn capacity blocked', async () => {
+    const context = await fixture();
+    const { host, provider, events } = context;
+    const first = provider.current;
+    closeOnSendGateErrors(first);
+    gate.arrange(context, first);
+    assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+    await until(() => !host.turnInProgress);
+    await settle();
+    assert.equal(first.closed, false);
+    assert.equal(provider.sessions.length, 1);
+    assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => [event.code, event.retryable]), [['capacityBlocked', false]]);
+    assert.equal(host.submitChat({ text: 'next', questionOverride: false }).result, 'notReady');
+    await host.shutdown();
+  });
+}
+
+test('a capacity refusal from the send-time copy with no latched binding failure still ends the process', async () => {
+  const { host, backend, provider, events } = await fixture();
+  const first = provider.current;
+  closeOnSendGateErrors(first);
+  backend.copyForSend = async () => {
+    Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
+    throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'ordinary');
+  };
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(first.closed, true);
+  assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => [event.code, event.retryable]), [['capacityBlocked', false]]);
+  await host.shutdown();
+});
+
+test('the close for a binding failure never reaches the session that replaced the failed one', async () => {
+  const context = await fixture();
+  const { host, backend, provider } = context;
+  const first = provider.current;
+  first.action = async (request, session) => {
+    failNextBinding(backend);
+    request.onSignal({ kind: 'compaction' });
+    await settle();
+    session.exit('subprocessExited');
+    return { kind: 'failed', code: 'subprocessExited', retryable: true };
+  };
+  assert.equal(host.submitChat({ text: 'first', questionOverride: false }).result, 'admitted');
+  await until(() => provider.sessions.length === 2 && host.status.provider.state === 'ready');
+  await settle();
+  assert.equal(provider.current.closed, false);
+  assert.equal(host.submitChat({ text: 'later', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(provider.current.requests.length, 1);
+  await host.shutdown();
+});
+
 test('a turn interrupted before enqueue is a classified unsent refusal', async () => {
   const { host, provider } = await fixture();
   const capture = captureSendFailure(provider.current);
@@ -884,6 +1112,7 @@ test('required compaction binding capacity refusal retains its typed failure', a
     Object.assign(backend.status, { capacity: { ...backend.status.capacity, ordinary: { state: 'exhausted', reason: null, dimensions: ['freeSpace'] } } });
     throw new RuntimeCapacityError({ admitted: false, state: 'exhausted', dimensions: ['freeSpace'] }, 'ordinary');
   };
+  returnRefusalsAsOutcomes(provider.current);
   provider.current.beforeSend = async () => { host.passiveSignal(provider.current.providerInstanceId, { kind: 'compaction' }); };
   assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
   await until(() => !host.turnInProgress);

@@ -20,4 +20,4 @@ Decide whether any latched binding failure should end the process so the reconne
 
 ## Status
 
-Tracked by the user's triage decision on 2026-11-09. No fix or publication is authorized by this entry.
+Tracked by the user's triage decision on 2026-11-09, and fixed later that day: the host now ends the failed session once the failure latches or its active turn has ended, with capacity refusals excluded, as the [runtime design](../features/companion-execution-runtime.md) states. The evidence above describes the code before that fix.
