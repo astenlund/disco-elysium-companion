@@ -15,3 +15,5 @@ Define operator-assisted recovery guidance for content-invalid runtime metadata,
 ## Status
 
 The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+
+Fixed and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09: the runtime design and `runtime/STARTUP.md` now state the operator procedure, and a regression test exercises it end to end.

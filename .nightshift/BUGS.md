@@ -85,12 +85,6 @@ Distinguish residue, unexpected owned entries, and helper transport failures wit
 
 **Requires:** none.
 
-### [Invalid runtime marker recovery](bugs/runtime-invalid-marker-recovery-guidance.md)
-
-Define a safe operator procedure for content-invalid runtime metadata without assuming marker deletion is safe.
-
-**Requires:** none.
-
 ### [Retained-handoff merge after abandon](bugs/runtime-retained-handoff-merge.md)
 
 Test and correct recovery refusal after unsettled reappend and explicit abandon without weakening original settlement binding.
