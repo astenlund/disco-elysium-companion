@@ -61,12 +61,6 @@ Distinguish residue, unexpected owned entries, and helper transport failures wit
 
 **Requires:** none.
 
-### [Prepared-context invalidation assertion](bugs/runtime-prepared-context-invalidation-assertion.md)
-
-Investigate extra fixture-root invalidations before changing the assertion or production behavior.
-
-**Requires:** none.
-
 ## Startup prototype deferred bugs
 
 These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.

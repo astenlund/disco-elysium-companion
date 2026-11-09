@@ -14,4 +14,4 @@ Investigate the fixture's expected invalidation contract against FilePublisher a
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. The evidence above predates commit fae8233, which changed the assertion to expect both the attempted target and the data root; `FilePublisher.block` invalidates the root, and no production defect was found. Resolved with no further change and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-09.
