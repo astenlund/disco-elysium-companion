@@ -65,6 +65,18 @@ Invoke-InCompanionModule {
     Write-CompanionStateBytes -Path $target -Bytes ([byte[]](4, 5, 6))
     Assert-Equal -Actual ([string]::Join(',', [IO.File]::ReadAllBytes($target))) -Expected '4,5,6' -Message 'Atomic writer replaces complete bytes.'
     Assert-Equal -Actual @([IO.Directory]::GetFiles($State, '*.tmp')).Count -Expected 0 -Message 'Atomic writer removes its owned temp.'
+    # A target that appears between the writer's existence check and its first-write move is
+    # replaced rather than refused, so atomic replacement still decides between concurrent writers.
+    $racedTarget = Join-Path $State 'raced.json'
+    $racedTemp = "$racedTarget.0123456789abcdef0123456789abcdef.tmp"
+    [IO.File]::WriteAllBytes($racedTemp, [byte[]](21))
+    [IO.File]::WriteAllBytes($racedTarget, [byte[]](20))
+    Move-CompanionStateTemp -Temp $racedTemp -Target $racedTarget
+    Assert-Equal -Actual ([string]::Join(',', [IO.File]::ReadAllBytes($racedTarget))) -Expected '21' -Message 'The first-write move overwrites a target that appeared after the existence check.'
+    Assert-False -Condition ([IO.File]::Exists($racedTemp)) -Message 'The first-write move transfers the temp path.'
+    [IO.File]::Delete($racedTarget)
+    $moveDefault = (Get-Command Write-CompanionStateBytes).ScriptBlock.Ast.FindAll({ param($Node) $Node -is [Management.Automation.Language.ParameterAst] -and $Node.Name.VariablePath.UserPath -ceq 'Move' }, $true) | Select-Object -First 1
+    Assert-True -Condition ($null -ne $moveDefault -and $moveDefault.DefaultValue.Extent.Text -cmatch '\bMove-CompanionStateTemp\b') -Message 'The writer moves a first write through Move-CompanionStateTemp by default.'
     $sharingCalls = [Collections.Generic.List[int]]::new()
     $delays = [Collections.Generic.List[int]]::new()
     Assert-ThrowsType -TypeName 'System.IO.IOException' -Action {

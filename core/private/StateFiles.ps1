@@ -27,6 +27,14 @@ function Test-SharingViolation {
     return ($Exception.HResult -band 0xffff) -eq 32
 }
 
+# The first-write move overwrites: a target that appears after the writer's existence check is
+# replaced, so atomic replacement still decides the winner among concurrent writers (7.1).
+function Move-CompanionStateTemp {
+    param([Parameter(Mandatory)] [string] $Temp, [Parameter(Mandatory)] [string] $Target)
+
+    [IO.File]::Move($Temp, $Target, $true)
+}
+
 function Write-CompanionStateBytes {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -35,7 +43,7 @@ function Write-CompanionStateBytes {
         [Parameter()] [scriptblock] $WriteBytes = { param($Stream, $Value) $Stream.Write($Value, 0, $Value.Length) },
         [Parameter()] [scriptblock] $FlushStream = { param($Stream) $Stream.Flush($true) },
         [Parameter()] [scriptblock] $CloseStream = { param($Stream) $Stream.Dispose() },
-        [Parameter()] [scriptblock] $Move = { param($Temp, $Target) [IO.File]::Move($Temp, $Target, $true) },
+        [Parameter()] [scriptblock] $Move = { param($Temp, $Target) Move-CompanionStateTemp -Temp $Temp -Target $Target },
         [Parameter()] [scriptblock] $Replace = { param($Temp, $Target, $Backup) [IO.File]::Replace($Temp, $Target, $Backup, $true) },
         [Parameter()] [scriptblock] $Delay = { param($Milliseconds) [Threading.Thread]::Sleep($Milliseconds) },
         [Parameter()] [scriptblock] $DeleteTemp = { param($Temp) [IO.File]::Delete($Temp) },
