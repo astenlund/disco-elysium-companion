@@ -31,12 +31,6 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 These user-tracked findings came from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
 
-### [State-file overwrite contract](bugs/statefiles-overwrite-wording.md)
-
-Reconcile the section 7.1 no-overwrite promise with the existing state writer after deciding the intended replacement behavior.
-
-**Requires:** none.
-
 ### [Concurrent scratch cleanup](bugs/parallel-scratch-cleanup.md)
 
 Reproduce the intermittent concurrent test scratch removal failure before changing shared cleanup logic.
@@ -84,12 +78,6 @@ These user-tracked findings came from Nightshift run df11cced-f1ff-4618-b967-34f
 ### Skipped context shape after an unsent attempt
 
 `WindowRecovery.prepare` writes `nextShape` before an attempt is sent and `cancelBeforeSend` does not restore it, and the retryability inspection in `runtime/src/session-host.ts` prepares and cancels an attempt; after an ordinary failure with the single revalidation spent, a later submission of the same text can skip a shape that has become feasible, and the same inspection marks the episode exhausted when it finds no candidate. The skip rule in `companion-execution-runtime.md` says a skip sends nothing and consumes no failure but not whether it is permanent, so decide that first, then state the rule in the spec or move the write to the actual send.
-
-**Requires:** none.
-
-### Absent adapter package member after resolution
-
-`$script:SaveDigestDumpReasons` in `core/DigestDiff.psm1` lists `adapter-release-corrupt` and the digest list inherits it, but nothing emits that reason at the dump stage; the only stage-level emitter is the digest validator failure in `core/private/Acquisition.ps1`. A package member that vanishes after resolution gets no repair hint: a directly launched member should end as `command-start-failed`, and a script launched through `pwsh` normally as `command-exit-nonzero`. Choose between classifying an absent member as `adapter-release-corrupt` for both launch forms and retiring the dump entry together with the dump routing in `AGENTS.md`, keeping the reason for the digest stage, which inherits it from the dump list today.
 
 **Requires:** none.
 

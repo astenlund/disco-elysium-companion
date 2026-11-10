@@ -14,4 +14,4 @@ Track it as a bug: decide whether the spec wording or the code is authoritative 
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. On 2026-11-10 the user decided the code is authoritative: the state-writer paragraph now states the overwriting first-write move, the move is the named `Move-CompanionStateTemp` with a regression test, and the entry is archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md).
