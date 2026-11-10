@@ -28,7 +28,7 @@ function Test-SharingViolation {
 }
 
 # The first-write move overwrites: a target that appears after the writer's existence check is
-# replaced, so atomic replacement still decides the winner among concurrent writers (7.1).
+# replaced rather than refused, unless a reader holds it open (7.1).
 function Move-CompanionStateTemp {
     param([Parameter(Mandatory)] [string] $Temp, [Parameter(Mandatory)] [string] $Target)
 

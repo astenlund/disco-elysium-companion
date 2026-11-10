@@ -66,7 +66,7 @@ Invoke-InCompanionModule {
     Assert-Equal -Actual ([string]::Join(',', [IO.File]::ReadAllBytes($target))) -Expected '4,5,6' -Message 'Atomic writer replaces complete bytes.'
     Assert-Equal -Actual @([IO.Directory]::GetFiles($State, '*.tmp')).Count -Expected 0 -Message 'Atomic writer removes its owned temp.'
     # A target that appears between the writer's existence check and its first-write move is
-    # replaced rather than refused, so atomic replacement still decides between concurrent writers.
+    # replaced rather than refused as already existing (7.1).
     $racedTarget = Join-Path $State 'raced.json'
     $racedTemp = "$racedTarget.0123456789abcdef0123456789abcdef.tmp"
     [IO.File]::WriteAllBytes($racedTemp, [byte[]](21))
