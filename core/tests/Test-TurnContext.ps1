@@ -49,6 +49,26 @@ Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
     Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'config' } @($configWithOversizedDetail)
 }
 
+# Only resolution and the digest validator classify a corrupt release; the dump stage never does.
+Assert-ThrowsType -TypeName 'ArgumentException' -Action {
+    Invoke-InCompanionModule { [SaveDigestStageException]::new('dump', 'stable', 'adapter-release-corrupt', [pscustomobject]@{}, $null) }
+}
+$digestCorrupt = Invoke-InCompanionModule { [SaveDigestStageException]::new('digest', 'stable', 'adapter-release-corrupt', [pscustomobject]@{}, $null) }
+Assert-OrdinalEqual -Actual $digestCorrupt.Reason -Expected 'adapter-release-corrupt' -Message 'The digest stage still carries the corrupt-release reason from the validator.'
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { New-TurnContextDetail -Class 'dump' -Reason 'adapter-release-corrupt' }
+}
+$dumpCorruptDiagnostic = $successDiagnostic.Replace('"outcomeClass":"success"', '"outcomeClass":"dump"').Replace('"consumptionState":"consumed"', '"consumptionState":"none"').Replace('"generationTimestamp":"2026-08-10T12:00:00.0000000Z"', '"generationTimestamp":null').Replace('"detail":null', '"detail":"adapter-release-corrupt"')
+Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
+    Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'dump' } @($dumpCorruptDiagnostic)
+}
+$digestCorruptDiagnostic = $dumpCorruptDiagnostic.Replace('"outcomeClass":"dump"', '"outcomeClass":"digest"')
+$digestCorruptRead = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'digest' } @($digestCorruptDiagnostic)
+Assert-OrdinalEqual -Actual $digestCorruptRead.Materialized['detail'] -Expected 'adapter-release-corrupt' -Message 'A digest diagnostic carrying the corrupt-release reason is accepted.'
+$dumpStartDiagnostic = $dumpCorruptDiagnostic.Replace('"detail":"adapter-release-corrupt"', '"detail":"command-start-failed"')
+$dumpStartRead = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'dump' } @($dumpStartDiagnostic)
+Assert-OrdinalEqual -Actual $dumpStartRead.Materialized['detail'] -Expected 'command-start-failed' -Message 'The dump diagnostic fixture is otherwise admissible.'
+
 $attempt = [pscustomobject]@{ outcomeClass = 'reset-write:not-consumed'; consumptionState = 'notConsumed'; envelopeJson = '{}'; cacheDegraded = $false; diagnostic = [ordered]@{} }
 Assert-ThrowsType -TypeName 'TurnContextProtocolException' -Action {
     Invoke-InCompanionModule { param($Value) Assert-TurnContextAttemptResult -Value $Value } @($attempt)

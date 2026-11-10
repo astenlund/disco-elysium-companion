@@ -150,8 +150,10 @@ class SaveCandidateLimitException : CompanionContentException {
 # validates against these lists, and the turn-context reason table in TurnContext.ps1
 # derives its copy/dump/digest entries from them.
 $script:SaveDigestCopyReasons = @('work-setup-failed', 'source-size-limit-exceeded', 'source-vanished', 'source-changed', 'source-unreadable')
-$script:SaveDigestDumpReasons = @('command-start-failed', 'adapter-release-corrupt', 'command-timeout', 'command-transport-failed', 'command-exit-nonzero', 'promised-output-missing')
-$script:SaveDigestDigestReasons = $script:SaveDigestDumpReasons + @('document-invalid', 'adapter-validator-infrastructure-failed', 'schema-version-mismatch', 'adapter-version-mismatch', 'game-mismatch', 'source-domain-mismatch', 'source-receipt-mismatch')
+# Only the digest stage carries adapter-release-corrupt, from the packaged validator; a
+# command member that vanishes after resolution is an ordinary command failure.
+$script:SaveDigestDumpReasons = @('command-start-failed', 'command-timeout', 'command-transport-failed', 'command-exit-nonzero', 'promised-output-missing')
+$script:SaveDigestDigestReasons = $script:SaveDigestDumpReasons + @('adapter-release-corrupt', 'document-invalid', 'adapter-validator-infrastructure-failed', 'schema-version-mismatch', 'adapter-version-mismatch', 'game-mismatch', 'source-domain-mismatch', 'source-receipt-mismatch')
 
 class SaveDigestStageException : CompanionContentException {
     [string] $Stage

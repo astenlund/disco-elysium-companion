@@ -36,7 +36,7 @@ Runtime-mode exception: when this session's system prompt carries the companion 
      consumption state (`unknown` for invalid exit-1 framing).
    - `[stale-target]`: a retained baseline is newer than the target; direct the player
      to create a fresh in-game save. Never offer an automatic baseline reset.
-   - A validated `adapter-release-corrupt` reason (config, dump, or digest): direct the
+   - A validated `adapter-release-corrupt` reason (config or digest): direct the
      user to repair or reinstall the active adapter package under
      `adapters/disco_elysium/releases/`.
    - A `pipeline-reaper-discovery-limit-exceeded` warning is persistent: stop all
