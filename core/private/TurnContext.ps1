@@ -629,8 +629,9 @@ function Invoke-TurnContextConsumption {
 
             return [pscustomobject]@{ action = 'terminal'; terminalResult = $terminalResult }
         }
-        # Reset-write details are registry literals. Re-validating here routes an
-        # invalid detail through the attempt's protocol catch-all.
+        # Reset-write details are registry literals. Re-validating here makes an invalid
+        # detail throw out of the attempt, and the caller reports protocol /
+        # attempt-result-invalid with unknown consumption.
         $resultDetail = if ($consume.outcomeClass -cin @('reset-write:not-consumed', 'reset-write:consumed')) { New-TurnContextDetail -Class $consume.outcomeClass -Reason $consume.detail } else { $null }
         $terminalResult = New-TurnContextTerminalResult -Class $consume.outcomeClass -OperationalWarnings $OperationalWarnings -ConsumptionState $consume.consumptionState -Detail $resultDetail -SourceIdentity $payloadSource -GenerationTimestamp $payloadGeneration -EnvelopeJson $json -CacheDegraded $consume.cacheDegraded
 
