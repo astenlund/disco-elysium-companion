@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome', 'ZeroByteStateFiles')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome', 'ZeroByteStateFiles', 'UnexpectedFailure')]
     [string] $Only = 'All'
 )
 
@@ -1223,27 +1223,28 @@ $stabilityRows = Invoke-InCompanionModule {
     $unexpectedEnumerations = [Collections.Generic.List[int]]::new()
     $unexpectedCycles = [Collections.Generic.List[int]]::new()
     $unexpectedConsumptions = [Collections.Generic.List[int]]::new()
-    $unexpected = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
-        GetSaveCandidates = { param($Unused) $unexpectedEnumerations.Add(1); if ($unexpectedEnumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath), [IO.FileInfo]::new($SavePath)) } }
-        ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
-        ConfirmConfig = { param($Unused) }
-        TestStable = { param($Save) throw [InvalidOperationException]::new('unexpected stability failure') }
-        Cycle = { param($CycleSave, $Sink) $unexpectedCycles.Add(1) }
-        Consumption = { param($Floor, $Ctx, $Sink) $unexpectedConsumptions.Add(1) }
+    $unexpectedError = $null
+    try {
+        $null = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $Config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational) -Operations @{
+            GetSaveCandidates = { param($Unused) $unexpectedEnumerations.Add(1); if ($unexpectedEnumerations.Count -eq 1) { @([IO.FileInfo]::new($SavePath)) } else { @([IO.FileInfo]::new($newerPath), [IO.FileInfo]::new($SavePath)) } }
+            ReadCurrent = { param($Unused) [pscustomobject]@{ outcome = 'absent'; document = $null; reason = 'target-missing' } }
+            ConfirmConfig = { param($Unused) }
+            TestStable = { param($Save) throw [InvalidOperationException]::new('unexpected stability failure') }
+            Cycle = { param($CycleSave, $Sink) $unexpectedCycles.Add(1) }
+            Consumption = { param($Floor, $Ctx, $Sink) $unexpectedConsumptions.Add(1) }
+        }
     }
-    $unexpectedSource = $unexpected.diagnostic['sourceIdentity']
+    catch { $unexpectedError = $_.Exception }
+    $releasedLock = Enter-CompanionCycleLock -CompanionRoot $Root -TimeoutMilliseconds 0
+    $releasedLock.Dispose()
     [IO.File]::Delete($newerPath)
 
     return [pscustomobject]@{
         rows = @($rows)
         firstCycledSave = $cycledSaves[0]
         reselectFloorFile = $reselect.diagnostic['sourceIdentity']
-        unexpectedClass = $unexpected.outcomeClass
-        unexpectedDetail = $unexpected.diagnostic['detail']
-        unexpectedDomainId = if ($null -eq $unexpectedSource) { $null } else { [string] $unexpectedSource['domainId'] }
-        unexpectedFile = if ($null -eq $unexpectedSource) { $null } else { [string] $unexpectedSource['saveFile'] }
-        unexpectedSavedAt = if ($null -eq $unexpectedSource) { $null } else { [string] $unexpectedSource['savedAt'] }
-        unexpectedGeneration = $unexpected.diagnostic['generationTimestamp']
+        unexpectedErrorType = if ($null -eq $unexpectedError) { $null } else { $unexpectedError.GetType().FullName }
+        unexpectedErrorMessage = if ($null -eq $unexpectedError) { $null } else { $unexpectedError.Message }
         unexpectedCycleCalls = $unexpectedCycles.Count
         unexpectedConsumptionCalls = $unexpectedConsumptions.Count
     }
@@ -1256,12 +1257,10 @@ foreach ($row in $stabilityRows.rows) {
 }
 Assert-OrdinalEqual -Actual $stabilityRows.firstCycledSave -Expected 'C.ntwtf.zip' -Message 'The cycle processes the post-lock re-selected newer save.'
 Assert-OrdinalEqual -Actual ([string] $stabilityRows.reselectFloorFile['saveFile']) -Expected 'C.ntwtf.zip' -Message 'The floor rises to the post-lock selection.'
-Assert-OrdinalEqual -Actual $stabilityRows.unexpectedClass -Expected 'protocol' -Message 'An unexpected post-lock stability failure terminates as protocol.'
-Assert-OrdinalEqual -Actual $stabilityRows.unexpectedDetail -Expected 'envelope-invalid' -Message 'An unexpected post-lock stability failure carries envelope-invalid.'
-Assert-OrdinalEqual -Actual $stabilityRows.unexpectedDomainId -Expected $turnContextDomain -Message 'An unexpected post-lock stability failure carries the raised floor domain.'
-Assert-OrdinalEqual -Actual $stabilityRows.unexpectedFile -Expected 'C.ntwtf.zip' -Message 'An unexpected post-lock stability failure carries the raised floor file.'
-Assert-OrdinalEqual -Actual $stabilityRows.unexpectedSavedAt -Expected '2026-08-10T13:00:00.0000000Z' -Message 'An unexpected post-lock stability failure carries the raised floor timestamp.'
-Assert-True -Condition ($null -eq $stabilityRows.unexpectedGeneration) -Message 'An unexpected post-lock stability failure has no generation timestamp.'
+# An unexpected failure builds no attempt result: it propagates to the wrapper, which alone
+# reports protocol / attempt-result-invalid with unknown consumption.
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedErrorType -Expected 'System.InvalidOperationException' -Message 'An unexpected post-lock stability failure propagates out of the attempt.'
+Assert-OrdinalEqual -Actual $stabilityRows.unexpectedErrorMessage -Expected 'unexpected stability failure' -Message 'The propagated failure is the original exception.'
 Assert-Equal -Actual $stabilityRows.unexpectedCycleCalls -Expected 0 -Message 'An unexpected post-lock stability failure never invokes the cycle.'
 Assert-Equal -Actual $stabilityRows.unexpectedConsumptionCalls -Expected 0 -Message 'An unexpected post-lock stability failure never starts consumption.'
 
@@ -1439,6 +1438,28 @@ if ($Only -in @('All', 'ZeroByteStateFiles')) {
     Assert-False -Condition $healedEnvelope.RootElement.GetProperty('baselineReset').GetBoolean() -Message 'Refreshing a zero-byte current keeps the valid baseline.'
 
     if ($Only -eq 'ZeroByteStateFiles') {
+        Write-Output 'PASS: turn context'
+        exit 0
+    }
+}
+
+if ($Only -in @('All', 'UnexpectedFailure')) {
+    # A real unexpected failure inside the attempt, a file squatting where the state
+    # directory belongs, reaches the unmodified wrapper and its real validation, which
+    # report protocol / attempt-result-invalid with unknown consumption and no provenance.
+    $unexpectedFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-unexpected' -EntryScripts @('Get-TurnContext.ps1')
+    [IO.File]::WriteAllText($unexpectedFixture.State, 'not a directory', [Text.UTF8Encoding]::new($false, $true))
+    $unexpectedRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $unexpectedFixture.Core 'Get-TurnContext.ps1')) -WorkingDirectory $unexpectedFixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $unexpectedRun.ExitCode -Expected 1 -Message "An unexpected attempt failure ends the wrapper with exit 1 (stderr: $($unexpectedRun.StdErr.Trim()))"
+    Assert-Equal -Actual $unexpectedRun.StdOut.Length -Expected 0 -Message 'An unexpected attempt failure writes no envelope.'
+    $unexpectedPrefix = '[turn-context:protocol] '
+    Assert-True -Condition $unexpectedRun.StdErr.StartsWith($unexpectedPrefix, [StringComparison]::Ordinal) -Message "An unexpected attempt failure is a protocol terminal (stderr: $($unexpectedRun.StdErr.Trim()))"
+    $unexpectedDiagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'protocol' } @($unexpectedRun.StdErr.Substring($unexpectedPrefix.Length).TrimEnd())
+    Assert-OrdinalEqual -Actual $unexpectedDiagnostic.Materialized['consumptionState'] -Expected 'unknown' -Message 'An unexpected attempt failure reports unknown consumption.'
+    Assert-OrdinalEqual -Actual $unexpectedDiagnostic.Materialized['detail'] -Expected 'attempt-result-invalid' -Message 'An unexpected attempt failure reports attempt-result-invalid.'
+    Assert-True -Condition ($null -eq $unexpectedDiagnostic.Materialized['sourceIdentity'] -and $null -eq $unexpectedDiagnostic.Materialized['generationTimestamp']) -Message 'An unexpected attempt failure carries no provenance.'
+
+    if ($Only -eq 'UnexpectedFailure') {
         Write-Output 'PASS: turn context'
         exit 0
     }

@@ -579,11 +579,6 @@ function Invoke-TurnContextRefresh {
         }
         $commitObserved = $cycle -is [CycleOutcome] -and $cycle.CurrentCommitted
     }
-    catch {
-        $terminalResult = New-TurnContextTerminalResult -Class protocol -OperationalWarnings $OperationalWarnings -Reason envelope-invalid -SourceIdentity $raisedFloor
-
-        return [pscustomobject]@{ action = 'terminal'; terminalResult = $terminalResult; floor = $raisedFloor; warningCode = $null; commitObserved = $null }
-    }
     finally {
         $cycleLock.Dispose()
     }
@@ -684,71 +679,68 @@ function Invoke-TurnContextAttempt {
     $lastFreshnessReason = 'target-below-floor'
     $refreshCommitted = $false
     $cycleWarningCode = $null
-    try {
-        Initialize-CompanionStateDirectories -CompanionRoot $CompanionRoot
-        Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $OperationalWarnings
-        for ($pass = 0; $pass -lt $script:TurnContextRefreshAttemptCap; $pass++) {
-            $passObservation = Get-TurnContextSaveObservation -AdapterConfig $AdapterConfig -Floor $floor -Operations $Operations
-            if ($passObservation.status -ceq 'failure') { return New-TurnContextTerminalResult -Class source -OperationalWarnings $OperationalWarnings -Reason $passObservation.reason -SourceIdentity $passObservation.floor }
-            if ($passObservation.status -ceq 'empty') { return New-TurnContextTerminalResult -Class 'no-saves' -OperationalWarnings $OperationalWarnings -Reason no-matching-saves }
-            $floor = $passObservation.floor
-            $current = if ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
-            if ($current.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -OperationalWarnings $OperationalWarnings -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
-            $fresh = $current.outcome -ceq 'valid' -and (Compare-SourceIdentity -Left $current.document.Materialized['source'] -Right $floor).order -ge 0
-            if (-not $fresh) {
-                if ($current.outcome -cin @('absent', 'content-invalid', 'stale')) { Add-CompanionWarning -Sink $attemptWarnings -Code pipeline-current-self-healed -Detail $null }
-                $refresh = Invoke-TurnContextRefresh -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Pass $pass -Floor $floor
-                $floor = $refresh.floor
-                if ($null -ne $refresh.commitObserved) {
-                    $refreshAttempts++
-                    $refreshCommitted = $refreshCommitted -or $refresh.commitObserved
-                }
-                if ($refresh.action -ceq 'retry') { continue }
-                if ($refresh.action -ceq 'terminal') { return $refresh.terminalResult }
-                $cycleWarningCode = $refresh.warningCode
+    Initialize-CompanionStateDirectories -CompanionRoot $CompanionRoot
+    Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $OperationalWarnings
+    for ($pass = 0; $pass -lt $script:TurnContextRefreshAttemptCap; $pass++) {
+        $passObservation = Get-TurnContextSaveObservation -AdapterConfig $AdapterConfig -Floor $floor -Operations $Operations
+        if ($passObservation.status -ceq 'failure') { return New-TurnContextTerminalResult -Class source -OperationalWarnings $OperationalWarnings -Reason $passObservation.reason -SourceIdentity $passObservation.floor }
+        if ($passObservation.status -ceq 'empty') { return New-TurnContextTerminalResult -Class 'no-saves' -OperationalWarnings $OperationalWarnings -Reason no-matching-saves }
+        $floor = $passObservation.floor
+        $current = if ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
+        if ($current.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -OperationalWarnings $OperationalWarnings -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
+        $fresh = $current.outcome -ceq 'valid' -and (Compare-SourceIdentity -Left $current.document.Materialized['source'] -Right $floor).order -ge 0
+        if (-not $fresh) {
+            if ($current.outcome -cin @('absent', 'content-invalid', 'stale')) { Add-CompanionWarning -Sink $attemptWarnings -Code pipeline-current-self-healed -Detail $null }
+            $refresh = Invoke-TurnContextRefresh -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Pass $pass -Floor $floor
+            $floor = $refresh.floor
+            if ($null -ne $refresh.commitObserved) {
+                $refreshAttempts++
+                $refreshCommitted = $refreshCommitted -or $refresh.commitObserved
             }
-            $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
-            if ($target.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -OperationalWarnings $OperationalWarnings -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
-            if ($target.outcome -cne 'valid') {
-                if ($null -ne $cycleWarningCode) { return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason $target.reason -SourceIdentity $floor }
-                $lastFreshnessReason = $target.reason
-
-                continue
-            }
-            # 7.5 stage 4: admit only a target at or above the incoming floor.
-            if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
-                if ($null -ne $cycleWarningCode -or $pass -eq ($script:TurnContextRefreshAttemptCap - 1)) {
-                    return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason target-below-floor -SourceIdentity $floor
-                }
-                $lastFreshnessReason = 'target-below-floor'
-
-                continue
-            }
-            $admittedGeneration = $target.document.RootElement.GetProperty('generatedAt').GetString()
-            # 7.5 stage 5: observe the save directory after the frozen target has
-            # been admitted, raising the floor to the newest identity observed.
-            # An empty observation leaves the existing floor unchanged.
-            $postTargetObservation = Get-TurnContextSaveObservation -AdapterConfig $AdapterConfig -Floor $floor -Operations $Operations
-            if ($postTargetObservation.status -ceq 'failure') { return New-TurnContextTerminalResult -Class source -OperationalWarnings $OperationalWarnings -Reason $postTargetObservation.reason -SourceIdentity $postTargetObservation.floor }
-            $floor = $postTargetObservation.floor
-            if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
-                if ($null -ne $cycleWarningCode -or $pass -eq ($script:TurnContextRefreshAttemptCap - 1)) {
-                    return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason target-below-floor -SourceIdentity $floor -GenerationTimestamp $admittedGeneration
-                }
-                $lastFreshnessReason = 'target-below-floor'
-
-                continue
-            }
-            if ($null -ne $cycleWarningCode) {
-                Add-CompanionWarning -Sink $attemptWarnings -Code $cycleWarningCode -Detail $null
-            }
-            # 7.6's Publish-StateEvent.ps1 replaces only this stage-6 consumption.
-            $consumption = if ($Operations.ContainsKey('ConsumeStage')) { & $Operations.ConsumeStage ([pscustomobject]@{ Floor = $floor; AdmittedTarget = $target.document; RefreshAttempts = $refreshAttempts; RefreshCommitted = $refreshCommitted; Pass = $pass; AttemptWarnings = $attemptWarnings }) } else { Invoke-TurnContextConsumption -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Floor $floor -AdmittedTarget $target.document -RefreshAttempts $refreshAttempts -RefreshCommitted $refreshCommitted -Pass $pass }
-            if ($consumption.action -ceq 'retry') { continue }
-
-            return $consumption.terminalResult
+            if ($refresh.action -ceq 'retry') { continue }
+            if ($refresh.action -ceq 'terminal') { return $refresh.terminalResult }
+            $cycleWarningCode = $refresh.warningCode
         }
-        return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason $lastFreshnessReason -SourceIdentity $floor
+        $target = if ($fresh) { $current } elseif ($Operations.ContainsKey('ReadCurrent')) { & $Operations.ReadCurrent $AdapterConfig } else { Read-CompanionCurrent -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig }
+        if ($target.outcome -ceq 'validator-infrastructure') { return New-TurnContextTerminalResult -Class compute -OperationalWarnings $OperationalWarnings -Reason adapter-validator-infrastructure-failed -SourceIdentity $floor }
+        if ($target.outcome -cne 'valid') {
+            if ($null -ne $cycleWarningCode) { return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason $target.reason -SourceIdentity $floor }
+            $lastFreshnessReason = $target.reason
+
+            continue
+        }
+        # 7.5 stage 4: admit only a target at or above the incoming floor.
+        if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
+            if ($null -ne $cycleWarningCode -or $pass -eq ($script:TurnContextRefreshAttemptCap - 1)) {
+                return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason target-below-floor -SourceIdentity $floor
+            }
+            $lastFreshnessReason = 'target-below-floor'
+
+            continue
+        }
+        $admittedGeneration = $target.document.RootElement.GetProperty('generatedAt').GetString()
+        # 7.5 stage 5: observe the save directory after the frozen target has
+        # been admitted, raising the floor to the newest identity observed.
+        # An empty observation leaves the existing floor unchanged.
+        $postTargetObservation = Get-TurnContextSaveObservation -AdapterConfig $AdapterConfig -Floor $floor -Operations $Operations
+        if ($postTargetObservation.status -ceq 'failure') { return New-TurnContextTerminalResult -Class source -OperationalWarnings $OperationalWarnings -Reason $postTargetObservation.reason -SourceIdentity $postTargetObservation.floor }
+        $floor = $postTargetObservation.floor
+        if ((Compare-SourceIdentity -Left $target.document.Materialized['source'] -Right $floor).order -lt 0) {
+            if ($null -ne $cycleWarningCode -or $pass -eq ($script:TurnContextRefreshAttemptCap - 1)) {
+                return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason target-below-floor -SourceIdentity $floor -GenerationTimestamp $admittedGeneration
+            }
+            $lastFreshnessReason = 'target-below-floor'
+
+            continue
+        }
+        if ($null -ne $cycleWarningCode) {
+            Add-CompanionWarning -Sink $attemptWarnings -Code $cycleWarningCode -Detail $null
+        }
+        # 7.6's Publish-StateEvent.ps1 replaces only this stage-6 consumption.
+        $consumption = if ($Operations.ContainsKey('ConsumeStage')) { & $Operations.ConsumeStage ([pscustomobject]@{ Floor = $floor; AdmittedTarget = $target.document; RefreshAttempts = $refreshAttempts; RefreshCommitted = $refreshCommitted; Pass = $pass; AttemptWarnings = $attemptWarnings }) } else { Invoke-TurnContextConsumption -CompanionRoot $CompanionRoot -AdapterConfig $AdapterConfig -AttemptWarnings $attemptWarnings -OperationalWarnings $OperationalWarnings -Operations $Operations -Floor $floor -AdmittedTarget $target.document -RefreshAttempts $refreshAttempts -RefreshCommitted $refreshCommitted -Pass $pass }
+        if ($consumption.action -ceq 'retry') { continue }
+
+        return $consumption.terminalResult
     }
-    catch { return New-TurnContextTerminalResult -Class protocol -OperationalWarnings $OperationalWarnings -Reason envelope-invalid -SourceIdentity $floor }
+    return New-TurnContextTerminalResult -Class freshness -OperationalWarnings $OperationalWarnings -Reason $lastFreshnessReason -SourceIdentity $floor
 }
