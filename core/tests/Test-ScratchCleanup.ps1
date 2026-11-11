@@ -117,29 +117,21 @@ if (Test-Selected 'ConcurrentSweep') {
         $root = Join-Path $script:ProjectTmp "scratch-sweep-$deadId-$([guid]::NewGuid().ToString('N'))"
         New-ScratchTree -Root $root
         $go = Join-Path $control "go-$round"
-        $processes = @()
+        $children = @()
         try {
-            for ($index = 0; $index -lt $Sweepers; $index++) {
-                $startInfo = [Diagnostics.ProcessStartInfo]::new('pwsh')
-                foreach ($argument in @('-NoProfile', '-File', $sweeper, '-GoFile', $go)) { $startInfo.ArgumentList.Add($argument) }
-                $startInfo.UseShellExecute = $false
-                $startInfo.RedirectStandardOutput = $true
-                $startInfo.RedirectStandardError = $true
-                $process = [Diagnostics.Process]::Start($startInfo)
-                $processes += [pscustomobject]@{ process = $process; stdout = $process.StandardOutput.ReadToEndAsync(); stderr = $process.StandardError.ReadToEndAsync() }
-            }
+            for ($index = 0; $index -lt $Sweepers; $index++) { $children += Start-BoundedPwsh -Arguments @('-File', $sweeper, '-GoFile', $go) }
             # Every sweeper imports its module before the go file appears.
             Start-Sleep -Milliseconds 2500
             [IO.File]::WriteAllText($go, 'go', $script:Utf8)
-            foreach ($entry in $processes) {
-                Assert-True -Condition $entry.process.WaitForExit(120000) -Message "Round $round sweepers exit."
-                $stderr = $entry.stderr.GetAwaiter().GetResult()
-                Assert-Equal -Actual $entry.process.ExitCode -Expected 0 -Message "Round $round sweeper exits cleanly (stderr: $($stderr.Trim()))"
+            foreach ($child in $children) {
+                $result = Complete-BoundedPwsh -Child $child -TimeoutMilliseconds 120000
+                Assert-Equal -Actual $result.ExitCode -Expected 0 -Message "Round $round sweeper exits cleanly (stderr: $($result.StdErr.Trim()))"
             }
             Assert-False -Condition ([IO.Directory]::Exists($root)) -Message "Round $round leaves no part of the dead root."
         }
         finally {
-            foreach ($entry in $processes) { $entry.process.Dispose() }
+            # Every sweeper still running is killed before the root is cleaned up.
+            foreach ($child in $children) { Stop-BoundedPwsh -Child $child }
             if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
         }
     }
