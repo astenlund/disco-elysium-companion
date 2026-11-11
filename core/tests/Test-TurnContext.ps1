@@ -235,6 +235,22 @@ function Write-TurnContextPassGate {
     Write-Output 'PASS: turn context'
 }
 
+# Runs the real Get-TurnContext.ps1 from a staged core and asserts the protocol /
+# attempt-result-invalid fallback: unknown consumption, no provenance and no envelope.
+function Assert-StagedWrapperUnknownTerminal {
+    param([Parameter(Mandatory)] $Fixture, [Parameter(Mandatory)] [string] $Label)
+
+    $run = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $Fixture.Core 'Get-TurnContext.ps1')) -WorkingDirectory $Fixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $run.ExitCode -Expected 1 -Message "$Label ends the wrapper with exit 1 (stderr: $($run.StdErr.Trim()))"
+    Assert-Equal -Actual $run.StdOut.Length -Expected 0 -Message "$Label writes no envelope."
+    $prefix = '[turn-context:protocol] '
+    Assert-True -Condition $run.StdErr.StartsWith($prefix, [StringComparison]::Ordinal) -Message "$Label is a protocol terminal (stderr: $($run.StdErr.Trim()))"
+    $diagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'protocol' } @($run.StdErr.Substring($prefix.Length).TrimEnd())
+    Assert-OrdinalEqual -Actual $diagnostic.Materialized['consumptionState'] -Expected 'unknown' -Message "$Label reports unknown consumption."
+    Assert-OrdinalEqual -Actual $diagnostic.Materialized['detail'] -Expected 'attempt-result-invalid' -Message "$Label reports attempt-result-invalid."
+    Assert-True -Condition ($null -eq $diagnostic.Materialized['sourceIdentity'] -and $null -eq $diagnostic.Materialized['generationTimestamp']) -Message "$Label carries no provenance."
+}
+
 $turnContextDigestTemplate = '{"schemaVersion":2,"adapterVersion":2,"game":"example","generatedAt":"GEN","source":{"domainId":"DOM","saveFile":"FILE","savedAt":"SAVE","byteLength":1,"contentSha256":"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"},"session":{"day":1,"time":"08:09","location":"place","playtimeNote":null},"character":{"level":1,"xp":0,"unspentPoints":0,"money":{"amount":1.25,"minorUnits":125,"minorUnitsPerUnit":100,"currency":"real"},"vitals":[{"name":"health","value":1}],"skills":[{"name":"Logic","value":1,"group":"Intellect"}]},"objectives":[{"id":"TASK.example","title":"example","status":"active","acquired":{"day":1,"time":"08:09"},"resolved":null,"subobjectives":[]}],"inventory":{"owned":["item"],"equipped":["item"],"highlights":[]},"extra":{}}'
 $turnContextDomain = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 
@@ -1576,15 +1592,7 @@ if ($Only -in @('All', 'UnexpectedFailure')) {
     # protocol / attempt-result-invalid with unknown consumption and no provenance.
     $unexpectedFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-unexpected' -EntryScripts @('Get-TurnContext.ps1')
     Add-StagedCoreFault -Core $unexpectedFixture.Core -File 'StateFiles.ps1' -Function 'Invoke-WorkFileReaper'
-    $unexpectedRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $unexpectedFixture.Core 'Get-TurnContext.ps1')) -WorkingDirectory $unexpectedFixture.Root -TimeoutMilliseconds 240000
-    Assert-Equal -Actual $unexpectedRun.ExitCode -Expected 1 -Message "An unexpected attempt failure ends the wrapper with exit 1 (stderr: $($unexpectedRun.StdErr.Trim()))"
-    Assert-Equal -Actual $unexpectedRun.StdOut.Length -Expected 0 -Message 'An unexpected attempt failure writes no envelope.'
-    $unexpectedPrefix = '[turn-context:protocol] '
-    Assert-True -Condition $unexpectedRun.StdErr.StartsWith($unexpectedPrefix, [StringComparison]::Ordinal) -Message "An unexpected attempt failure is a protocol terminal (stderr: $($unexpectedRun.StdErr.Trim()))"
-    $unexpectedDiagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'protocol' } @($unexpectedRun.StdErr.Substring($unexpectedPrefix.Length).TrimEnd())
-    Assert-OrdinalEqual -Actual $unexpectedDiagnostic.Materialized['consumptionState'] -Expected 'unknown' -Message 'An unexpected attempt failure reports unknown consumption.'
-    Assert-OrdinalEqual -Actual $unexpectedDiagnostic.Materialized['detail'] -Expected 'attempt-result-invalid' -Message 'An unexpected attempt failure reports attempt-result-invalid.'
-    Assert-True -Condition ($null -eq $unexpectedDiagnostic.Materialized['sourceIdentity'] -and $null -eq $unexpectedDiagnostic.Materialized['generationTimestamp']) -Message 'An unexpected attempt failure carries no provenance.'
+    Assert-StagedWrapperUnknownTerminal -Fixture $unexpectedFixture -Label 'An unexpected attempt failure'
 
     if ($Only -eq 'UnexpectedFailure') {
         Write-Output 'PASS: turn context'
@@ -1598,15 +1606,7 @@ if ($Only -in @('All', 'InvalidWrapperTerminal')) {
     # validates every terminal it writes, so it emits the attempt-result-invalid fallback.
     $invalidFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-invalid-terminal' -EntryScripts @('Get-TurnContext.ps1')
     Add-StagedCoreOverride -Core $invalidFixture.Core -File 'TurnContext.ps1' -Function 'Get-TurnContextEnvelopeRejection' -Body 'param($Result, $AdapterConfig, $OperationalWarnings) return New-TurnContextDiagnosticObject -Class protocol -ConsumptionState consumed -Detail (New-TurnContextDetail -Class protocol -Reason envelope-invalid) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $OperationalWarnings'
-    $invalidRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $invalidFixture.Core 'Get-TurnContext.ps1')) -WorkingDirectory $invalidFixture.Root -TimeoutMilliseconds 240000
-    Assert-Equal -Actual $invalidRun.ExitCode -Expected 1 -Message "An invalid wrapper terminal ends the wrapper with exit 1 (stderr: $($invalidRun.StdErr.Trim()))"
-    Assert-Equal -Actual $invalidRun.StdOut.Length -Expected 0 -Message 'An invalid wrapper terminal writes no envelope.'
-    $invalidPrefix = '[turn-context:protocol] '
-    Assert-True -Condition $invalidRun.StdErr.StartsWith($invalidPrefix, [StringComparison]::Ordinal) -Message "An invalid wrapper terminal is replaced by a protocol terminal (stderr: $($invalidRun.StdErr.Trim()))"
-    $invalidDiagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'protocol' } @($invalidRun.StdErr.Substring($invalidPrefix.Length).TrimEnd())
-    Assert-OrdinalEqual -Actual $invalidDiagnostic.Materialized['consumptionState'] -Expected 'unknown' -Message 'The replacement for an invalid wrapper terminal reports unknown consumption.'
-    Assert-OrdinalEqual -Actual $invalidDiagnostic.Materialized['detail'] -Expected 'attempt-result-invalid' -Message 'The replacement for an invalid wrapper terminal reports attempt-result-invalid.'
-    Assert-True -Condition ($null -eq $invalidDiagnostic.Materialized['sourceIdentity'] -and $null -eq $invalidDiagnostic.Materialized['generationTimestamp']) -Message 'The replacement for an invalid wrapper terminal carries no provenance.'
+    Assert-StagedWrapperUnknownTerminal -Fixture $invalidFixture -Label 'An invalid wrapper terminal'
 
     if ($Only -eq 'InvalidWrapperTerminal') {
         Write-Output 'PASS: turn context'
