@@ -29,11 +29,15 @@ $modulePath = Join-Path $PSScriptRoot 'DigestDiff.psm1'
 if (-not (Test-Path -LiteralPath $modulePath)) { $modulePath = Join-Path $PSScriptRoot '../DigestDiff.psm1' }
 Import-Module $modulePath -Force -DisableNameChecking
 
+function New-StateEventUnknownDiagnostic {
+    return New-TurnContextDiagnosticObject -Class protocol -ConsumptionState unknown -Detail (New-StateEventDetail -Script Publish -Class protocol -Reason attempt-result-invalid) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+}
+
 function Write-StateEventTerminal {
     param([Parameter(Mandatory)] $Diagnostic)
 
     try { $line = Format-StateEventDiagnosticLine -Script Publish -Diagnostic $Diagnostic }
-    catch { $line = Format-StateEventDiagnosticLine -Script Publish -Diagnostic (New-TurnContextDiagnosticObject -Class protocol -ConsumptionState unknown -Detail (New-StateEventDetail -Script Publish -Class protocol -Reason attempt-result-invalid) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)) }
+    catch { $line = Format-StateEventDiagnosticLine -Script Publish -Diagnostic (New-StateEventUnknownDiagnostic) }
     [Console]::Error.Write("$line`n")
     exit 1
 }
@@ -89,7 +93,7 @@ try {
     exit 0
 }
 catch {
-    Write-StateEventTerminal (New-TurnContextDiagnosticObject -Class protocol -ConsumptionState unknown -Detail (New-StateEventDetail -Script Publish -Class protocol -Reason attempt-result-invalid) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational))
+    Write-StateEventTerminal (New-StateEventUnknownDiagnostic)
 }
 finally {
     if ($null -ne $config) { $config.Dispose() }
