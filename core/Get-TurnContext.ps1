@@ -59,7 +59,7 @@ try {
         [void] (Assert-TurnContextAttemptResult -Value $selected)
     }
     # Every envelope-bearing result is validated, including a retry's not-consumed one.
-    if ($null -ne $selected.envelopeJson) {
+    if ($selected.outcomeClass -cin @('success', 'reset-write:consumed', 'reset-write:not-consumed')) {
         $rejection = Get-TurnContextEnvelopeRejection -Result $selected -AdapterConfig $config -OperationalWarnings $operational
         if ($null -ne $rejection) { Write-TurnContextTerminal $rejection }
     }
