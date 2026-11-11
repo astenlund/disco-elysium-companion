@@ -987,9 +987,10 @@ if ($Only -in @('All', 'EnvelopeRejectionState')) {
         Assert-OrdinalEqual -Actual $row.generation -Expected '2026-08-10T12:00:00.0000000Z' -Message "An envelope rejection after '$($row.name)' keeps the result's generation."
     }
 
-    # The unmodified wrapper writes the rejection as its terminal record, emits no envelope,
-    # and never starts a second attempt after a rejected notConsumed first attempt.
-    foreach ($scenario in @(@('envelope-reject-first', 'notConsumed', 'envelope-invalid'), @('envelope-reject-selected', 'consumed', 'envelope-invalid'), @('envelope-reject-infrastructure', 'consumed', 'adapter-validator-infrastructure-failed'))) {
+    # The unmodified wrapper writes the rejection as its terminal record and emits no envelope.
+    # It never starts a second attempt after a rejected notConsumed first attempt, and it
+    # validates a retry's notConsumed envelope too, never starting a third attempt.
+    foreach ($scenario in @(@('envelope-reject-first', 'notConsumed', 'envelope-invalid', '1'), @('envelope-reject-selected', 'consumed', 'envelope-invalid', '1'), @('envelope-reject-infrastructure', 'consumed', 'adapter-validator-infrastructure-failed', '1'), @('envelope-reject-retry', 'notConsumed', 'envelope-invalid', "1`n2"))) {
         $rejectRoot = New-ScratchCompanionRoot -Prefix "turn-context-$($scenario[0])"
         $rejectRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $PSScriptRoot 'Invoke-TurnContextWrapperHarness.ps1'), '-Scenario', $scenario[0], '-ScratchRoot', $rejectRoot, '-StagedWrapperPath', (Join-Path $PSScriptRoot '../Get-TurnContext.ps1')) -WorkingDirectory $rejectRoot
         Assert-Equal -Actual $rejectRun.ExitCode -Expected 1 -Message "The '$($scenario[0])' wrapper exits 1."
@@ -998,7 +999,7 @@ if ($Only -in @('All', 'EnvelopeRejectionState')) {
         $rejectDiagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass protocol } @($rejectRun.StdErr.Substring('[turn-context:protocol] '.Length).TrimEnd())
         Assert-OrdinalEqual -Actual $rejectDiagnostic.Materialized['consumptionState'] -Expected $scenario[1] -Message "The '$($scenario[0])' terminal reports the result's consumption state."
         Assert-OrdinalEqual -Actual $rejectDiagnostic.Materialized['detail'] -Expected $scenario[2] -Message "The '$($scenario[0])' terminal carries its protocol reason."
-        Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $rejectRoot 'attempt-trace.txt')).Trim()) -Expected '1' -Message "The '$($scenario[0])' wrapper makes exactly one attempt."
+        Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $rejectRoot 'attempt-trace.txt')).Trim()) -Expected $scenario[3] -Message "The '$($scenario[0])' wrapper makes exactly the expected attempts."
     }
 
     if ($Only -eq 'EnvelopeRejectionState') {

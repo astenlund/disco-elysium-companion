@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select', 'not-owner', 'envelope-reject-first', 'envelope-reject-selected', 'envelope-reject-infrastructure')]
+    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select', 'not-owner', 'envelope-reject-first', 'envelope-reject-selected', 'envelope-reject-infrastructure', 'envelope-reject-retry')]
     [string] $Scenario,
 
     [Parameter(Mandatory)]
@@ -107,6 +107,9 @@ function Invoke-TurnContextAttempt {
         return New-TestResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -EnvelopeJson '{"attempt":"A"}'
     }
 
+    if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'envelope-reject-retry') {
+        return New-TestResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -EnvelopeJson '{"attempt":"B"}' -SourceIdentity $rejectedIdentity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z'
+    }
     if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'retry-success') {
         return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"B"}'
     }
@@ -127,6 +130,7 @@ function Get-TurnContextEnvelopeRejection {
         'envelope-reject-first' { 'envelope-invalid' }
         'envelope-reject-selected' { 'envelope-invalid' }
         'envelope-reject-infrastructure' { 'adapter-validator-infrastructure-failed' }
+        'envelope-reject-retry' { if ($Result.envelopeJson -ceq '{"attempt":"B"}') { 'envelope-invalid' } else { return $null } }
         default { return $null }
     }
 
