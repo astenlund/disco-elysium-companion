@@ -85,10 +85,7 @@ try {
     # The record file, not this receipt, carries the transition: a failed stdout write is
     # a delivery failure whose consumption state says whether a record was committed.
     try { [Console]::Out.Write($receiptJson) }
-    catch {
-        $deliveryState = if ($selected.stateEventOutcome -ceq 'committed') { 'consumed' } else { 'none' }
-        Write-StateEventTerminal (New-StateEventPublishDiagnostic -Result $selected -Class delivery -Reason stdout-write-failed -ConsumptionState $deliveryState -OperationalWarnings $operational)
-    }
+    catch { Write-StateEventTerminal (New-StateEventPublishDiagnostic -Result $selected -Class delivery -Reason stdout-write-failed -ConsumptionState $selected.consumptionState -OperationalWarnings $operational) }
     exit 0
 }
 catch {

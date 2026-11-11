@@ -1456,7 +1456,7 @@ function Test-StateEventOperationResult {
 }
 
 # Builds the Publish exit-1 diagnostic for a state-event operation failure, or for a
-# delivery failure after one. Provenance follows the 7.5 latch: config clears it, a
+# receipt or delivery failure after a non-failure result. Provenance follows the 7.5 latch: config clears it, a
 # failure before the locked freeze uses the admitted preflight target, and every later
 # failure uses the final target.
 function New-StateEventPublishDiagnostic {
