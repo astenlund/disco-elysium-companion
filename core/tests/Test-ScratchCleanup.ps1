@@ -93,6 +93,26 @@ if (Test-Selected 'Removal') {
     Assert-Win32Rethrown -Action { Invoke-StaleRootRemoval -Path $stuck -Remove { param($Target) $stuckCalls.count++; throw [ComponentModel.Win32Exception]::new(2) }.GetNewClosure() } -NativeErrorCode 2 -Message 'A root that survives every attempt'
     Assert-Equal -Actual $stuckCalls.count -Expected 3 -Message 'A surviving root is attempted exactly three times.'
 
+    # An attempt that returns normally but leaves the root (a suppressed partial removal) is
+    # repeated until the root is gone.
+    $lingering = Join-Path $scratch 'lingering'
+    New-ScratchTree -Root $lingering -Directories 1 -FilesPerDirectory 1
+    $lingeringCalls = @{ count = 0 }
+    Invoke-StaleRootRemoval -Path $lingering -Remove { param($Target) $lingeringCalls.count++; if ($lingeringCalls.count -ge 2) { [IO.Directory]::Delete($Target, $true) } }.GetNewClosure()
+    Assert-Equal -Actual $lingeringCalls.count -Expected 2 -Message 'A root left by a normally returning attempt is removed again once.'
+    Assert-False -Condition ([IO.Directory]::Exists($lingering)) -Message 'A root left by a normally returning attempt is absent after the retry.'
+
+    # A root that every normally returning attempt leaves in place surfaces after the bound.
+    $survivor = Join-Path $scratch 'survivor'
+    New-ScratchTree -Root $survivor -Directories 1 -FilesPerDirectory 1
+    $survivorCalls = @{ count = 0 }
+    $survivorError = $null
+    try { Invoke-StaleRootRemoval -Path $survivor -Remove { param($Target) $survivorCalls.count++ }.GetNewClosure() }
+    catch { $survivorError = $_.Exception }
+    Assert-True -Condition ($null -ne $survivorError) -Message 'A root no attempt removes is reported.'
+    Assert-Equal -Actual $survivorCalls.count -Expected 3 -Message 'A root no attempt removes is attempted exactly three times.'
+    Assert-True -Condition ([IO.Directory]::Exists($survivor)) -Message 'A root no attempt removes is left for inspection.'
+
     # A path that stops being an ordinary directory before the retry is left alone.
     $replaced = Join-Path $scratch 'replaced'
     New-ScratchTree -Root $replaced -Directories 1 -FilesPerDirectory 1
