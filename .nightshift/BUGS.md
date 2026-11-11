@@ -87,22 +87,6 @@ These user-tracked findings came from Nightshift run df11cced-f1ff-4618-b967-34f
 
 **Requires:** none.
 
-## Three Ready items deferred bugs
-
-These user-tracked findings came from Nightshift run 20cf1b2f-b050-44bd-baec-71479f63b501. Both predate that run and were established by reading the code. Tracking does not authorize a fix.
-
-### Envelope rejection reports unknown consumption
-
-`core/Get-TurnContext.ps1` calls `Read-TurnContextEnvelope` on a structurally valid attempt result with no inner try, so a rejected envelope reaches the outer catch and is reported as `protocol` / `attempt-result-invalid` with unknown consumption, even after the attempt consumed. State-extraction section 7.5 says an envelope validation failure keeps the attempt's consumption state, and its `[protocol]` row and the rationale for `unknown` leave this case out. Decide whether the wrapper keeps the result's state (as `protocol` / `envelope-invalid` with the result's consumption and provenance, with a test) or the spec lists this case as unknown, then fix all three section 7.5 statements together.
-
-**Requires:** none.
-
-### Attempt state setup failure classification
-
-`Invoke-TurnContextAttempt` calls `Initialize-CompanionStateDirectories` with no handler, so a failure there, such as a file squatting where the state directory belongs, ends as `protocol` / `attempt-result-invalid` with unknown consumption, while the section 7.5 `[source]` row and the reason registry promise `source` / `state-setup-failed` for state setup failure. The `UnexpectedFailure` group in `core/tests/Test-TurnContext.ps1` uses this case as its trigger. Either classify the setup failure as `source` / `state-setup-failed` with a test, giving that group a different real trigger, or narrow the `[source]` row in the spec.
-
-**Requires:** none.
-
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
