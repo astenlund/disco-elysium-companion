@@ -51,3 +51,10 @@ These user-tracked cleanups came from Nightshift run cffcf94d-49be-4cab-afcb-3fa
 These user-tracked cleanups came from Nightshift run df11cced-f1ff-4618-b967-34f6785c1d5b. None was fixed by this tracking edit.
 
 - **Text-client Ctrl+C clause.** The text-client paragraph of `companion-execution-runtime.md` says Ctrl+C "interrupts a running turn and quits when idle", but `runtime/src/text-client.ts` clears `running` on any terminal event, so Ctrl+C also quits while the interaction is still occupied; that is safe because `shutdown` awaits the turn work. Amend the clause to say the key interrupts until the turn's terminal event and quits after it, and add a test that drives the SIGINT branch, which no test exercises.
+
+## Three Ready items follow-ups
+
+These user-tracked cleanups came from Nightshift run 20cf1b2f-b050-44bd-baec-71479f63b501. None was fixed by this tracking edit.
+
+- **Superseded atomic replace record.** The "Atomic replace" bullet in state-extraction section 11 records a 2026-08-07 live claim that 1000 write-temp-then-`Move(overwrite)` cycles completed under a share-friendly reader. The 2026-08-10 probe recorded in section 7.1 found the overwriting move denied under such a reader, and `Write-CompanionStateBytes` rewrites an existing target with `File.Replace`. Mark the 2026-08-07 result as superseded by the 2026-08-10 probe and describe the production Replace loop as unverified until it is re-probed.
+- **Publisher unexpected-failure test.** No test drives an unexpected attempt exception through `core/Publish-StateEvent.ps1`; that it reports `protocol` / `attempt-result-invalid` with unknown consumption rests on reading its outer catch. The squatted-state trigger used for `Get-TurnContext.ps1` does not reach the attempt there, because the ownership preflight reads the consumer marker first. Add a publisher test with a trigger that reaches the attempt.
