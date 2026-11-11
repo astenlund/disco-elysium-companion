@@ -680,7 +680,10 @@ function Invoke-TurnContextAttempt {
     $lastFreshnessReason = 'target-below-floor'
     $refreshCommitted = $false
     $cycleWarningCode = $null
-    Initialize-CompanionStateDirectories -CompanionRoot $CompanionRoot
+    # A setup failure precedes save selection, so it is a classified source failure with
+    # no provenance rather than an exception the wrapper must report as unknown.
+    try { Initialize-CompanionStateDirectories -CompanionRoot $CompanionRoot }
+    catch { return New-TurnContextTerminalResult -Class source -OperationalWarnings $OperationalWarnings -Reason state-setup-failed }
     Invoke-WorkFileReaper -CompanionRoot $CompanionRoot -WarningSink $OperationalWarnings
     for ($pass = 0; $pass -lt $script:TurnContextRefreshAttemptCap; $pass++) {
         $passObservation = Get-TurnContextSaveObservation -AdapterConfig $AdapterConfig -Floor $floor -Operations $Operations

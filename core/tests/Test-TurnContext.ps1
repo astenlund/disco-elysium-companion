@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome', 'ZeroByteStateFiles', 'UnexpectedFailure')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome', 'ZeroByteStateFiles', 'StateSetupFailure', 'UnexpectedFailure')]
     [string] $Only = 'All'
 )
 
@@ -1443,12 +1443,53 @@ if ($Only -in @('All', 'ZeroByteStateFiles')) {
     }
 }
 
+if ($Only -in @('All', 'StateSetupFailure')) {
+    # A state setup failure is a classified source failure before save selection, never an
+    # unexpected exception. The attempt covers a file squatting where the work area belongs.
+    $workSetupFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-work-setup'
+    [IO.Directory]::Delete((Join-Path $workSetupFixture.Root '.tmp'))
+    [IO.File]::WriteAllText((Join-Path $workSetupFixture.Root '.tmp'), 'not a directory', [Text.UTF8Encoding]::new($false, $true))
+    $workSetup = Invoke-InCompanionModule {
+        param($Root)
+        $config = Get-AdapterConfig -CompanionRoot $Root -Profile Acquisition
+        try {
+            $result = Invoke-TurnContextAttempt -CompanionRoot $Root -AdapterConfig $config -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+            [void] (Assert-TurnContextAttemptResult -Value $result)
+            [pscustomobject]@{ outcomeClass = $result.outcomeClass; consumptionState = $result.consumptionState; detail = $result.diagnostic['detail']; sourceIdentity = $result.diagnostic['sourceIdentity']; generationTimestamp = $result.diagnostic['generationTimestamp'] }
+        }
+        finally { $config.Dispose() }
+    } @($workSetupFixture.Root)
+    Assert-OrdinalEqual -Actual $workSetup.outcomeClass -Expected 'source' -Message 'A work-area setup failure is a source outcome.'
+    Assert-OrdinalEqual -Actual $workSetup.consumptionState -Expected 'none' -Message 'A work-area setup failure consumes nothing.'
+    Assert-OrdinalEqual -Actual $workSetup.detail -Expected 'state-setup-failed' -Message 'A work-area setup failure carries the state setup reason.'
+    Assert-True -Condition ($null -eq $workSetup.sourceIdentity -and $null -eq $workSetup.generationTimestamp) -Message 'A setup failure before save selection carries no provenance.'
+
+    # The same classification through the unmodified wrapper and its real validation, with
+    # a file squatting where the state directory belongs.
+    $stateSetupFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-state-setup' -EntryScripts @('Get-TurnContext.ps1')
+    [IO.File]::WriteAllText($stateSetupFixture.State, 'not a directory', [Text.UTF8Encoding]::new($false, $true))
+    $stateSetupRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $stateSetupFixture.Core 'Get-TurnContext.ps1')) -WorkingDirectory $stateSetupFixture.Root -TimeoutMilliseconds 240000
+    Assert-Equal -Actual $stateSetupRun.ExitCode -Expected 1 -Message "A state setup failure ends the wrapper with exit 1 (stderr: $($stateSetupRun.StdErr.Trim()))"
+    Assert-Equal -Actual $stateSetupRun.StdOut.Length -Expected 0 -Message 'A state setup failure writes no envelope.'
+    $stateSetupPrefix = '[turn-context:source] '
+    Assert-True -Condition $stateSetupRun.StdErr.StartsWith($stateSetupPrefix, [StringComparison]::Ordinal) -Message "A state setup failure is a source terminal (stderr: $($stateSetupRun.StdErr.Trim()))"
+    $stateSetupDiagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass 'source' } @($stateSetupRun.StdErr.Substring($stateSetupPrefix.Length).TrimEnd())
+    Assert-OrdinalEqual -Actual $stateSetupDiagnostic.Materialized['consumptionState'] -Expected 'none' -Message 'A state setup failure reports no consumption.'
+    Assert-OrdinalEqual -Actual $stateSetupDiagnostic.Materialized['detail'] -Expected 'state-setup-failed' -Message 'A state setup failure reports state-setup-failed.'
+    Assert-True -Condition ($null -eq $stateSetupDiagnostic.Materialized['sourceIdentity'] -and $null -eq $stateSetupDiagnostic.Materialized['generationTimestamp']) -Message 'A state setup failure carries no provenance.'
+
+    if ($Only -eq 'StateSetupFailure') {
+        Write-Output 'PASS: turn context'
+        exit 0
+    }
+}
+
 if ($Only -in @('All', 'UnexpectedFailure')) {
-    # A real unexpected failure inside the attempt, a file squatting where the state
-    # directory belongs, reaches the unmodified wrapper and its real validation, which
-    # report protocol / attempt-result-invalid with unknown consumption and no provenance.
+    # A real unexpected exception inside the attempt, from a staged core whose work-file
+    # reaper throws, reaches the unmodified wrapper and its real validation, which report
+    # protocol / attempt-result-invalid with unknown consumption and no provenance.
     $unexpectedFixture = New-StagedStubAcquisitionRoot -Prefix 'turn-context-unexpected' -EntryScripts @('Get-TurnContext.ps1')
-    [IO.File]::WriteAllText($unexpectedFixture.State, 'not a directory', [Text.UTF8Encoding]::new($false, $true))
+    Add-StagedCoreFault -Core $unexpectedFixture.Core -File 'StateFiles.ps1' -Function 'Invoke-WorkFileReaper'
     $unexpectedRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $unexpectedFixture.Core 'Get-TurnContext.ps1')) -WorkingDirectory $unexpectedFixture.Root -TimeoutMilliseconds 240000
     Assert-Equal -Actual $unexpectedRun.ExitCode -Expected 1 -Message "An unexpected attempt failure ends the wrapper with exit 1 (stderr: $($unexpectedRun.StdErr.Trim()))"
     Assert-Equal -Actual $unexpectedRun.StdOut.Length -Expected 0 -Message 'An unexpected attempt failure writes no envelope.'
