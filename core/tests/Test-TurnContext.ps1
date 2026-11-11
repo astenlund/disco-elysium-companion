@@ -944,8 +944,9 @@ if ($Only -in @('All', 'EnvelopeRejectionState')) {
             accept = { param($Document) }
             reject = { param($Document) throw [AdapterDigestValidationException]::new('content rejected') }
             machinery = { param($Document) throw [InvalidOperationException]::new('machinery') }
+            stream = { param($Document) 'unexpected validator output' }
         }
-        $rows = foreach ($case in @(@('consumed', 'accept'), @('consumed', 'reject'), @('notConsumed', 'reject'), @('consumed', 'machinery'), @('notConsumed', 'machinery'))) {
+        $rows = foreach ($case in @(@('consumed', 'accept'), @('consumed', 'reject'), @('notConsumed', 'reject'), @('consumed', 'machinery'), @('notConsumed', 'machinery'), @('consumed', 'stream'))) {
             $config = [AdapterConfig]::new()
             $config.AdapterVersion = 2
             $config.Game = 'example'
@@ -973,6 +974,7 @@ if ($Only -in @('All', 'EnvelopeRejectionState')) {
         'notConsumed/reject' = @('notConsumed', 'envelope-invalid')
         'consumed/machinery' = @('consumed', 'adapter-validator-infrastructure-failed')
         'notConsumed/machinery' = @('notConsumed', 'adapter-validator-infrastructure-failed')
+        'consumed/stream' = @('consumed', 'adapter-validator-infrastructure-failed')
     }
     foreach ($row in $rejection) {
         $expected = $expectedRejections[$row.name]

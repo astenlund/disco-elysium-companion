@@ -104,7 +104,10 @@ function Read-TurnContextEnvelope {
         $floorOrder = Compare-SourceIdentity -Left $source -Right $floor
         if (-not $floorOrder.comparable -or $floorOrder.order -lt 0 -or (Get-Property $root baselineReset).GetBoolean() -ne ($diffRoot.GetProperty('baselineGeneratedAt').ValueKind -eq [Text.Json.JsonValueKind]::Null)) { throw [TurnContextProtocolException]::new('Turn-context envelope is invalid.') }
         if ($PSCmdlet.ParameterSetName -ceq 'Producer') {
-            Assert-AdapterDigestDocument -Document $state -AdapterConfig $AdapterConfig
+            # A configuration exception at this validation boundary (a validator that writes
+            # output) is validator machinery, not envelope content.
+            try { Assert-AdapterDigestDocument -Document $state -AdapterConfig $AdapterConfig }
+            catch [AdapterConfigurationException] { throw [AdapterValidatorInfrastructureException]::new('Adapter digest validation machinery failed.', $_.Exception) }
             if ($adapterVersion -ne $AdapterConfig.AdapterVersion -or -not [string]::Equals($game, $AdapterConfig.Game, [StringComparison]::Ordinal) -or -not [string]::Equals($floor.domainId, $AdapterConfig.SourceDomainId, [StringComparison]::Ordinal) -or (Get-Property $root cacheDegraded).GetBoolean() -ne $ExpectedCacheDegraded) { throw [TurnContextProtocolException]::new('Turn-context envelope is invalid.') }
         }
         return $document
