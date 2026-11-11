@@ -24,7 +24,8 @@ $groupScripts = [ordered]@{
     Process = @((Join-Path $PSScriptRoot 'Test-ProcessRunner.ps1'))
     State = @(
         (Join-Path $PSScriptRoot 'Test-EntryFence.ps1'),
-        (Join-Path $PSScriptRoot 'Test-StateFiles.ps1')
+        (Join-Path $PSScriptRoot 'Test-StateFiles.ps1'),
+        (Join-Path $PSScriptRoot 'Test-ScratchCleanup.ps1')
     )
     Adapter = @(
         (Join-Path $adapterRoot 'Test-Build-Digest.ps1'),

@@ -528,7 +528,42 @@ function Clear-StaleScratchRoots {
         if ($liveProcessIds.Contains($creatorId)) {
             continue
         }
-        Remove-Item -LiteralPath $entryItem.FullName -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-StaleScratchRoot -Path $entryItem.FullName
+    }
+}
+
+# Parallel harnesses in one checkout reap the same dead root together. When another sweeper
+# deletes an entry the PowerShell provider's recursive walk is inspecting, Remove-Item throws
+# a terminating Win32Exception (file or path not found) that -ErrorAction cannot suppress.
+# That error means the tree is being removed concurrently, so the removal is repeated while
+# the root is still an ordinary directory, a bounded number of times; any other failure, and
+# a root that outlasts the attempts, still surfaces. -Remove exists for tests.
+function Remove-StaleScratchRoot {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter()] [scriptblock] $Remove = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
+    )
+
+    $attempts = 3
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            & $Remove $Path
+
+            return
+        }
+        catch [System.ComponentModel.Win32Exception] {
+            if ($_.Exception.NativeErrorCode -notin @(2, 3)) {
+                throw
+            }
+            $remaining = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            if ($null -eq $remaining -or $remaining -isnot [System.IO.DirectoryInfo] -or
+                ($remaining.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return
+            }
+            if ($attempt -ge $attempts) {
+                throw
+            }
+        }
     }
 }
 
