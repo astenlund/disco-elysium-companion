@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'BridgeCycleOutcome', 'ZeroByteStateFiles', 'StateSetupFailure', 'UnexpectedFailure')]
+    [ValidateSet('All', 'DiagnosticProtocol', 'WrapperTerminal', 'WrapperRetry', 'WrapperDeliveryFailure', 'WrapperTransactionSelection', 'RefreshLimit', 'DuplicateSurfaceMatrix', 'TurnContextPairing', 'FreshnessRaceNewerConsumed', 'PostTargetEnumeration', 'EnvelopeSerializeStatePreserved', 'EnvelopeProtocolRejection', 'EnvelopeRejectionState', 'BridgeCycleOutcome', 'ZeroByteStateFiles', 'StateSetupFailure', 'UnexpectedFailure')]
     [string] $Only = 'All'
 )
 
@@ -922,6 +922,89 @@ if ($Only -eq 'EnvelopeProtocolRejection') {
 
     Write-TurnContextPassGate
     exit 0
+}
+
+if ($Only -in @('All', 'EnvelopeRejectionState')) {
+    # A structurally valid attempt result whose envelope fails producer validation keeps its
+    # own consumption state and provenance (7.5); validator machinery failing there is
+    # protocol too. Every rejection diagnostic passes the real diagnostic validator.
+    $rejection = Invoke-InCompanionModule {
+        param($Template, $Domain)
+        $stateDoc = Read-DigestDocument -Json $Template.Replace('GEN', '2026-08-10T12:00:00.0000000Z').Replace('DOM', $Domain).Replace('FILE', 'B.ntwtf.zip').Replace('SAVE', '2026-08-10T11:00:00.0000000Z')
+        $diffDoc = New-EmptyDiff -Target $stateDoc
+        $identity = [ordered]@{ domainId = $Domain; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' }
+        $envelope = [ordered]@{ turnContextVersion = 2; adapterVersion = 2L; game = 'example'; sourceFloor = $identity; refresh = [ordered]@{ attempted = $false; commitObserved = $false; attempts = 0 }; warnings = @(); baselineReset = $true; cacheDegraded = $false; diff = $diffDoc.RootElement; state = $stateDoc.RootElement }
+        $envelopeJson = ConvertTo-CompanionJson -InputObject $envelope -Budget 'turn-context'
+        $sink = New-CompanionWarningSink -Profile TurnOperational
+        $results = @{
+            consumed = New-TurnContextTerminalResult -Class success -OperationalWarnings $sink -ConsumptionState consumed -SourceIdentity $identity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z' -EnvelopeJson $envelopeJson
+            notConsumed = New-TurnContextTerminalResult -Class 'reset-write:not-consumed' -OperationalWarnings $sink -ConsumptionState notConsumed -Reason baseline-replace-failed -SourceIdentity $identity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z' -EnvelopeJson $envelopeJson
+        }
+        $validators = @{
+            accept = { param($Document) }
+            reject = { param($Document) throw [AdapterDigestValidationException]::new('content rejected') }
+            machinery = { param($Document) throw [InvalidOperationException]::new('machinery') }
+        }
+        $rows = foreach ($case in @(@('consumed', 'accept'), @('consumed', 'reject'), @('notConsumed', 'reject'), @('consumed', 'machinery'), @('notConsumed', 'machinery'))) {
+            $config = [AdapterConfig]::new()
+            $config.AdapterVersion = 2
+            $config.Game = 'example'
+            $config.SourceDomainId = $Domain
+            $config.Validator = $validators[$case[1]]
+            $result = $results[$case[0]]
+            [void] (Assert-TurnContextAttemptResult -Value $result)
+            $diagnostic = Get-TurnContextEnvelopeRejection -Result $result -AdapterConfig $config -OperationalWarnings $sink
+            $validated = if ($null -eq $diagnostic) { $null } else { Read-TurnContextDiagnostic -Json (ConvertTo-CompanionJson -InputObject $diagnostic -Budget config) -ExpectedClass protocol }
+            [pscustomobject]@{
+                name = "$($case[0])/$($case[1])"
+                rejected = $null -ne $diagnostic
+                state = if ($null -eq $validated) { $null } else { $validated.Materialized['consumptionState'] }
+                detail = if ($null -eq $validated) { $null } else { $validated.Materialized['detail'] }
+                saveFile = if ($null -eq $validated) { $null } else { [string] $validated.Materialized['sourceIdentity']['saveFile'] }
+                generation = if ($null -eq $validated) { $null } else { $validated.Materialized['generationTimestamp'] }
+            }
+        }
+
+        return @($rows)
+    } @($turnContextDigestTemplate, $turnContextDomain)
+    $expectedRejections = @{
+        'consumed/accept' = $null
+        'consumed/reject' = @('consumed', 'envelope-invalid')
+        'notConsumed/reject' = @('notConsumed', 'envelope-invalid')
+        'consumed/machinery' = @('consumed', 'adapter-validator-infrastructure-failed')
+        'notConsumed/machinery' = @('notConsumed', 'adapter-validator-infrastructure-failed')
+    }
+    foreach ($row in $rejection) {
+        $expected = $expectedRejections[$row.name]
+        if ($null -eq $expected) {
+            Assert-False -Condition $row.rejected -Message "A producer-valid envelope after '$($row.name)' is not rejected."
+            continue
+        }
+        Assert-True -Condition $row.rejected -Message "An envelope rejection after '$($row.name)' produces a diagnostic."
+        Assert-OrdinalEqual -Actual $row.state -Expected $expected[0] -Message "An envelope rejection after '$($row.name)' keeps the result's consumption state."
+        Assert-OrdinalEqual -Actual $row.detail -Expected $expected[1] -Message "An envelope rejection after '$($row.name)' carries its protocol reason."
+        Assert-OrdinalEqual -Actual $row.saveFile -Expected 'B.ntwtf.zip' -Message "An envelope rejection after '$($row.name)' keeps the result's source identity."
+        Assert-OrdinalEqual -Actual $row.generation -Expected '2026-08-10T12:00:00.0000000Z' -Message "An envelope rejection after '$($row.name)' keeps the result's generation."
+    }
+
+    # The unmodified wrapper writes the rejection as its terminal record, emits no envelope,
+    # and never starts a second attempt after a rejected notConsumed first attempt.
+    foreach ($scenario in @(@('envelope-reject-first', 'notConsumed', 'envelope-invalid'), @('envelope-reject-selected', 'consumed', 'envelope-invalid'), @('envelope-reject-infrastructure', 'consumed', 'adapter-validator-infrastructure-failed'))) {
+        $rejectRoot = New-ScratchCompanionRoot -Prefix "turn-context-$($scenario[0])"
+        $rejectRun = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $PSScriptRoot 'Invoke-TurnContextWrapperHarness.ps1'), '-Scenario', $scenario[0], '-ScratchRoot', $rejectRoot, '-StagedWrapperPath', (Join-Path $PSScriptRoot '../Get-TurnContext.ps1')) -WorkingDirectory $rejectRoot
+        Assert-Equal -Actual $rejectRun.ExitCode -Expected 1 -Message "The '$($scenario[0])' wrapper exits 1."
+        Assert-Equal -Actual $rejectRun.StdOut -Expected '' -Message "The '$($scenario[0])' wrapper emits no envelope."
+        Assert-True -Condition $rejectRun.StdErr.StartsWith('[turn-context:protocol] ', [StringComparison]::Ordinal) -Message "The '$($scenario[0])' wrapper ends as a protocol terminal (stderr: $($rejectRun.StdErr.Trim()))."
+        $rejectDiagnostic = Invoke-InCompanionModule { param($Json) Read-TurnContextDiagnostic -Json $Json -ExpectedClass protocol } @($rejectRun.StdErr.Substring('[turn-context:protocol] '.Length).TrimEnd())
+        Assert-OrdinalEqual -Actual $rejectDiagnostic.Materialized['consumptionState'] -Expected $scenario[1] -Message "The '$($scenario[0])' terminal reports the result's consumption state."
+        Assert-OrdinalEqual -Actual $rejectDiagnostic.Materialized['detail'] -Expected $scenario[2] -Message "The '$($scenario[0])' terminal carries its protocol reason."
+        Assert-Equal -Actual ([IO.File]::ReadAllText((Join-Path $rejectRoot 'attempt-trace.txt')).Trim()) -Expected '1' -Message "The '$($scenario[0])' wrapper makes exactly one attempt."
+    }
+
+    if ($Only -eq 'EnvelopeRejectionState') {
+        Write-TurnContextPassGate
+        exit 0
+    }
 }
 
 $consumeOutcomeRoot = New-ScratchCompanionRoot -Prefix 'turn-context-consume-outcome'

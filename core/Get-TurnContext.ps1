@@ -50,13 +50,17 @@ try {
     $first = Invoke-TurnContextAttempt -CompanionRoot ([IO.Path]::GetFullPath($CompanionRoot)) -AdapterConfig $config -OperationalWarnings $operational
     [void] (Assert-TurnContextAttemptResult -Value $first)
     $selected = $first
+    # 7.5: a rejected envelope keeps the valid result's consumption state and provenance and
+    # ends the transaction without a further consuming attempt.
     if ($first.outcomeClass -ceq 'reset-write:not-consumed') {
-        [void] (Read-TurnContextEnvelope -Json $first.envelopeJson -AdapterConfig $config -ExpectedCacheDegraded $false)
+        $rejection = Get-TurnContextEnvelopeRejection -Result $first -AdapterConfig $config -OperationalWarnings $operational
+        if ($null -ne $rejection) { Write-TurnContextTerminal $rejection }
         $selected = Invoke-TurnContextAttempt -CompanionRoot ([IO.Path]::GetFullPath($CompanionRoot)) -AdapterConfig $config -OperationalWarnings $operational
         [void] (Assert-TurnContextAttemptResult -Value $selected)
     }
     if ($selected.outcomeClass -in @('success', 'reset-write:consumed')) {
-        [void] (Read-TurnContextEnvelope -Json $selected.envelopeJson -AdapterConfig $config -ExpectedCacheDegraded $selected.cacheDegraded)
+        $rejection = Get-TurnContextEnvelopeRejection -Result $selected -AdapterConfig $config -OperationalWarnings $operational
+        if ($null -ne $rejection) { Write-TurnContextTerminal $rejection }
         # A failed stdout write is a delivery failure, not a protocol defect: the
         # baseline has already advanced, so the terminal diagnostic preserves the
         # consumed state and the host discards any partial envelope bytes.

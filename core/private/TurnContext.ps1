@@ -199,6 +199,24 @@ function Read-TurnContextDetailReason {
     return $reason
 }
 
+# Producer-mode validation of a structurally valid attempt result's envelope. Returns null
+# when the envelope is admitted; otherwise the terminal protocol diagnostic, which keeps the
+# result's consumption state and provenance because the result itself was valid (7.5).
+function Get-TurnContextEnvelopeRejection {
+    param([Parameter(Mandatory)] $Result, [Parameter(Mandatory)] [AdapterConfig] $AdapterConfig, [Parameter(Mandatory)] [CompanionWarningSink] $OperationalWarnings)
+
+    try {
+        [void] (Read-TurnContextEnvelope -Json $Result.envelopeJson -AdapterConfig $AdapterConfig -ExpectedCacheDegraded $Result.cacheDegraded)
+
+        return $null
+    }
+    catch {
+        $reason = if ($_.Exception -is [AdapterValidatorInfrastructureException]) { 'adapter-validator-infrastructure-failed' } else { 'envelope-invalid' }
+
+        return New-TurnContextDiagnosticObject -Class protocol -ConsumptionState $Result.consumptionState -Detail (New-TurnContextDetail -Class protocol -Reason $reason) -SourceIdentity $Result.diagnostic['sourceIdentity'] -GenerationTimestamp $Result.diagnostic['generationTimestamp'] -LockStage $null -OperationalWarnings $OperationalWarnings
+    }
+}
+
 function Test-TurnContextDiagnosticProvenance {
     param(
         [Parameter(Mandatory)] [string] $Class,

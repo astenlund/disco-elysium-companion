@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select', 'not-owner')]
+    [ValidateSet('retry-success', 'retry-terminal', 'stdout-fail', 'degraded-select', 'not-owner', 'envelope-reject-first', 'envelope-reject-selected', 'envelope-reject-infrastructure')]
     [string] $Scenario,
 
     [Parameter(Mandatory)]
@@ -93,6 +93,13 @@ function Invoke-TurnContextAttempt {
 
         return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}' -SourceIdentity $consumedIdentity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z'
     }
+    $rejectedIdentity = [ordered]@{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' }
+    if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'envelope-reject-first') {
+        return New-TestResult -OutcomeClass 'reset-write:not-consumed' -ConsumptionState 'notConsumed' -EnvelopeJson '{"attempt":"A"}' -SourceIdentity $rejectedIdentity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z'
+    }
+    if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -cin @('envelope-reject-selected', 'envelope-reject-infrastructure')) {
+        return New-TestResult -OutcomeClass 'success' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}' -SourceIdentity $rejectedIdentity -GenerationTimestamp '2026-08-10T12:00:00.0000000Z'
+    }
     if ($env:TURN_CONTEXT_WRAPPER_SCENARIO -ceq 'degraded-select') {
         return New-TestResult -OutcomeClass 'reset-write:consumed' -ConsumptionState 'consumed' -EnvelopeJson '{"attempt":"A"}' -CacheDegraded $true
     }
@@ -111,8 +118,19 @@ function Assert-TurnContextAttemptResult {
     param($Value)
 }
 
-function Read-TurnContextEnvelope {
-    param([string] $Json, $AdapterConfig, [bool] $ExpectedCacheDegraded)
+# Models the module's mapping of a rejected envelope: the result's own consumption state
+# and provenance under a protocol reason.
+function Get-TurnContextEnvelopeRejection {
+    param($Result, $AdapterConfig, $OperationalWarnings)
+
+    $reason = switch ($env:TURN_CONTEXT_WRAPPER_SCENARIO) {
+        'envelope-reject-first' { 'envelope-invalid' }
+        'envelope-reject-selected' { 'envelope-invalid' }
+        'envelope-reject-infrastructure' { 'adapter-validator-infrastructure-failed' }
+        default { return $null }
+    }
+
+    return [ordered]@{ outcomeClass = 'protocol'; consumptionState = $Result.consumptionState; lockStage = $null; sourceIdentity = $Result.diagnostic.sourceIdentity; generationTimestamp = $Result.diagnostic.generationTimestamp; detail = $reason; warnings = @() }
 }
 
 function Read-TurnContextDiagnostic {
