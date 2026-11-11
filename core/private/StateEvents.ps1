@@ -61,7 +61,7 @@ $script:StateEventReasons = ConvertTo-StateEventOrdinalRegistry @{
         refresh = $script:TurnContextReasons['refresh']
         freshness = $script:TurnContextReasons['freshness']
         compute = $script:TurnContextReasons['compute']
-        protocol = $script:TurnContextReasons['protocol']
+        protocol = @($script:TurnContextReasons['protocol']) + @('receipt-invalid')
         delivery = $script:TurnContextReasons['delivery']
     }
     Settlement = @{
@@ -944,7 +944,7 @@ function Read-StateEventDiagnostic {
         if ($hasGeneration) { Test-Utc $generation }
         $consumptionLegal = switch ($consumption) {
             'notConsumed' { $class -ceq 'outbox-write:not-consumed' }
-            'consumed' { $Script -ceq 'Publish' -and $class -ceq 'delivery' }
+            'consumed' { $Script -ceq 'Publish' -and ($class -ceq 'delivery' -or ($class -ceq 'protocol' -and $reason -ceq 'receipt-invalid')) }
             'unknown' { $class -ceq 'protocol' -and $reason -ceq 'attempt-result-invalid' -and -not $hasSource -and -not $hasGeneration }
             # The settlement and consumer scripts' protocol failure always carries unknown; the
             # publisher keeps the 7.5 protocol rules.
@@ -997,10 +997,26 @@ function Read-StateEventReceipt {
     $document = Read-CompanionJson -Json $Json -Budget config
     $root = $document.RootElement
     Test-ExactFields $root @('outcome', 'kind', 'logicalOutboxId', 'sequence', 'target', 'schemaVersion', 'adapterVersion', 'game', 'baselineApplied', 'cacheDegraded', 'warnings')
-    $outcome = Test-String (Get-Property $root outcome)
+    Test-StateEventReceiptResultFields -Root $root
+    if ((Test-Integer (Get-Property $root schemaVersion)) -ne (Get-CoreSchemaVersion)) { Fail-Document }
+    $adapterVersion = Test-Integer (Get-Property $root adapterVersion)
+    $game = Test-String (Get-Property $root game)
+    if ($null -ne $AdapterConfig -and ($adapterVersion -ne $AdapterConfig.AdapterVersion -or -not [string]::Equals($game, $AdapterConfig.Game, [StringComparison]::Ordinal))) { Fail-Document }
+    Test-StateEventWarningArray -Element (Get-Property $root warnings) -Codes $script:StateEventReceiptWarningCodes
+
+    return $document
+}
+
+# The receipt fields an operation result supplies: outcome, record identity, target, baseline
+# application and cache degradation. The receipt reader checks them in the receipt, and the
+# publisher checks them in the result before building its receipt.
+function Test-StateEventReceiptResultFields {
+    param([Parameter(Mandatory)] [Text.Json.JsonElement] $Root)
+
+    $outcome = Test-String (Get-Property $Root outcome)
     if ($outcome -cnotin @('committed', 'unchanged', 'replayed')) { Fail-Document }
     $identified = $outcome -cin @('committed', 'replayed')
-    $kind = Get-Property $root kind; $logical = Get-Property $root logicalOutboxId; $sequence = Get-Property $root sequence; $target = Get-Property $root target; $applied = Get-Property $root baselineApplied
+    $kind = Get-Property $Root kind; $logical = Get-Property $Root logicalOutboxId; $sequence = Get-Property $Root sequence; $target = Get-Property $Root target; $applied = Get-Property $Root baselineApplied
     if ($identified) {
         if ((Test-String $kind) -cnotin $script:StateEventRecordKinds -or -not (Test-StateEventLogicalOutboxIdText -Value (Test-String $logical))) { Fail-Document }
         $sequenceValue = Test-Integer $sequence $false $true
@@ -1014,14 +1030,25 @@ function Read-StateEventReceipt {
     }
     elseif ($target.ValueKind -ne [Text.Json.JsonValueKind]::Null) { Fail-Document }
     if ($outcome -ceq 'committed') { Test-Boolean $applied } elseif ($applied.ValueKind -ne [Text.Json.JsonValueKind]::Null) { Fail-Document }
-    if ((Test-Integer (Get-Property $root schemaVersion)) -ne (Get-CoreSchemaVersion)) { Fail-Document }
-    $adapterVersion = Test-Integer (Get-Property $root adapterVersion)
-    $game = Test-String (Get-Property $root game)
-    if ($null -ne $AdapterConfig -and ($adapterVersion -ne $AdapterConfig.AdapterVersion -or -not [string]::Equals($game, $AdapterConfig.Game, [StringComparison]::Ordinal))) { Fail-Document }
-    Test-Boolean (Get-Property $root cacheDegraded)
-    Test-StateEventWarningArray -Element (Get-Property $root warnings) -Codes $script:StateEventReceiptWarningCodes
+    Test-Boolean (Get-Property $Root cacheDegraded)
+}
 
-    return $document
+# Rejects a non-failure operation result whose receipt fields, consumption state or
+# provenance target are malformed, so that a later receipt failure is known to concern a
+# well-formed result (7.6). Throws TurnContextProtocolException.
+function Assert-StateEventNonFailureResult {
+    param([Parameter(Mandatory)] $Result)
+
+    try {
+        $expectedConsumption = if ($Result.stateEventOutcome -ceq 'committed') { 'consumed' } else { 'none' }
+        if ($Result.consumptionState -isnot [string] -or -not [string]::Equals($Result.consumptionState, $expectedConsumption, [StringComparison]::Ordinal) -or $Result.provenanceDocument -isnot [CompanionJsonValue]) { Fail-Document }
+        $fields = [ordered]@{ outcome = $Result.stateEventOutcome; kind = $Result.kind; logicalOutboxId = $Result.logicalOutboxId; sequence = $Result.sequence; target = $Result.target; baselineApplied = $Result.baselineApplied; cacheDegraded = $Result.cacheDegraded }
+        Test-StateEventReceiptResultFields -Root (Read-CompanionJson -Json (ConvertTo-CompanionJson -InputObject $fields -Budget config) -Budget config).RootElement
+        $provenance = $Result.provenanceDocument.RootElement
+        Test-Utc (Get-Property $provenance generatedAt)
+        [void] (Test-Source (Get-Property $provenance source))
+    }
+    catch { throw [TurnContextProtocolException]::new('Invalid state-event operation result.') }
 }
 
 # --- Outbox-mode consuming operation -----------------------------------------------

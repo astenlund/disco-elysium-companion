@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence', 'LedgerBudget', 'Capacity', 'QuarantineCapacity', 'Retirement', 'SequenceDomain', 'UnexpectedFailure', IgnoreCase = $false)]
+    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence', 'LedgerBudget', 'Capacity', 'QuarantineCapacity', 'Retirement', 'SequenceDomain', 'UnexpectedFailure', 'ReceiptFailure', IgnoreCase = $false)]
     [string] $Only = 'All'
 )
 
@@ -1866,6 +1866,27 @@ if (Test-Selected 'UnexpectedFailure') {
     $unexpectedTerminal = Read-TerminalLine -Result $unexpected -Script Publish
     Assert-True -Condition ($null -eq $unexpectedTerminal.diagnostic['sourceIdentity'] -and $null -eq $unexpectedTerminal.diagnostic['generationTimestamp']) -Message 'An unexpected attempt failure through the publisher carries no provenance.'
     Assert-Equal -Actual @(Get-RecordNames -Fixture $fixture).Count -Expected 0 -Message 'An unexpected attempt failure through the publisher commits no record.'
+}
+
+if (Test-Selected 'ReceiptFailure') {
+    # A staged core whose receipt reader throws fails the receipt of a well-formed committed
+    # result: the record is committed, so the terminal keeps consumed and the final target's
+    # provenance rather than reporting an unknown outcome.
+    $fixture = New-RuntimeFixture -Prefix 'state-event-receipt-failure'
+    Add-StagedCoreFault -Core $fixture.Core -File 'StateEvents.ps1' -Function 'Read-StateEventReceipt'
+    $failed = Invoke-Publish -Fixture $fixture
+    Assert-Terminal -Result $failed -Script Publish -Class protocol -Detail 'receipt-invalid' -ConsumptionState consumed -Message 'A receipt failure after a committed record'
+    $failedTerminal = Read-TerminalLine -Result $failed -Script Publish
+    Assert-True -Condition ($null -ne $failedTerminal.diagnostic['sourceIdentity'] -and $null -ne $failedTerminal.diagnostic['generationTimestamp']) -Message 'A receipt failure after a committed record carries the final target provenance.'
+    Assert-Equal -Actual @(Get-RecordNames -Fixture $fixture).Count -Expected 1 -Message 'A receipt failure after a committed record leaves the record in the outbox.'
+
+    # A committed result whose own target is malformed is rejected before its receipt is
+    # built, so its outcome stays unknown even though a record was committed.
+    $malformed = New-RuntimeFixture -Prefix 'state-event-result-malformed'
+    Add-StagedCoreOverride -Core $malformed.Core -File 'StateEvents.ps1' -Function 'New-StateEventTargetIdentity' -Body 'param($Document) return [ordered]@{ generatedAt = 42; source = $Document.RootElement.GetProperty(''source'').Clone() }'
+    $rejected = Invoke-Publish -Fixture $malformed
+    Assert-Terminal -Result $rejected -Script Publish -Class protocol -Detail 'attempt-result-invalid' -ConsumptionState unknown -Message 'A malformed committed result'
+    Assert-Equal -Actual @(Get-RecordNames -Fixture $malformed).Count -Expected 1 -Message 'A malformed committed result follows a committed record.'
 }
 
 Write-Output 'PASS: state events'

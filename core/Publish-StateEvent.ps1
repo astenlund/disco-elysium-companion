@@ -76,7 +76,12 @@ try {
     if ($selected.stateEventOutcome -ceq 'failure') {
         Write-StateEventTerminal (New-StateEventPublishDiagnostic -Result $selected -Class $selected.outcomeClass -Reason $selected.reason -ConsumptionState $selected.consumptionState -OperationalWarnings $operational)
     }
-    $receiptJson = ConvertTo-StateEventReceiptJson -Result $selected -AdapterConfig $config -OperationalWarnings $operational -ReceiptWarnings $receiptWarnings
+    # 7.6: a malformed result proves nothing about the outbox and reaches the outer catch. A
+    # well-formed result whose receipt fails keeps its own consumption state and provenance:
+    # a committed record carries the transition, and unchanged or replayed consumed nothing.
+    Assert-StateEventNonFailureResult -Result $selected
+    try { $receiptJson = ConvertTo-StateEventReceiptJson -Result $selected -AdapterConfig $config -OperationalWarnings $operational -ReceiptWarnings $receiptWarnings }
+    catch { Write-StateEventTerminal (New-StateEventPublishDiagnostic -Result $selected -Class protocol -Reason receipt-invalid -ConsumptionState $selected.consumptionState -OperationalWarnings $operational) }
     # The record file, not this receipt, carries the transition: a failed stdout write is
     # a delivery failure whose consumption state says whether a record was committed.
     try { [Console]::Out.Write($receiptJson) }

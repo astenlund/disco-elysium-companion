@@ -313,21 +313,33 @@ function Copy-CompanionCoreTree {
     Copy-Item -LiteralPath (Join-Path $coreRoot 'private') -Destination (Join-Path $Destination 'private') -Recurse
 }
 
-# Appends a throwing redefinition of one core private function to the staged copy of the
-# file that defines it, so a real entry script run from that staged core meets an
-# unexpected exception at every call of the function. The repository core is untouched.
-function Add-StagedCoreFault {
+# Appends a redefinition of one core private function, given as its body, to the staged
+# copy of the file that defines it, so a real entry script run from that staged core calls
+# the redefinition instead. The repository core is untouched.
+function Add-StagedCoreOverride {
     param(
         [Parameter(Mandatory)] [string] $Core,
         [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z]+\.ps1$')] [string] $File,
-        [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z]+-[A-Za-z]+$')] [string] $Function
+        [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z]+-[A-Za-z]+$')] [string] $Function,
+        [Parameter(Mandatory)] [string] $Body
     )
 
     $path = Join-Path $Core "private/$File"
     $source = [System.IO.File]::ReadAllText($path, [System.Text.UTF8Encoding]::new($false, $true))
     if (-not $source.Contains("function $Function ", [System.StringComparison]::Ordinal)) { throw [System.InvalidOperationException]::new("The staged $File does not define $Function.") }
     $newline = if ($source.Contains("`r`n", [System.StringComparison]::Ordinal)) { "`r`n" } else { "`n" }
-    [System.IO.File]::AppendAllText($path, "${newline}function $Function { throw [System.InvalidOperationException]::new('Injected test fault.') }$newline", [System.Text.UTF8Encoding]::new($false, $true))
+    [System.IO.File]::AppendAllText($path, "${newline}function $Function { $Body }$newline", [System.Text.UTF8Encoding]::new($false, $true))
+}
+
+# Makes every call of one staged core private function throw an unexpected exception.
+function Add-StagedCoreFault {
+    param(
+        [Parameter(Mandatory)] [string] $Core,
+        [Parameter(Mandatory)] [string] $File,
+        [Parameter(Mandatory)] [string] $Function
+    )
+
+    Add-StagedCoreOverride -Core $Core -File $File -Function $Function -Body "throw [System.InvalidOperationException]::new('Injected test fault.')"
 }
 
 function Install-StubAdapterRelease {
@@ -760,4 +772,4 @@ function New-StagedRuntimeContextRoot {
     return [pscustomobject]@{ Root = $root; ScopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes)); SafetySha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($safetyBytes)) }
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
