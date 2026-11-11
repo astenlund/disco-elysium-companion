@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence', 'LedgerBudget', 'Capacity', 'QuarantineCapacity', 'Retirement', 'SequenceDomain', IgnoreCase = $false)]
+    [ValidateSet('All', 'Constants', 'Arguments', 'Ownership', 'RecordKinds', 'RecordValidation', 'CanonicalTokens', 'Settlement', 'Consumer', 'CommitStates', 'Reconciliation', 'VersionChange', 'ReceiptIndependence', 'LedgerBudget', 'Capacity', 'QuarantineCapacity', 'Retirement', 'SequenceDomain', 'UnexpectedFailure', IgnoreCase = $false)]
     [string] $Only = 'All'
 )
 
@@ -1852,6 +1852,20 @@ if (Test-Selected 'SequenceDomain') {
     Assert-True -Condition ($observation.warnings -ccontains 'pipeline-cleanup-degraded') -Message 'Unavailable quarantine capacity is disclosed.'
     Assert-Equal -Actual $observation.protected -Expected 1 -Message 'A surviving legal file protects its tombstone from both age and count pruning.'
     foreach ($name in $unknownDiagnostics) { Assert-True -Condition ([IO.File]::Exists((Join-Path $quarantine $name))) -Message 'Unknown diagnostic names were never deleted.' }
+}
+
+if (Test-Selected 'UnexpectedFailure') {
+    # A real unexpected exception inside the attempt, from a staged core whose work-file
+    # reaper throws, reaches the unmodified publisher past its ownership preflight; its outer
+    # catch reports protocol / attempt-result-invalid with unknown consumption and no provenance.
+    $fixture = New-StateEventFixture -Prefix 'state-event-unexpected'
+    Write-Marker -Fixture $fixture -Json (Get-MarkerJson -Owner runtime)
+    Add-StagedCoreFault -Core $fixture.Core -File 'StateFiles.ps1' -Function 'Invoke-WorkFileReaper'
+    $unexpected = Invoke-Publish -Fixture $fixture
+    Assert-Terminal -Result $unexpected -Script Publish -Class protocol -Detail 'attempt-result-invalid' -ConsumptionState unknown -Message 'An unexpected attempt failure through the publisher'
+    $unexpectedTerminal = Read-TerminalLine -Result $unexpected -Script Publish
+    Assert-True -Condition ($null -eq $unexpectedTerminal.diagnostic['sourceIdentity'] -and $null -eq $unexpectedTerminal.diagnostic['generationTimestamp']) -Message 'An unexpected attempt failure through the publisher carries no provenance.'
+    Assert-Equal -Actual @(Get-RecordNames -Fixture $fixture).Count -Expected 0 -Message 'An unexpected attempt failure through the publisher commits no record.'
 }
 
 Write-Output 'PASS: state events'
