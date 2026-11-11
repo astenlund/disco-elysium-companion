@@ -84,7 +84,9 @@ $script:StateEventReasons = ConvertTo-StateEventOrdinalRegistry @{
         delivery = @('stdout-write-failed')
     }
 }
-# Classes whose reasons this section adds; every other class keeps its 7.5 reasons, atoms, and provenance rules.
+# Classes section 7.6 introduces outright, all of whose reasons are atom-free. A reason 7.6
+# adds to an existing 7.5 class is recognized by its absence from that class's 7.5 reasons
+# and is atom-free too; Read-StateEventDiagnostic decides consumption and provenance.
 $script:StateEventAddedClasses = @('outbox', 'outbox-write:not-consumed', 'settlement')
 
 class StateEventFailure : System.Exception {
@@ -946,8 +948,9 @@ function Read-StateEventDiagnostic {
             'notConsumed' { $class -ceq 'outbox-write:not-consumed' }
             'consumed' { $Script -ceq 'Publish' -and ($class -ceq 'delivery' -or ($class -ceq 'protocol' -and $reason -ceq 'receipt-invalid')) }
             'unknown' { $class -ceq 'protocol' -and $reason -ceq 'attempt-result-invalid' -and -not $hasSource -and -not $hasGeneration }
-            # The settlement and consumer scripts' protocol failure always carries unknown; the
-            # publisher keeps the 7.5 protocol rules.
+            # The settlement and consumer scripts' protocol failure always carries unknown; a
+            # publisher protocol failure may carry none, as a receipt failure after an unchanged
+            # or replayed result does.
             default { $class -cne 'outbox-write:not-consumed' -and ($Script -ceq 'Publish' -or $class -cne 'protocol') }
         }
         if (-not $consumptionLegal) { throw [TurnContextProtocolException]::new('Invalid state-event diagnostic.') }
