@@ -22,11 +22,27 @@ $modulePath = Join-Path $PSScriptRoot 'DigestDiff.psm1'
 if (-not (Test-Path -LiteralPath $modulePath)) { $modulePath = Join-Path $PSScriptRoot '../DigestDiff.psm1' }
 Import-Module $modulePath -Force -DisableNameChecking
 
-function Write-TurnContextTerminal {
+function New-TurnContextUnknownDiagnostic {
+    return New-TurnContextDiagnosticObject -Class 'protocol' -ConsumptionState 'unknown' -Detail (New-TurnContextDetail -Class protocol -Reason attempt-result-invalid) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings (New-CompanionWarningSink -Profile TurnOperational)
+}
+
+function ConvertTo-TurnContextTerminalLine {
     param([Parameter(Mandatory)] $Diagnostic)
 
     $json = ConvertTo-CompanionJson -InputObject $Diagnostic -Budget config
-    [Console]::Error.Write("[turn-context:$($Diagnostic.outcomeClass)] $json`n")
+    [void] (Read-TurnContextDiagnostic -Json $json -ExpectedClass $Diagnostic.outcomeClass)
+
+    return "[turn-context:$($Diagnostic.outcomeClass)] $json"
+}
+
+# 7.5: every terminal the wrapper writes passes Read-TurnContextDiagnostic first; a record it
+# rejects is replaced by the protocol / attempt-result-invalid record with unknown consumption.
+function Write-TurnContextTerminal {
+    param([Parameter(Mandatory)] $Diagnostic)
+
+    try { $line = ConvertTo-TurnContextTerminalLine -Diagnostic $Diagnostic }
+    catch { $line = ConvertTo-TurnContextTerminalLine -Diagnostic (New-TurnContextUnknownDiagnostic) }
+    [Console]::Error.Write("$line`n")
     exit 1
 }
 
@@ -71,13 +87,10 @@ try {
         catch { Write-TurnContextTerminal (New-TurnContextDiagnosticObject -Class 'delivery' -ConsumptionState $selected.consumptionState -Detail (New-TurnContextDetail -Class delivery -Reason stdout-write-failed) -SourceIdentity $selected.diagnostic.sourceIdentity -GenerationTimestamp $selected.diagnostic.generationTimestamp -LockStage $null -OperationalWarnings $operational) }
         exit 0
     }
-    $diagnosticJson = ConvertTo-CompanionJson -InputObject $selected.diagnostic -Budget config
-    [void] (Read-TurnContextDiagnostic -Json $diagnosticJson -ExpectedClass $selected.outcomeClass)
     Write-TurnContextTerminal $selected.diagnostic
 }
 catch {
-    $sink = New-CompanionWarningSink -Profile TurnOperational
-    Write-TurnContextTerminal (New-TurnContextDiagnosticObject -Class 'protocol' -ConsumptionState 'unknown' -Detail (New-TurnContextDetail -Class protocol -Reason attempt-result-invalid) -SourceIdentity $null -GenerationTimestamp $null -LockStage $null -OperationalWarnings $sink)
+    Write-TurnContextTerminal (New-TurnContextUnknownDiagnostic)
 }
 finally {
     if ($null -ne $config) { $config.Dispose() }
