@@ -3,13 +3,14 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Removal', 'ConcurrentSweep', IgnoreCase = $false)]
+    [ValidateSet('All', 'Removal', 'ConcurrentSweep', 'StaggeredSweep', IgnoreCase = $false)]
     [string] $Only = 'All',
 
-    # The concurrent race is rare per sweep, so the stress rounds trade run time for the
-    # chance of meeting it; a passing run is evidence, not proof, that removal tolerates it.
+    # The concurrent races are timing-dependent, so the stress rounds trade run time for the
+    # chance of meeting them; a passing run is evidence, not proof, that the sweep tolerates them.
     [Parameter()] [ValidateRange(1, 1000)] [int] $Rounds = 40,
-    [Parameter()] [ValidateRange(2, 16)] [int] $Sweepers = 6
+    [Parameter()] [ValidateRange(2, 16)] [int] $Sweepers = 6,
+    [Parameter()] [ValidateRange(1, 1000)] [int] $StaggerRounds = 10
 )
 
 Set-StrictMode -Version Latest
@@ -60,6 +61,12 @@ function Get-ClaimNames {
 
 if (Test-Selected 'Removal') {
     $scratch = New-ScratchCompanionRoot -Prefix 'scratch-removal'
+
+    # A creator counts as exited only when no process has its id at the moment of the check.
+    $exitedProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
+    $exitedProcess.WaitForExit()
+    Assert-True -Condition (& $script:TestSupport { param($Id) Test-ScratchCreatorExited -ProcessId $Id } $exitedProcess.Id) -Message 'An exited creator counts as exited.'
+    Assert-False -Condition (& $script:TestSupport { param($Id) Test-ScratchCreatorExited -ProcessId $Id } $PID) -Message 'A running creator does not count as exited.'
 
     # The default removal claims the root and deletes the claimed tree completely.
     $plain = Join-Path $scratch 'plain'
@@ -166,6 +173,59 @@ if (Test-Selected 'ConcurrentSweep') {
             foreach ($child in $children) { Stop-BoundedPwsh -Child $child }
             if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
         }
+    }
+}
+
+if (Test-Selected 'StaggeredSweep') {
+    # A second sweeper starts while the first is still sweeping many dead roots, so it is
+    # absent from any liveness view the first took earlier. Entries sort as the early roots,
+    # the fillers, the second sweeper's claims and then the late roots, so the first sweeper
+    # reaches the second's in-progress claims after its own start.
+    $sweeper = Join-Path $PSScriptRoot 'Invoke-ScratchSweep.ps1'
+    $deadProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
+    $deadProcess.WaitForExit()
+    $deadId = $deadProcess.Id
+    Assert-True -Condition ($null -eq (Get-Process -Id $deadId -ErrorAction SilentlyContinue)) -Message 'The dead creator process has exited.'
+    $control = New-ScratchCompanionRoot -Prefix 'scratch-stagger-control'
+    $go = Join-Path $control 'go'
+    [IO.File]::WriteAllText($go, 'go', $script:Utf8)
+    # Fillers keep .tmp larger than one enumeration buffer and never match the scratch shape.
+    $fillers = @(for ($index = 0; $index -lt 80; $index++) { Join-Path $script:ProjectTmp ('m-scratch-stagger-filler-{0:D3}-{1}' -f $index, $PID) })
+    foreach ($filler in $fillers) { [void] [IO.Directory]::CreateDirectory($filler) }
+
+    try {
+        for ($round = 1; $round -le $StaggerRounds; $round++) {
+            $roots = @(foreach ($index in 0..11) { Join-Path $script:ProjectTmp ('a{0:D2}-{1}-{2}' -f $index, $deadId, [guid]::NewGuid().ToString('N')) })
+            $roots += @(foreach ($index in 0..5) { Join-Path $script:ProjectTmp ('z{0:D2}-{1}-{2}' -f $index, $deadId, [guid]::NewGuid().ToString('N')) })
+            foreach ($root in $roots) { New-ScratchTree -Root $root -Directories 40 -FilesPerDirectory 25 }
+            $children = @()
+            $sweeperIds = @()
+            try {
+                $first = Start-BoundedPwsh -Arguments @('-File', $sweeper, '-GoFile', $go)
+                $children += $first
+                $sweeperIds += $first.Process.Id
+                $deadline = [DateTime]::UtcNow.AddSeconds(60)
+                while ([IO.Directory]::Exists($roots[0]) -and [DateTime]::UtcNow -lt $deadline) { [Threading.Thread]::Sleep(2) }
+                Assert-False -Condition ([IO.Directory]::Exists($roots[0])) -Message "Round $round first sweeper claims its first root."
+                $second = Start-BoundedPwsh -Arguments @('-File', $sweeper, '-GoFile', $go)
+                $children += $second
+                $sweeperIds += $second.Process.Id
+                foreach ($child in $children) {
+                    $result = Complete-BoundedPwsh -Child $child -TimeoutMilliseconds 120000
+                    Assert-Equal -Actual $result.ExitCode -Expected 0 -Message "Round $round staggered sweeper exits cleanly (stderr: $($result.StdErr.Trim()))"
+                }
+                Assert-Equal -Actual @($roots | Where-Object { [IO.Directory]::Exists($_) }).Count -Expected 0 -Message "Round $round leaves no dead root."
+                Assert-Equal -Actual @(Get-ClaimNames -Directory $script:ProjectTmp -ProcessIds $sweeperIds).Count -Expected 0 -Message "Round $round leaves no claimed tree."
+            }
+            finally {
+                foreach ($child in $children) { Stop-BoundedPwsh -Child $child }
+                foreach ($root in $roots) { if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) } }
+                foreach ($name in @(Get-ClaimNames -Directory $script:ProjectTmp -ProcessIds $sweeperIds)) { [IO.Directory]::Delete((Join-Path $script:ProjectTmp $name), $true) }
+            }
+        }
+    }
+    finally {
+        foreach ($filler in $fillers) { if ([IO.Directory]::Exists($filler)) { [IO.Directory]::Delete($filler, $true) } }
     }
 }
 

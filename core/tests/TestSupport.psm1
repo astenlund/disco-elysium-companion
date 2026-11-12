@@ -490,8 +490,10 @@ function Clear-StaleScratchRoots {
     # its predecessors here: only directories matching the exact scratch shape
     # <prefix>-<pid>-<32hex> whose embedded process id is no longer alive, directly
     # beneath the project .tmp, non-reparse. A live PID is never touched (the creator
-    # may still be running); migration artifacts, evidence roots, and hand-placed
-    # fixtures do not match the shape and are never considered.
+    # may still be running), and liveness is decided per entry when it is reached, so a
+    # harness or sweeper that started during this sweep is seen as live; migration
+    # artifacts, evidence roots, and hand-placed fixtures do not match the shape and are
+    # never considered.
     if ($script:StaleScratchSwept) {
         return
     }
@@ -506,10 +508,6 @@ function Clear-StaleScratchRoots {
         return
     }
     $temporaryRoot = $tmpRootItem.FullName.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
-    $liveProcessIds = [System.Collections.Generic.HashSet[int]]::new()
-    foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
-        [void] $liveProcessIds.Add($process.Id)
-    }
 
     foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($temporaryRoot)) {
         $entryItem = Get-Item -LiteralPath $entry -Force -ErrorAction SilentlyContinue
@@ -524,11 +522,29 @@ function Clear-StaleScratchRoots {
         if (-not $match.Success) {
             continue
         }
-        $creatorId = [int] $match.Groups[1].Value
-        if ($liveProcessIds.Contains($creatorId)) {
+        $creatorId = 0
+        if (-not [int]::TryParse($match.Groups[1].Value, [ref] $creatorId) -or -not (Test-ScratchCreatorExited -ProcessId $creatorId)) {
             continue
         }
         Remove-StaleScratchRoot -Path $entryItem.FullName
+    }
+}
+
+# True only on positive evidence that no process has this id: a lookup that fails for any
+# other reason counts as live, so an unreadable process is never treated as gone.
+function Test-ScratchCreatorExited {
+    param([Parameter(Mandatory)] [int] $ProcessId)
+
+    try {
+        [System.Diagnostics.Process]::GetProcessById($ProcessId).Dispose()
+
+        return $false
+    }
+    catch [System.ArgumentException] {
+        return $true
+    }
+    catch {
+        return $false
     }
 }
 
