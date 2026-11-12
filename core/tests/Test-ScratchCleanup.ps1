@@ -134,6 +134,7 @@ if (Test-Selected 'Removal') {
     while ($null -ne $failingException -and $failingException -isnot [ComponentModel.Win32Exception]) { $failingException = $failingException.InnerException }
     Assert-True -Condition ($null -ne $failingException -and $failingException.NativeErrorCode -eq 5) -Message 'A removal failure is rethrown.'
     Assert-True -Condition ($failingError -is [IO.IOException] -and $failingError.Message.Contains($failingSeen.target, [StringComparison]::Ordinal) -and $failingError.Message.Contains($failing, [StringComparison]::Ordinal)) -Message "A removal failure names the claim and the original root ($($failingError.Message))."
+    Assert-True -Condition ($null -ne $failingException -and $failingError.Message.Contains($failingException.Message, [StringComparison]::Ordinal)) -Message "A removal failure keeps its cause in the message ($($failingError.Message))."
     Assert-Equal -Actual $failingSeen.count -Expected 1 -Message 'A removal failure is not retried.'
     [IO.Directory]::Delete($failingSeen.target, $true)
 

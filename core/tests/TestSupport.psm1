@@ -579,7 +579,7 @@ function Remove-StaleScratchRoot {
             & $Remove $claim
         }
         catch {
-            throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed.", $_.Exception)
+            throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed: $($_.Exception.Message)", $_.Exception)
         }
         if (-not (Test-StaleScratchRootRemaining -Path $claim)) {
             return
