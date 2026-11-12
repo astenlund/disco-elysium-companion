@@ -96,7 +96,7 @@ describe('retained handoff binding after an unsettled reappend and explicit aban
     const coordinator = new RecoveryCoordinator(model.kernel);
     const snapshot = restoredJournal(original);
     installEventInspectionFixture(model.kernel, async () => ({ status: 'absent', sha256: null, metadata: null }));
-    model.kernel.outbox.read = async () => ({ status: 'absent' });
+    model.kernel.outbox.read = async (name: string) => ({ status: 'absent', name });
     await coordinator.plan({ cause: 'gap', journal: snapshot });
 
     // Act
