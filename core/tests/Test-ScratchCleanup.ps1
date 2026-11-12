@@ -189,9 +189,9 @@ if (Test-Selected 'StaggeredSweep') {
     $control = New-ScratchCompanionRoot -Prefix 'scratch-stagger-control'
     $go = Join-Path $control 'go'
     [IO.File]::WriteAllText($go, 'go', $script:Utf8)
-    # Fillers keep .tmp larger than one enumeration buffer and never match the scratch shape.
-    $fillers = @(for ($index = 0; $index -lt 80; $index++) { Join-Path $script:ProjectTmp ('m-scratch-stagger-filler-{0:D3}-{1}' -f $index, $PID) })
-    foreach ($filler in $fillers) { [void] [IO.Directory]::CreateDirectory($filler) }
+    # Fillers keep .tmp larger than one enumeration buffer. They are ordinary scratch roots of
+    # this live process, so sweepers skip them now and a later sweep reaps them after a crash.
+    $fillers = @(for ($index = 0; $index -lt 80; $index++) { New-ScratchCompanionRoot -Prefix ('m-scratch-stagger-filler-{0:D3}' -f $index) })
 
     try {
         for ($round = 1; $round -le $StaggerRounds; $round++) {
