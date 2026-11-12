@@ -1074,35 +1074,41 @@ test('a plan-bound carry keeps the original completed-replay attempt', async () 
   assert.equal(await model.kernel.carryHash(), carryHash);
 });
 
-test('a completed ordinary carry removal replays from the exact restored event', async () => {
-  const { model, oldVersion, prerequisite } = completedOrdinaryCarryModel();
-  const coordinator = new RecoveryCoordinator(model.kernel);
-  Object.assign(coordinator, { fileHash: memoryFileHash(model) });
-  const cut = new Error('Stop after completed-carry replay replacement is durable.');
-  const write = model.memory.write.bind(model.memory);
-  model.memory.write = async (...args) => {
-    const result = await write(...args);
-    if (args[0] === `operations/${owner.operationId}.json` && (args[1] as RepairOperation).recovery.attempts.length === 2) { throw cut; }
-    return result;
-  };
-  model.kernel.publish = async (_force, _record, _deadline, accept) => {
-    const result = publishReceipt(oldVersion.logicalOutboxId, 4, 'replayed');
-    await accept?.(result);
-    return result;
-  };
-  await assert.rejects(coordinator.resume(owner.operationId), error => error === cut);
-  const current = await model.kernel.operations.read(owner.operationId);
-  assert.equal(current.status, 'valid');
-  if (current.status !== 'valid' || current.value.compacted || current.value.kind !== 'repair') { throw new Error('Expected replacement after restored old-version replay.'); }
-  assert.equal(current.value.recovery.episodes.at(-1)?.replacementAttempt, 1);
-  assert.equal(current.value.plan.handoffs.find(item => item.logicalOutboxId === oldVersion.logicalOutboxId)?.presentation, 'rejected');
-  assert.equal(prerequisite.nextAction, prerequisite.actions.length);
-  assert.equal(await model.kernel.carryHash(), null);
-});
-
 // The replay publication check and the incompatible-replay merge build their handoff through
 // handoffFor, which takes an accepted event's identity from its acceptance. On the completed-replay
 // route the reappended event is accepted, so a fresh event identity still matches the retained binding.
+test('a completed ordinary carry removal replays from the exact restored event', async () => {
+  for (const freshEventIdentity of [false, true]) {
+    const variant = `fresh event identity: ${freshEventIdentity}`;
+    const { model, oldVersion, prerequisite } = completedOrdinaryCarryModel(freshEventIdentity);
+    const coordinator = new RecoveryCoordinator(model.kernel);
+    Object.assign(coordinator, { fileHash: memoryFileHash(model) });
+    const cut = new Error('Stop after completed-carry replay replacement is durable.');
+    const write = model.memory.write.bind(model.memory);
+    model.memory.write = async (...args) => {
+      const result = await write(...args);
+      if (args[0] === `operations/${owner.operationId}.json` && (args[1] as RepairOperation).recovery.attempts.length === 2) { throw cut; }
+      return result;
+    };
+    model.kernel.publish = async (_force, _record, _deadline, accept) => {
+      const result = publishReceipt(oldVersion.logicalOutboxId, 4, 'replayed');
+      await accept?.(result);
+      return result;
+    };
+    await assert.rejects(coordinator.resume(owner.operationId), error => error === cut);
+    const current = await model.kernel.operations.read(owner.operationId);
+    assert.equal(current.status, 'valid', variant);
+    if (current.status !== 'valid' || current.value.compacted || current.value.kind !== 'repair') { throw new Error('Expected replacement after restored old-version replay.'); }
+    assert.equal(current.value.recovery.episodes.at(-1)?.replacementAttempt, 1, variant);
+    const handoff = current.value.plan.handoffs.find(item => item.logicalOutboxId === oldVersion.logicalOutboxId);
+    assert.equal(handoff?.presentation, 'rejected', variant);
+    assert.equal(handoff?.journalId, oldVersion.acceptance?.journalId, variant);
+    assert.equal(handoff?.eventId, oldVersion.acceptance?.eventId, variant);
+    assert.equal(prerequisite.nextAction, prerequisite.actions.length, variant);
+    assert.equal(await model.kernel.carryHash(), null, variant);
+  }
+});
+
 test('replay publication keeps the accepted binding of a reappend with a fresh event identity', async () => {
   // Arrange
   const { model, oldVersion, restored } = completedOrdinaryCarryModel(true);
@@ -1120,38 +1126,6 @@ test('replay publication keeps the accepted binding of a reappend with a fresh e
   assert.equal(handoffs.length, 1);
   assert.equal(handoffs[0]!.journalId, oldVersion.acceptance?.journalId);
   assert.equal(handoffs[0]!.eventId, oldVersion.acceptance?.eventId);
-});
-
-test('incompatible replay keeps the accepted binding of a reappend with a fresh event identity', async () => {
-  // Arrange: the restored event passes the replay publication check, then the old-version
-  // receipt merges it with the retained binding.
-  const { model, oldVersion, restored } = completedOrdinaryCarryModel(true);
-  const coordinator = new RecoveryCoordinator(model.kernel);
-  Object.assign(coordinator, { fileHash: memoryFileHash(model) });
-  const cut = new Error('Stop after the replacement attempt is durable.');
-  const write = model.memory.write.bind(model.memory);
-  model.memory.write = async (...args) => {
-    const result = await write(...args);
-    if (args[0] === `operations/${owner.operationId}.json` && (args[1] as RepairOperation).recovery.attempts.length === 2) { throw cut; }
-    return result;
-  };
-  model.kernel.publish = async (_force, _record, _deadline, accept) => {
-    const result = publishReceipt(restored.logicalOutboxId, 4, 'replayed');
-    await accept?.(result);
-    return result;
-  };
-
-  // Act
-  await assert.rejects(coordinator.resume(owner.operationId), error => error === cut);
-
-  // Assert
-  const current = await model.kernel.operations.read(owner.operationId);
-  assert.ok(current.status === 'valid' && !current.value.compacted && current.value.kind === 'repair');
-  assert.equal(current.value.recovery.episodes.at(-1)?.replacementAttempt, 1);
-  const handoff = current.value.plan.handoffs.find(item => item.logicalOutboxId === restored.logicalOutboxId);
-  assert.equal(handoff?.presentation, 'rejected');
-  assert.equal(handoff?.journalId, oldVersion.acceptance?.journalId);
-  assert.equal(handoff?.eventId, oldVersion.acceptance?.eventId);
 });
 
 test('completed carry removal refuses present slot or contradictory restoration', async () => {
