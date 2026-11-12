@@ -647,8 +647,10 @@ if (Test-Selected 'CanonicalTokens') {
     # The diagnostic reader admits only canonical class tokens, and the settlement and consumer
     # scripts' protocol failure only with consumption state unknown.
     $diagnostic = {
-        param([string] $Class, [string] $State, [string] $Detail)
-        ConvertTo-CompanionJson -InputObject ([ordered]@{ outcomeClass = $Class; consumptionState = $State; lockStage = $null; sourceIdentity = $null; generationTimestamp = $null; detail = $Detail; warnings = @() }) -Budget config
+        param([string] $Class, [string] $State, [string] $Detail, [bool] $Provenance = $false)
+        $source = if ($Provenance) { [ordered]@{ domainId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'; saveFile = 'B.ntwtf.zip'; savedAt = '2026-08-10T11:00:00.0000000Z' } } else { $null }
+        $generation = if ($Provenance) { '2026-08-10T11:00:01.0000000Z' } else { $null }
+        ConvertTo-CompanionJson -InputObject ([ordered]@{ outcomeClass = $Class; consumptionState = $State; lockStage = $null; sourceIdentity = $source; generationTimestamp = $generation; detail = $Detail; warnings = @() }) -Budget config
     }
     foreach ($case in @(
             @{ Script = 'Settlement'; Class = 'config'; State = 'none'; Detail = 'consumer-not-owner' },
@@ -669,6 +671,22 @@ if (Test-Selected 'CanonicalTokens') {
             @{ Script = 'Consumer'; Class = 'protocol'; State = 'none'; Detail = 'attempt-result-invalid' },
             @{ Script = 'Consumer'; Class = 'protocol'; State = 'notConsumed'; Detail = 'attempt-result-invalid' })) {
         Assert-ThrowsDerived -TypeName 'TurnContextProtocolException' -Action { [void] (Read-StateEventDiagnostic -Json (& $diagnostic $case.Class $case.State $case.Detail) -ExpectedClass $case.Class -Script $case.Script) } -Message "The $($case.Script) diagnostic $($case.Class)/$($case.State)"
+    }
+
+    # A publisher receipt failure keeps its checked result's consumption state and the final
+    # target's provenance, so receipt-invalid is admitted with consumed or none, only with
+    # provenance and only from the publisher.
+    foreach ($state in @('consumed', 'none')) {
+        [void] (Read-StateEventDiagnostic -Json (& $diagnostic 'protocol' $state 'receipt-invalid' $true) -ExpectedClass 'protocol' -Script Publish)
+    }
+    foreach ($case in @(
+            @{ Script = 'Publish'; State = 'consumed'; Detail = 'attempt-result-invalid'; Provenance = $true },
+            @{ Script = 'Publish'; State = 'unknown'; Detail = 'receipt-invalid'; Provenance = $false },
+            @{ Script = 'Publish'; State = 'consumed'; Detail = 'receipt-invalid'; Provenance = $false },
+            @{ Script = 'Publish'; State = 'none'; Detail = 'receipt-invalid'; Provenance = $false },
+            @{ Script = 'Settlement'; State = 'unknown'; Detail = 'receipt-invalid'; Provenance = $false },
+            @{ Script = 'Consumer'; State = 'unknown'; Detail = 'receipt-invalid'; Provenance = $false })) {
+        Assert-ThrowsDerived -TypeName 'TurnContextProtocolException' -Action { [void] (Read-StateEventDiagnostic -Json (& $diagnostic 'protocol' $case.State $case.Detail $case.Provenance) -ExpectedClass 'protocol' -Script $case.Script) } -Message "The $($case.Script) diagnostic protocol/$($case.State)/$($case.Detail) with provenance $($case.Provenance)"
     }
     Assert-ThrowsDerived -TypeName 'TurnContextProtocolException' -Action { [void] (Format-StateEventDiagnosticLine -Script Settlement -Diagnostic ([ordered]@{ outcomeClass = 'Config'; consumptionState = 'none'; lockStage = $null; sourceIdentity = $null; generationTimestamp = $null; detail = 'consumer-not-owner'; warnings = @() })) } -Message 'Formatting a miscased class'
 }
@@ -1879,6 +1897,14 @@ if (Test-Selected 'ReceiptFailure') {
     $failedTerminal = Read-TerminalLine -Result $failed -Script Publish
     Assert-True -Condition ($null -ne $failedTerminal.diagnostic['sourceIdentity'] -and $null -ne $failedTerminal.diagnostic['generationTimestamp']) -Message 'A receipt failure after a committed record carries the final target provenance.'
     Assert-Equal -Actual @(Get-RecordNames -Fixture $fixture).Count -Expected 1 -Message 'A receipt failure after a committed record leaves the record in the outbox.'
+
+    # The same fault after an unchanged result consumed nothing: the terminal keeps none and
+    # the final target's provenance, and no record is added.
+    $unchanged = Invoke-Publish -Fixture $fixture
+    Assert-Terminal -Result $unchanged -Script Publish -Class protocol -Detail 'receipt-invalid' -ConsumptionState none -Message 'A receipt failure after an unchanged result'
+    $unchangedTerminal = Read-TerminalLine -Result $unchanged -Script Publish
+    Assert-True -Condition ($null -ne $unchangedTerminal.diagnostic['sourceIdentity'] -and $null -ne $unchangedTerminal.diagnostic['generationTimestamp']) -Message 'A receipt failure after an unchanged result carries the final target provenance.'
+    Assert-Equal -Actual @(Get-RecordNames -Fixture $fixture).Count -Expected 1 -Message 'A receipt failure after an unchanged result adds no record.'
 
     # A committed result whose own target is malformed is rejected before its receipt is
     # built, so its outcome stays unknown even though a record was committed.
