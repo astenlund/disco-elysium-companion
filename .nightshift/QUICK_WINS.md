@@ -70,7 +70,7 @@ These user-tracked cleanups came from Nightshift run 65584d32-c500-4a15-8def-fca
 
 - **Scratch sweep survivor diagnostics.** When a claimed stale tree survives removal, `Remove-StaleScratchRoot` in `core/tests/TestSupport.psm1` names only the claim path (`scratch-sweep-claim-<sweeper pid>-<guid>`). The original `<prefix>-<creator pid>` root is lost, and a later sweep re-claims the leftover under yet another name. Name the original root beside the claim in the survivor error. Wrap post-claim removal failures with both paths, keeping the original as the inner exception. Assert both in the `Removal` group of `core/tests/Test-ScratchCleanup.ps1`. In the same file, extract the dead-creator setup that the `Removal`, `ConcurrentSweep` and `StaggeredSweep` groups each repeat (start `cmd.exe /c exit`, wait, keep the `Process` object so its id is not reused) into one file-local helper, with a comment on why the object is held.
 
-## Three Ready items (run 56b060c8) follow-ups
+## Runtime test stub typing follow-ups
 
 These user-tracked cleanups came from Nightshift run 56b060c8-28c5-49d3-9634-af8875758f14. None was fixed by this tracking edit.
 
