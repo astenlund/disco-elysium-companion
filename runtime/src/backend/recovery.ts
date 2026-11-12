@@ -156,7 +156,9 @@ export class RecoveryCoordinator {
     const priorEvent = matches[0];
     requireControl(priorEvent === undefined || priorEvent.metadata.sequence <= snapshot.header.value.highWaterSequence);
     if (priorEvent !== undefined) {
-      const handoff = handoffFor(priorEvent.metadata);
+      const inventory = await k.operations.list();
+      if (inventory.invalid.length > 0) { throw new SafetyUnavailableError('Replay source handoff authority is unavailable.'); }
+      const handoff = settlementHandoffFor(priorEvent.metadata, inventory);
       const existing = record.plan.handoffs.findIndex(value => value.logicalOutboxId === handoff.logicalOutboxId);
       const bound = record.plan.handoffs[existing];
       requireControl(bound === undefined || bound.recordSha256 === handoff.recordSha256 && bound.journalId === handoff.journalId
@@ -1674,7 +1676,12 @@ export class RecoveryCoordinator {
               const priorBindings = current.record.plan.handoffs.filter(item => item.logicalOutboxId === previous.logicalOutboxId);
               requireControl(priorBindings.length <= 1 && priorBindings.every(item => item.recordSha256 === previous.recordSha256));
               const preserved = priorBindings[0];
-              const sourceHandoff = retainedEvent === undefined ? null : handoffFor(retainedEvent.metadata);
+              let sourceHandoff: RetainedHandoff | null = null;
+              if (retainedEvent !== undefined) {
+                const inventory = await k.operations.list();
+                if (inventory.invalid.length > 0) { throw new SafetyUnavailableError('Incompatible replay handoff authority is unavailable.'); }
+                sourceHandoff = settlementHandoffFor(retainedEvent.metadata, inventory);
+              }
               const handoff = preserved === undefined ? sourceHandoff : sourceHandoff === null ? preserved : mergeHandoff(preserved, sourceHandoff);
               if (handoff === null) { throw new SafetyUnavailableError('Incompatible replay lacks its original settlement binding.'); }
               const oldHandoff = { ...handoff, presentation: 'rejected' as const };
