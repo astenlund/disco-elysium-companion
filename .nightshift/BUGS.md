@@ -65,16 +65,6 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
-## Five Ready bugs deferred bugs
-
-These user-tracked findings came from Nightshift run df11cced-f1ff-4618-b967-34f6785c1d5b and were established by reading the code, not by executing the failure. Tracking does not authorize a fix.
-
-### Same-record replay checks compare raw identity
-
-`prepareReplayPublication` and the `sourceHandoff` merge in the incompatible-replay branch of `runtime/src/backend/recovery.ts` still use the raw event identity through `handoffFor` where the after-abandon merge sites use `settlementHandoffFor`, so a proven unsettled reappend whose journal or event identity differs from its retained binding is refused rather than merged at either check, whichever repair kind produced the new identity. The refusal fails closed and no fixture yet shows that the sequence occurs. Build a fixture for each check, then decide whether it should accept a proven reappend.
-
-**Requires:** none.
-
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
