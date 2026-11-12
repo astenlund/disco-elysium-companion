@@ -50,6 +50,16 @@ function Invoke-StaleRootRemoval {
     }
 }
 
+# Returns a process that has already exited, standing in for a dead scratch creator. Callers
+# hold the returned object for as long as they rely on its id: its open handle keeps Windows
+# from reusing the id for a new process, which a sweep would then see as a live creator.
+function Start-ExitedProcess {
+    $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
+    $process.WaitForExit()
+
+    return $process
+}
+
 function Get-ClaimNames {
     param([Parameter(Mandatory)] [string] $Directory, [Parameter(Mandatory)] [int[]] $ProcessIds)
 
@@ -63,8 +73,7 @@ if (Test-Selected 'Removal') {
     $scratch = New-ScratchCompanionRoot -Prefix 'scratch-removal'
 
     # A creator counts as exited only when no process has its id at the moment of the check.
-    $exitedProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
-    $exitedProcess.WaitForExit()
+    $exitedProcess = Start-ExitedProcess
     Assert-True -Condition (& $script:TestSupport { param($Id) Test-ScratchCreatorExited -ProcessId $Id } $exitedProcess.Id) -Message 'An exited creator counts as exited.'
     Assert-False -Condition (& $script:TestSupport { param($Id) Test-ScratchCreatorExited -ProcessId $Id } $PID) -Message 'A running creator does not count as exited.'
 
@@ -111,6 +120,7 @@ if (Test-Selected 'Removal') {
     Assert-True -Condition ($null -ne $survivorError) -Message 'A tree no attempt removes is reported.'
     Assert-Equal -Actual $survivorSeen.count -Expected 3 -Message 'A tree no attempt removes is attempted exactly three times.'
     Assert-True -Condition ([IO.Directory]::Exists($survivorSeen.target)) -Message 'A tree no attempt removes is left for inspection.'
+    Assert-True -Condition ($survivorError.Message.Contains($survivorSeen.target, [StringComparison]::Ordinal) -and $survivorError.Message.Contains($survivor, [StringComparison]::Ordinal)) -Message "A surviving tree's error names the claim and the original root ($($survivorError.Message))."
     [IO.Directory]::Delete($survivorSeen.target, $true)
 
     # A removal failure surfaces at once.
@@ -123,6 +133,7 @@ if (Test-Selected 'Removal') {
     $failingException = $failingError
     while ($null -ne $failingException -and $failingException -isnot [ComponentModel.Win32Exception]) { $failingException = $failingException.InnerException }
     Assert-True -Condition ($null -ne $failingException -and $failingException.NativeErrorCode -eq 5) -Message 'A removal failure is rethrown.'
+    Assert-True -Condition ($failingError -is [IO.IOException] -and $failingError.Message.Contains($failingSeen.target, [StringComparison]::Ordinal) -and $failingError.Message.Contains($failing, [StringComparison]::Ordinal)) -Message "A removal failure names the claim and the original root ($($failingError.Message))."
     Assert-Equal -Actual $failingSeen.count -Expected 1 -Message 'A removal failure is not retried.'
     [IO.Directory]::Delete($failingSeen.target, $true)
 
@@ -139,8 +150,7 @@ if (Test-Selected 'ConcurrentSweep') {
     # Several real sweepers start together against one large dead-process root, the shape
     # the shared helper reaps when parallel harnesses start in the same checkout.
     $sweeper = Join-Path $PSScriptRoot 'Invoke-ScratchSweep.ps1'
-    $deadProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
-    $deadProcess.WaitForExit()
+    $deadProcess = Start-ExitedProcess
     $deadId = $deadProcess.Id
     Assert-True -Condition ($null -eq (Get-Process -Id $deadId -ErrorAction SilentlyContinue)) -Message 'The dead creator process has exited.'
     $control = New-ScratchCompanionRoot -Prefix 'scratch-sweep-control'
@@ -182,8 +192,7 @@ if (Test-Selected 'StaggeredSweep') {
     # the fillers, the second sweeper's claims and then the late roots, so the first sweeper
     # reaches the second's in-progress claims after its own start.
     $sweeper = Join-Path $PSScriptRoot 'Invoke-ScratchSweep.ps1'
-    $deadProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit' -PassThru -WindowStyle Hidden
-    $deadProcess.WaitForExit()
+    $deadProcess = Start-ExitedProcess
     $deadId = $deadProcess.Id
     Assert-True -Condition ($null -eq (Get-Process -Id $deadId -ErrorAction SilentlyContinue)) -Message 'The dead creator process has exited.'
     $control = New-ScratchCompanionRoot -Prefix 'scratch-stagger-control'

@@ -556,7 +556,9 @@ function Test-ScratchCreatorExited {
 # others find the root gone and skip it, and a claim abandoned by a crash is reaped by a later
 # sweep once its process has exited. The winner removes the claimed tree alone and checks it
 # is gone after every attempt, a bounded number of times; a root that cannot be claimed, a
-# removal failure and a tree that outlasts the attempts all surface. -Remove exists for tests.
+# removal failure and a tree that outlasts the attempts all surface, the last two naming both
+# the claim and the original root, since a later sweep re-claims a leftover under a new name.
+# -Remove exists for tests.
 function Remove-StaleScratchRoot {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -573,13 +575,18 @@ function Remove-StaleScratchRoot {
 
     $attempts = 3
     for ($attempt = 1; $attempt -le $attempts; $attempt++) {
-        & $Remove $claim
+        try {
+            & $Remove $claim
+        }
+        catch {
+            throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed.", $_.Exception)
+        }
         if (-not (Test-StaleScratchRootRemaining -Path $claim)) {
             return
         }
     }
 
-    throw [System.IO.IOException]::new("Claimed stale scratch root survived $attempts removal attempts: $claim")
+    throw [System.IO.IOException]::new("Claimed stale scratch root survived $attempts removal attempts: $claim (originally $Path)")
 }
 
 # True while the path is still an ordinary, non-reparse directory. Only a not-found error
