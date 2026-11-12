@@ -204,6 +204,54 @@ describe('request-scoped window recovery', () => {
     assert.equal(recovery.summary()?.descendingFailures, 2);
   });
 
+  describe('decides skipped shapes per attempt', () => {
+    const withoutShapeTwo = (): WindowCandidate[] => candidates().filter(candidate => candidate.shape !== 2);
+
+    it('lets a later submission choose a shape that an unsent attempt skipped as infeasible', () => {
+      // Arrange
+      const recovery = create();
+      finish(recovery, prepare(recovery, 1));
+      recovery.cancelBeforeSend(prepare(recovery, 3, withoutShapeTwo()));
+
+      // Act
+      const next = prepare(recovery, 2);
+
+      // Assert
+      assert.equal(next.revalidation, false);
+      assert.equal(recovery.summary()?.descendingFailures, 1);
+    });
+
+    for (const outcome of ['success', 'otherFailure'] as const) {
+      it(`keeps the next shape when a sent attempt that skipped a shape ends in ${outcome}`, () => {
+        // Arrange
+        const recovery = create();
+        finish(recovery, prepare(recovery, 1));
+
+        // Act
+        finish(recovery, prepare(recovery, 3, withoutShapeTwo()), outcome);
+
+        // Assert
+        assert.equal(prepare(recovery, 2).revalidation, false);
+        assert.equal(recovery.summary()?.descendingFailures, 1);
+      });
+    }
+
+    it('refuses an attempt with no smaller candidate without exhausting the episode', () => {
+      // Arrange
+      const recovery = create();
+      finish(recovery, prepare(recovery, 1));
+      const noneSmaller = candidates().map(candidate => ({ ...candidate, bytes: 450 }));
+
+      // Act
+      const refused = recovery.prepare(noneSmaller, state);
+
+      // Assert
+      assert.equal(refused, null);
+      assert.deepEqual(recovery.summary(), { variant: 'ordinary', state: 'ready', descendingFailures: 1, revalidationAvailable: true });
+      assert.equal(prepare(recovery, 2).candidate.bytes, 300);
+    });
+  });
+
   it('retains ordinary progress across override selection and shares equal configurations', () => {
     const recovery = create();
     finish(recovery, prepare(recovery, 1));

@@ -1374,6 +1374,29 @@ test('send-time relevance replaces the unsent baseline even when candidate bytes
   await host.shutdown();
 });
 
+test('the retryability inspection after a window failure does not decide the next submission shape', async () => {
+  const { host, backend, provider } = await fixture();
+  const preview = backend.preview.bind(backend);
+  let previews = 0;
+  backend.preview = async (...args) => {
+    const result = await preview(...args);
+    previews += 1;
+    return previews === 2 ? { ...result, preview: { candidates: result.preview.candidates.filter(candidate => candidate.shape !== 2) } } : result;
+  };
+  provider.current.action = async () => ({ kind: 'failed', code: 'contextExhausted', retryable: true });
+  assert.equal(host.submitChat({ text: 'same question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(previews, 2);
+  assert.equal(host.status.windowRecovery?.state, 'ready');
+  provider.current.action = async () => ({ kind: 'completed', text: 'Smaller context fits.' });
+  assert.equal(host.submitChat({ text: 'same question', questionOverride: false }).result, 'admitted');
+  await until(() => !host.turnInProgress);
+  assert.equal(provider.current.requests.length, 2);
+  assert.equal(backend.copied?.candidate.shape, 2);
+  assert.equal(host.status.windowRecovery?.descendingFailures, 1);
+  await host.shutdown();
+});
+
 for (const stage of ['copy', 'enqueue'] as const) {
   test(`compaction during send-time ${stage} prevents a state-omitting enqueue`, async () => {
     const { host, backend, provider, events } = await fixture();

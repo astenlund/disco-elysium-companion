@@ -359,7 +359,7 @@ describe('codec-owned relevance lifecycle', () => {
     }
   });
 
-  it('preserves the empty candidate boundary for initial, exhausted and disclosure selection', async () => {
+  it('preserves the empty candidate boundary for initial, post-failure and disclosure selection', async () => {
     const model = deliveryFixture();
     const original = ContextPreparer.prototype.preview;
     ContextPreparer.prototype.preview = async () => ({ candidates: [] });
@@ -380,9 +380,10 @@ describe('codec-owned relevance lifecycle', () => {
       const ticket = failed.prepare(candidates(nativeClean), nativeClean)!;
       failed.sent(ticket, 'instance'); failed.finished(ticket, 'instance', 'contextExhausted');
       assert.equal(failed.prepare(preview.preview.candidates, preview.relevanceFingerprint), null);
-      assert.equal(failed.summary()?.state, 'exhausted');
+      assert.equal(failed.summary()?.state, 'ready');
       assert.equal(failed.summary()?.descendingFailures, 1);
       assert.equal(failed.summary()?.revalidationAvailable, true);
+      assert.equal(failed.prepare(candidates(nativeClean), nativeClean)?.candidate.shape, 4);
       const disclosure = createWindow();
       assert.throws(() => disclosure.prepare(preview.preview.candidates, preview.relevanceFingerprint, true), WindowRecoveryError);
       assert.equal(disclosure.summary()?.state, 'unavailable');

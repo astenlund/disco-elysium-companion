@@ -180,14 +180,14 @@ export class WindowRecovery {
       const stateCandidate = candidates.find(item => item.stateIncluded && (changedHistory || item.fingerprint !== episode.failedCandidates.at(-1)));
       revalidation = ordinaryAttemptFailed && episode.revalidationAvailable && (changedHistory || changedContent) && stateCandidate !== undefined;
       candidate = revalidation ? stateCandidate : undefined;
+      // Selection is per attempt: skipped shapes and a missing smaller candidate are never recorded, because an
+      // unsent attempt's content says nothing about the next submission. Only a failed ordinary ladder send advances the
+      // next shape, in finished.
       if (candidate === undefined && !episode.exhausted && episode.failures < 4) {
         candidate = candidates.find(item => item.shape >= episode.nextShape && !episode.failedCandidates.includes(item.fingerprint) && item.fingerprint !== episode.failedRevalidationCandidate && (episode.failedBytes === null || item.bytes < episode.failedBytes));
-        if (candidate !== undefined) { episode.nextShape = candidate.shape; }
       }
       if (candidate === undefined) {
         if (episode.failures === 0) { return this.fail('No admissible initial context candidate.'); }
-        episode.exhausted = true;
-        episode.nextShape = 5;
 
         return null;
       }
