@@ -20,6 +20,7 @@ Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
 $script:TestSupport = Get-Module TestSupport
 $script:ProjectTmp = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.tmp'))
 $script:Utf8 = [Text.UTF8Encoding]::new($false, $true)
+$script:ClaimPattern = '^scratch-sweep-claim-([0-9]+)-[0-9a-f]{32}$'
 
 function Test-Selected {
     param([Parameter(Mandatory)] [string] $Name)
@@ -38,88 +39,93 @@ function New-ScratchTree {
 }
 
 function Invoke-StaleRootRemoval {
-    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [scriptblock] $Remove)
+    param([Parameter(Mandatory)] [string] $Path, [scriptblock] $Remove)
 
-    & $script:TestSupport { param($Path, $Remove) Remove-StaleScratchRoot -Path $Path -Remove $Remove } $Path $Remove
+    if ($null -eq $Remove) {
+        & $script:TestSupport { param($Path) Remove-StaleScratchRoot -Path $Path } $Path
+    }
+    else {
+        & $script:TestSupport { param($Path, $Remove) Remove-StaleScratchRoot -Path $Path -Remove $Remove } $Path $Remove
+    }
 }
 
-function Assert-Win32Rethrown {
-    param([Parameter(Mandatory)] [scriptblock] $Action, [Parameter(Mandatory)] [int] $NativeErrorCode, [Parameter(Mandatory)] [string] $Message)
+function Get-ClaimNames {
+    param([Parameter(Mandatory)] [string] $Directory, [Parameter(Mandatory)] [int[]] $ProcessIds)
 
-    try { & $Action }
-    catch {
-        $exception = $_.Exception
-        while ($null -ne $exception -and $exception -isnot [ComponentModel.Win32Exception]) { $exception = $exception.InnerException }
-        Assert-True -Condition ($null -ne $exception -and $exception.NativeErrorCode -eq $NativeErrorCode) -Message "$Message rethrows the Win32 error $NativeErrorCode ($($_.Exception.GetType().FullName): $($_.Exception.Message))."
-
-        return
-    }
-
-    throw [InvalidOperationException]::new("Assertion failed: $Message did not throw.")
+    return @([IO.Directory]::GetFileSystemEntries($Directory) | ForEach-Object { [IO.Path]::GetFileName($_) } | Where-Object {
+            $match = [regex]::Match($_, $script:ClaimPattern)
+            $match.Success -and [int] $match.Groups[1].Value -in $ProcessIds
+        })
 }
 
 if (Test-Selected 'Removal') {
     $scratch = New-ScratchCompanionRoot -Prefix 'scratch-removal'
 
-    # Another sweeper finished the tree while this one's walk was inside it.
-    $finished = Join-Path $scratch 'finished'
-    New-ScratchTree -Root $finished -Directories 2 -FilesPerDirectory 2
-    Invoke-StaleRootRemoval -Path $finished -Remove { param($Target) [IO.Directory]::Delete($Target, $true); throw [ComponentModel.Win32Exception]::new(2) }
-    Assert-False -Condition ([IO.Directory]::Exists($finished)) -Message 'A root a concurrent sweeper finished removing stays removed.'
+    # The default removal claims the root and deletes the claimed tree completely.
+    $plain = Join-Path $scratch 'plain'
+    New-ScratchTree -Root $plain -Directories 2 -FilesPerDirectory 2
+    Invoke-StaleRootRemoval -Path $plain
+    Assert-False -Condition ([IO.Directory]::Exists($plain)) -Message 'A swept root is gone.'
+    Assert-Equal -Actual @(Get-ClaimNames -Directory $scratch -ProcessIds @($PID)).Count -Expected 0 -Message 'A swept root leaves no claimed tree behind.'
 
-    # The walk lost an entry to another sweeper and left the rest; the retry removes it.
-    $partial = Join-Path $scratch 'partial'
-    New-ScratchTree -Root $partial -Directories 2 -FilesPerDirectory 2
-    $calls = @{ count = 0 }
-    Invoke-StaleRootRemoval -Path $partial -Remove {
-        param($Target)
-        $calls.count++
-        if ($calls.count -eq 1) { [IO.Directory]::Delete((Join-Path $Target 'd0'), $true); throw [ComponentModel.Win32Exception]::new(3) }
-        Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
-    }.GetNewClosure()
-    Assert-Equal -Actual $calls.count -Expected 2 -Message 'A partly removed root is removed again once.'
-    Assert-False -Condition ([IO.Directory]::Exists($partial)) -Message 'A partly removed root is absent after the retry.'
+    # The claim is an atomic rename beside the root to a scratch-shaped name carrying this
+    # process id, done before any removal starts.
+    $named = Join-Path $scratch 'named'
+    New-ScratchTree -Root $named -Directories 1 -FilesPerDirectory 1
+    $seen = @{ target = $null; rootGone = $false }
+    Invoke-StaleRootRemoval -Path $named -Remove { param($Target) $seen.target = $Target; $seen.rootGone = -not [IO.Directory]::Exists($named); [IO.Directory]::Delete($Target, $true) }.GetNewClosure()
+    Assert-True -Condition $seen.rootGone -Message 'The root is renamed away before removal starts.'
+    Assert-OrdinalEqual -Actual ([IO.Path]::GetDirectoryName($seen.target)) -Expected $scratch -Message 'The claim stays beside the root.'
+    $claimMatch = [regex]::Match([IO.Path]::GetFileName($seen.target), $script:ClaimPattern)
+    Assert-True -Condition ($claimMatch.Success -and [int] $claimMatch.Groups[1].Value -eq $PID) -Message "The claim name carries this live process id ($($seen.target))."
 
-    # Any other Win32 failure is not a concurrent removal and still surfaces.
-    $denied = Join-Path $scratch 'denied'
-    New-ScratchTree -Root $denied -Directories 1 -FilesPerDirectory 1
-    Assert-Win32Rethrown -Action { Invoke-StaleRootRemoval -Path $denied -Remove { param($Target) throw [ComponentModel.Win32Exception]::new(5) } } -NativeErrorCode 5 -Message 'An access failure during removal'
-    Assert-True -Condition ([IO.Directory]::Exists($denied)) -Message 'An access failure leaves the root for inspection.'
+    # A root another sweeper already claimed or removed is skipped without any removal.
+    $lostCalls = @{ count = 0 }
+    Invoke-StaleRootRemoval -Path (Join-Path $scratch 'already-gone') -Remove { param($Target) $lostCalls.count++ }.GetNewClosure()
+    Assert-Equal -Actual $lostCalls.count -Expected 0 -Message 'A root that is already gone is not removed.'
 
-    # A root that keeps surviving the not-found failure is reported after the bounded attempts.
-    $stuck = Join-Path $scratch 'stuck'
-    New-ScratchTree -Root $stuck -Directories 1 -FilesPerDirectory 1
-    $stuckCalls = @{ count = 0 }
-    Assert-Win32Rethrown -Action { Invoke-StaleRootRemoval -Path $stuck -Remove { param($Target) $stuckCalls.count++; throw [ComponentModel.Win32Exception]::new(2) }.GetNewClosure() } -NativeErrorCode 2 -Message 'A root that survives every attempt'
-    Assert-Equal -Actual $stuckCalls.count -Expected 3 -Message 'A surviving root is attempted exactly three times.'
-
-    # An attempt that returns normally but leaves the root (a suppressed partial removal) is
-    # repeated until the root is gone.
+    # An attempt that returns normally but leaves the claimed tree (a suppressed partial
+    # removal) is repeated until the tree is gone.
     $lingering = Join-Path $scratch 'lingering'
     New-ScratchTree -Root $lingering -Directories 1 -FilesPerDirectory 1
     $lingeringCalls = @{ count = 0 }
     Invoke-StaleRootRemoval -Path $lingering -Remove { param($Target) $lingeringCalls.count++; if ($lingeringCalls.count -ge 2) { [IO.Directory]::Delete($Target, $true) } }.GetNewClosure()
-    Assert-Equal -Actual $lingeringCalls.count -Expected 2 -Message 'A root left by a normally returning attempt is removed again once.'
-    Assert-False -Condition ([IO.Directory]::Exists($lingering)) -Message 'A root left by a normally returning attempt is absent after the retry.'
+    Assert-Equal -Actual $lingeringCalls.count -Expected 2 -Message 'A tree left by a normally returning attempt is removed again once.'
+    Assert-Equal -Actual @(Get-ClaimNames -Directory $scratch -ProcessIds @($PID)).Count -Expected 0 -Message 'A tree left by a normally returning attempt is gone after the retry.'
 
-    # A root that every normally returning attempt leaves in place surfaces after the bound.
+    # A claimed tree that every attempt leaves in place surfaces after the bound and stays
+    # for inspection.
     $survivor = Join-Path $scratch 'survivor'
     New-ScratchTree -Root $survivor -Directories 1 -FilesPerDirectory 1
-    $survivorCalls = @{ count = 0 }
+    $survivorSeen = @{ count = 0; target = $null }
     $survivorError = $null
-    try { Invoke-StaleRootRemoval -Path $survivor -Remove { param($Target) $survivorCalls.count++ }.GetNewClosure() }
+    try { Invoke-StaleRootRemoval -Path $survivor -Remove { param($Target) $survivorSeen.count++; $survivorSeen.target = $Target }.GetNewClosure() }
     catch { $survivorError = $_.Exception }
-    Assert-True -Condition ($null -ne $survivorError) -Message 'A root no attempt removes is reported.'
-    Assert-Equal -Actual $survivorCalls.count -Expected 3 -Message 'A root no attempt removes is attempted exactly three times.'
-    Assert-True -Condition ([IO.Directory]::Exists($survivor)) -Message 'A root no attempt removes is left for inspection.'
+    Assert-True -Condition ($null -ne $survivorError) -Message 'A tree no attempt removes is reported.'
+    Assert-Equal -Actual $survivorSeen.count -Expected 3 -Message 'A tree no attempt removes is attempted exactly three times.'
+    Assert-True -Condition ([IO.Directory]::Exists($survivorSeen.target)) -Message 'A tree no attempt removes is left for inspection.'
+    [IO.Directory]::Delete($survivorSeen.target, $true)
 
-    # A path that stops being an ordinary directory before the retry is left alone.
+    # A removal failure surfaces at once.
+    $failing = Join-Path $scratch 'failing'
+    New-ScratchTree -Root $failing -Directories 1 -FilesPerDirectory 1
+    $failingSeen = @{ count = 0; target = $null }
+    $failingError = $null
+    try { Invoke-StaleRootRemoval -Path $failing -Remove { param($Target) $failingSeen.count++; $failingSeen.target = $Target; throw [ComponentModel.Win32Exception]::new(5) }.GetNewClosure() }
+    catch { $failingError = $_.Exception }
+    $failingException = $failingError
+    while ($null -ne $failingException -and $failingException -isnot [ComponentModel.Win32Exception]) { $failingException = $failingException.InnerException }
+    Assert-True -Condition ($null -ne $failingException -and $failingException.NativeErrorCode -eq 5) -Message 'A removal failure is rethrown.'
+    Assert-Equal -Actual $failingSeen.count -Expected 1 -Message 'A removal failure is not retried.'
+    [IO.Directory]::Delete($failingSeen.target, $true)
+
+    # A claimed path that stops being an ordinary directory is left alone.
     $replaced = Join-Path $scratch 'replaced'
     New-ScratchTree -Root $replaced -Directories 1 -FilesPerDirectory 1
-    $replacedCalls = @{ count = 0 }
-    Invoke-StaleRootRemoval -Path $replaced -Remove { param($Target) $replacedCalls.count++; [IO.Directory]::Delete($Target, $true); [IO.File]::WriteAllText($Target, 'not a directory'); throw [ComponentModel.Win32Exception]::new(2) }.GetNewClosure()
-    Assert-Equal -Actual $replacedCalls.count -Expected 1 -Message 'A root replaced by a file is not removed again.'
-    Assert-True -Condition ([IO.File]::Exists($replaced)) -Message 'A file that replaced a root is left in place.'
+    $replacedSeen = @{ count = 0; target = $null }
+    Invoke-StaleRootRemoval -Path $replaced -Remove { param($Target) $replacedSeen.count++; $replacedSeen.target = $Target; [IO.Directory]::Delete($Target, $true); [IO.File]::WriteAllText($Target, 'not a directory') }.GetNewClosure()
+    Assert-Equal -Actual $replacedSeen.count -Expected 1 -Message 'A claimed path replaced by a file is not removed again.'
+    Assert-True -Condition ([IO.File]::Exists($replacedSeen.target)) -Message 'A file that replaced a claimed path is left in place.'
 }
 
 if (Test-Selected 'ConcurrentSweep') {
@@ -138,8 +144,13 @@ if (Test-Selected 'ConcurrentSweep') {
         New-ScratchTree -Root $root
         $go = Join-Path $control "go-$round"
         $children = @()
+        $sweeperIds = @()
         try {
-            for ($index = 0; $index -lt $Sweepers; $index++) { $children += Start-BoundedPwsh -Arguments @('-File', $sweeper, '-GoFile', $go) }
+            for ($index = 0; $index -lt $Sweepers; $index++) {
+                $child = Start-BoundedPwsh -Arguments @('-File', $sweeper, '-GoFile', $go)
+                $children += $child
+                $sweeperIds += $child.Process.Id
+            }
             # Every sweeper imports its module before the go file appears.
             Start-Sleep -Milliseconds 2500
             [IO.File]::WriteAllText($go, 'go', $script:Utf8)
@@ -148,6 +159,7 @@ if (Test-Selected 'ConcurrentSweep') {
                 Assert-Equal -Actual $result.ExitCode -Expected 0 -Message "Round $round sweeper exits cleanly (stderr: $($result.StdErr.Trim()))"
             }
             Assert-False -Condition ([IO.Directory]::Exists($root)) -Message "Round $round leaves no part of the dead root."
+            Assert-Equal -Actual @(Get-ClaimNames -Directory $script:ProjectTmp -ProcessIds $sweeperIds).Count -Expected 0 -Message "Round $round leaves no claimed tree."
         }
         finally {
             # Every sweeper still running is killed before the root is cleaned up.
