@@ -31,12 +31,6 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 These user-tracked findings came from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
 
-### [Concurrent scratch cleanup](bugs/parallel-scratch-cleanup.md)
-
-Reproduce the intermittent concurrent test scratch removal failure before changing shared cleanup logic.
-
-**Requires:** none.
-
 ### [Fixture cleanup contract](bugs/fixture-cleanup-contract.md)
 
 Investigate a retained private fixture directory while distinguishing helper exit, process quiescence, and physical removal.
@@ -84,22 +78,6 @@ These user-tracked findings came from Nightshift run df11cced-f1ff-4618-b967-34f
 ### Same-record replay checks compare raw identity
 
 `prepareReplayPublication` and the `sourceHandoff` merge in the incompatible-replay branch of `runtime/src/backend/recovery.ts` still use the raw event identity through `handoffFor` where the after-abandon merge sites use `settlementHandoffFor`, so a proven unsettled reappend whose journal or event identity differs from its retained binding is refused rather than merged at either check, whichever repair kind produced the new identity. The refusal fails closed and no fixture yet shows that the sequence occurs. Build a fixture for each check, then decide whether it should accept a proven reappend.
-
-**Requires:** none.
-
-## Turn-context failure boundary deferred bugs
-
-These user-tracked findings came from Nightshift run eee852c4-f839-43e6-8439-5cd0c025d54b. Tracking does not authorize a fix.
-
-### Publisher receipt failure after a non-failure result
-
-In `core/Publish-StateEvent.ps1`, every non-failure attempt result (`committed`, `unchanged` or `replayed`) reaches `ConvertTo-StateEventReceiptJson` in `core/private/StateEvents.ps1`, which serializes the receipt and validates it with `Read-StateEventReceipt`, with no handler of its own; if either throws, the outer catch reports `protocol` / `attempt-result-invalid` with `unknown` consumption. Only `committed` carries `consumed`; `unchanged` and `replayed` consume nothing. Before the receipt, `Test-StateEventOperationResult` checks only that the result has a `stateEventOutcome` property, so `Read-StateEventReceipt` is the first check of the result's receipt fields, and a rejection there can mean either a well-formed result whose receipt failed or a malformed result. This is the publisher counterpart of the envelope rejection consumption bug fixed in the same run, found by reading the code, not executed. State-extraction section 7.6 has two rules here that conflict: its class-set paragraph says the publisher keeps the 7.5 `protocol` rules, whose row preserves a valid result's consumption state, while its terminal-record paragraph allows `consumed` only for a `delivery` failure that follows a committed record. `Read-StateEventDiagnostic` enforces the terminal-record rule, and `Write-StateEventTerminal` silently replaces a diagnostic it rejects with `protocol` / `attempt-result-invalid` / `unknown`. Decide the class and consumption state reported for a receipt failure after a `committed` result, and how a malformed result the receipt check rejects is told apart from a well-formed one. State that outcome in section 7.6, so that its class-set and terminal-record rules agree with each other and with `Read-StateEventDiagnostic`. Add a test that drives the real `Publish-StateEvent.ps1` to a receipt failure after a `committed` result, the only outcome where the conflict applies, and asserts the decided class, consumption state and reason on the emitted terminal; the fallback record itself passes `Read-StateEventDiagnostic`, so validating the line alone would not detect a fallback.
-
-**Requires:** none.
-
-### Wrapper terminal self-validation
-
-State-extraction section 7.5 says the wrapper and the validated entry both validate the wrapper's terminal record with `Read-TurnContextDiagnostic`, and that the wrapper supplies `ExpectedLockStage` from its typed operation result. In `core/Get-TurnContext.ps1` only the selected attempt's own diagnostic is validated, without `-ExpectedLockStage`; the config, ownership-preflight, delivery and outer-catch terminals, and the envelope-rejection terminal from `Get-TurnContextEnvelopeRejection`, are written without wrapper-side validation. It fails closed, because `core/Get-ValidatedTurnContext.ps1` validates every child record and maps an invalid one to `protocol` with `unknown` consumption. Either validate every wrapper-generated terminal before writing it, passing `ExpectedLockStage` for lock classes, or narrow every spec statement of wrapper-side terminal validation to what the wrapper actually validates: the two section 7.5 sentences and the section 11 host transaction selection criterion that compares wrapper validation with `-ExpectedLockStage` against host validation. The typed attempt result checked by `Assert-TurnContextAttemptResult` has no lock stage apart from its diagnostic, so the first option either passes the diagnostic's own `lockStage`, which adds no check, or first adds a typed lock-stage field to the attempt result and its validator; unless such a field is added, either option also corrects the sentence saying the wrapper supplies `ExpectedLockStage` from its typed operation result.
 
 **Requires:** none.
 
