@@ -10,6 +10,8 @@ $script:CleanupRegistered = $false
 $script:StaleScratchSwept = $false
 $script:ScratchRemovalAttempts = 3
 $script:ScratchResidueSampleLimit = 16
+# The default removal of one scratch tree; an attempt that leaves part of it is judged by its caller, not here.
+$script:RemoveScratchTree = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
 
 function Assert-ScratchBoundarySafe {
     if (-not (Test-Path -LiteralPath $script:ProjectRoot -PathType Container)) {
@@ -564,7 +566,7 @@ function Test-ScratchCreatorExited {
 function Remove-StaleScratchRoot {
     param(
         [Parameter(Mandatory)] [string] $Path,
-        [Parameter()] [scriptblock] $Remove = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
+        [Parameter()] [scriptblock] $Remove = $script:RemoveScratchTree
     )
 
     $claim = Join-Path ([System.IO.Path]::GetDirectoryName($Path)) "scratch-sweep-claim-$PID-$([guid]::NewGuid().ToString('N'))"
@@ -593,7 +595,7 @@ function Invoke-BoundedScratchRemoval {
 
     for ($attempt = 1; $attempt -le $script:ScratchRemovalAttempts; $attempt++) {
         & $Remove $Path
-        if (-not (Test-StaleScratchRootRemaining -Path $Path)) {
+        if (-not (Test-ScratchTreeRemaining -Path $Path)) {
             return $true
         }
     }
@@ -631,7 +633,7 @@ function Get-ScratchResidue {
 function Remove-ScratchCompanionRoot {
     param(
         [Parameter(Mandatory)] [string] $Path,
-        [Parameter()] [scriptblock] $Remove = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
+        [Parameter()] [scriptblock] $Remove = $script:RemoveScratchTree
     )
 
     $root = [System.IO.Path]::GetFullPath($Path)
@@ -654,7 +656,7 @@ function Remove-ScratchCompanionRoot {
 
 # True while the path is still an ordinary, non-reparse directory. Only a not-found error
 # counts as gone; a path that cannot be read is treated as still present, never as removed.
-function Test-StaleScratchRootRemaining {
+function Test-ScratchTreeRemaining {
     param([Parameter(Mandatory)] [string] $Path)
 
     try {

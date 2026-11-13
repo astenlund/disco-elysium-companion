@@ -9,7 +9,7 @@ import { loadRuntimeConfig, type ModelChoice } from '../../src/config.ts';
 import { FileOperationGuard } from '../../src/file-operation.ts';
 import type { ProviderSession } from '../../src/provider.ts';
 import { hostedTools, ToolBoundary } from '../../src/tool-boundary.ts';
-import { companionFixture } from '../support/companion.ts';
+import { companionFixture, fixtureCloseFailure } from '../support/companion.ts';
 import { createTestNative } from '../support/native-helper.ts';
 
 const scriptName = path.basename(fileURLToPath(import.meta.url), '.ts');
@@ -122,14 +122,17 @@ async function main(): Promise<void> {
     try { await session?.close(); }
     catch { observation.terminationUnverified = true; }
     current = null;
-    if (observation.terminationUnverified !== true) { await fixture.close(); }
+    if (observation.terminationUnverified !== true) {
+      try { await fixture.close(); observation.fixtureClosed = true; }
+      catch (error) { Object.assign(observation, fixtureCloseFailure(error)); }
+    }
     observation.finishedAt = new Date().toISOString();
     await fs.mkdir(resultsDirectory, { recursive: true });
     await fs.writeFile(resultPath, JSON.stringify(observation, null, 2).replaceAll('\n', '\r\n') + '\r\n');
     process.stdout.write(JSON.stringify({ resultPath, ...observation }) + '\n');
   }
   if (!observation.completed || observation.resumeIdentityMatched !== true || observation.projectHookExecuted !== false || observation.nativeInventoryObserved !== true
-    || observation.onlyFixedTools !== true || observation.noMcp !== true || observation.terminationUnverified === true) { process.exitCode = 1; }
+    || observation.onlyFixedTools !== true || observation.noMcp !== true || observation.terminationUnverified === true || observation.fixtureClosed !== true) { process.exitCode = 1; }
 }
 
 await main();

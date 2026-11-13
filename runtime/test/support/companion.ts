@@ -6,22 +6,33 @@ import { fileURLToPath } from 'node:url';
 
 export interface CompanionFixture { readonly root: string; close(): Promise<void> }
 
-/** What a fixture root still held after removal: an entry count (null when unlistable) and a bounded root-relative sample. */
-export interface FixtureResidue { readonly remaining: number | null; readonly sample: readonly string[] }
+/**
+ * What still stands at a fixture root after removal: a directory, with its entry count (null when unlistable) and a
+ * bounded root-relative sample; another kind of entry; or residue the host reported in a form that could not be read.
+ */
+export interface FixtureResidue { readonly kind: 'directory' | 'not-a-directory' | 'unknown'; readonly remaining: number | null; readonly sample: readonly string[] }
 
 /** The fixture root outlived its removal; distinct from a host failure, and its message names no path. */
 export class FixtureResidueError extends Error {
   readonly residue: FixtureResidue;
 
   constructor(residue: FixtureResidue) {
-    super(`Fixture root was not removed: ${residue.remaining ?? 'an unknown number of'} entries remain.`);
+    super(residue.kind === 'not-a-directory' ? 'Fixture root was not removed: an entry that is not a directory remains at its path.'
+      : `Fixture root was not removed: ${residue.remaining ?? 'an unknown number of'} entries remain.`);
     this.name = 'FixtureResidueError';
     this.residue = residue;
   }
 }
 
+/** The observation fields a probe records for a failed fixture close, keeping the residue when there is one. */
+export function fixtureCloseFailure(error: unknown): Record<string, unknown> {
+  const name = error instanceof Error ? error.name : 'unknown';
+
+  return error instanceof FixtureResidueError ? { fixtureCloseFailure: name, fixtureResidue: error.residue } : { fixtureCloseFailure: name };
+}
+
 const residueExitCode = 3;
-const unknownResidue: FixtureResidue = { remaining: null, sample: [] };
+const residueSampleLimit = 16;
 
 function reportedResidue(stderr: string): FixtureResidue {
   const last = stderr.trimEnd().split(/\r?\n/).at(-1) ?? '';
@@ -29,21 +40,30 @@ function reportedResidue(stderr: string): FixtureResidue {
     const value = (JSON.parse(last) as { fixtureResidue?: { remaining?: unknown; sample?: unknown } }).fixtureResidue;
     const sample = Array.isArray(value?.sample) ? value.sample.filter((entry): entry is string => typeof entry === 'string') : [];
 
-    return { remaining: typeof value?.remaining === 'number' ? value.remaining : null, sample };
+    return { kind: 'directory', remaining: typeof value?.remaining === 'number' ? value.remaining : null, sample };
   }
   catch {
     // A residue exit whose report cannot be read is still residue, of unknown extent.
-    return unknownResidue;
+    return { kind: 'unknown', remaining: null, sample: [] };
   }
 }
 
-async function assertRootRemoved(root: string): Promise<void> {
-  try { await fs.lstat(root); }
+/** @internal Resolves when nothing stands at the root; otherwise rejects with what stands there. */
+export async function assertRootRemoved(root: string): Promise<void> {
+  let entry;
+  try { entry = await fs.lstat(root); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return; }
     throw new Error('Fixture root removal could not be verified.', { cause: error });
   }
-  throw new FixtureResidueError(unknownResidue);
+  if (!entry.isDirectory()) { throw new FixtureResidueError({ kind: 'not-a-directory', remaining: null, sample: [] }); }
+  let names: string[];
+  try { names = (await fs.readdir(root, { recursive: true })).map(name => name.replaceAll(path.sep, '/')).sort(); }
+  catch {
+    // A directory that cannot be listed is still residue, of unknown extent.
+    throw new FixtureResidueError({ kind: 'directory', remaining: null, sample: [] });
+  }
+  throw new FixtureResidueError({ kind: 'directory', remaining: names.length, sample: names.slice(0, residueSampleLimit) });
 }
 
 // The shared PowerShell fixture owns its root until stdin closes, then removes it; close() resolves only once the root is gone.

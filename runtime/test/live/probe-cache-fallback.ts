@@ -11,7 +11,7 @@ import { FileToolAdapter } from '../../src/file-tool-adapter.ts';
 import { assembleInstructions } from '../../src/instructions.ts';
 import { ProcessSupervisor } from '../../src/process.ts';
 import type { ProviderOutcome, ProviderSession } from '../../src/provider.ts';
-import { companionFixture, type CompanionFixture } from '../support/companion.ts';
+import { companionFixture, fixtureCloseFailure, type CompanionFixture } from '../support/companion.ts';
 import { createTestNative } from '../support/native-helper.ts';
 
 const scriptName = path.basename(fileURLToPath(import.meta.url), '.ts');
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
     currentSession = null;
     if (fixture !== null && observation.terminationVerified === true) {
       try { await fixture.close(); observation.fixtureClosed = true; }
-      catch (error) { observation.fixtureCloseFailure = error instanceof Error ? error.name : 'unknown'; }
+      catch (error) { Object.assign(observation, fixtureCloseFailure(error)); }
     }
     observation.captureBytes = captureBytes;
     observation.finishedAt = new Date().toISOString();

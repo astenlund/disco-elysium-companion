@@ -152,8 +152,27 @@ if (Test-Selected 'Removal') {
     Remove-ScratchCompanionRoot -Path $owned
     Assert-False -Condition ([IO.Directory]::Exists($owned)) -Message 'An explicitly removed owned root is gone.'
 
-    # Only a root this process created can be removed explicitly.
-    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Remove-ScratchCompanionRoot -Path $plain }
+    # Only a root this process created can be removed explicitly; a tree it did not create survives the refusal.
+    $foreign = Join-Path $scratch 'foreign'
+    New-ScratchTree -Root $foreign -Directories 1 -FilesPerDirectory 1
+    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Remove-ScratchCompanionRoot -Path $foreign }
+    Assert-True -Condition ([IO.File]::Exists((Join-Path $foreign 'd0/a/b/c/f0.txt'))) -Message 'A tree this process did not create survives an explicit removal request.'
+
+    # An owned root replaced by a reparse point is refused, and the reparse target keeps its content.
+    $sentinel = Join-Path $scratch 'sentinel'
+    New-ScratchTree -Root $sentinel -Directories 1 -FilesPerDirectory 1
+    $linked = New-ScratchCompanionRoot -Prefix 'scratch-owned-junction'
+    [IO.Directory]::Delete($linked)
+    $null = New-Item -ItemType Junction -Path $linked -Target $sentinel
+    try {
+        Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Remove-ScratchCompanionRoot -Path $linked }
+        Assert-True -Condition ([IO.File]::Exists((Join-Path $sentinel 'd0/a/b/c/f0.txt'))) -Message 'A junction standing at an owned root is never followed by an explicit removal.'
+    }
+    finally {
+        # Deleting the junction without recursion removes only the link.
+        [IO.Directory]::Delete($linked)
+    }
+    Assert-True -Condition ([IO.File]::Exists((Join-Path $sentinel 'd0/a/b/c/f0.txt'))) -Message 'Removing the junction leaves its target intact.'
 
     # An owned root that every attempt leaves surfaces with its root-relative residue and stays.
     $stubborn = New-ScratchCompanionRoot -Prefix 'scratch-owned-survivor'

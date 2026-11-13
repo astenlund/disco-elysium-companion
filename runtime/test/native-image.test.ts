@@ -13,6 +13,7 @@ import { maxLaunchDirectoryLength } from '../src/launch-directory.ts';
 import { nativeHelperReasons, NativeHelperUnavailableError, type NativeHelperReason } from '../src/native-helper-error.ts';
 import { compileHelper, ensureNativeHelperImage, observeImageFile, type NativeImageOptions } from '../src/native-image.ts';
 import type { StartupProgress } from '../src/startup-progress.ts';
+import { holdExclusively } from './support/exclusive-hold.ts';
 import { compileTestProgram, testHelperImage } from './support/native-helper.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
@@ -225,22 +226,14 @@ describe('native helper first-launch build', () => {
     // Arrange: a synthetic file another process holds open without sharing.
     const held = path.join(scratch, `held-${randomUUID()}.exe`);
     await fs.writeFile(held, 'synthetic');
-    const holdScript = "$held = [IO.File]::Open($env:HOLD_PATH, 'Open', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [void][Console]::In.ReadLine(); $held.Dispose()";
-    const holder = spawn('pwsh', ['-NoProfile', '-NonInteractive', '-Command', holdScript], { env: { ...process.env, HOLD_PATH: held }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
-    await new Promise<void>((resolve, reject) => {
-      holder.stdout.once('data', () => { resolve(); });
-      holder.once('error', reject);
-      holder.once('exit', () => { reject(new Error('The holder exited before holding the file.')); });
-    });
+    const hold = await holdExclusively(held);
     try {
       // Act and assert: the open fails with a sharing violation, which Node reports as EBUSY.
       assert.throws(() => openSync(held, 'r'), { code: 'EBUSY' });
       assert.throws(() => observeImageFile(held), error => error instanceof NativeHelperUnavailableError && error.reason === 'imageInUse');
       assert.throws(() => observeImageFile(held, 'buildOutput'), error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed');
     } finally {
-      const closed = new Promise(resolve => { holder.once('close', resolve); });
-      holder.stdin.end();
-      await closed;
+      await hold.release();
     }
   });
 
