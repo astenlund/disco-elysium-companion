@@ -59,7 +59,7 @@ These user-tracked findings came from Nightshift run a69edaac-e54c-47ec-ba9c-3e2
 
 ### [Scratch cleanup exit handler never fires](bugs/scratch-exit-handler-never-fires.md)
 
-Many core test harnesses rely on a `PowerShell.Exiting` cleanup that does not fire under `pwsh -File`, so their scratch roots wait for the stale sweep; replace it with explicit removal, including the fixture host's staging-failure exit.
+Many PowerShell test harnesses rely on a `PowerShell.Exiting` cleanup that does not fire under `pwsh -File`, so their scratch roots wait for the stale sweep; replace it with explicit removal, including the fixture host's staging-failure exit.
 
 **Requires:** none.
 
