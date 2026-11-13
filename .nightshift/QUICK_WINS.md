@@ -57,9 +57,3 @@ These user-tracked cleanups came from Nightshift run df11cced-f1ff-4618-b967-34f
 These user-tracked cleanups came from Nightshift run 20cf1b2f-b050-44bd-baec-71479f63b501. None was fixed by this tracking edit.
 
 - **Superseded atomic replace record.** The "Atomic replace" bullet in state-extraction section 11 records a 2026-08-07 live claim that 1000 write-temp-then-`Move(overwrite)` cycles completed under a share-friendly reader. The 2026-08-10 probe recorded in section 7.1 found the overwriting move denied under such a reader, and `Write-CompanionStateBytes` rewrites an existing target with `File.Replace`. Mark the 2026-08-07 result as superseded by the 2026-08-10 probe and describe the production Replace loop as unverified until it is re-probed.
-
-## Turn-context failure boundary follow-ups
-
-These user-tracked cleanups came from Nightshift run eee852c4-f839-43e6-8439-5cd0c025d54b. None was fixed by this tracking edit.
-
-- **Envelope reader infrastructure exception.** The `Read-TurnContextEnvelope` paragraph in state-extraction section 7.5 says the function returns the validated value or throws `TurnContextProtocolException`. In producer mode it also throws `AdapterValidatorInfrastructureException` from adapter admission, including for a validator that writes output, and both `Get-TurnContextEnvelopeRejection` and the attempt's payload serialization reason depend on that distinction. Add the producer-mode branch to the paragraph.
