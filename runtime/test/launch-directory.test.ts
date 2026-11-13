@@ -11,10 +11,10 @@ import type { HelperImage } from '../src/native-image.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** A root path of exactly `length` characters under the repository's .tmp; it is never created. */
-function rootOfLength(length: number): string {
-  const base = path.join(repository, '.tmp', 'launch-root-');
-  assert.ok(base.length < length, `the repository path is too long to build a ${length}-character root`);
+/** A root path of exactly `length` characters inside `parent` (by default the repository's .tmp); this builds the path only. */
+function rootOfLength(length: number, parent = path.join(repository, '.tmp')): string {
+  const base = path.join(parent, 'launch-root-');
+  assert.ok(base.length < length, `the parent path is too long to build a ${length}-character root`);
 
   return base + 'r'.repeat(length - base.length);
 }
@@ -64,11 +64,13 @@ describe('companion root launch admission', () => {
 
   it('refuses a too-long root when opening the backend before reading its configuration or starting the helper service', async () => {
     // Arrange: a valid configuration under the root, so neither a missing file nor the absent image can refuse it first.
-    const tooLong = rootOfLength(maxLaunchDirectoryLength + 1);
+    // The root lives in a folder of this run's own, which alone is removed afterwards.
+    const scratch = await fs.mkdtemp(path.join(repository, '.tmp', 'launch-admission-'));
+    const tooLong = rootOfLength(maxLaunchDirectoryLength + 1, scratch);
     await fs.mkdir(path.join(tooLong, 'runtime'), { recursive: true });
     await fs.copyFile(path.join(repository, 'runtime', 'companion.config.json'), path.join(tooLong, 'runtime', 'companion.config.json'));
     let launches = 0;
-    const image: HelperImage = { path: path.join(repository, '.tmp', 'never-started.exe'), sha256: '0'.repeat(64), volume: '0', fileId: '0' };
+    const image: HelperImage = { path: path.join(scratch, 'never-started.exe'), sha256: '0'.repeat(64), volume: '0', fileId: '0' };
     try {
       // Act
       const opening = openBackend({ companionRoot: tooLong, nativeImage: image, nativeLauncher: () => { launches++; throw new Error('The helper service must not start.'); } });
@@ -79,6 +81,6 @@ describe('companion root launch admission', () => {
       assert.equal(launches, 0);
       assert.deepEqual(await fs.readdir(tooLong), ['runtime']);
     }
-    finally { await fs.rm(tooLong, { recursive: true, force: true }); }
+    finally { await fs.rm(scratch, { recursive: true, force: true }); }
   });
 });
