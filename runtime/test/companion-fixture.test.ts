@@ -48,8 +48,8 @@ describe('companion fixture cleanup contract', () => {
     }
   });
 
-  it('rejects when the root path still holds an entry after the host reports it gone', { timeout: 120000 }, async () => {
-    // Arrange: the root directory is replaced by a held file, which the host's directory probe does not count as the root.
+  it('rejects with path-free residue when an entry that is not a directory stands at the root path', { timeout: 120000 }, async () => {
+    // Arrange: the root directory is replaced by a held file, which no removal can take and which is not the root directory.
     const fixture = await companionFixture();
     try {
       await fs.rm(fixture.root, { recursive: true });

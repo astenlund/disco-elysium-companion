@@ -578,29 +578,34 @@ function Remove-StaleScratchRoot {
     }
 
     try {
-        $removed = Invoke-BoundedScratchRemoval -Path $claim -Remove $Remove
+        $state = Invoke-BoundedScratchRemoval -Path $claim -Remove $Remove
     }
     catch {
         throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed: $($_.Exception.Message)", $_.Exception)
     }
-    if (-not $removed) {
+    # A claim replaced by something other than a directory is left alone, as no sweep removes it.
+    if ($state -cne 'gone' -and $state -cne 'other') {
         throw [System.IO.IOException]::new("Claimed stale scratch root survived $script:ScratchRemovalAttempts removal attempts: $claim (originally $Path)")
     }
 }
 
-# Runs a removal against one scratch tree until it is gone, at most a fixed number of times.
-# True once the tree is gone; false when every attempt left it. A throwing removal is not retried.
+# Runs a removal against one scratch tree, at most a fixed number of times, and returns what
+# stands at the path afterwards (see Get-ScratchTreeState). It stops once the path is gone or
+# holds something other than an ordinary directory, which a further removal must not touch, and
+# retries while an ordinary or unreadable directory remains. A throwing removal is not retried.
 function Invoke-BoundedScratchRemoval {
     param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [scriptblock] $Remove)
 
+    $state = 'directory'
     for ($attempt = 1; $attempt -le $script:ScratchRemovalAttempts; $attempt++) {
         & $Remove $Path
-        if (-not (Test-ScratchTreeRemaining -Path $Path)) {
-            return $true
+        $state = Get-ScratchTreeState -Path $Path
+        if ($state -ceq 'gone' -or $state -ceq 'other') {
+            return $state
         }
     }
 
-    return $false
+    return $state
 }
 
 # Describes what a surviving scratch tree still holds without naming where it lives: the
@@ -620,10 +625,10 @@ function Get-ScratchResidue {
     }
     catch {
         # An unreadable survivor is still residue; its listing is reported as incomplete.
-        return [ordered]@{ remaining = $null; sample = @($sample); listing = 'incomplete' }
+        return [ordered]@{ kind = 'directory'; remaining = $null; sample = @($sample); listing = 'incomplete' }
     }
 
-    return [ordered]@{ remaining = $remaining; sample = @($sample); listing = 'complete' }
+    return [ordered]@{ kind = 'directory'; remaining = $remaining; sample = @($sample); listing = 'complete' }
 }
 
 # Removes a scratch root this process created, for a harness that must know the root is gone
@@ -646,30 +651,36 @@ function Remove-ScratchCompanionRoot {
         throw [System.InvalidOperationException]::new('Scratch root reparse points are never removed.')
     }
 
-    if (-not (Invoke-BoundedScratchRemoval -Path $root -Remove $Remove)) {
-        $failure = [System.IO.IOException]::new("Scratch root survived $script:ScratchRemovalAttempts removal attempts: $root")
-        $failure.Data['ScratchResidue'] = Get-ScratchResidue -Path $root
+    $state = Invoke-BoundedScratchRemoval -Path $root -Remove $Remove
+    if ($state -cne 'gone') {
+        $failure = [System.IO.IOException]::new("Scratch root was not removed after at most $script:ScratchRemovalAttempts attempts: $root")
+        $failure.Data['ScratchResidue'] = if ($state -ceq 'other') { [ordered]@{ kind = 'not-a-directory'; remaining = $null; sample = @(); listing = 'none' } } else { Get-ScratchResidue -Path $root }
         throw $failure
     }
     [void] $script:ScratchRoots.Remove($root)
 }
 
-# True while the path is still an ordinary, non-reparse directory. Only a not-found error
-# counts as gone; a path that cannot be read is treated as still present, never as removed.
-function Test-ScratchTreeRemaining {
+# What stands at a scratch tree's path: 'gone' only on a not-found error, 'directory' for an
+# ordinary non-reparse directory, 'other' for a file or reparse point, and 'unreadable' when the
+# path cannot be read, which is never taken as removed.
+function Get-ScratchTreeState {
     param([Parameter(Mandatory)] [string] $Path)
 
     try {
         $attributes = [System.IO.File]::GetAttributes($Path)
     }
     catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
-        return $false
+        return 'gone'
     }
     catch {
-        return $true
+        return 'unreadable'
     }
 
-    return ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0 -and ($attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0
+    if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0 -and ($attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+        return 'directory'
+    }
+
+    return 'other'
 }
 
 function New-ScratchCompanionRoot {

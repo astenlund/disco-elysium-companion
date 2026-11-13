@@ -37,10 +37,10 @@ const residueSampleLimit = 16;
 function reportedResidue(stderr: string): FixtureResidue {
   const last = stderr.trimEnd().split(/\r?\n/).at(-1) ?? '';
   try {
-    const value = (JSON.parse(last) as { fixtureResidue?: { remaining?: unknown; sample?: unknown } }).fixtureResidue;
+    const value = (JSON.parse(last) as { fixtureResidue?: { kind?: unknown; remaining?: unknown; sample?: unknown } }).fixtureResidue;
     const sample = Array.isArray(value?.sample) ? value.sample.filter((entry): entry is string => typeof entry === 'string') : [];
 
-    return { kind: 'directory', remaining: typeof value?.remaining === 'number' ? value.remaining : null, sample };
+    return { kind: value?.kind === 'not-a-directory' ? 'not-a-directory' : 'directory', remaining: typeof value?.remaining === 'number' ? value.remaining : null, sample };
   }
   catch {
     // A residue exit whose report cannot be read is still residue, of unknown extent.

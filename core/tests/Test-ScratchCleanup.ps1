@@ -192,6 +192,20 @@ if (Test-Selected 'Removal') {
     Assert-True -Condition ([IO.Directory]::Exists($stubborn)) -Message 'A surviving owned root is left for inspection.'
     Remove-ScratchCompanionRoot -Path $stubborn
     Assert-False -Condition ([IO.Directory]::Exists($stubborn)) -Message 'A surviving owned root stays owned and can be removed once released.'
+
+    # An owned root replaced by a file during removal is residue, not a removed root: the file stays, and so does ownership.
+    $occupied = New-ScratchCompanionRoot -Prefix 'scratch-owned-occupied'
+    $occupiedCalls = @{ count = 0 }
+    $occupiedError = $null
+    try { Remove-ScratchCompanionRoot -Path $occupied -Remove { param($Target) $occupiedCalls.count++; [IO.Directory]::Delete($Target, $true); [IO.File]::WriteAllText($Target, 'occupied') }.GetNewClosure() }
+    catch { $occupiedError = $_.Exception }
+    Assert-True -Condition ($occupiedError -is [IO.IOException]) -Message "An owned root replaced by a file is reported as residue ($occupiedError)."
+    Assert-Equal -Actual $occupiedCalls.count -Expected 1 -Message 'An owned root replaced by a file is not removed again.'
+    Assert-OrdinalEqual -Actual $occupiedError.Data['ScratchResidue'].kind -Expected 'not-a-directory' -Message 'The residue names an entry that is not a directory.'
+    Assert-True -Condition ([IO.File]::Exists($occupied)) -Message 'The file standing at the owned root is left in place.'
+    [IO.File]::Delete($occupied)
+    Remove-ScratchCompanionRoot -Path $occupied
+    Assert-False -Condition (Test-Path -LiteralPath $occupied) -Message 'An owned root reported as residue stays owned and can be removed once cleared.'
 }
 
 if (Test-Selected 'ConcurrentSweep') {
