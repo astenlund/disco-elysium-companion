@@ -39,6 +39,7 @@ describe('companion fixture cleanup contract', () => {
       // Assert
       assert.ok(failure instanceof FixtureResidueError, `expected FixtureResidueError, got ${String(failure)}`);
       assert.deepEqual(failure.residue, { kind: 'directory', remaining: 1, sample: ['held.txt'] });
+      assert.equal(failure.message, 'Fixture root was not removed: 1 entries remain (held.txt).');
       assert.equal(failure.message.includes(fixture.root), false);
       assert.equal(existsSync(fixture.root), true);
     }

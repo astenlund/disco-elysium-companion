@@ -17,8 +17,10 @@ export class FixtureResidueError extends Error {
   readonly residue: FixtureResidue;
 
   constructor(residue: FixtureResidue) {
+    // Test reporters print only the message, so it carries the bounded, root-relative sample too.
+    const sample = residue.sample.length === 0 ? '' : ` (${residue.sample.join(', ')})`;
     super(residue.kind === 'not-a-directory' ? 'Fixture root was not removed: an entry that is not a directory remains at its path.'
-      : `Fixture root was not removed: ${residue.remaining ?? 'an unknown number of'} entries remain.`);
+      : `Fixture root was not removed: ${residue.remaining ?? 'an unknown number of'} entries remain${sample}.`);
     this.name = 'FixtureResidueError';
     this.residue = residue;
   }
