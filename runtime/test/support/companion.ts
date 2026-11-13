@@ -12,17 +12,22 @@ export interface CompanionFixture { readonly root: string; close(): Promise<void
  */
 export interface FixtureResidue { readonly kind: 'directory' | 'not-a-directory' | 'unknown'; readonly remaining: number | null; readonly sample: readonly string[] }
 
-/** The fixture root outlived its removal; distinct from a host failure, and its message names no path. */
+/**
+ * The fixture root outlived its removal; distinct from a host failure, and its message names no path. `hostExitCode` is
+ * how the host ended (null when it was killed), so a residue left behind a failed host keeps both facts apart.
+ */
 export class FixtureResidueError extends Error {
   readonly residue: FixtureResidue;
+  readonly hostExitCode: number | null;
 
-  constructor(residue: FixtureResidue) {
+  constructor(residue: FixtureResidue, hostExitCode: number | null) {
     // Test reporters print only the message, so it carries the bounded, root-relative sample too.
     const sample = residue.sample.length === 0 ? '' : ` (${residue.sample.join(', ')})`;
     super(residue.kind === 'not-a-directory' ? 'Fixture root was not removed: an entry that is not a directory remains at its path.'
       : `Fixture root was not removed: ${residue.remaining ?? 'an unknown number of'} entries remain${sample}.`);
     this.name = 'FixtureResidueError';
     this.residue = residue;
+    this.hostExitCode = hostExitCode;
   }
 }
 
@@ -30,7 +35,7 @@ export class FixtureResidueError extends Error {
 export function fixtureCloseFailure(error: unknown): Record<string, unknown> {
   const name = error instanceof Error ? error.name : 'unknown';
 
-  return error instanceof FixtureResidueError ? { fixtureCloseFailure: name, fixtureResidue: error.residue } : { fixtureCloseFailure: name };
+  return error instanceof FixtureResidueError ? { fixtureCloseFailure: name, fixtureResidue: error.residue, fixtureHostExitCode: error.hostExitCode } : { fixtureCloseFailure: name };
 }
 
 const residueExitCode = 3;
@@ -50,22 +55,25 @@ function reportedResidue(stderr: string): FixtureResidue {
   }
 }
 
-/** @internal Resolves when nothing stands at the root; otherwise rejects with what stands there. */
-export async function assertRootRemoved(root: string): Promise<void> {
+/**
+ * @internal Resolves when nothing stands at the root; otherwise rejects with what stands there, tagged with how the
+ * host ended.
+ */
+export async function assertRootRemoved(root: string, hostExitCode: number | null = 0): Promise<void> {
   let entry;
   try { entry = await fs.lstat(root); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return; }
     throw new Error('Fixture root removal could not be verified.', { cause: error });
   }
-  if (!entry.isDirectory()) { throw new FixtureResidueError({ kind: 'not-a-directory', remaining: null, sample: [] }); }
+  if (!entry.isDirectory()) { throw new FixtureResidueError({ kind: 'not-a-directory', remaining: null, sample: [] }, hostExitCode); }
   let names: string[];
   try { names = (await fs.readdir(root, { recursive: true })).map(name => name.replaceAll(path.sep, '/')).sort(); }
   catch {
     // A directory that cannot be listed is still residue, of unknown extent.
-    throw new FixtureResidueError({ kind: 'directory', remaining: null, sample: [] });
+    throw new FixtureResidueError({ kind: 'directory', remaining: null, sample: [] }, hostExitCode);
   }
-  throw new FixtureResidueError({ kind: 'directory', remaining: names.length, sample: names.slice(0, residueSampleLimit) });
+  throw new FixtureResidueError({ kind: 'directory', remaining: names.length, sample: names.slice(0, residueSampleLimit) }, hostExitCode);
 }
 
 // The shared PowerShell fixture owns its root until stdin closes, then removes it; close() resolves only once the root is gone.
@@ -102,9 +110,11 @@ export async function companionFixture(mode: 'empty' | 'core' | 'state-event' | 
           let code: number | null;
           try { code = await closed; }
           finally { clearTimeout(timeout); }
-          if (code === residueExitCode) { throw new FixtureResidueError(reportedResidue(error)); }
+          if (code === residueExitCode) { throw new FixtureResidueError(reportedResidue(error), code); }
+          // Whatever else ended the host, a root still standing is residue first; only a verifiably gone root leaves a
+          // host failure.
+          await assertRootRemoved(root, code);
           if (code !== 0) { throw new Error(`Fixture cleanup failed: ${error}`); }
-          await assertRootRemoved(root);
         })();
 
         return completion;

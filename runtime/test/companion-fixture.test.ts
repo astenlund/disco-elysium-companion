@@ -74,6 +74,34 @@ describe('companion fixture cleanup contract', () => {
     }
   });
 
+  it('rejects with path-free residue, not a host failure, when the host fails while the root still stands', { timeout: 120000 }, async () => {
+    // Arrange: a junction replaces the root, so the host's reparse guard refuses the removal and the host exits 1.
+    const fixture = await companionFixture();
+    const sentinel = await fs.mkdtemp(path.join(repository, '.tmp', 'fixture-sentinel-'));
+    try {
+      await fs.writeFile(path.join(sentinel, 'kept.txt'), 'x');
+      await fs.rm(fixture.root, { recursive: true });
+      await fs.symlink(sentinel, fixture.root, 'junction');
+      let failure: unknown = null;
+
+      // Act
+      try { await fixture.close(); }
+      catch (error) { failure = error; }
+
+      // Assert
+      assert.ok(failure instanceof FixtureResidueError, `expected FixtureResidueError, got ${String(failure)}`);
+      assert.equal(failure.residue.kind, 'not-a-directory');
+      assert.equal(failure.hostExitCode, 1);
+      assert.equal(failure.message.includes(fixture.root), false);
+      assert.equal(existsSync(path.join(sentinel, 'kept.txt')), true);
+    }
+    finally {
+      // Removing the junction itself, never through it, leaves its target for the sentinel cleanup.
+      await fs.rmdir(fixture.root).catch(() => undefined);
+      await fs.rm(sentinel, { recursive: true, force: true });
+    }
+  });
+
   it('reports a directory still standing at the root with its entry count and a bounded root-relative sample', async () => {
     // Arrange
     const root = await fs.mkdtemp(path.join(repository, '.tmp', 'fixture-residue-'));
