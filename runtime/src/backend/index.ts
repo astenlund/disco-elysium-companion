@@ -13,6 +13,7 @@ import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
+import { admitLaunchRoot } from '../launch-directory.ts';
 import { invalidOperationOwners, OperationStore } from '../operations.ts';
 import { NativeHelper } from '../native-helper.ts';
 import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from '../native-helper-error.ts';
@@ -306,6 +307,8 @@ export class CoordinatorBackend implements RuntimeBackend {
  */
 export async function openBackend(options: BackendOptions): Promise<RuntimeBackend> {
   options.onStartupPhase?.('configuration');
+  // Every owned launch starts in the companion root, so a root too long to launch from is refused before any process.
+  admitLaunchRoot(options.companionRoot);
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
   options.onStartupPhase?.('scopeAdmission');
   let helper: NativeHelper;

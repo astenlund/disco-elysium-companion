@@ -10,7 +10,7 @@ import { goToolchain, helperImageFile, helperModule, readNativeHelperRelease, ty
 import { normalizedGoSourceHash } from './go-source.ts';
 import { guardScopeToken } from './guard.ts';
 import { hasExactKeys, parseStrictJson } from './json.ts';
-import { launchDirectoryRefusal } from './launch-directory.ts';
+import { admitLaunchRoot } from './launch-directory.ts';
 import { NativeHelperUnavailableError, type NativeHelperReason } from './native-helper-error.ts';
 
 /** The checkout this runtime runs from; the build step canonicalizes it before any use. */
@@ -373,15 +373,15 @@ function runToolchain(go: string, args: readonly string[], cwd: string, environm
 
 /**
  * Compiles the helper into a build directory with the closed environment and the manifest's toolchain and flags, after
- * checking the toolchain version; returns the output path. The pin tool and the build step share this one recipe.
+ * refusing a root too long to start the toolchain in its module directory and checking the toolchain version; returns
+ * the output path. The pin tool and the build step share this one recipe.
  */
 export async function compileHelper(root: string, directory: string, go = resolveGo(), deadlineMs = buildDeadlineMs,
   source: NodeJS.ProcessEnv = process.env, onAbandoned: () => void = () => {}): Promise<string> {
+  admitLaunchRoot(root, helperModule);
   const environment = buildIo(() => goEnvironment(directory, go, source));
   buildIo(() => disableTelemetry(environment));
   const moduleDirectory = path.join(root, helperModule);
-  const directoryRefusal = launchDirectoryRefusal(moduleDirectory);
-  if (directoryRefusal !== null) { throw refuse('buildFailed', directoryRefusal); }
   const version = await runToolchain(go, ['version'], moduleDirectory, environment, 60_000);
   if (version.code === null && !version.expired) { throw refuse('toolchainMissing'); }
   if (version.abandoned) { onAbandoned(); }

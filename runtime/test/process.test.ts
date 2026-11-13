@@ -235,9 +235,15 @@ describe('owned process transport', () => {
 });
 
 describe('owned launch working-directory length', () => {
+  // Each segment costs its name plus one separator, so a step never leaves exactly one character it could not fill.
   const directoryOfLength = async (base: string, length: number): Promise<string> => {
+    assert.ok(length - base.length >= 2, `cannot build a ${length}-character directory below a ${base.length}-character base`);
     let current = base;
-    while (current.length < length) { current = path.join(current, 'd'.repeat(Math.min(length - current.length - 1, 100))); }
+    while (current.length < length) {
+      const remaining = length - current.length;
+      const take = Math.min(remaining - 1, 100);
+      current = path.join(current, 'd'.repeat(remaining - take - 1 === 1 ? take - 1 : take));
+    }
     assert.equal(current.length, length);
     await fs.mkdir(current, { recursive: true });
 
@@ -262,7 +268,7 @@ describe('owned launch working-directory length', () => {
       assert.equal(launched.stdout.toString('utf8'), '["fits"]');
       assert.ok(refusal instanceof SupervisorError, `expected SupervisorError, got ${String(refusal)}`);
       assert.equal(refusal.reason, 'result-invalid');
-      assert.match(refusal.message, new RegExp(`longer than ${maxLaunchDirectoryLength} characters; this one has ${maxLaunchDirectoryLength + 1}`));
+      assert.match(refusal.message, new RegExp(`has ${maxLaunchDirectoryLength + 1} characters, but this launch needs one of at most ${maxLaunchDirectoryLength}`));
       assert.equal(refusal.message.includes(scratch), false);
       assert.equal(await supervisor.observeJobAbsent('core'), true);
       assert.equal((await supervisor.run('core', { ...options('arguments', 'after'), cwd: longest }, 15000)).stdout.toString('utf8'), '["after"]');

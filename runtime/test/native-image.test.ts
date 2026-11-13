@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { prepareNativeImage } from '../src/cli.ts';
 import { goToolchain, helperImageFile, helperModule, manifestFile, nativeHelperSha256 } from '../src/compiled-image-release.ts';
+import { ConfigurationError } from '../src/config.ts';
 import { maxLaunchDirectoryLength } from '../src/launch-directory.ts';
 import { nativeHelperReasons, NativeHelperUnavailableError, type NativeHelperReason } from '../src/native-helper-error.ts';
 import { compileHelper, ensureNativeHelperImage, observeImageFile, type NativeImageOptions } from '../src/native-image.ts';
@@ -205,17 +206,19 @@ describe('native helper first-launch build', () => {
   });
 
   it('refuses an installation whose helper module directory is too long to start the toolchain in, before launching it', { timeout: 120000 }, async () => {
-    // Arrange: a root whose module directory is one character past the launch limit, and a toolchain path that does not
-    // exist, so any launch would surface as toolchainMissing rather than the length refusal.
-    const base = path.join(scratch, `long-${randomUUID()}`);
-    const suffix = path.join('', helperModule).length + 1;
-    const root = path.join(base, 'r'.repeat(maxLaunchDirectoryLength + 1 - suffix - base.length - 1));
-    assert.equal(path.join(root, helperModule).length, maxLaunchDirectoryLength + 1);
+    // Arrange: a root one character longer than the module directory allows, and a toolchain path that does not exist, so
+    // any launch would surface as toolchainMissing rather than the length refusal.
+    const allowed = maxLaunchDirectoryLength - path.join('', helperModule).length - 1;
+    const base = path.join(scratch, 'long-');
+    assert.ok(base.length < allowed, 'the scratch path is too long to build the over-long root');
+    const root = base + 'r'.repeat(allowed + 1 - base.length);
+    const build = path.join(scratch, `build-${randomUUID()}`);
 
     // Act and assert
-    await assert.rejects(compileHelper(root, path.join(scratch, `build-${randomUUID()}`), path.join(scratch, `absent-${randomUUID()}`, 'go.exe')),
-      error => error instanceof NativeHelperUnavailableError && error.reason === 'buildFailed'
-        && error.message.includes(`longer than ${maxLaunchDirectoryLength} characters; this one has ${maxLaunchDirectoryLength + 1}`) && !error.message.includes(root));
+    await assert.rejects(compileHelper(root, build, path.join(scratch, `absent-${randomUUID()}`, 'go.exe')),
+      error => error instanceof ConfigurationError && error.code === 'configurationInvalid'
+        && error.message.includes(`has ${allowed + 1} characters, but this launch needs one of at most ${allowed}`) && !error.message.includes(root));
+    assert.equal(existsSync(build), false);
   });
 
   it('reports an unreadable file by what it is: in use for a held image, a build failure for a held build output', { timeout: 120000 }, async () => {
