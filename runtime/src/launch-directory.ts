@@ -9,7 +9,11 @@ import { ConfigurationError } from './config.ts';
  */
 export const maxLaunchDirectoryLength = 258;
 
-/** The longest executable path Windows starts, measured on the same host: a 259-character path started and 260 failed. */
+/**
+ * The longest executable path Node's child_process.spawn starts, measured on the same host: 259 characters started and
+ * 260 failed. It bounds the helper image, which the runtime starts through Node spawn. The Go broker's StartProcess,
+ * which starts owned children, started 270-character paths on that host, so this does not bound what the broker starts.
+ */
 export const maxLaunchExecutableLength = 259;
 
 /**
@@ -30,15 +34,15 @@ export function admitLaunchRoot(root: string, relative = ''): void {
   if (refusal !== null) { throw new ConfigurationError(refusal); }
 }
 
-/** Why the executable at `file` cannot start, or null when it can. The message gives lengths only, never the path. */
+/** Why Node spawn cannot start the helper image at `file`, or null when it can. The message gives lengths only, never the path. */
 export function launchExecutableRefusal(file: string): string | null {
   const length = path.win32.resolve(file).length;
   if (length <= maxLaunchExecutableLength) { return null; }
 
-  return `The executable path has ${length} characters, but Windows cannot start an executable whose path is longer than ${maxLaunchExecutableLength} characters. Move the companion root to a shorter path.`;
+  return `The helper image path has ${length} characters, but the runtime cannot start the helper image from a path longer than ${maxLaunchExecutableLength} characters. Move the companion root to a shorter path.`;
 }
 
-/** Refuses, as an invalid configuration, an executable whose path is too long to start. */
+/** Refuses, as an invalid configuration, a helper image whose path is too long for Node spawn to start. */
 export function admitLaunchExecutable(file: string): void {
   const refusal = launchExecutableRefusal(file);
   if (refusal !== null) { throw new ConfigurationError(refusal); }
@@ -62,5 +66,5 @@ export function admitInstallationRoot(root: string, adapter: string): void {
   const bound = installationRootBound(adapter);
   if (rootLength <= bound) { return; }
 
-  throw new ConfigurationError(`The companion root has ${rootLength} characters, but this installation needs one of at most ${bound}: Windows cannot start a process in a working directory longer than ${maxLaunchDirectoryLength} characters or an executable whose path is longer than ${maxLaunchExecutableLength}. Move the companion root to a shorter path.`);
+  throw new ConfigurationError(`The companion root has ${rootLength} characters, but this installation needs one of at most ${bound}: Windows cannot start a process in a working directory longer than ${maxLaunchDirectoryLength} characters, and the runtime cannot start the helper image from a path longer than ${maxLaunchExecutableLength}. Move the companion root to a shorter path.`);
 }

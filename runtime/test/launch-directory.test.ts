@@ -176,7 +176,7 @@ describe('companion root launch admission', () => {
 
     // Assert
     assert.equal(refused.code, 'configurationInvalid', refused.message);
-    assert.match(refused.message, new RegExp(`has ${maxLaunchExecutableLength + 1} characters, but Windows cannot start an executable whose path is longer than ${maxLaunchExecutableLength}`));
+    assert.match(refused.message, new RegExp(`helper image path has ${maxLaunchExecutableLength + 1} characters, but the runtime cannot start the helper image from a path longer than ${maxLaunchExecutableLength}`));
     assert.equal(refused.launches, 0);
     assert.equal(admitted.code, 'nativeHelperUnavailable', admitted.message);
   });
