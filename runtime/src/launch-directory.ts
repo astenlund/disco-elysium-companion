@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { helperImageFile, helperModule } from './compiled-image-release.ts';
 import { ConfigurationError } from './config.ts';
 
 /**
@@ -41,4 +42,25 @@ export function launchExecutableRefusal(file: string): string | null {
 export function admitLaunchExecutable(file: string): void {
   const refusal = launchExecutableRefusal(file);
   if (refusal !== null) { throw new ConfigurationError(refusal); }
+}
+
+/**
+ * The longest companion root every launch the runtime makes below it can start from: owned children in the root, the
+ * helper build in its module directory and the core's adapter commands in adapters/<adapter> as working directories, and
+ * the helper image as an executable. Adapter tools inside the core-resolved release folder are not covered here.
+ */
+export function installationRootBound(adapter: string): number {
+  const depth = (relative: string): number => path.win32.join('', relative).length + 1;
+
+  return Math.min(maxLaunchDirectoryLength, maxLaunchDirectoryLength - depth(helperModule), maxLaunchDirectoryLength - depth(path.win32.join('adapters', adapter)),
+    maxLaunchExecutableLength - depth(helperImageFile));
+}
+
+/** Refuses, as an invalid configuration, a companion root longer than `installationRootBound`, naming that one bound. */
+export function admitInstallationRoot(root: string, adapter: string): void {
+  const rootLength = path.win32.resolve(root).length;
+  const bound = installationRootBound(adapter);
+  if (rootLength <= bound) { return; }
+
+  throw new ConfigurationError(`The companion root has ${rootLength} characters, but this installation needs one of at most ${bound}: Windows cannot start a process in a working directory longer than ${maxLaunchDirectoryLength} characters or an executable whose path is longer than ${maxLaunchExecutableLength}. Move the companion root to a shorter path.`);
 }

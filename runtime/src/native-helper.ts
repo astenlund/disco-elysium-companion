@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonBudget, type JsonValue } from './json.ts';
+import { admitLaunchExecutable } from './launch-directory.ts';
 import { NativeHelperUnavailableError } from './native-helper-error.ts';
 import { SupervisorError } from './supervisor-error.ts';
 import { observeImageFile, type HelperImage } from './native-image.ts';
@@ -257,6 +258,7 @@ export class NativeHelper {
    * launcher exist for tests: a low limit drives renewal, and a launcher substitutes a scripted service.
    */
   static async start(image: HelperImage, companionRoot: string, sequenceLimit = Number.MAX_SAFE_INTEGER, launcher: ServiceSpawn = spawnService): Promise<NativeHelper> {
+    admitLaunchExecutable(image.path);
     const helper = new NativeHelper(image, companionRoot, sequenceLimit, launcher);
     helper.current = await helper.launch();
     return helper;

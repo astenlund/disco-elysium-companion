@@ -6,6 +6,8 @@ import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
 import { ReleaseRefusedError } from './backend/consumer.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
+import { ConfigurationError, loadRuntimeConfig } from './config.ts';
+import { admitInstallationRoot } from './launch-directory.ts';
 import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from './native-helper-error.ts';
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
 import { createChatRuntime } from './runtime.ts';
@@ -89,11 +91,26 @@ function canonicalCompanionRoot(root: string): string {
   catch { return root; }
 }
 
+/**
+ * Every command starts processes below the root, so a root too long for any of them is refused before the build step.
+ * A configuration that cannot be read defers to the command's own read, which refuses it at the point it always has.
+ */
+async function admitCommandRoot(companionRoot: string): Promise<void> {
+  let adapter: string;
+  try { adapter = (await loadRuntimeConfig(path.join(companionRoot, 'runtime', 'companion.config.json'))).adapter; }
+  catch (error) {
+    if (error instanceof ConfigurationError) { return; }
+    throw error;
+  }
+  admitInstallationRoot(companionRoot, adapter);
+}
+
 async function runCliInternal(args: readonly string[], givenRoot: string,
   write: (text: string) => void, progressSink: StartupProgressSink, diagnose: (text: string) => void): Promise<number> {
   const command = parseCommand(args);
   if (command === null) { write('Usage: chat | status | consumer <runtime|bridge> [--abandon-undelivered] | repair'); return 2; }
   const companionRoot = canonicalCompanionRoot(givenRoot);
+  await admitCommandRoot(companionRoot);
   if (command.kind === 'status') {
     write(JSON.stringify(await readBackendStatus(companionRoot)));
     write('Consumer, freshness, operational warnings, watcher, provider, window recovery and capacity are available only in the running chat client.');

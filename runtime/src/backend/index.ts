@@ -13,7 +13,7 @@ import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
-import { admitLaunchExecutable, admitLaunchRoot } from '../launch-directory.ts';
+import { admitInstallationRoot } from '../launch-directory.ts';
 import { invalidOperationOwners, OperationStore } from '../operations.ts';
 import { NativeHelper } from '../native-helper.ts';
 import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from '../native-helper-error.ts';
@@ -307,18 +307,12 @@ export class CoordinatorBackend implements RuntimeBackend {
  */
 export async function openBackend(options: BackendOptions): Promise<RuntimeBackend> {
   options.onStartupPhase?.('configuration');
-  // A root too long to launch from is refused before any process: owned children start in the root, the core starts the
-  // adapter's commands in adapters/<adapter> below it, and the helper image is started by its own path.
-  admitLaunchRoot(options.companionRoot);
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
-  admitLaunchRoot(options.companionRoot, path.join('adapters', config.adapter));
+  // A root too long for any launch below it is refused before any process; the CLI applies the same admission earlier.
+  admitInstallationRoot(options.companionRoot, config.adapter);
   options.onStartupPhase?.('scopeAdmission');
   let helper: NativeHelper;
-  try {
-    const image = options.nativeImage ?? await ensureNativeHelperImage({ build: false });
-    admitLaunchExecutable(image.path);
-    helper = await NativeHelper.start(image, options.companionRoot, undefined, options.nativeLauncher);
-  }
+  try { helper = await NativeHelper.start(options.nativeImage ?? await ensureNativeHelperImage({ build: false }), options.companionRoot, undefined, options.nativeLauncher); }
   catch (error) { throw phaseFatalError(error); }
   let bootstrap: Awaited<ReturnType<typeof createReadOnlyInspection>>;
   try { bootstrap = await createReadOnlyInspection(options.companionRoot, helper); }

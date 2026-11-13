@@ -11,6 +11,7 @@ import { EventReader, type EventRead } from '../event-reader.ts';
 import { operationIdPattern } from '../identity.ts';
 import { eventFileSequence, JournalDocumentError, parseJournalCursor, parseJournalHeader, type JournalCursor, type JournalHeader } from '../journal-records.ts';
 import { jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, utcNow, type JsonProfile, type JsonValue } from '../json.ts';
+import { admitInstallationRoot } from '../launch-directory.ts';
 import { NativeHelper, type ServiceSpawn } from '../native-helper.ts';
 import { finishAfterCleanup, type SettledStep } from '../native-helper-error.ts';
 import { ensureNativeHelperImage, type HelperImage } from '../native-image.ts';
@@ -309,6 +310,7 @@ export interface StatusHelperOptions {
  */
 export async function readRuntimeStatus(companionRoot: string, options: StatusHelperOptions = {}): Promise<StandaloneRuntimeStatus> {
   const config = await loadRuntimeConfig(path.join(companionRoot, 'runtime', 'companion.config.json'));
+  admitInstallationRoot(companionRoot, config.adapter);
   const helper = await NativeHelper.start(options.nativeImage ?? await ensureNativeHelperImage({ build: false }), companionRoot, undefined, options.nativeLauncher);
 
   return settleStatusRead(() => readStatusWithHelper(companionRoot, config, helper), () => helper.close(), helper);

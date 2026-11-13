@@ -4,9 +4,11 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { openBackend } from '../src/backend/index.ts';
+import { openBackend, readBackendStatus } from '../src/backend/index.ts';
+import { runCli } from '../src/cli.ts';
+import { helperImageFile, helperModule } from '../src/compiled-image-release.ts';
 import { ConfigurationError, loadRuntimeConfig } from '../src/config.ts';
-import { admitLaunchRoot, launchDirectoryRefusal, maxLaunchDirectoryLength, maxLaunchExecutableLength } from '../src/launch-directory.ts';
+import { admitLaunchRoot, installationRootBound, launchDirectoryRefusal, maxLaunchDirectoryLength, maxLaunchExecutableLength } from '../src/launch-directory.ts';
 import type { HelperImage } from '../src/native-image.ts';
 import { pathOfLength } from './support/launch-length.ts';
 
@@ -41,6 +43,71 @@ async function openWith(rootLength: number, imageLength = 120): Promise<Opened> 
   }
   finally { await fs.rm(scratch, { recursive: true, force: true }); }
 }
+
+/** The longest root every launch below it can start from, derived here from the measured limits and the launch paths. */
+async function expectedInstallationBound(): Promise<number> {
+  const adapter = (await loadRuntimeConfig(configFile)).adapter;
+  const depth = (relative: string): number => path.join('', relative).length + 1;
+
+  return Math.min(maxLaunchDirectoryLength, maxLaunchDirectoryLength - depth(path.join('adapters', adapter)), maxLaunchDirectoryLength - depth(helperModule),
+    maxLaunchExecutableLength - depth(helperImageFile));
+}
+
+/** Runs one CLI command on a root of `rootLength` characters holding the checked-in configuration, in a folder of this run's own. */
+async function cliWith(args: readonly string[], rootLength: number): Promise<{ readonly failure: unknown; readonly progress: readonly unknown[]; readonly written: readonly string[] }> {
+  const scratch = await fs.mkdtemp(path.join(tmp, 'launch-cli-'));
+  try {
+    const root = pathOfLength(scratch, 'launch-root-', rootLength);
+    await fs.mkdir(path.join(root, 'runtime'), { recursive: true });
+    await fs.copyFile(configFile, path.join(root, 'runtime', 'companion.config.json'));
+    const progress: unknown[] = [];
+    const written: string[] = [];
+    let failure: unknown = null;
+    try { await runCli(args, root, text => { written.push(text); }, event => { progress.push(event); }, () => undefined); }
+    catch (error) { failure = error; }
+
+    return { failure, progress, written };
+  }
+  finally { await fs.rm(scratch, { recursive: true, force: true }); }
+}
+
+describe('installation launch admission at the command line', () => {
+  for (const command of ['status', 'chat']) {
+    it(`refuses ${command} for a root one character longer than every launch allows, before any build, helper or progress`, { timeout: 60000 }, async () => {
+      // Arrange
+      const bound = await expectedInstallationBound();
+
+      // Act
+      const { failure, progress, written } = await cliWith([command], bound + 1);
+
+      // Assert
+      assert.ok(failure instanceof ConfigurationError, `expected ConfigurationError, got ${String(failure)}`);
+      assert.match(failure.message, new RegExp(`has ${bound + 1} characters, but this installation needs one of at most ${bound}`));
+      assert.deepEqual(progress, []);
+      assert.deepEqual(written, []);
+    });
+  }
+
+  it('refuses standalone status for a helper image path too long to start, before its launcher runs', { timeout: 60000 }, async () => {
+    // Arrange
+    const scratch = await fs.mkdtemp(path.join(tmp, 'launch-status-'));
+    try {
+      const root = pathOfLength(scratch, 'launch-root-', 120);
+      await fs.mkdir(path.join(root, 'runtime'), { recursive: true });
+      await fs.copyFile(configFile, path.join(root, 'runtime', 'companion.config.json'));
+      const image: HelperImage = { path: pathOfLength(scratch, 'image-', maxLaunchExecutableLength + 1 - 4) + '.exe', sha256: '0'.repeat(64), volume: '0', fileId: '0' };
+      let launches = 0;
+
+      // Act
+      const reading = readBackendStatus(root, { nativeImage: image, nativeLauncher: () => { launches++; throw new Error('The helper service must not start.'); } });
+
+      // Assert
+      await assert.rejects(reading, error => error instanceof ConfigurationError && error.message.includes(`has ${maxLaunchExecutableLength + 1} characters`));
+      assert.equal(launches, 0);
+    }
+    finally { await fs.rm(scratch, { recursive: true, force: true }); }
+  });
+});
 
 describe('companion root launch admission', () => {
   it('admits a root at the launch limit and refuses one character more with the root length and the remedy', () => {
@@ -85,18 +152,18 @@ describe('companion root launch admission', () => {
     assert.doesNotThrow(() => admitLaunchRoot(pathOfLength(tmp, 'launch-root-', maxLaunchDirectoryLength)));
   });
 
-  it('refuses a root too long for the adapter launch directory before starting the helper service, and admits one character less', { timeout: 60000 }, async () => {
-    // Arrange: the core starts the adapter's commands in adapters/<adapter>, the deepest launch directory below the root.
-    const adapter = (await loadRuntimeConfig(configFile)).adapter;
-    const allowed = maxLaunchDirectoryLength - path.join('adapters', adapter).length - 1;
+  it('refuses a root longer than every launch below it allows before starting the helper service, and admits the bound itself', { timeout: 60000 }, async () => {
+    // Arrange
+    const bound = await expectedInstallationBound();
 
     // Act
-    const refused = await openWith(allowed + 1);
-    const admitted = await openWith(allowed);
+    const refused = await openWith(bound + 1);
+    const admitted = await openWith(bound);
 
     // Assert
+    assert.equal(installationRootBound((await loadRuntimeConfig(configFile)).adapter), bound);
     assert.equal(refused.code, 'configurationInvalid', refused.message);
-    assert.match(refused.message, new RegExp(`has ${allowed + 1} characters, but this launch needs one of at most ${allowed}`));
+    assert.match(refused.message, new RegExp(`has ${bound + 1} characters, but this installation needs one of at most ${bound}`));
     assert.equal(refused.launches, 0);
     assert.deepEqual(refused.entries, ['runtime']);
     assert.equal(admitted.code, 'nativeHelperUnavailable', admitted.message);
