@@ -88,6 +88,29 @@ describe('installation launch admission at the command line', () => {
     });
   }
 
+  it('refuses chat for a root over the bound even when its configuration cannot be read, before any build or progress', { timeout: 60000 }, async () => {
+    // Arrange: a configuration that does not parse, so only the adapter-free part of the bound can be checked.
+    const bound = await expectedInstallationBound();
+    const scratch = await fs.mkdtemp(path.join(tmp, 'launch-cli-'));
+    try {
+      const root = pathOfLength(scratch, 'launch-root-', bound + 1);
+      await fs.mkdir(path.join(root, 'runtime'), { recursive: true });
+      await fs.writeFile(path.join(root, 'runtime', 'companion.config.json'), 'not json');
+      const progress: unknown[] = [];
+      let failure: unknown = null;
+
+      // Act
+      try { await runCli(['chat'], root, () => undefined, event => { progress.push(event); }, () => undefined); }
+      catch (error) { failure = error; }
+
+      // Assert
+      assert.ok(failure instanceof ConfigurationError, `expected ConfigurationError, got ${String(failure)}`);
+      assert.match(failure.message, new RegExp(`has ${bound + 1} characters, but this installation needs one of at most ${bound}`));
+      assert.deepEqual(progress, []);
+    }
+    finally { await fs.rm(scratch, { recursive: true, force: true }); }
+  });
+
   it('refuses standalone status for a helper image path too long to start, before its launcher runs', { timeout: 60000 }, async () => {
     // Arrange
     const scratch = await fs.mkdtemp(path.join(tmp, 'launch-status-'));

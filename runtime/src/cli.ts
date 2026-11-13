@@ -93,15 +93,16 @@ function canonicalCompanionRoot(root: string): string {
 
 /**
  * Every command starts processes below the root, so a root too long for the launches installationRootBound covers is
- * refused before the build step.
- * A configuration that cannot be read defers to the command's own read, which refuses it at the point it always has.
+ * refused before the build step. A configuration that cannot be read still gets the configuration-free part of that
+ * bound, and then defers to the command's own read, which refuses it at the point it always has.
  */
 async function admitCommandRoot(companionRoot: string): Promise<void> {
   let adapter: string;
   try { adapter = (await loadRuntimeConfig(path.join(companionRoot, 'runtime', 'companion.config.json'))).adapter; }
   catch (error) {
-    if (error instanceof ConfigurationError) { return; }
-    throw error;
+    if (!(error instanceof ConfigurationError)) { throw error; }
+    admitInstallationRoot(companionRoot);
+    return;
   }
   admitInstallationRoot(companionRoot, adapter);
 }

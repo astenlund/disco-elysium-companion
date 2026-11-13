@@ -48,22 +48,32 @@ export function admitLaunchExecutable(file: string): void {
   if (refusal !== null) { throw new ConfigurationError(refusal); }
 }
 
-/**
- * The longest companion root that these launches below it can start from: owned children in the root, the
- * helper build in its module directory and the core's adapter commands in adapters/<adapter> as working directories, and
- * the helper image as an executable. Adapter tools inside the core-resolved release folder are not covered here.
- */
-export function installationRootBound(adapter: string): number {
-  const depth = (relative: string): number => path.win32.join('', relative).length + 1;
+const launchDepth = (relative: string): number => path.win32.join('', relative).length + 1;
 
-  return Math.min(maxLaunchDirectoryLength, maxLaunchDirectoryLength - depth(helperModule), maxLaunchDirectoryLength - depth(path.win32.join('adapters', adapter)),
-    maxLaunchExecutableLength - depth(helperImageFile));
+/**
+ * The part of the installation bound that needs no configuration: owned children in the root and the helper build in
+ * its module directory as working directories, and the helper image as an executable.
+ */
+export function runtimeRootBound(): number {
+  return Math.min(maxLaunchDirectoryLength, maxLaunchDirectoryLength - launchDepth(helperModule), maxLaunchExecutableLength - launchDepth(helperImageFile));
 }
 
-/** Refuses, as an invalid configuration, a companion root longer than `installationRootBound`, naming that one bound. */
-export function admitInstallationRoot(root: string, adapter: string): void {
+/**
+ * The longest companion root that these launches below it can start from: the launches of `runtimeRootBound` and the
+ * core's adapter commands in adapters/<adapter> as their working directory. Adapter tools inside the core-resolved
+ * release folder are not covered here.
+ */
+export function installationRootBound(adapter: string): number {
+  return Math.min(runtimeRootBound(), maxLaunchDirectoryLength - launchDepth(path.win32.join('adapters', adapter)));
+}
+
+/**
+ * Refuses, as an invalid configuration, a companion root longer than `installationRootBound(adapter)`, or than
+ * `runtimeRootBound()` when no adapter is known, naming that one bound.
+ */
+export function admitInstallationRoot(root: string, adapter?: string): void {
   const rootLength = path.win32.resolve(root).length;
-  const bound = installationRootBound(adapter);
+  const bound = adapter === undefined ? runtimeRootBound() : installationRootBound(adapter);
   if (rootLength <= bound) { return; }
 
   throw new ConfigurationError(`The companion root has ${rootLength} characters, but this installation needs one of at most ${bound}: Windows cannot start a process in a working directory longer than ${maxLaunchDirectoryLength} characters, and the runtime cannot start the helper image from a path longer than ${maxLaunchExecutableLength}. Move the companion root to a shorter path.`);
