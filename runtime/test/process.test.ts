@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 
+import { maxLaunchDirectoryLength } from '../src/launch-directory.ts';
 import { withoutHome } from '../src/native-helper.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
 import { createTestNative } from './support/native-helper.ts';
@@ -229,6 +230,44 @@ describe('owned process transport', () => {
       lines.close();
       if (owner.exitCode === null && owner.signalCode === null) { owner.kill(); }
       await closed;
+    }
+  });
+});
+
+describe('owned launch working-directory length', () => {
+  const directoryOfLength = async (base: string, length: number): Promise<string> => {
+    let current = base;
+    while (current.length < length) { current = path.join(current, 'd'.repeat(Math.min(length - current.length - 1, 100))); }
+    assert.equal(current.length, length);
+    await fs.mkdir(current, { recursive: true });
+
+    return current;
+  };
+
+  it('launches at the longest working directory Windows accepts and refuses one character more before any process starts', { timeout: 60000 }, async () => {
+    // Arrange
+    const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'launch-length-'));
+    const supervisor = (await createTestNative(path.join(scratch, 'scope'))).supervisor;
+    const longest = await directoryOfLength(path.join(scratch, 'fits'), maxLaunchDirectoryLength);
+    const tooLong = await directoryOfLength(path.join(scratch, 'over'), maxLaunchDirectoryLength + 1);
+    try {
+      // Act
+      const launched = await supervisor.run('core', { ...options('arguments', 'fits'), cwd: longest }, 15000);
+      await supervisor.verifyQuiescent('core');
+      let refusal: unknown = null;
+      try { supervisor.spawn('core', { ...options('arguments', 'over'), cwd: tooLong }); }
+      catch (error) { refusal = error; }
+
+      // Assert
+      assert.equal(launched.stdout.toString('utf8'), '["fits"]');
+      assert.ok(refusal instanceof SupervisorError, `expected SupervisorError, got ${String(refusal)}`);
+      assert.equal(refusal.reason, 'result-invalid');
+      assert.match(refusal.message, new RegExp(`longer than ${maxLaunchDirectoryLength} characters; this one has ${maxLaunchDirectoryLength + 1}`));
+      assert.equal(refusal.message.includes(scratch), false);
+      assert.equal(await supervisor.observeJobAbsent('core'), true);
+      assert.equal((await supervisor.run('core', { ...options('arguments', 'after'), cwd: longest }, 15000)).stdout.toString('utf8'), '["after"]');
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true });
     }
   });
 });

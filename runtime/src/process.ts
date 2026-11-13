@@ -5,6 +5,7 @@ import { PassThrough, type Writable } from 'node:stream';
 
 import { guardScopeToken } from './guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, stringifyJson, type JsonValue } from './json.ts';
+import { launchDirectoryRefusal } from './launch-directory.ts';
 import { boundServiceOwner, withoutHome, type NativeHelper } from './native-helper.ts';
 import { SupervisorError, type SupervisorReason } from './supervisor-error.ts';
 
@@ -447,6 +448,8 @@ export class ProcessSupervisor {
 
   spawn(role: ProcessRole, options: OwnedSpawnOptions): OwnedProcess {
     if (!(processRoles as readonly string[]).includes(role)) { throw new SupervisorError('result-invalid', 'Unknown process role.'); }
+    const directoryRefusal = launchDirectoryRefusal(options.cwd);
+    if (directoryRefusal !== null) { throw new SupervisorError('result-invalid', directoryRefusal); }
     if (this.active.has(role) || this.stopping.has(role)) { throw new SupervisorError('termination-unverified', 'The previous process still owns this queue.'); }
     this.active.set(role, null);
     try {

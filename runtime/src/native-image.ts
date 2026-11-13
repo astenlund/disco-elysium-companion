@@ -10,6 +10,7 @@ import { goToolchain, helperImageFile, helperModule, readNativeHelperRelease, ty
 import { normalizedGoSourceHash } from './go-source.ts';
 import { guardScopeToken } from './guard.ts';
 import { hasExactKeys, parseStrictJson } from './json.ts';
+import { launchDirectoryRefusal } from './launch-directory.ts';
 import { NativeHelperUnavailableError, type NativeHelperReason } from './native-helper-error.ts';
 
 /** The checkout this runtime runs from; the build step canonicalizes it before any use. */
@@ -379,6 +380,8 @@ export async function compileHelper(root: string, directory: string, go = resolv
   const environment = buildIo(() => goEnvironment(directory, go, source));
   buildIo(() => disableTelemetry(environment));
   const moduleDirectory = path.join(root, helperModule);
+  const directoryRefusal = launchDirectoryRefusal(moduleDirectory);
+  if (directoryRefusal !== null) { throw refuse('buildFailed', directoryRefusal); }
   const version = await runToolchain(go, ['version'], moduleDirectory, environment, 60_000);
   if (version.code === null && !version.expired) { throw refuse('toolchainMissing'); }
   if (version.abandoned) { onAbandoned(); }
