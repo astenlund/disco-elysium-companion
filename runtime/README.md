@@ -10,7 +10,7 @@ Use Windows, Node 22.23 or later, Go `go1.26.0` on `PATH`, and PowerShell 7.5 or
 
 `companion.config.json` chooses the adapter, game, provider model/effort, optional question override, and watcher setting. Unknown members or invalid values are rejected. The provider uses the existing default-profile authentication setup. Status displays the SDK's API-key source; `none` leaves the non-API-key method unspecified. An inherited `CLAUDE_CONFIG_DIR` is unsupported and prevents provider startup; the runtime requires the default profile. Supported credential variables continue to pass through to the provider.
 
-The executable resolves the companion root from its own installation directory. It has no command-line root override. Tests use the programmatic root parameter and private fixtures.
+The executable resolves the companion root from its own installation directory. It has no command-line root override. The root's path can be at most 223 characters with the checked-in adapter; every command refuses a longer root with `configurationInvalid`, as [the startup phase guide](STARTUP.md) describes. Tests use the programmatic root parameter and private fixtures.
 
 ## Commands
 

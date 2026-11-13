@@ -31,12 +31,6 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 These user-tracked findings came from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
 
-### [Deep helper working directories](bugs/runtime-helper-cwd-length.md)
-
-Investigate measured Windows helper launch failures in deep private working directories without weakening containment or quiescence.
-
-**Requires:** none.
-
 ### [Inventory failure categories](bugs/runtime-inventory-diagnostic-opacity.md)
 
 Distinguish residue, unexpected owned entries, and helper transport failures without exposing paths or authorizing deletion.
