@@ -26,3 +26,16 @@ else {
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject ([ordered]@{ root = $root }) -Compress))
 [Console]::Out.Flush()
 $null = [Console]::In.ReadLine()
+# Exit 0 means the root is gone. A root that survives removal exits 3 with its path-free
+# residue as the last stderr line, so the caller can tell residue apart from a host failure.
+try {
+    Remove-ScratchCompanionRoot -Path $root
+}
+catch [System.IO.IOException] {
+    $residue = $_.Exception.Data['ScratchResidue']
+    if ($null -eq $residue) {
+        throw
+    }
+    [Console]::Error.WriteLine((ConvertTo-Json -InputObject ([ordered]@{ fixtureResidue = $residue }) -Depth 4 -Compress))
+    exit 3
+}

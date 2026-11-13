@@ -145,6 +145,34 @@ if (Test-Selected 'Removal') {
     Invoke-StaleRootRemoval -Path $replaced -Remove { param($Target) $replacedSeen.count++; $replacedSeen.target = $Target; [IO.Directory]::Delete($Target, $true); [IO.File]::WriteAllText($Target, 'not a directory') }.GetNewClosure()
     Assert-Equal -Actual $replacedSeen.count -Expected 1 -Message 'A claimed path replaced by a file is not removed again.'
     Assert-True -Condition ([IO.File]::Exists($replacedSeen.target)) -Message 'A file that replaced a claimed path is left in place.'
+
+    # A harness removes a root it created explicitly and learns that it is gone.
+    $owned = New-ScratchCompanionRoot -Prefix 'scratch-owned-removal'
+    New-ScratchTree -Root (Join-Path $owned 'tree') -Directories 2 -FilesPerDirectory 2
+    Remove-ScratchCompanionRoot -Path $owned
+    Assert-False -Condition ([IO.Directory]::Exists($owned)) -Message 'An explicitly removed owned root is gone.'
+
+    # Only a root this process created can be removed explicitly.
+    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Remove-ScratchCompanionRoot -Path $plain }
+
+    # An owned root that every attempt leaves surfaces with its root-relative residue and stays.
+    $stubborn = New-ScratchCompanionRoot -Prefix 'scratch-owned-survivor'
+    New-ScratchTree -Root (Join-Path $stubborn 'tree') -Directories 1 -FilesPerDirectory 2
+    $stubbornCalls = @{ count = 0 }
+    $stubbornError = $null
+    try { Remove-ScratchCompanionRoot -Path $stubborn -Remove { param($Target) $stubbornCalls.count++ }.GetNewClosure() }
+    catch { $stubbornError = $_.Exception }
+    Assert-True -Condition ($stubbornError -is [IO.IOException]) -Message "A surviving owned root is reported as an IOException ($stubbornError)."
+    Assert-Equal -Actual $stubbornCalls.count -Expected 3 -Message 'A surviving owned root is attempted exactly three times.'
+    $residue = $stubbornError.Data['ScratchResidue']
+    # tree, d0, a, b and c, then f0.txt and f1.txt.
+    Assert-Equal -Actual $residue.remaining -Expected 7 -Message 'The residue counts every directory and file left under the root.'
+    Assert-OrdinalEqual -Actual $residue.listing -Expected 'complete' -Message 'The residue listing is complete.'
+    Assert-True -Condition ($residue.sample -ccontains 'tree/d0/a/b/c/f1.txt') -Message "The residue sample holds root-relative forward-slash paths ($($residue.sample -join ', '))."
+    Assert-False -Condition (@($residue.sample | Where-Object { $_.Contains($stubborn, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) -Message 'The residue sample never names the root itself.'
+    Assert-True -Condition ([IO.Directory]::Exists($stubborn)) -Message 'A surviving owned root is left for inspection.'
+    Remove-ScratchCompanionRoot -Path $stubborn
+    Assert-False -Condition ([IO.Directory]::Exists($stubborn)) -Message 'A surviving owned root stays owned and can be removed once released.'
 }
 
 if (Test-Selected 'ConcurrentSweep') {

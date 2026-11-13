@@ -8,6 +8,8 @@ $script:ProjectTmpRoot = Join-Path $script:ProjectRoot '.tmp'
 $script:ScratchRoots = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $script:CleanupRegistered = $false
 $script:StaleScratchSwept = $false
+$script:ScratchRemovalAttempts = 3
+$script:ScratchResidueSampleLimit = 16
 
 function Assert-ScratchBoundarySafe {
     if (-not (Test-Path -LiteralPath $script:ProjectRoot -PathType Container)) {
@@ -573,20 +575,81 @@ function Remove-StaleScratchRoot {
         return
     }
 
-    $attempts = 3
-    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
-        try {
-            & $Remove $claim
-        }
-        catch {
-            throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed: $($_.Exception.Message)", $_.Exception)
-        }
-        if (-not (Test-StaleScratchRootRemaining -Path $claim)) {
-            return
+    try {
+        $removed = Invoke-BoundedScratchRemoval -Path $claim -Remove $Remove
+    }
+    catch {
+        throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed: $($_.Exception.Message)", $_.Exception)
+    }
+    if (-not $removed) {
+        throw [System.IO.IOException]::new("Claimed stale scratch root survived $script:ScratchRemovalAttempts removal attempts: $claim (originally $Path)")
+    }
+}
+
+# Runs a removal against one scratch tree until it is gone, at most a fixed number of times.
+# True once the tree is gone; false when every attempt left it. A throwing removal is not retried.
+function Invoke-BoundedScratchRemoval {
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [scriptblock] $Remove)
+
+    for ($attempt = 1; $attempt -le $script:ScratchRemovalAttempts; $attempt++) {
+        & $Remove $Path
+        if (-not (Test-StaleScratchRootRemaining -Path $Path)) {
+            return $true
         }
     }
 
-    throw [System.IO.IOException]::new("Claimed stale scratch root survived $attempts removal attempts: $claim (originally $Path)")
+    return $false
+}
+
+# Describes what a surviving scratch tree still holds without naming where it lives: the
+# number of entries left and up to a fixed number of their root-relative paths.
+function Get-ScratchResidue {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $remaining = 0
+    $sample = [System.Collections.Generic.List[string]]::new()
+    try {
+        foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Path, '*', [System.IO.SearchOption]::AllDirectories)) {
+            $remaining++
+            if ($sample.Count -lt $script:ScratchResidueSampleLimit) {
+                $sample.Add([System.IO.Path]::GetRelativePath($Path, $entry).Replace([System.IO.Path]::DirectorySeparatorChar, '/'))
+            }
+        }
+    }
+    catch {
+        # An unreadable survivor is still residue; its listing is reported as incomplete.
+        return [ordered]@{ remaining = $null; sample = @($sample); listing = 'incomplete' }
+    }
+
+    return [ordered]@{ remaining = $remaining; sample = @($sample); listing = 'complete' }
+}
+
+# Removes a scratch root this process created, for a harness that must know the root is gone
+# instead of leaving it to the exit handler, whose removal is silent. A root that survives the
+# bounded attempts surfaces as an IOException whose Data['ScratchResidue'] holds its residue.
+# -Remove exists for tests.
+function Remove-ScratchCompanionRoot {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter()] [scriptblock] $Remove = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
+    )
+
+    $root = [System.IO.Path]::GetFullPath($Path)
+    if (-not $script:ScratchRoots.Contains($root)) {
+        throw [System.InvalidOperationException]::new('Only a scratch root this process created can be removed explicitly.')
+    }
+    Assert-ScratchBoundarySafe
+    $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+    if ($null -ne $rootItem -and ($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw [System.InvalidOperationException]::new('Scratch root reparse points are never removed.')
+    }
+
+    if (-not (Invoke-BoundedScratchRemoval -Path $root -Remove $Remove)) {
+        $failure = [System.IO.IOException]::new("Scratch root survived $script:ScratchRemovalAttempts removal attempts: $root")
+        $failure.Data['ScratchResidue'] = Get-ScratchResidue -Path $root
+        throw $failure
+    }
+    [void] $script:ScratchRoots.Remove($root)
 }
 
 # True while the path is still an ordinary, non-reparse directory. Only a not-found error
@@ -847,4 +910,4 @@ function New-StagedRuntimeContextRoot {
     return [pscustomobject]@{ Root = $root; ScopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes)); SafetySha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($safetyBytes)) }
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Remove-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
