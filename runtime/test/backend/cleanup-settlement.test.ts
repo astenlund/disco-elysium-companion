@@ -4,10 +4,9 @@ import { describe, it } from 'node:test';
 import { Deadline } from '../../src/deadline.ts';
 import type { CoreResult } from '../../src/core-client.ts';
 import type { RepairOperation } from '../../src/operation-records.ts';
-import type { OutboxRead } from '../../src/outbox.ts';
 import { handoffDigestOperations } from '../support/handoff-digest-fixture.ts';
 import { journalEvent } from '../support/journal-event.ts';
-import { authorityModel, generation, journal, repair, scope, stubJournalTransaction } from './authority-fixtures.ts';
+import { authorityModel, generation, journal, repair, replayOutbox, scope, stubJournalTransaction } from './authority-fixtures.ts';
 
 async function cleanupFixture(currentEvent: boolean, presentation: 'replayable' | 'rejected' = 'rejected', unfinished = false) {
   const original = (await handoffDigestOperations(scope))[0]!;
@@ -25,8 +24,7 @@ async function cleanupFixture(currentEvent: boolean, presentation: 'replayable' 
   model.memory.seed(`operations/${operation.operationId}.json`, operation);
   stubJournalTransaction(model.kernel, snapshot);
   model.kernel.outbox.list = async () => ['event-0000000000000010.json'];
-  model.kernel.outbox.read = async name => ({ status: 'valid', name, sha256: handoff.recordSha256, bytes: Buffer.alloc(0), receipt: {},
-    metadata: { game: 'stubgame', principal: 'principal', logicalOutboxId: handoff.logicalOutboxId, sequence: 10 } } as OutboxRead);
+  model.kernel.outbox.read = async () => replayOutbox(handoff.logicalOutboxId, 10, 0, handoff.recordSha256);
   const plans: string[] = [];
   model.kernel.planRecovery = async request => { plans.push(request.cause); return { record: operation, sha256: '3'.repeat(64) }; };
   return { model, plans, handoff, operation };

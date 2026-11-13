@@ -17,7 +17,7 @@ import { SentMarkPublicationError } from '../../src/journal.ts';
 import { bytesHash, type ScopeStorage } from '../../src/storage.ts';
 import type { ContextCandidate, ContextPreparer } from '../../src/prepared-context.ts';
 import { PendingStateCheckError } from '../../src/backend/api.ts';
-import { MemoryAuthority, journal, repair, at, scope, generation } from './authority-fixtures.ts';
+import { MemoryAuthority, journal, repair, replayOutbox, at, scope, generation } from './authority-fixtures.ts';
 import { journalEvent } from '../support/journal-event.ts';
 import { eventFileName } from '../../src/journal-records.ts';
 
@@ -528,9 +528,9 @@ describe('owed observation authority', () => {
     const value = model();
     await value.resources.withTransition('repair', () => value.resources.reserve('repair'));
     assert.equal(value.resources.capacity.current.owed.pendingOutboxRecords, null);
-    const source = { status: 'valid', sha256: 'e'.repeat(64), metadata: { logicalOutboxId: 'd'.repeat(32) + '-1' } } as const;
-    value.kernel.outbox.list = async () => ['event-0000000000000001.json'];
-    value.kernel.outbox.read = async () => source as never;
+    const source = replayOutbox('d'.repeat(32) + '-1', 1, 0, 'e'.repeat(64));
+    value.kernel.outbox.list = async () => [source.name];
+    value.kernel.outbox.read = async () => source;
     const evidence = await readOwedOutbox(value.kernel.outbox);
     assert.equal(evidence.names.length, 1); assert.equal(complete.pendingOutbox, 0);
     await refreshCapacityOwed(value.kernel);
@@ -552,7 +552,7 @@ describe('owed observation authority', () => {
     value.kernel.outbox.list = async () => ++reads === 1 ? [] : ['event-0000000000000001.json'];
     await assert.rejects(readOwedOutbox(value.kernel.outbox));
     value.kernel.outbox.list = async () => ['event-0000000000000001.json'];
-    value.kernel.outbox.read = async () => ({ status: 'invalid' }) as never;
+    value.kernel.outbox.read = async name => ({ status: 'invalid', name, sha256: 'e'.repeat(64) });
     await assert.rejects(readOwedOutbox(value.kernel.outbox));
   });
 
