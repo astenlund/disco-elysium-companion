@@ -31,12 +31,6 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 These user-tracked findings came from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
 
-### [Fixture cleanup contract](bugs/fixture-cleanup-contract.md)
-
-Investigate a retained private fixture directory while distinguishing helper exit, process quiescence, and physical removal.
-
-**Requires:** none.
-
 ### [Deep helper working directories](bugs/runtime-helper-cwd-length.md)
 
 Investigate measured Windows helper launch failures in deep private working directories without weakening containment or quiescence.
