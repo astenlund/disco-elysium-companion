@@ -11,6 +11,7 @@ import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import { maxLaunchDirectoryLength } from '../src/launch-directory.ts';
 import { withoutHome } from '../src/native-helper.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
+import { directoryOfLength } from './support/launch-length.ts';
 import { createTestNative } from './support/native-helper.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -235,21 +236,6 @@ describe('owned process transport', () => {
 });
 
 describe('owned launch working-directory length', () => {
-  // Each segment costs its name plus one separator, so a step never leaves exactly one character it could not fill.
-  const directoryOfLength = async (base: string, length: number): Promise<string> => {
-    assert.ok(length - base.length >= 2, `cannot build a ${length}-character directory below a ${base.length}-character base`);
-    let current = base;
-    while (current.length < length) {
-      const remaining = length - current.length;
-      const take = Math.min(remaining - 1, 100);
-      current = path.join(current, 'd'.repeat(remaining - take - 1 === 1 ? take - 1 : take));
-    }
-    assert.equal(current.length, length);
-    await fs.mkdir(current, { recursive: true });
-
-    return current;
-  };
-
   it('launches at the longest working directory Windows accepts and refuses one character more before any process starts', { timeout: 60000 }, async () => {
     // Arrange
     const scratch = await fs.mkdtemp(path.join(root, '.tmp', 'launch-length-'));

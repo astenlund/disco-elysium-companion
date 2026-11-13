@@ -14,6 +14,7 @@ import { nativeHelperReasons, NativeHelperUnavailableError, type NativeHelperRea
 import { compileHelper, ensureNativeHelperImage, observeImageFile, type NativeImageOptions } from '../src/native-image.ts';
 import type { StartupProgress } from '../src/startup-progress.ts';
 import { holdExclusively } from './support/exclusive-hold.ts';
+import { pathOfLength } from './support/launch-length.ts';
 import { compileTestProgram, testHelperImage } from './support/native-helper.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
@@ -210,9 +211,7 @@ describe('native helper first-launch build', () => {
     // Arrange: a root one character longer than the module directory allows, and a toolchain path that does not exist, so
     // any launch would surface as toolchainMissing rather than the length refusal.
     const allowed = maxLaunchDirectoryLength - path.join('', helperModule).length - 1;
-    const base = path.join(scratch, 'long-');
-    assert.ok(base.length < allowed, 'the scratch path is too long to build the over-long root');
-    const root = base + 'r'.repeat(allowed + 1 - base.length);
+    const root = pathOfLength(scratch, 'long-', allowed + 1);
     const build = path.join(scratch, `build-${randomUUID()}`);
 
     // Act and assert
