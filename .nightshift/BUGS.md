@@ -53,6 +53,22 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+## Fixture and launch-length follow-ups
+
+These user-tracked findings came from Nightshift run a69edaac-e54c-47ec-ba9c-3e2c5bb3418d. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
+
+### [Scratch cleanup exit handler never fires](bugs/scratch-exit-handler-never-fires.md)
+
+Core test harnesses rely on a `PowerShell.Exiting` cleanup that does not fire under `pwsh -File`, so their scratch roots wait for the stale sweep; replace it with explicit removal, including the fixture host's staging-failure exit.
+
+**Requires:** none.
+
+### [Adapter tool path length](bugs/adapter-tool-path-length.md)
+
+Measure whether the core can start adapter tools from the release folder at long companion roots, and refuse a too-long root with a length message if it cannot.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
