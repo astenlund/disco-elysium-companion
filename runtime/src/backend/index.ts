@@ -308,7 +308,8 @@ export class CoordinatorBackend implements RuntimeBackend {
 export async function openBackend(options: BackendOptions): Promise<RuntimeBackend> {
   options.onStartupPhase?.('configuration');
   const config = await loadRuntimeConfig(path.join(options.companionRoot, 'runtime', 'companion.config.json'));
-  // A root too long for any launch below it is refused before any process; the CLI applies the same admission earlier.
+  // A root too long for the launches installationRootBound covers is refused before any process; the CLI applies the
+  // same admission earlier.
   admitInstallationRoot(options.companionRoot, config.adapter);
   options.onStartupPhase?.('scopeAdmission');
   let helper: NativeHelper;

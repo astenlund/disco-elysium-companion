@@ -44,7 +44,7 @@ async function openWith(rootLength: number, imageLength = 120): Promise<Opened> 
   finally { await fs.rm(scratch, { recursive: true, force: true }); }
 }
 
-/** The longest root every launch below it can start from, derived here from the measured limits and the launch paths. */
+/** The installation bound, derived here from the measured limits and the launch paths installationRootBound covers. */
 async function expectedInstallationBound(): Promise<number> {
   const adapter = (await loadRuntimeConfig(configFile)).adapter;
   const depth = (relative: string): number => path.join('', relative).length + 1;
@@ -73,7 +73,7 @@ async function cliWith(args: readonly string[], rootLength: number): Promise<{ r
 
 describe('installation launch admission at the command line', () => {
   for (const command of ['status', 'chat']) {
-    it(`refuses ${command} for a root one character longer than every launch allows, before any build, helper or progress`, { timeout: 60000 }, async () => {
+    it(`refuses ${command} for a root one character over the installation bound, before any build, helper or progress`, { timeout: 60000 }, async () => {
       // Arrange
       const bound = await expectedInstallationBound();
 
@@ -152,7 +152,7 @@ describe('companion root launch admission', () => {
     assert.doesNotThrow(() => admitLaunchRoot(pathOfLength(tmp, 'launch-root-', maxLaunchDirectoryLength)));
   });
 
-  it('refuses a root longer than every launch below it allows before starting the helper service, and admits the bound itself', { timeout: 60000 }, async () => {
+  it('refuses a root over the installation bound before starting the helper service, and admits the bound itself', { timeout: 60000 }, async () => {
     // Arrange
     const bound = await expectedInstallationBound();
 

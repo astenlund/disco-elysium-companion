@@ -45,7 +45,7 @@ export function admitLaunchExecutable(file: string): void {
 }
 
 /**
- * The longest companion root every launch the runtime makes below it can start from: owned children in the root, the
+ * The longest companion root that these launches below it can start from: owned children in the root, the
  * helper build in its module directory and the core's adapter commands in adapters/<adapter> as working directories, and
  * the helper image as an executable. Adapter tools inside the core-resolved release folder are not covered here.
  */

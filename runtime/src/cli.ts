@@ -92,7 +92,8 @@ function canonicalCompanionRoot(root: string): string {
 }
 
 /**
- * Every command starts processes below the root, so a root too long for any of them is refused before the build step.
+ * Every command starts processes below the root, so a root too long for the launches installationRootBound covers is
+ * refused before the build step.
  * A configuration that cannot be read defers to the command's own read, which refuses it at the point it always has.
  */
 async function admitCommandRoot(companionRoot: string): Promise<void> {
