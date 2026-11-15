@@ -34,6 +34,11 @@ export function isPublicationResidue(relative: string): boolean {
   return false;
 }
 
+/** Whether a journal/events entry is one the runtime does not own: neither an event file nor the runtime's own publication residue. */
+export function isForeignEventsEntry(name: string, isFile: boolean): boolean {
+  return (eventFileSequence(name) === null || !isFile) && !isPublicationResidue(path.join('journal', 'events', name));
+}
+
 function sameObject(left: PathAdmission, right: PathAdmission): boolean {
   return left.kind === right.kind && left.volume === right.volume && left.identity === right.identity && left.links === right.links;
 }

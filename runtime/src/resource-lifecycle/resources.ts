@@ -11,6 +11,7 @@ import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { PublicationPathAdmissionError, type AdmitPublicationScope } from '../files.ts';
 import { eventFileSequence } from '../journal-records.ts';
+import { isForeignEventsEntry } from '../platform/publication-residue.ts';
 import { asInteger, hasExactKeys, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, ProspectiveJsonBudgetError, stringifyProspectiveJson, type JsonProfile, type JsonValue } from '../json.ts';
 import { effectivelyUnfinished, pendingOperationSafety, parseOperation, type FullOperation, type RepairOperation, type RetainedHandoff } from '../operation-records.ts';
 import type { OperationStore } from '../operations.ts';
@@ -22,6 +23,8 @@ const zero: ResourceCounts = Object.freeze({ uncompactedEvents: 0, retainedHando
 const fixedControls = new Set(['scope.json', 'runtime.json', 'state-safety.json', 'agent-session.json', 'agent-session-index.json', 'journal/journal.json', 'journal/cursor-agent-session.json']);
 const maximumPendingOutbox = 16;
 const maximumRecoveryEvents = 2;
+/** The journal/events entries a foreign-entry check reads before it gives up and keeps the generic reason. */
+const foreignEventsScanBound = 65_536;
 const controlWorkspace = 4_194_304n;
 const stamp = '9999-12-31T23:59:59.9999999Z';
 const token = 'f'.repeat(32);
@@ -295,12 +298,34 @@ export class ResourceAuthority {
       if (!recovering && operations.invalid.length === 0 && (observation.counts.retainedHandoffs !== unique.size
         || observation.retainedHandoffIdentitySha256 !== handoffIdentityDigest(unique.values()))) { unavailable('inventory'); }
       const complete = recovering ? operations.invalid.every(entry => entry.sha256 !== null) : operations.invalid.length === 0 && observation.invalidEvents === 0;
+      // The helper counts a stray events file as an invalid event, so only the names tell the operator it is foreign.
+      const foreignEvents = !complete && !recovering && operations.invalid.length === 0 && await this.holdsForeignEventsEntry(deadline);
       deadline?.check();
-      return { ...observation, complete, counts: { ...observation.counts, retainedHandoffs: unique.size, fullTerminalOperations: operations.fullTerminalCount + operations.invalid.length },
+      return { ...observation, complete, ...(foreignEvents ? { incompleteReason: 'foreignEntryJournalEvents' as const } : {}), counts: { ...observation.counts, retainedHandoffs: unique.size, fullTerminalOperations: operations.fullTerminalCount + operations.invalid.length },
         potentialHandoffs: Math.max(observation.potentialHandoffs, unique.size), recoveryEvents, activeRepair: active.length > 0,
         unfinishedOperations: operations.records.filter(entry => !entry.record.compacted && entry.record.completedAt === null).length,
         pendingConsumer: operations.records.some(entry => !entry.record.compacted && entry.record.kind !== 'repair' && entry.record.completedAt === null) };
     } catch (error) { if (observeOwed === undefined) { this.invalidate(); } throw error; }
+  }
+
+  /**
+   * Whether journal/events holds an entry the runtime does not own. It names a cause only: any failure or an oversized
+   * listing reads false, which keeps the generic reason, and the refusal it explains stands either way.
+   */
+  private async holdsForeignEventsEntry(deadline?: Deadline): Promise<boolean> {
+    try {
+      const directory = path.join(this.scope.dataRoot, 'journal', 'events');
+      const admitted = await this.inspector.inspect(this.scope.dataRoot, directory, true, deadline?.remaining());
+      if (admitted.kind !== 'directory') { return false; }
+      let entries = 0;
+      for await (const entry of await fs.opendir(directory)) {
+        deadline?.check();
+        if (++entries > foreignEventsScanBound) { return false; }
+        if (isForeignEventsEntry(entry.name, entry.isFile())) { return true; }
+      }
+
+      return false;
+    } catch { return false; }
   }
 
   private async readSafety(deadline?: Deadline): Promise<ReturnType<typeof parseStateSafety>> {

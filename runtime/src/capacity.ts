@@ -6,6 +6,8 @@ export interface DocumentUsage { readonly bytes: number; readonly tokens: number
 export interface DocumentReservation { readonly name: string; readonly profile: JsonProfile; readonly usage: DocumentUsage | null }
 export interface CapacityInventory {
   readonly complete: boolean;
+  /** The known cause of an incomplete inventory; absent, an incomplete inventory keeps the generic `inventory` reason. */
+  readonly incompleteReason?: CapacityReason;
   readonly counts: ResourceCounts;
   readonly freeBytes: bigint | null;
   readonly uncertainWorkspace: boolean;
@@ -25,7 +27,8 @@ function countsValid(counts: ResourceCounts): boolean { return dimensions.every(
 // Reservations describe a complete bounded transition, including its recovery and
 // finalization. Unknown prospective documents reserve their entire admitted profile.
 export function assessCapacity(inventory: CapacityInventory, transition: TransitionReservation): CapacityDecision {
-  if (!inventory.complete || inventory.freeBytes === null || inventory.freeBytes < 0n || !countsValid(inventory.counts)
+  if (!inventory.complete) { return { admitted: false, state: 'unavailable', dimensions: [inventory.incompleteReason ?? 'inventory'] }; }
+  if (inventory.freeBytes === null || inventory.freeBytes < 0n || !countsValid(inventory.counts)
     || !countsValid(transition.additions) || !countsValid(transition.remainingControlReserve) || transition.workspaceBytes < 0n) {
     return { admitted: false, state: 'unavailable', dimensions: ['inventory'] };
   }

@@ -10,7 +10,7 @@ import { FilePublisher } from './files.ts';
 import { isOpaqueToken, newIdentity, type ProcessIdentities } from './identity.ts';
 import { acknowledgementPrefix, eventFileName, eventFileSequence, eventRewriteMetadata, JournalDocumentError, logicalOutboxSequence, parseEventDescription, parseJournalCursor, parseJournalHeader, type EventDescription, type EventMetadata, type JournalCursor, type JournalHeader } from './journal-records.ts';
 import { asInt64, asInteger, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, utcNow } from './json.ts';
-import { isPublicationResidue } from './platform/publication-residue.ts';
+import { isForeignEventsEntry } from './platform/publication-residue.ts';
 import { SerialQueue } from './serial.ts';
 
 type ControlRead<T> = { readonly status: 'absent' | 'invalid' } | { readonly status: 'valid'; readonly value: T; readonly sha256: string };
@@ -180,8 +180,8 @@ export class Journal {
       const sequence = eventFileSequence(entry.name);
       if (sequence === null || !entry.isFile()) {
         // A publication sibling is the runtime's own residue, which its guarded cleanup removes; anything else is foreign.
-        if (isPublicationResidue(path.join(eventsPath, entry.name))) { throw new JournalUnavailableError('Journal inventory contains unresolved storage entries.'); }
-        throw new JournalForeignEntryError('Journal inventory contains an entry it does not own.');
+        if (isForeignEventsEntry(entry.name, entry.isFile())) { throw new JournalForeignEntryError('Journal inventory contains an entry it does not own.'); }
+        throw new JournalUnavailableError('Journal inventory contains unresolved storage entries.');
       }
       entries.push({ path: path.join(directory, entry.name), sequence });
     }

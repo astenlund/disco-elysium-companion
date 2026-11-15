@@ -21,12 +21,16 @@ export interface ResourceScopeFixture {
   close(): Promise<void>;
 }
 
+/** An operation store with no operation records, for cases whose inventory reads the operations folder. */
+export const noOperations = { list: async () => ({ records: [], invalid: [], handoffCount: 0, fullTerminalCount: 0 }) } as unknown as OperationStore;
+
 /**
  * A scratch runtime-data scope under the repository's .tmp, holding its scope binding and an empty journal/events folder,
  * with the real native helper and a resource authority over it. `prepare` adds the entries a case needs before the helper
  * starts; `close` stops the helper and removes the scratch root.
  */
-export async function resourceScopeFixture(name: string, prepare: (dataRoot: string) => Promise<void> = async () => {}): Promise<ResourceScopeFixture> {
+export async function resourceScopeFixture(name: string, prepare: (dataRoot: string) => Promise<void> = async () => {},
+  operations: OperationStore = {} as OperationStore): Promise<ResourceScopeFixture> {
   const root = path.join(repository, '.tmp', `${name}-${randomUUID()}`);
   const dataRoot = path.join(root, 'data');
   await fs.mkdir(path.join(dataRoot, 'journal', 'events'), { recursive: true });
@@ -42,7 +46,7 @@ export async function resourceScopeFixture(name: string, prepare: (dataRoot: str
     await close();
     throw error;
   }
-  const resources = new ResourceAuthority(scope, new PathInspector(native.supervisor), {} as OperationStore);
+  const resources = new ResourceAuthority(scope, new PathInspector(native.supervisor), operations);
 
   return { root, dataRoot, scope, native, resources, close: async () => { try { await native.close(); } finally { await close(); } } };
 }
