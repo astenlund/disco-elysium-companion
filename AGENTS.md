@@ -39,6 +39,9 @@ Runtime-mode exception: when this session's system prompt carries the companion 
    - A validated `adapter-release-corrupt` reason (config or digest): direct the
      user to repair or reinstall the active adapter package under
      `adapters/disco_elysium/releases/`.
+   - A validated `config` reason `companion-root-too-long`: the companion folder's path is
+     too long for the adapter's tools to start; direct the user to move it to a shorter path
+     and rerun.
    - A `pipeline-reaper-discovery-limit-exceeded` warning is persistent: stop all
      companion processes, reduce the named `tmp` or `state` root below its ceilings,
      rerun.

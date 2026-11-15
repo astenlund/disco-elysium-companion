@@ -5,19 +5,26 @@ foreach ($name in 'game', 'adapterVersion', 'saveDirectory', 'saveGlob', 'maxSou
 $script:AdapterPlaceholders = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($name in 'artifactRoot', 'save', 'dump', 'digest', 'adapterVersion', 'sourceDomainId', 'saveName', 'savedAt', 'sourceLength', 'sourceSha256') { [void] $script:AdapterPlaceholders.Add($name) }
 
+# The longest executable path and working directory with which Invoke-AdapterCommand starts a
+# process, measured with core/tests/Measure-AdapterLaunchLimits.ps1 on 2026-11-15 (259 started and
+# 260 failed; 258 started and 259 failed), the same limits the runtime measured for Node spawn.
+$script:MaxAdapterExecutableLength = 259
+$script:MaxAdapterWorkingDirectoryLength = 258
+
 function Fail-AdapterConfiguration { throw [AdapterConfigurationException]::new('Adapter configuration is invalid.') }
 function Fail-AdapterResolution { throw [AdapterConfigurationException]::new('adapter-resolution-failed') }
 function Fail-AdapterRelease { throw [AdapterConfigurationException]::new('adapter-release-corrupt') }
+function Fail-AdapterRootLength { throw [AdapterConfigurationException]::new('companion-root-too-long') }
 
 # The 7.5 configuration reason for a failed adapter resolution. Get-AdapterConfig raises the
-# release and location reasons with the reason token as the message, and any other configuration
-# failure means adapter.json was read and is invalid. A failure outside Get-AdapterConfig never
-# reached the adapter, so it is a location failure.
+# release, location and root-length reasons with the reason token as the message, and any other
+# configuration failure means adapter.json was read and is invalid. A failure outside
+# Get-AdapterConfig never reached the adapter, so it is a location failure.
 function Get-AdapterResolutionReason {
     param([Parameter(Mandatory)] [Exception] $Exception)
 
     if ($Exception -isnot [AdapterConfigurationException]) { return 'adapter-resolution-failed' }
-    foreach ($reason in 'adapter-release-corrupt', 'adapter-resolution-failed') {
+    foreach ($reason in 'adapter-release-corrupt', 'adapter-resolution-failed', 'companion-root-too-long') {
         if ([string]::Equals($Exception.Message, $reason, [StringComparison]::Ordinal)) { return $reason }
     }
 
@@ -157,6 +164,8 @@ function Test-AdapterEntrypoint {
     $expanded = $entry.Replace('{artifactRoot}', $ArtifactRoot)
     $fullEntry = [IO.Path]::GetFullPath($expanded)
     if (-not (Test-AdapterPathDescendant -Path $fullEntry -Root $ArtifactRoot)) { Fail-AdapterConfiguration }
+    # An index-0 entry is the executable the launch starts; an index-3 script is only an argument to pwsh, which opens long paths.
+    if ($Index -eq 0 -and $fullEntry.Length -gt $script:MaxAdapterExecutableLength) { Fail-AdapterRootLength }
     if (-not (Test-Path -LiteralPath $fullEntry -PathType Leaf)) { Fail-AdapterRelease }
     if ($Index -eq 3 -and -not $fullEntry.EndsWith('.ps1', [StringComparison]::Ordinal)) { Fail-AdapterConfiguration }
 }
@@ -268,6 +277,8 @@ function Get-AdapterConfig {
         # maxSourceBytes, command/entrypoint grammar, ambientExtraPaths) never imports a
         # validator module that later must be torn down.
         if ($Profile -eq 'Acquisition') {
+            # Adapter commands start in the adapter directory, so a root too long for it refuses before any cycle.
+            if ($adapterDirectory.Length -gt $script:MaxAdapterWorkingDirectoryLength) { Fail-AdapterRootLength }
             if (-not (Test-Path -LiteralPath $config.SaveDirectory -PathType Container)) { Fail-AdapterConfiguration }
             $config.MaxSourceBytes = Get-AdapterInt64 (Get-AdapterJsonProperty $json maxSourceBytes) $true
             if ($config.MaxSourceBytes -eq [long]::MaxValue) { Fail-AdapterConfiguration }

@@ -722,6 +722,48 @@ function New-ScratchCompanionRoot {
     return $scratchRoot
 }
 
+# The configuration reason Get-AdapterConfig fails with at $Root, or $null when it resolves. Callers must
+# have DigestDiff imported, because Get-AdapterConfig and its reason mapping are its exports.
+function Get-AdapterConfigReason {
+    param([Parameter(Mandatory)] [string] $Root, [Parameter()] [string] $Profile = 'StateCompatibility')
+
+    try {
+        $config = Get-AdapterConfig -CompanionRoot $Root -Profile $Profile
+        $config.Dispose()
+
+        return $null
+    }
+    catch {
+        if ([string]::Equals($_.Exception.GetType().Name, 'AdapterConfigurationException', [StringComparison]::Ordinal)) {
+            return Get-AdapterResolutionReason -Exception $_.Exception
+        }
+
+        throw
+    }
+}
+
+# A path of exactly $Length characters beneath $Base that ends in $Leaf, padded with directory names of
+# at most 200 characters, for fixtures at a Windows path-length boundary. Nothing is created.
+function Get-ExactLengthPath {
+    param([Parameter(Mandatory)] [string] $Base, [Parameter(Mandatory)] [int] $Length, [Parameter(Mandatory)] [string] $Leaf)
+
+    $remaining = $Length - $Base.Length - 1 - $Leaf.Length
+    if ($remaining -lt 2) {
+        throw [System.ArgumentOutOfRangeException]::new('Length', "Length $Length is too short for a $($Base.Length)-character base and a $($Leaf.Length)-character leaf.")
+    }
+    $parts = [System.Collections.Generic.List[string]]::new()
+    while ($remaining -gt 0) {
+        $take = [Math]::Min(200, $remaining - 1)
+        if ($remaining - 1 - $take -eq 1) {
+            $take--
+        }
+        $parts.Add('p' * $take)
+        $remaining -= $take + 1
+    }
+
+    return $Base + '\' + [string]::Join('\', $parts) + '\' + $Leaf
+}
+
 function Get-TreeFingerprint {
     param([Parameter(Mandatory)] [string] $Path)
 
@@ -938,4 +980,4 @@ function New-StagedRuntimeContextRoot {
     return [pscustomobject]@{ Root = $root; ScopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes)); SafetySha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($safetyBytes)) }
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Remove-ScratchCompanionRoot, Remove-OwnedScratchRoots, Complete-ScratchHarness, Exit-HarnessFailure, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Remove-ScratchCompanionRoot, Remove-OwnedScratchRoots, Complete-ScratchHarness, Exit-HarnessFailure, Get-ExactLengthPath, Get-AdapterConfigReason, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample

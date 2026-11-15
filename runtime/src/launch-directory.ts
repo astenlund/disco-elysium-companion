@@ -5,7 +5,8 @@ import { ConfigurationError } from './config.ts';
 
 /**
  * The longest working directory Windows starts a process in. Measured on the Go helper path, where the broker and the
- * owned child both start in the companion root: 258 characters launched and 259 failed, and a plain Node spawn agrees.
+ * owned child both start in the companion root: 258 characters launched and 259 failed, and a plain Node spawn agrees,
+ * as does the core's own adapter launch (core/tests/Measure-AdapterLaunchLimits.ps1).
  */
 export const maxLaunchDirectoryLength = 258;
 
@@ -61,7 +62,8 @@ export function runtimeRootBound(): number {
 /**
  * The longest companion root that these launches below it can start from: the launches of `runtimeRootBound` and the
  * core's adapter commands in adapters/<adapter> as their working directory. Adapter tools inside the core-resolved
- * release folder are not covered here.
+ * release folder sit deeper than this bound allows for; the core refuses a root too long for them, with the reason
+ * companion-root-too-long, when it resolves the adapter configuration.
  */
 export function installationRootBound(adapter: string): number {
   return Math.min(runtimeRootBound(), maxLaunchDirectoryLength - launchDepth(path.win32.join('adapters', adapter)));

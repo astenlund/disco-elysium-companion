@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'StateProfile', 'ProfileFailures', 'CommandGrammar', 'ConfigAdmission', 'ValidatorFaultBoundary', 'ValidatorBoundaryMatrix', 'DuplicateSurfaceMatrix', 'AmbientExtraPaths', 'WalkPolicyFraming', 'LeaseOrder', 'EntrypointMatrix', 'WarmHold')]
+    [ValidateSet('All', 'StateProfile', 'ProfileFailures', 'CommandGrammar', 'ConfigAdmission', 'ValidatorFaultBoundary', 'ValidatorBoundaryMatrix', 'DuplicateSurfaceMatrix', 'AmbientExtraPaths', 'WalkPolicyFraming', 'LeaseOrder', 'EntrypointMatrix', 'LaunchLength', 'WarmHold')]
     [string] $Only = 'All'
 )
 
@@ -271,6 +271,42 @@ function Test-AdapterEntrypointValidationRejections {
     Assert-True -Condition $result.Admitted -Message 'an in-root index-0 executable and an in-root index-3 script are admitted'
 }
 
+function Test-AdapterLaunchLengthAdmission {
+    $base = New-ScratchCompanionRoot -Prefix 'adapter-launch-length'
+    $saves = Join-Path $base 'saves'
+    [void] [IO.Directory]::CreateDirectory($saves)
+    $prefix = '{"game":"example","adapterVersion":-9223372036854775808,"saveDirectory":"' + $saves.Replace('\', '\\') + '","saveGlob":"*.zip","maxSourceBytes":1,'
+    $digest = '"digestCommand":["pwsh","-NoProfile","-File","{artifactRoot}/adapters/example/Build-Digest.ps1","{dump}","{digest}","{adapterVersion}","{sourceDomainId}","{saveName}","{savedAt}","{sourceLength}","{sourceSha256}"],"digestEntrypointIndex":3}'
+    $executableJson = $prefix + '"dumpCommand":["{artifactRoot}/adapters/example/tool.exe","{save}","{dump}"],"dumpEntrypointIndex":0,' + $digest
+    $scriptJson = $prefix + '"dumpCommand":["pwsh","-NoProfile","-File","{artifactRoot}/adapters/example/Build-Digest.ps1","{save}","{dump}"],"dumpEntrypointIndex":3,' + $digest
+    $toolSuffix = '\adapters\example\releases\-9223372036854775808\schema-2\adapters\example\tool.exe'
+    $adapterSuffix = '\adapters\example'
+    $newRoot = {
+        param([int] $Length, [string] $AdapterJson)
+        $root = Get-ExactLengthPath -Base $base -Length $Length -Leaf 'r'
+        New-AdapterFixtureTree -Root $root -AdapterJson $AdapterJson
+
+        return $root
+    }
+
+    # The dump tool starts at a 259-character path and is refused one character later, before any launch.
+    $fitting = & $newRoot (259 - $toolSuffix.Length) $executableJson
+    Assert-True -Condition (Test-Path -LiteralPath ($fitting + $toolSuffix) -PathType Leaf) -Message 'the fixture places the dump tool at the boundary path'
+    Assert-OrdinalEqual -Actual ([string] (Get-AdapterConfigReason -Root $fitting -Profile Acquisition)) -Expected '' -Message 'a dump tool path of 259 characters is admitted'
+    $tooLong = & $newRoot (260 - $toolSuffix.Length) $executableJson
+    Assert-OrdinalEqual -Actual (Get-AdapterConfigReason -Root $tooLong -Profile Acquisition) -Expected 'companion-root-too-long' -Message 'a dump tool path of 260 characters refuses the root by its length'
+
+    # Script entrypoints are pwsh arguments, so only the adapter working directory bounds them: 258 fits, 259 does not.
+    $scriptFitting = & $newRoot (258 - $adapterSuffix.Length) $scriptJson
+    Assert-True -Condition (($scriptFitting + '\adapters\example\releases\-9223372036854775808\schema-2\adapters\example\Build-Digest.ps1').Length -gt 260) -Message 'the script entrypoint lies beyond the executable bound'
+    Assert-OrdinalEqual -Actual ([string] (Get-AdapterConfigReason -Root $scriptFitting -Profile Acquisition)) -Expected '' -Message 'a 258-character adapter working directory is admitted with a long script entrypoint'
+    $scriptTooLong = & $newRoot (259 - $adapterSuffix.Length) $scriptJson
+    Assert-OrdinalEqual -Actual (Get-AdapterConfigReason -Root $scriptTooLong -Profile Acquisition) -Expected 'companion-root-too-long' -Message 'a 259-character adapter working directory refuses the root by its length'
+
+    # Reading state launches nothing, so the state profile still resolves at a root too long to acquire from.
+    Assert-OrdinalEqual -Actual ([string] (Get-AdapterConfigReason -Root $scriptTooLong)) -Expected '' -Message 'the state profile ignores launch lengths'
+}
+
 function Test-WatcherWarmHoldAmortizesValidatorImports {
     $root = New-ScratchCompanionRoot -Prefix 'adapter-warm-hold'
     New-AdapterFixture -Root $root
@@ -314,6 +350,7 @@ $tests = [ordered]@{
     WalkPolicyFraming = ${function:Test-WalkPolicyIdFramesPolicyOrderInsensitively}
     LeaseOrder = ${function:Test-AcquisitionValidationFailsBeforeValidatorImport}
     EntrypointMatrix = ${function:Test-AdapterEntrypointValidationRejections}
+    LaunchLength = ${function:Test-AdapterLaunchLengthAdmission}
     WarmHold = ${function:Test-WatcherWarmHoldAmortizesValidatorImports}
 }
 

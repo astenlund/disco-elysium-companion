@@ -723,24 +723,6 @@ function New-AdapterFixture {
     New-AdapterFixtureTree -Root $Root -Name $Name -AdapterJson $adapterJson -ValidatorModule $ValidatorModule -OmitDumpTool:$OmitDumpTool
 }
 
-function Get-ReleaseConfigReason {
-    param([Parameter(Mandatory)] [string] $Root, [Parameter()] [string] $Profile = 'StateCompatibility')
-
-    try {
-        $config = Get-AdapterConfig -CompanionRoot $Root -Profile $Profile
-        $config.Dispose()
-
-        return $null
-    }
-    catch {
-        if ([string]::Equals($_.Exception.GetType().Name, 'AdapterConfigurationException', [StringComparison]::Ordinal)) {
-            return Get-AdapterResolutionReason -Exception $_.Exception
-        }
-
-        throw
-    }
-}
-
 function Test-PackageMemberRemediation {
     $assertCorrupt = {
         param($Message)
@@ -760,17 +742,17 @@ function Test-PackageMemberRemediation {
     # A validator that cannot be imported (syntax error) is corrupt release.
     $importFail = New-ScratchCompanionRoot -Prefix 'release-corrupt-import'
     New-AdapterFixture -Root $importFail -ValidatorModule 'function Assert-AdapterDigestSemantics { '
-    & $assertCorrupt (Get-ReleaseConfigReason -Root $importFail)
+    & $assertCorrupt (Get-AdapterConfigReason -Root $importFail)
 
     # A validator whose required export is missing is corrupt release.
     $missingExport = New-ScratchCompanionRoot -Prefix 'release-corrupt-export'
     New-AdapterFixture -Root $missingExport -ValidatorModule "function SomethingElse { }`nExport-ModuleMember -Function SomethingElse`n"
-    & $assertCorrupt (Get-ReleaseConfigReason -Root $missingExport)
+    & $assertCorrupt (Get-AdapterConfigReason -Root $missingExport)
 
     # A validator with a spurious extra export is corrupt release.
     $extraExport = New-ScratchCompanionRoot -Prefix 'release-corrupt-extra'
     New-AdapterFixture -Root $extraExport -ValidatorModule "function Assert-AdapterDigestSemantics { param([Parameter(Mandatory)] [System.Text.Json.JsonElement] `$RootElement) }`nfunction Extra { }`nExport-ModuleMember -Function Assert-AdapterDigestSemantics, Extra`n"
-    & $assertCorrupt (Get-ReleaseConfigReason -Root $extraExport)
+    & $assertCorrupt (Get-AdapterConfigReason -Root $extraExport)
 
     # The mapping is generic: repeat the import failure under a second adapter name with the
     # Acquisition non-module rules satisfied (spec section 8: the save directory must exist
@@ -780,13 +762,13 @@ function Test-PackageMemberRemediation {
     $secondSaves = Join-Path $second 'saves'
     [void] [IO.Directory]::CreateDirectory($secondSaves)
     New-AdapterFixture -Root $second -Name 'xeno' -ValidatorModule 'function Assert-AdapterDigestSemantics { ' -SaveDirectory $secondSaves
-    & $assertCorrupt (Get-ReleaseConfigReason -Root $second -Profile Acquisition)
+    & $assertCorrupt (Get-AdapterConfigReason -Root $second -Profile Acquisition)
 
     # Removing the release validator module is a damaged release, not an ordinary config error.
     $removed = New-ScratchCompanionRoot -Prefix 'release-corrupt-removed'
     New-AdapterFixture -Root $removed
     [IO.File]::Delete((Join-Path $removed 'adapters/example/releases/-9223372036854775808/schema-2/adapters/example/Validate-Digest.psm1'))
-    & $assertCorrupt (Get-ReleaseConfigReason -Root $removed)
+    & $assertCorrupt (Get-AdapterConfigReason -Root $removed)
 
     # An artifact-root member named by dumpCommand that is absent is a damaged release, reported
     # at the config surface before spawn.
@@ -795,20 +777,20 @@ function Test-PackageMemberRemediation {
     [void] [IO.Directory]::CreateDirectory($saveDir)
     $absent = New-ScratchCompanionRoot -Prefix 'release-corrupt-absent'
     New-AdapterFixture -Root $absent -OmitDumpTool -SaveDirectory $saveDir
-    & $assertCorrupt (Get-ReleaseConfigReason -Root $absent -Profile Acquisition)
+    & $assertCorrupt (Get-AdapterConfigReason -Root $absent -Profile Acquisition)
 
     # Invalid adapter.json content stays the ordinary config class.
     $invalid = New-ScratchCompanionRoot -Prefix 'release-corrupt-invalid'
     New-AdapterFixture -Root $invalid
     [IO.File]::WriteAllText((Join-Path $invalid 'adapters/example/adapter.json'), '{}', [Text.UTF8Encoding]::new($false))
-    Assert-OrdinalEqual -Actual (Get-ReleaseConfigReason -Root $invalid) -Expected 'adapter-config-invalid' -Message 'invalid adapter.json content is the ordinary config reason'
+    Assert-OrdinalEqual -Actual (Get-AdapterConfigReason -Root $invalid) -Expected 'adapter-config-invalid' -Message 'invalid adapter.json content is the ordinary config reason'
 
     # An adapter.json that cannot be read was never validated, so it is a location failure.
     $locked = New-ScratchCompanionRoot -Prefix 'release-corrupt-locked'
     New-AdapterFixture -Root $locked
     $stream = [IO.File]::Open((Join-Path $locked 'adapters/example/adapter.json'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     try {
-        Assert-OrdinalEqual -Actual (Get-ReleaseConfigReason -Root $locked) -Expected 'adapter-resolution-failed' -Message 'an I/O failure before adapter.json is read reports a location failure'
+        Assert-OrdinalEqual -Actual (Get-AdapterConfigReason -Root $locked) -Expected 'adapter-resolution-failed' -Message 'an I/O failure before adapter.json is read reports a location failure'
     }
     finally {
         $stream.Dispose()
@@ -843,6 +825,29 @@ function Test-ResolutionReasonsAcrossEntryPoints {
         Assert-True -Condition $bridge.StdErr.StartsWith('[turn-context:config] ', [StringComparison]::Ordinal) -Message "the bridge reports the config class for adapter $($case.Adapter)"
         Assert-True -Condition $bridge.StdErr.Contains("`"detail`":`"$($case.Reason)`"", [StringComparison]::Ordinal) -Message "the bridge reports $($case.Reason) for adapter $($case.Adapter)"
     }
+
+    # Arrange: a root one character too long for its dump tool, which every launching entry point refuses before a cycle.
+    $lengthBase = New-ScratchCompanionRoot -Prefix 'resolution-root-length'
+    $lengthSaves = Join-Path $lengthBase 'saves'
+    [void] [IO.Directory]::CreateDirectory($lengthSaves)
+    $toolSuffix = '\adapters\example\releases\-9223372036854775808\schema-2\adapters\example\tool.exe'
+    $longRoot = Get-ExactLengthPath -Base $lengthBase -Length (260 - $toolSuffix.Length) -Leaf 'r'
+    Copy-CompanionCoreTree -Destination (Join-Path $longRoot 'core') -EntryScripts @('Update-CompanionState.ps1', 'Get-TurnContext.ps1', 'Publish-StateEvent.ps1')
+    New-AdapterFixture -Root $longRoot -SaveDirectory $lengthSaves
+    Assert-True -Condition (Test-Path -LiteralPath ($longRoot + $toolSuffix) -PathType Leaf) -Message 'the fixture places the dump tool one character past the executable bound'
+
+    # Act
+    $oneShot = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $longRoot 'core/Update-CompanionState.ps1'), '-Adapter', 'example') -WorkingDirectory $lengthBase
+    $bridge = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $longRoot 'core/Get-TurnContext.ps1'), '-Adapter', 'example') -WorkingDirectory $lengthBase
+    $publish = Invoke-BoundedPwsh -Arguments @('-File', (Join-Path $longRoot 'core/Publish-StateEvent.ps1'), '-Adapter', 'example', '-Principal', 'S-1-5-21-1000-1001-1002-1003') -WorkingDirectory $lengthBase
+
+    # Assert
+    Assert-Equal -Actual $oneShot.ExitCode -Expected 1 -Message 'the one-shot fails closed for a root too long for its dump tool'
+    Assert-OrdinalEqual -Actual $oneShot.StdErr.Trim() -Expected '[config] companion-root-too-long' -Message 'the one-shot names the root length as the reason'
+    Assert-Equal -Actual $bridge.ExitCode -Expected 1 -Message 'the bridge fails closed for a root too long for its dump tool'
+    Assert-True -Condition ($bridge.StdErr.StartsWith('[turn-context:config] ', [StringComparison]::Ordinal) -and $bridge.StdErr.Contains('"detail":"companion-root-too-long"', [StringComparison]::Ordinal)) -Message "the bridge reports the root-length config reason ($($bridge.StdErr.Trim()))"
+    Assert-Equal -Actual $publish.ExitCode -Expected 1 -Message 'publish fails closed for a root too long for its dump tool'
+    Assert-True -Condition $publish.StdErr.Contains('companion-root-too-long', [StringComparison]::Ordinal) -Message "publish reports the root-length config reason ($($publish.StdErr.Trim()))"
 }
 
 $tests = [ordered]@{
