@@ -12,6 +12,7 @@ import { Deadline } from '../deadline.ts';
 import { FilePublisher, type PublicationOptions } from '../files.ts';
 import { takeInstanceGuard } from '../guard.ts';
 import { initializeJournal } from '../journal-initialization.ts';
+import { journalFailureReason } from '../journal.ts';
 import { jsonBudgets, utcNow, type ProspectiveJsonBudgetError } from '../json.ts';
 import { admitInstallationRoot } from '../launch-directory.ts';
 import { invalidOperationOwners, OperationStore } from '../operations.ts';
@@ -84,7 +85,7 @@ export class CoordinatorBackend implements RuntimeBackend {
     const capacity = firstCapacityRefusal(k.resources.capacity.current);
     const pending = observed.stateSafety.state === 'recovering' && observed.safety?.status === 'valid' && observed.safety.value.pendingCheck !== null;
     k.emit({ stateSafety: observed.stateSafety, freshness: { ...k.status.freshness, state: 'failed', class: 'journal',
-      reason: pending ? 'settlementPending' : k.status.journal.fault ?? (capacity?.state === 'unavailable' ? 'capacityUnavailable' : 'journalUnavailable'), checkedAt: utcNow() } });
+      reason: pending ? 'settlementPending' : k.status.journal.fault ?? (capacity?.state === 'unavailable' ? 'capacityUnavailable' : journalFailureReason(error)), checkedAt: utcNow() } });
     return { notOwner: false, consumerResult: null, requiredWorkCompleted: false, capacityRewind: null };
   }
   private async cleanup(): Promise<void> {
@@ -203,6 +204,8 @@ export class CoordinatorBackend implements RuntimeBackend {
       this.kernel.resources.reportFailure(error);
       this.kernel.emit({ freshness: { ...this.status.freshness, state: 'failed', class: 'journal',
         reason: this.status.journal.fault ?? (error.state === 'unavailable' ? 'capacityUnavailable' : 'runtimeCapacityExceeded'), checkedAt: utcNow() } });
+    } else if (journalFailureReason(error) === 'journalForeignEntry') {
+      this.kernel.emit({ freshness: { ...this.status.freshness, state: 'failed', class: 'journal', reason: this.status.journal.fault ?? 'journalForeignEntry', checkedAt: utcNow() } });
     }
     return error;
   }

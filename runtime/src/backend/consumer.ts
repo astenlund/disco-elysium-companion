@@ -2,6 +2,7 @@ import { requireControl } from '../control-values.ts';
 import type { ConsumerReceipt, CoreRequest, CoreResult } from '../core-client.ts';
 import { Deadline } from '../deadline.ts';
 import { newIdentity, newOperationId } from '../identity.ts';
+import { journalFailureReason } from '../journal.ts';
 import { utcNow } from '../json.ts';
 import { effectivelyUnfinished, pendingOperationSafety, type FullOperation, type HandoverOperation, type ReleaseOperation, type OperationSafety } from '../operation-records.ts';
 import { requireRepair, unownedInvalidOperations, type StoredOperation } from '../operations.ts';
@@ -107,7 +108,7 @@ export class ConsumerCoordinator {
     let snapshot: Awaited<ReturnType<typeof k.journal.read>> | null = null;
     let inventory: Awaited<ReturnType<typeof k.operations.list>> | null = null;
     let safety: Awaited<ReturnType<typeof k.safety>> | null = null;
-    try { snapshot = await k.journal.read(); } catch { details.push('journalUnavailable'); }
+    try { snapshot = await k.journal.read(); } catch (error) { details.push(journalFailureReason(error)); }
     try { inventory = await k.operations.list(); } catch { details.push('operationsUnavailable'); }
     try { safety = await k.safety(); } catch { details.push('contextUnavailable'); }
     try { if (inventory === null || !hasCarryAuthority(await k.carryHash(), inventory)) { details.push('recoveryCarryUnbound'); } }

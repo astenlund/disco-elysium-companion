@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { assessCapacity, type CapacityInventory, type ResourceCounts, type TransitionReservation } from '../src/capacity.ts';
+import { assessCapacity, capacityReasons, capacitySlot, inventoryFailureReason, inventoryFailureReasons, RuntimeCapacityError, type CapacityInventory, type ResourceCounts, type TransitionReservation } from '../src/capacity.ts';
 
 const zero: ResourceCounts = { uncompactedEvents: 0, retainedHandoffs: 0, fullTerminalOperations: 0 };
 const inventory: CapacityInventory = { complete: true, counts: zero, freeBytes: 1000000000n, uncertainWorkspace: false };
@@ -43,9 +43,36 @@ describe('complete-transition resource vectors', () => {
   });
 
   it('never turns incomplete discovery or uncertain cleanup into spare capacity', () => {
-    for (const observation of [{ ...inventory, complete: false }, { ...inventory, uncertainWorkspace: true }, { ...inventory, freeBytes: null }]) {
+    for (const observation of [{ ...inventory, complete: false }, { ...inventory, freeBytes: null }, { ...inventory, complete: false, uncertainWorkspace: true }]) {
       const result = assessCapacity(observation, transition);
       assert.deepEqual(result, { admitted: false, state: 'unavailable', dimensions: ['inventory'] });
+    }
+  });
+
+  it('names residue left in a complete inventory as its own unavailable dependency', () => {
+    assert.deepEqual(assessCapacity({ ...inventory, uncertainWorkspace: true }, transition), { admitted: false, state: 'unavailable', dimensions: ['workspaceResidue'] });
+  });
+});
+
+describe('native inventory failure categories', () => {
+  it('maps each category code of the helper to its own capacity reason', () => {
+    for (const code of ['foreignEntryScopeRoot', 'foreignEntryJournal', 'foreignEntryJournalEvents', 'foreignEntryOperations', 'foreignEntryQuarantine', 'inventoryUnreadable'] as const) {
+      assert.equal(inventoryFailureReason(code), code);
+    }
+  });
+
+  it('names a helper that could not answer, and keeps the generic reason for every other code', () => {
+    assert.equal(inventoryFailureReason('unavailable'), 'helperUnavailable');
+    for (const code of ['inventoryUnavailable', 'deadlineExceeded', 'requestTooLarge', 'workspaceResidue', 'helperUnavailable', 'foreignEntryElsewhere', 'scopeUnbound']) {
+      assert.equal(inventoryFailureReason(code), 'inventory', code);
+    }
+  });
+
+  it('keeps every category in the bounded public reason set, so the status slot never falls back to otherAuthority', () => {
+    for (const reason of inventoryFailureReasons) {
+      const error = new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: [reason] }, 'ordinary');
+      assert.ok(capacityReasons.includes(reason));
+      assert.deepEqual(capacitySlot(error), { state: 'unavailable', reason, dimensions: [] });
     }
   });
 });

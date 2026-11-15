@@ -25,10 +25,11 @@ function countsValid(counts: ResourceCounts): boolean { return dimensions.every(
 // Reservations describe a complete bounded transition, including its recovery and
 // finalization. Unknown prospective documents reserve their entire admitted profile.
 export function assessCapacity(inventory: CapacityInventory, transition: TransitionReservation): CapacityDecision {
-  if (!inventory.complete || inventory.uncertainWorkspace || inventory.freeBytes === null || inventory.freeBytes < 0n || !countsValid(inventory.counts)
+  if (!inventory.complete || inventory.freeBytes === null || inventory.freeBytes < 0n || !countsValid(inventory.counts)
     || !countsValid(transition.additions) || !countsValid(transition.remainingControlReserve) || transition.workspaceBytes < 0n) {
     return { admitted: false, state: 'unavailable', dimensions: ['inventory'] };
   }
+  if (inventory.uncertainWorkspace) { return { admitted: false, state: 'unavailable', dimensions: ['workspaceResidue'] }; }
   const exhausted: string[] = [];
   const peak: ResourceCounts = {
     uncompactedEvents: inventory.counts.uncompactedEvents + transition.additions.uncompactedEvents + transition.remainingControlReserve.uncompactedEvents,
@@ -79,8 +80,19 @@ export function requireCapacity(inventory: CapacityInventory, transition: Transi
 
 export const capacityTransitions = ['runtimeMarker', 'release', 'repair', 'maintenance', 'ordinary'] as const;
 export type CapacityTransition = typeof capacityTransitions[number];
-export const capacityReasons = ['inventory', 'documentInventory', 'additions', 'recoveryAuthority', 'stateSafety', 'reservation', 'publicationScope', 'scopeAuthority', 'eventFinalization', 'unreservedAddition', 'workspace', 'codecScope', 'otherAuthority'] as const;
+/** The categories of an unavailable resource inventory beyond the generic `inventory` reason; each names its remedy. */
+export const inventoryFailureReasons = ['workspaceResidue', 'foreignEntryScopeRoot', 'foreignEntryJournal', 'foreignEntryJournalEvents', 'foreignEntryOperations', 'foreignEntryQuarantine',
+  'inventoryUnreadable', 'helperUnavailable'] as const;
+export const capacityReasons = ['inventory', ...inventoryFailureReasons, 'documentInventory', 'additions', 'recoveryAuthority', 'stateSafety', 'reservation', 'publicationScope', 'scopeAuthority', 'eventFinalization',
+  'unreservedAddition', 'workspace', 'codecScope', 'otherAuthority'] as const;
 export type CapacityReason = typeof capacityReasons[number];
+
+/** The capacity reason of a failed native inventory request: the category its helper code names, a helper transport failure, or generic. */
+export function inventoryFailureReason(code: string): CapacityReason {
+  if (code === 'unavailable') { return 'helperUnavailable'; }
+
+  return code !== 'workspaceResidue' && code !== 'helperUnavailable' && inventoryFailureReasons.some(value => value === code) ? code as CapacityReason : 'inventory';
+}
 export const capacityDimensions = ['uncompactedEvents', 'retainedHandoffs', 'fullTerminalOperations', 'quarantineFiles', 'freeSpace', 'documentBytes', 'documentTokens', 'documentText', 'operationFinalizationBytes', 'operationFinalizationTokensOrText', 'operationFinalizationDocument', 'otherResource'] as const;
 export type CapacityDimension = typeof capacityDimensions[number];
 export interface CapacitySlot { readonly state: 'unchecked' | 'admitted' | 'unavailable' | 'exhausted'; readonly reason: CapacityReason | null; readonly dimensions: readonly CapacityDimension[] }

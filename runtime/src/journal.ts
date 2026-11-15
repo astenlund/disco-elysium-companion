@@ -10,6 +10,7 @@ import { FilePublisher } from './files.ts';
 import { isOpaqueToken, newIdentity, type ProcessIdentities } from './identity.ts';
 import { acknowledgementPrefix, eventFileName, eventFileSequence, eventRewriteMetadata, JournalDocumentError, logicalOutboxSequence, parseEventDescription, parseJournalCursor, parseJournalHeader, type EventDescription, type EventMetadata, type JournalCursor, type JournalHeader } from './journal-records.ts';
 import { asInt64, asInteger, isLowerHex, jsonBudgets, parseStrictJson, readBoundedFile, StrictJsonError, utcNow } from './json.ts';
+import { isPublicationResidue } from './platform/publication-residue.ts';
 import { SerialQueue } from './serial.ts';
 
 type ControlRead<T> = { readonly status: 'absent' | 'invalid' } | { readonly status: 'valid'; readonly value: T; readonly sha256: string };
@@ -55,7 +56,18 @@ const eventsPath = path.join('journal', 'events');
 const eventPath = (sequence: number): string => path.join(eventsPath, eventFileName(sequence));
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
-export class JournalUnavailableError extends Error { override readonly name = 'JournalUnavailableError'; }
+export class JournalUnavailableError extends Error { override readonly name: string = 'JournalUnavailableError'; }
+/** An entry the journal does not own inside journal/events; the journal stays unavailable and never removes it. */
+export class JournalForeignEntryError extends JournalUnavailableError { override readonly name = 'JournalForeignEntryError'; }
+
+/** The journal-level freshness reason of a failure: `journalForeignEntry` when it, or an error it wraps, is a foreign events entry. */
+export function journalFailureReason(error: unknown): 'journalForeignEntry' | 'journalUnavailable' {
+  for (let current = error, depth = 0; current instanceof Error && depth < 8; current = current.cause, depth++) {
+    if (current instanceof JournalForeignEntryError) { return 'journalForeignEntry'; }
+  }
+
+  return 'journalUnavailable';
+}
 export class SentMarkPublicationError extends Error {
   override readonly name = 'SentMarkPublicationError';
   constructor(cause: unknown) { super('The best-effort sent mark could not be published.', { cause }); }
@@ -166,7 +178,11 @@ export class Journal {
     for await (const entry of stream) {
       deadline?.check();
       const sequence = eventFileSequence(entry.name);
-      if (sequence === null || !entry.isFile()) { throw new JournalUnavailableError('Journal inventory contains unresolved storage entries.'); }
+      if (sequence === null || !entry.isFile()) {
+        // A publication sibling is the runtime's own residue, which its guarded cleanup removes; anything else is foreign.
+        if (isPublicationResidue(path.join(eventsPath, entry.name))) { throw new JournalUnavailableError('Journal inventory contains unresolved storage entries.'); }
+        throw new JournalForeignEntryError('Journal inventory contains an entry it does not own.');
+      }
       entries.push({ path: path.join(directory, entry.name), sequence });
     }
     entries.sort((left, right) => left.sequence - right.sequence);

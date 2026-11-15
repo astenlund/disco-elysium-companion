@@ -3,10 +3,10 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import type { PathInspector } from '../admission.ts';
+import { NativeOperationError, type PathInspector } from '../admission.ts';
 import { handoffIdentity, handoffIdentityDigest, mergeHandoff } from '../backend/handoffs.ts';
 import type { CodecReservation } from '../codec.ts';
-import { CapacityObservation, capacityError, requireCapacity, RuntimeCapacityError, type CapacityInventory, type CapacityOwed, type CapacityReason, type CapacityTransition, type DocumentReservation, type ResourceCounts, type TransitionReservation } from '../capacity.ts';
+import { CapacityObservation, capacityError, inventoryFailureReason, requireCapacity, RuntimeCapacityError, type CapacityInventory, type CapacityOwed, type CapacityReason, type CapacityTransition, type DocumentReservation, type ResourceCounts, type TransitionReservation } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
 import type { Deadline } from '../deadline.ts';
 import { PublicationPathAdmissionError, type AdmitPublicationScope } from '../files.ts';
@@ -262,7 +262,7 @@ export class ResourceAuthority {
     try {
       value = await this.inspector.native('inventory', { root: this.scope.dataRoot, scopeSha256: this.scope.bindingSha256, companionRoot: this.scope.companionRoot,
         mode, inputBase64: null, inputFile: null, inputSha256: null }, deadline?.remaining());
-    } catch { return unavailable('inventory'); }
+    } catch (error) { return unavailable(error instanceof NativeOperationError ? inventoryFailureReason(error.code) : 'inventory'); }
     if (!hasExactKeys(value, ['uncompactedEvents', 'retainedHandoffs', 'retainedHandoffIdentitySha256', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox', 'uncertainWorkspace', 'freeBytes'])) { unavailable('inventory'); }
     const counts = ['uncompactedEvents', 'retainedHandoffs', 'potentialHandoffs', 'fullTerminalOperations', 'unfinishedOperations', 'invalidEvents', 'invalidOperations', 'pendingOutbox'].map(name => asInteger(value[name]));
     if (!isLowerHex(value['retainedHandoffIdentitySha256'], 64) || counts.some(count => count === undefined || count < 0) || typeof value['freeBytes'] !== 'string' || !/^[0-9]+$/.test(value['freeBytes']) || typeof value['uncertainWorkspace'] !== 'boolean') { unavailable('inventory'); }

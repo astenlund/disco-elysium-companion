@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CapacityObservation, capacitySlot, capacityTransitions, initialCapacity, isCapacityBlocked, RuntimeCapacityError } from '../../src/capacity.ts';
-import { DataRootUnavailableError } from '../../src/admission.ts';
+import { DataRootUnavailableError, NativeOperationError } from '../../src/admission.ts';
 import { ResourceAuthority, type ResourceObservation } from '../../src/resource-lifecycle/resources.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
 import { CoordinatorBackend, finishFailedStart, phaseFatalError } from '../../src/backend/index.ts';
@@ -36,6 +36,33 @@ function fixture() {
 function assess(resources: ResourceAuthority, kind: 'ordinary' | 'release' | 'repair' | 'maintenance') {
   return resources.withTransition(kind, () => kind === 'maintenance' ? resources.reserveMaintenance() : resources.reserve(kind));
 }
+
+describe('inventory failure categories in the capacity refusal', () => {
+  const cases = [
+    ['foreignEntryJournalEvents', 'foreignEntryJournalEvents'], ['foreignEntryScopeRoot', 'foreignEntryScopeRoot'], ['inventoryUnreadable', 'inventoryUnreadable'],
+    ['unavailable', 'helperUnavailable'], ['inventoryUnavailable', 'inventory'], ['deadlineExceeded', 'inventory'],
+  ] as const;
+  for (const [code, reason] of cases) {
+    it(`refuses an ordinary transition whose native inventory answered ${code} as ${reason}`, async () => {
+      const { scope } = fixture().kernel;
+      const inspector = { native: async () => { throw new NativeOperationError(code); } };
+      const resources = new ResourceAuthority(scope, inspector as never, {} as never);
+      await assert.rejects(assess(resources, 'ordinary'), error => error instanceof RuntimeCapacityError && error.state === 'unavailable' && error.dimensions.join() === reason);
+      assert.deepEqual(resources.capacity.current.ordinary, { state: 'unavailable', reason, dimensions: [] });
+    });
+  }
+
+  it('refuses a complete inventory that reports residue as workspaceResidue, never as spare capacity', async () => {
+    const { scope } = fixture().kernel;
+    const reply = { uncompactedEvents: 0, retainedHandoffs: 0, retainedHandoffIdentitySha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', potentialHandoffs: 0,
+      fullTerminalOperations: 0, unfinishedOperations: 0, invalidEvents: 0, invalidOperations: 0, pendingOutbox: 0, uncertainWorkspace: true, freeBytes: '100000000000' };
+    const inspector = { native: async () => reply };
+    const resources = new ResourceAuthority(scope, inspector as never, {} as never);
+    await assert.rejects(resources.withTransition('runtimeMarker', () => resources.reserveRuntimeMarker()),
+      error => error instanceof RuntimeCapacityError && error.dimensions.join() === 'workspaceResidue');
+    assert.deepEqual(resources.capacity.current.runtimeMarker, { state: 'unavailable', reason: 'workspaceResidue', dimensions: [] });
+  });
+});
 
 describe('bounded capacity presentation', () => {
   it('retains five independent refusal slots and clears only a freshly admitted kind', () => {

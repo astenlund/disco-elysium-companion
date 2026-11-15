@@ -5,9 +5,9 @@ import test from 'node:test';
 import { PendingStateCheckError } from '../../src/backend/api.ts';
 import { SessionHost } from '../../src/session-host.ts';
 import type { SessionHostV1 } from '../../src/session-host-contract.ts';
-import { initialCapacity } from '../../src/capacity.ts';
+import { initialCapacity, inventoryFailureReasons } from '../../src/capacity.ts';
 import type { DialogAnswer } from '../../src/provider.ts';
-import { credentialSourceLabel, formatCapacity, runTextClient } from '../../src/text-client.ts';
+import { credentialSourceLabel, formatCapacity, formatStatus, runTextClient } from '../../src/text-client.ts';
 import { deferred, FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
 
 function clientStreams() {
@@ -324,6 +324,50 @@ test('text client directs a restart while an unfinished repair holds state valid
   assert.ok(attachment.includes(remedy));
   assert.ok(pending.slice(attachment.length).includes(remedy));
   assert.equal(cleared.includes('unfinished repair'), false);
+});
+
+test('capacity readout names each inventory failure category with its own remedy and no path', () => {
+  const remedies = {
+    workspaceResidue: /restart chat or run repair so its guarded cleanup runs.*move it out by hand, since the runtime never deletes it/,
+    foreignEntryScopeRoot: /sits in the runtime data folder; move it out by hand, since the runtime never deletes it/,
+    foreignEntryJournal: /sits in journal; move it out by hand/,
+    foreignEntryJournalEvents: /sits in journal\/events; move it out by hand/,
+    foreignEntryOperations: /sits in operations; move it out by hand/,
+    foreignEntryQuarantine: /sits in quarantine; move it out by hand/,
+    inventoryUnreadable: /could not be read; restore its readability/,
+    helperUnavailable: /native helper could not answer; exit chat and run status to check the helper/,
+  } as const;
+  for (const reason of inventoryFailureReasons) {
+    // Arrange
+    const initial = initialCapacity();
+    const capacity = { ...initial, ordinary: { state: 'unavailable' as const, reason, dimensions: [] as const } };
+
+    // Act
+    const rendered = formatCapacity(capacity);
+
+    // Assert
+    assert.ok(rendered.includes(`capacity unavailable (ordinary: ${reason}).`), rendered);
+    assert.match(rendered, remedies[reason]);
+    assert.doesNotMatch(rendered, /Restore a complete resource inventory/);
+  }
+});
+
+test('status names a foreign journal events entry and its manual remedy', () => {
+  // Arrange
+  const backend = new FakeBackend();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider: new FakeProvider(), instructionsSha256: instructionHash,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  const remedy = 'an entry the runtime does not own sits in journal/events; move it out by hand, since the runtime never deletes it, then restart chat or run repair.';
+
+  // Act
+  Object.assign(backend.status, { freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalForeignEntry' } });
+  const foreign = formatStatus(host.status);
+  Object.assign(backend.status, { freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalUnavailable' } });
+  const generic = formatStatus(host.status);
+
+  // Assert
+  assert.ok(foreign.includes(remedy), foreign);
+  assert.equal(generic.includes('journal/events'), false);
 });
 
 test('capacity readout keeps fixed slot order and labels each unknown obligation', () => {

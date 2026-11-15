@@ -3,7 +3,7 @@ import { capacityTransitions, firstCapacityRefusal, RuntimeCapacityError, type C
 import { Deadline, DeadlineExceededError } from '../deadline.ts';
 import type { CoreResult, PublishReceipt } from '../core-client.ts';
 import { hasCurrentAcceptance } from '../journal-records.ts';
-import { SentMarkPublicationError, type JournalEvent, type JournalSnapshot } from '../journal.ts';
+import { journalFailureReason, SentMarkPublicationError, type JournalEvent, type JournalSnapshot } from '../journal.ts';
 import { isObject, stringifyJson, utcNow } from '../json.ts';
 import { effectivelyUnfinished } from '../operation-records.ts';
 import { operationallyCurrent } from '../operational.ts';
@@ -148,7 +148,7 @@ export class DeliveryCoordinator {
     try { journal = await k.drain(gate); }
     catch (error) {
       capacityFailure = k.resources.captureFailure(error) ?? capacityFailure;
-      k.diagnose('interactionDrain', error); failure ??= { class: 'journal', reason: error instanceof DeadlineExceededError ? 'settlementPending' : 'journalUnavailable' };
+      k.diagnose('interactionDrain', error); failure ??= { class: 'journal', reason: error instanceof DeadlineExceededError ? 'settlementPending' : journalFailureReason(error) };
     }
     if (journal === null) { try { journal = await k.journal.read(gate); } catch { /* No state authority is substituted. */ } }
     // The settlement gate is now closed. Read-only safety admission for a frozen

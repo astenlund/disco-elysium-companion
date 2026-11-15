@@ -11,8 +11,20 @@ export function credentialSourceLabel(source: string | null): string {
   return source;
 }
 
+function foreignEntryRemedy(directory: string): string {
+  return `An entry the runtime does not own sits in ${directory}; move it out by hand, since the runtime never deletes it, and recheck.`;
+}
+
 const capacityRestore: Readonly<Record<CapacityReason, string>> = {
   inventory: 'Restore a complete resource inventory and recheck.',
+  workspaceResidue: 'Publication residue remains in the runtime data; exit chat and restart chat or run repair so its guarded cleanup runs. Residue that cleanup does not recognize stays; move it out by hand, since the runtime never deletes it.',
+  foreignEntryScopeRoot: foreignEntryRemedy('the runtime data folder'),
+  foreignEntryJournal: foreignEntryRemedy('journal'),
+  foreignEntryJournalEvents: foreignEntryRemedy('journal/events'),
+  foreignEntryOperations: foreignEntryRemedy('operations'),
+  foreignEntryQuarantine: foreignEntryRemedy('quarantine'),
+  inventoryUnreadable: 'An owned runtime file could not be read; restore its readability, for example by closing a program holding it, and recheck.',
+  helperUnavailable: 'The native helper could not answer; exit chat and run status to check the helper, then restart chat or run repair.',
   documentInventory: 'Restore a complete document inventory and recheck.',
   additions: 'Restore the prospective addition inventory and recheck.',
   recoveryAuthority: 'Restore recovery authority and recheck.',
@@ -68,7 +80,9 @@ export function formatStatus(status: HostStatus): string {
   // A live repairFailed fault means an unfinished repair that resumes only at the next chat or repair start.
   const repairRemedy = status.journal.fault === 'repairFailed' ? ` State validation waits for an unfinished repair. ${restartRemedy}` : '';
   const safetyRemedy = status.provider.safetyRefusal === null ? '' : ` ${formatSafetyRefusal(status.provider.safetyRefusal)}`;
-  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}${safetyRemedy}`;
+  const journalRemedy = status.freshness.state === 'failed' && status.freshness.class === 'journal' && status.freshness.reason === 'journalForeignEntry'
+    ? ' The journal is unavailable: an entry the runtime does not own sits in journal/events; move it out by hand, since the runtime never deletes it, then restart chat or run repair.' : '';
+  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}${journalRemedy}${safetyRemedy}`;
 }
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean; readonly onAttached?: () => void }
