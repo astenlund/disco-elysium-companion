@@ -4,6 +4,7 @@ package inventory
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,8 +20,39 @@ import (
 	"companion-helper/internal/nativefs"
 )
 
-// ErrUnavailable is the single failure class of every inventory mode.
+// ErrUnavailable is the failure class of every inventory mode; every category below wraps it.
 var ErrUnavailable = errors.New("resource authority unavailable")
+
+// ErrUnreadable marks an owned entry whose bytes could not be read, or not read stably, during a scan.
+var ErrUnreadable = fmt.Errorf("%w: owned entry unreadable", ErrUnavailable)
+
+// Owned-directory labels of a foreign entry. They name the directory only, never the entry, so no path leaves the helper.
+const (
+	ScopeRoot     = "scopeRoot"
+	Journal       = "journal"
+	JournalEvents = "journalEvents"
+	Operations    = "operations"
+	Quarantine    = "quarantine"
+)
+
+// ForeignEntryError marks an entry the runtime does not own inside one of its owned directories. Directory is one of the
+// owned-directory labels above.
+type ForeignEntryError struct{ Directory string }
+
+func (e *ForeignEntryError) Error() string { return "foreign entry in owned directory " + e.Directory }
+
+func (e *ForeignEntryError) Unwrap() error { return ErrUnavailable }
+
+var directoryLabels = map[string]string{"": ScopeRoot, "journal/": Journal, "journal/events/": JournalEvents, "operations/": Operations, "quarantine/": Quarantine}
+
+// foreignEntry reports an unowned entry found while walking the owned directory named by prefix.
+func foreignEntry(prefix string) error {
+	label, ok := directoryLabels[prefix]
+	if !ok {
+		return ErrUnavailable
+	}
+	return &ForeignEntryError{Directory: label}
+}
 
 const quarantineFileLimit = 256
 
@@ -64,11 +96,11 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string, gate 
 			eventFile := relative != "journal/recovery-event.json"
 			valid, err := inspectEvent(file.path, eventFile)
 			if err != nil {
-				return ErrUnavailable
+				return err
 			}
 			if valid == nil {
 				if _, err := nativefs.ObserveRaw(file.path, 30*time.Second); err != nil {
-					return ErrUnavailable
+					return ErrUnreadable
 				}
 				invalidEvents++
 				if eventFile {
@@ -96,11 +128,11 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string, gate 
 		}
 		if strings.HasPrefix(relative, "operations/") {
 			if !operationName.MatchString(filepath.Base(file.path)) {
-				return ErrUnavailable
+				return foreignEntry("operations/")
 			}
 			result, err := inspectOperation(file.path)
 			if err != nil {
-				return ErrUnavailable
+				return ErrUnreadable
 			}
 			switch result.state {
 			case operationUnfinished:
@@ -110,7 +142,7 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string, gate 
 			}
 			if result.invalid {
 				if _, err := nativefs.ObserveRaw(file.path, 30*time.Second); err != nil {
-					return ErrUnavailable
+					return ErrUnreadable
 				}
 				invalidOperations++
 			}
@@ -150,21 +182,21 @@ func Read(root, scopeSha256 string, markerOnly bool, companionRoot string, gate 
 }
 
 // inspectEvent returns the event description when the file is a valid event in its position, nil when it is invalid
-// content, and an error when it cannot be read.
+// content, ErrUnreadable when it cannot be read and ErrUnavailable when its inspection cannot complete.
 func inspectEvent(path string, eventFile bool) (*j.Value, error) {
 	data, err := nativefs.ReadBounded(path, j.StateEvent.Bytes)
 	if errors.Is(err, nativefs.ErrTooLarge) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, ErrUnreadable
 	}
 	description, err := events.InspectFrozen(data, false, 0)
 	if err != nil {
 		if errors.Is(err, j.ErrInvalid) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, ErrUnavailable
 	}
 	value, err := j.Parse(description, j.StateEvent)
 	if err != nil {
@@ -332,7 +364,7 @@ func visitEntry(directory nativefs.Admission, prefix, name string, markerOnly bo
 			return nil
 		}
 		if !allowedDirectories[relative] {
-			return ErrUnavailable
+			return foreignEntry(prefix)
 		}
 		return walk(admitted, relative+"/", false, gate, visit)
 	case markerOnly:
@@ -343,7 +375,7 @@ func visitEntry(directory nativefs.Admission, prefix, name string, markerOnly bo
 	default:
 		if !fixedFiles[relative] && !temporaryName.MatchString(relative) && !strings.HasPrefix(relative, "journal/events/") &&
 			!strings.HasPrefix(relative, "operations/") && !strings.HasPrefix(relative, "quarantine/") {
-			return ErrUnavailable
+			return foreignEntry(prefix)
 		}
 		return visit(entry{path, relative})
 	}

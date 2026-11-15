@@ -210,9 +210,28 @@ func resourceInventory(c *call, request *j.Value) ([]byte, string) {
 		return nil, code
 	}
 	if err != nil {
-		return nil, failure(err, code)
+		return nil, inventoryFailure(err, code)
 	}
 	return result, ""
+}
+
+var foreignEntryCodes = map[string]string{
+	inventory.ScopeRoot: "foreignEntryScopeRoot", inventory.Journal: "foreignEntryJournal", inventory.JournalEvents: "foreignEntryJournalEvents",
+	inventory.Operations: "foreignEntryOperations", inventory.Quarantine: "foreignEntryQuarantine",
+}
+
+// inventoryFailure names an inventory failure's category in its code: a foreign entry by its owned directory's label, an
+// unreadable owned entry, or otherwise the generic code. The code carries no path or entry name.
+func inventoryFailure(err error, code string) string {
+	if foreign, ok := errors.AsType[*inventory.ForeignEntryError](err); ok {
+		if named, ok := foreignEntryCodes[foreign.Directory]; ok {
+			return named
+		}
+	}
+	if errors.Is(err, inventory.ErrUnreadable) {
+		return "inventoryUnreadable"
+	}
+	return failure(err, code)
 }
 
 func eventMetadata(c *call, request *j.Value) ([]byte, string) {

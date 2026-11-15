@@ -12,8 +12,8 @@
   },
   "helper": {
     "file": "companion-helper.exe",
-    "bytes": 4668928,
-    "sha256": "0cdf981bd145e68cf4d3bff21eef23ee822bbb494dc162da4563314c9e058f34",
+    "bytes": 4677120,
+    "sha256": "3401ea6a7bd5848df57b067fa661eb6cbed174828e03d67d2c548290b914a1aa",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -108,8 +108,12 @@
         "sha256": "f79c8e2ca9fdbd611dcdd4870a4ec178fe1d995c4b009ea75f2a9b4d44400fd1"
       },
       {
+        "path": "runtime/native/helper/internal/inventory/categories_test.go",
+        "sha256": "059f2c159080171ce1bd8d4fabb3e2f59e220e053f5e236dbebb6f07fe5fe8b9"
+      },
+      {
         "path": "runtime/native/helper/internal/inventory/inventory.go",
-        "sha256": "647e5e04683790c0d41bbc373059ed0bc9736f89316558f7207032c19b61fe5d"
+        "sha256": "d5df62d71c08cf3839f1572fdf072936cf65b1d69d22a2877b1f62be697c6055"
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory_test.go",
@@ -209,7 +213,11 @@
       },
       {
         "path": "runtime/native/helper/internal/service/handlers.go",
-        "sha256": "4edb6376343c4c396dddc2292845d42f4fb2283242488999f03e1bccdc4357cd"
+        "sha256": "cec17ad2ddabfdceed4aacf3d6551c91825800af8d08c25a0caa0d9bb770488d"
+      },
+      {
+        "path": "runtime/native/helper/internal/service/inventory_failure_test.go",
+        "sha256": "6b7e45fb1fab3ff1a11c47dd38d8162efb9dab8b3ef9eafae343146ddb1d9a9f"
       },
       {
         "path": "runtime/native/helper/internal/service/service.go",
