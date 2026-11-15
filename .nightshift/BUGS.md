@@ -59,7 +59,7 @@ These user-tracked findings came from Nightshift run 4c9ec3e7-cbd5-4d5e-a544-7be
 
 ### Live probe 06 cannot build its warning sink
 
-`core/tests/Test-Section11LiveProbes.ps1 -Only Section11-06` fails with "The term 'New-CompanionWarningSink' is not recognized" where the probe builds a Walk warning sink before calling `Invoke-WorkFileReaper`, and it failed identically at commit 0d6e1e48040f49a2064c4ada901da3ceb25f06e6 (observed 2026-11-15), so the probe's reaper check has no passing run. The cause is not established: `DigestDiff.psm1` exports the function, and a later `Import-Module` in the harness (of `TestSupport.psm1` or `Section11LiveProbeSupport.psm1`) may hide it, which was not checked. Find why the command is unresolved in the probe's scope, fix it, then run probe 06 against a real save.
+`core/tests/Test-Section11LiveProbes.ps1 -Only Section11-06` fails with "The term 'New-CompanionWarningSink' is not recognized" where the probe builds a Walk warning sink before calling `Invoke-WorkFileReaper`, and it failed identically at commit 0d6e1e48040f49a2064c4ada901da3ceb25f06e6 (observed 2026-11-15), so the probe's reaper check has no passing run. The cause is not established: `DigestDiff.psm1` exports the function, and `Section11LiveProbeSupport.psm1`, which the harness imports last, re-imports `DigestDiff.psm1` with `-Force` from inside its own module, which may hide the harness's import; that was not checked. Find why the command is unresolved in the probe's scope, fix it, then rerun `-Only Section11-06`, which needs no save.
 
 **Requires:** none.
 
