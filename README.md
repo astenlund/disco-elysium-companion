@@ -75,7 +75,7 @@ Only one of the two may consume state at a time. A marker in `state/` records th
 - For the runtime, exactly Go `go1.26.0` on `PATH` whenever it must build its native helper: on the first `chat`, `consumer` or `repair` after a clone, when the built image fails its pin or cannot be read for a reason other than a sharing violation, and for the runtime tests. A launch that finds the pinned image already built runs no Go.
 - Node 22.23 or later for the runtime.
 - A Disco Elysium installation. `adapters/disco_elysium/adapter.json` currently carries the author's absolute save path; the setup section above says how to change it.
-- A companion folder path short enough for the adapter's tools to start: at most 172 characters for the current Disco Elysium release, on both routes. A longer path is refused with the config reason `companion-root-too-long`; [the runtime startup guide](runtime/STARTUP.md) explains the derivation.
+- A companion folder path short enough for the adapter's tools to start: at most 172 characters for the current Disco Elysium release, on both routes. A longer path is refused before any acquisition; [the runtime startup guide](runtime/STARTUP.md) describes the refusals and the derivation.
 - For the agent CLI route, a Claude Code or Codex login. For the runtime, a Claude Code login or API credentials; it uses the default Claude Code profile.
 
 ## Running the tests
