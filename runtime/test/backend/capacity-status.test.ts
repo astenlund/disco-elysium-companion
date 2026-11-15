@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CapacityObservation, capacitySlot, capacityTransitions, initialCapacity, isCapacityBlocked, RuntimeCapacityError } from '../../src/capacity.ts';
-import { DataRootUnavailableError, NativeOperationError } from '../../src/admission.ts';
+import { DataRootUnavailableError, NativeOperationError, PathInspector } from '../../src/admission.ts';
+import { HelperRequestFailedError } from '../../src/native-helper.ts';
 import { ResourceAuthority, type ResourceObservation } from '../../src/resource-lifecycle/resources.ts';
 import { Kernel, type KernelInput } from '../../src/backend/kernel.ts';
 import { CoordinatorBackend, finishFailedStart, phaseFatalError } from '../../src/backend/index.ts';
@@ -49,6 +50,22 @@ describe('inventory failure categories in the capacity refusal', () => {
       const resources = new ResourceAuthority(scope, inspector as never, {} as never);
       await assert.rejects(assess(resources, 'ordinary'), error => error instanceof RuntimeCapacityError && error.state === 'unavailable' && error.dimensions.join() === reason);
       assert.deepEqual(resources.capacity.current.ordinary, { state: 'unavailable', reason, dimensions: [] });
+    });
+  }
+
+  for (const [name, failure] of [['fails its request', new HelperRequestFailedError('fault', 'Fixture service fault.')], ['cannot start', new NativeHelperUnavailableError('serviceStart')]] as const) {
+    it(`refuses an ordinary transition whose helper ${name} as helperUnavailable through the real inspector`, async () => {
+      // Arrange
+      const { scope } = fixture().kernel;
+      const inspector = new PathInspector({ nativeHelper: { request: async () => { throw failure; } } } as never);
+      const resources = new ResourceAuthority(scope, inspector, {} as never);
+
+      // Act
+      const refused = assess(resources, 'ordinary');
+
+      // Assert
+      await assert.rejects(refused, error => error instanceof RuntimeCapacityError && error.state === 'unavailable' && error.dimensions.join() === 'helperUnavailable');
+      assert.deepEqual(resources.capacity.current.ordinary, { state: 'unavailable', reason: 'helperUnavailable', dimensions: [] });
     });
   }
 
