@@ -27,6 +27,22 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 (The reputation-mapping observability entry was resolved 2026-08-12 via the documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md) remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value clauses it names are spec-deferred, not open bugs.)
 
+## Inventory failure category follow-ups
+
+These user-tracked findings came from Nightshift run f424ec69-4a55-4373-86b5-17ada698c9e4. Each linked record preserves its evidence; tracking does not authorize a fix.
+
+### [Foreign quarantine entry fails maintenance opaquely](bugs/runtime-quarantine-foreign-file.md)
+
+A quarantine file outside the quarantined-file name grammar passes the inventory, then fails every maintenance pass's quarantine trim with no named cause; naming it needs a user decision between a new refusal and a diagnostic surface.
+
+**Requires:** none.
+
+### [Operator commands omit the journal foreign entry remedy](bugs/runtime-operator-journal-foreign-entry.md)
+
+With a stray file in journal/events, repair shows the cause only as a code and consumer bridge fails as runtimeUnavailable, while only chat shows the remedy; its sentence is also duplicated in text-client.ts.
+
+**Requires:** none.
+
 ## Startup prototype deferred bugs
 
 These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
