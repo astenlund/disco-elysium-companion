@@ -11,6 +11,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 $coreRoot = Split-Path $PSScriptRoot -Parent
 Import-Module (Join-Path $coreRoot 'DigestDiff.psm1') -Force
 
@@ -353,3 +355,10 @@ Assert-Equal -Expected 'find-span: [config]' -Actual $staged.StdErr.Trim() -Mess
 Assert-TreeFingerprintEqual -Expected $stateBefore -Actual $stateAfter -Message 'The staged walk does not create or modify state.'
 
 Write-Output 'PASS: walk'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

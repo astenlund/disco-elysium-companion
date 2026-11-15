@@ -21,11 +21,8 @@ Import-Module $fencePath -Force
 
 $token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 $failureText = '[maintenance] state extraction maintenance is active'
-$scratchRoots = [System.Collections.Generic.List[string]]::new()
-
 function New-FenceFixture {
     $root = New-ScratchCompanionRoot -Prefix 'entry-fence'
-    $scratchRoots.Add($root)
     [void] [System.IO.Directory]::CreateDirectory((Join-Path $root '.tmp'))
 
     return $root
@@ -138,10 +135,7 @@ function Open-ExclusiveFence {
 }
 
 function New-TestInfrastructureRoot {
-    $root = New-ScratchCompanionRoot -Prefix 'test-infrastructure'
-    $scratchRoots.Add($root)
-
-    return $root
+    return New-ScratchCompanionRoot -Prefix 'test-infrastructure'
 }
 
 function Invoke-ScratchRootProbe {
@@ -398,10 +392,9 @@ catch {
 
     Write-Output 'PASS: entry fence'
 }
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
 finally {
-    foreach ($root in $scratchRoots) {
-        if (Test-Path -LiteralPath $root) {
-            Remove-Item -LiteralPath $root -Recurse -Force -Confirm:$false
-        }
-    }
+    Complete-ScratchHarness
 }

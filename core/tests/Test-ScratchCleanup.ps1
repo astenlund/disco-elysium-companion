@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Removal', 'ConcurrentSweep', 'StaggeredSweep', IgnoreCase = $false)]
+    [ValidateSet('All', 'Removal', 'HarnessCleanup', 'ConcurrentSweep', 'StaggeredSweep', IgnoreCase = $false)]
     [string] $Only = 'All',
 
     # The concurrent races are timing-dependent, so the stress rounds trade run time for the
@@ -17,6 +17,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 
 $script:TestSupport = Get-Module TestSupport
 $script:ProjectTmp = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.tmp'))
@@ -58,6 +60,26 @@ function Start-ExitedProcess {
     $process.WaitForExit()
 
     return $process
+}
+
+function Test-OwnedScratchRoot {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    return & $script:TestSupport { param($Path) $script:ScratchRoots.Contains($Path) } $Path
+}
+
+function Get-ScratchResidueReports {
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $StdErr)
+
+    return @($StdErr -split '\r?\n' | Where-Object { $_.StartsWith('{"scratchResidue"', [StringComparison]::Ordinal) } | ForEach-Object { ($_ | ConvertFrom-Json).scratchResidue })
+}
+
+# Removes a root a child harness left behind once the child has exited, after checking it is a scratch root directly under .tmp.
+function Remove-ChildScratchRoot {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    Assert-OrdinalEqual -Actual ([IO.Path]::GetDirectoryName($Path)) -Expected $script:ProjectTmp -Message "A child's leftover root lies directly under .tmp ($Path)."
+    if ([IO.Directory]::Exists($Path)) { [IO.Directory]::Delete($Path, $true) }
 }
 
 function Get-ClaimNames {
@@ -208,6 +230,120 @@ if (Test-Selected 'Removal') {
     Assert-False -Condition (Test-Path -LiteralPath $occupied) -Message 'An owned root reported as residue stays owned and can be removed once cleared.'
 }
 
+if (Test-Selected 'HarnessCleanup') {
+    $harnessScratch = New-ScratchCompanionRoot -Prefix 'scratch-harness-cleanup'
+
+    # A named removal attempts every root, keeps a survivor owned and reports it on stderr instead of throwing.
+    $first = New-ScratchCompanionRoot -Prefix 'scratch-path-first'
+    $held = New-ScratchCompanionRoot -Prefix 'scratch-path-held'
+    $last = New-ScratchCompanionRoot -Prefix 'scratch-path-last'
+    New-ScratchTree -Root $first -Directories 1 -FilesPerDirectory 1
+    New-ScratchTree -Root $last -Directories 1 -FilesPerDirectory 1
+    $handle = [IO.File]::Open((Join-Path $held 'held.txt'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $capture = [IO.StringWriter]::new()
+    $originalError = [Console]::Error
+    [Console]::SetError($capture)
+    try {
+        Remove-OwnedScratchRoots -Path $first, $held, $last
+    }
+    finally {
+        [Console]::SetError($originalError)
+        $handle.Dispose()
+    }
+    Assert-False -Condition ([IO.Directory]::Exists($first) -or [IO.Directory]::Exists($last)) -Message 'A named removal removes the roots on either side of a survivor.'
+    Assert-True -Condition ([IO.Directory]::Exists($held)) -Message 'A root held open survives the named removal.'
+    $reports = @(Get-ScratchResidueReports -StdErr $capture.ToString())
+    Assert-Equal -Actual $reports.Count -Expected 1 -Message "Only the survivor is reported ($($capture.ToString().Trim()))."
+    Assert-OrdinalEqual -Actual $reports[0].root -Expected $held -Message 'The report names the surviving root.'
+    Assert-True -Condition (@($reports[0].residue.sample) -ccontains 'held.txt') -Message "The report carries the survivor's residue ($($capture.ToString().Trim()))."
+    Assert-True -Condition (Test-OwnedScratchRoot -Path $held) -Message 'A survivor stays owned.'
+    Assert-False -Condition (Test-OwnedScratchRoot -Path $first) -Message 'A removed root is no longer owned.'
+    Remove-OwnedScratchRoots -Path $held
+    Assert-False -Condition ([IO.Directory]::Exists($held) -or (Test-OwnedScratchRoot -Path $held)) -Message 'A survivor is removed by a later attempt once released.'
+
+    # Naming a root this process did not create throws before any named root is removed.
+    $kept = New-ScratchCompanionRoot -Prefix 'scratch-path-kept'
+    $foreign = Join-Path $harnessScratch 'foreign'
+    [void] [IO.Directory]::CreateDirectory($foreign)
+    Assert-ThrowsType -TypeName 'System.InvalidOperationException' -Action { Remove-OwnedScratchRoots -Path $kept, $foreign }
+    Assert-True -Condition ([IO.Directory]::Exists($kept) -and [IO.Directory]::Exists($foreign)) -Message 'A refused named removal removes nothing.'
+    Remove-OwnedScratchRoots -Path $kept
+
+    # A child harness built on the shared template exits 0 only when its body passed and none of its scratch is left.
+    $childHarness = Join-Path $harnessScratch 'child-harness.ps1'
+    $childScript = @'
+param([Parameter(Mandatory)] [string] $SupportPath, [Parameter(Mandatory)] [string] $Mode)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module $SupportPath -Force
+try {
+    $roots = @(foreach ($name in 'first', 'held', 'last') { New-ScratchCompanionRoot -Prefix "scratch-child-$name" })
+    [IO.File]::WriteAllText((Join-Path $roots[0] 'f.txt'), 'x')
+    [IO.File]::WriteAllText((Join-Path $roots[2] 'f.txt'), 'x')
+    $handle = $null
+    if ($Mode -cne 'Clean') {
+        $handle = [IO.File]::Open((Join-Path $roots[1] 'held.txt'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    }
+    [Console]::Out.WriteLine((ConvertTo-Json -InputObject @($roots) -Compress))
+    if ($Mode -ceq 'Failure') {
+        throw 'injected child body failure'
+    }
+    if ($Mode -ceq 'EarlyExit') {
+        exit 0
+    }
+    Write-Output 'PASS: child harness'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}
+'@
+    [IO.File]::WriteAllText($childHarness, $childScript, $script:Utf8)
+    $supportPath = Join-Path $PSScriptRoot 'TestSupport.psm1'
+    foreach ($mode in 'Clean', 'Residue', 'Failure', 'EarlyExit') {
+        $run = Invoke-BoundedPwsh -Arguments @('-File', $childHarness, '-SupportPath', $supportPath, '-Mode', $mode) -TimeoutMilliseconds 60000
+        $childRoots = @(($run.StdOut -split '\r?\n')[0] | ConvertFrom-Json)
+        try {
+            Assert-Equal -Actual $childRoots.Count -Expected 3 -Message "The $mode child announces its roots (stdout: $($run.StdOut.Trim()); stderr: $($run.StdErr.Trim()))."
+            Assert-False -Condition ([IO.Directory]::Exists($childRoots[0]) -or [IO.Directory]::Exists($childRoots[2])) -Message "The $mode child removes the roots it can."
+            $childReports = @(Get-ScratchResidueReports -StdErr $run.StdErr)
+            if ($mode -ceq 'Clean') {
+                Assert-Equal -Actual $run.ExitCode -Expected 0 -Message "A clean child harness exits 0 (stderr: $($run.StdErr.Trim()))."
+                Assert-False -Condition ([IO.Directory]::Exists($childRoots[1])) -Message 'A clean child harness leaves no scratch.'
+                Assert-Equal -Actual $childReports.Count -Expected 0 -Message 'A clean child harness reports no residue.'
+                continue
+            }
+            Assert-Equal -Actual $run.ExitCode -Expected 1 -Message "A $mode child harness with residue exits 1."
+            Assert-True -Condition ([IO.Directory]::Exists($childRoots[1])) -Message "The $mode child's held root survives."
+            Assert-Equal -Actual $childReports.Count -Expected 1 -Message "The $mode child reports its one survivor ($($run.StdErr.Trim()))."
+            Assert-OrdinalEqual -Actual $childReports[0].root -Expected $childRoots[1] -Message "The $mode child's report names the held root."
+            Assert-True -Condition $run.StdErr.Contains('FAIL: 1 scratch root(s) survived removal', [StringComparison]::Ordinal) -Message "The $mode child names its residue failure ($($run.StdErr.Trim()))."
+            if ($mode -ceq 'Residue') {
+                Assert-True -Condition $run.StdOut.Contains('PASS: child harness', [StringComparison]::Ordinal) -Message 'Residue fails a child harness whose body passed.'
+            }
+            if ($mode -ceq 'Failure') {
+                Assert-True -Condition $run.StdErr.Contains('injected child body failure', [StringComparison]::Ordinal) -Message "A body failure stays visible beside the residue report ($($run.StdErr.Trim()))."
+            }
+        }
+        finally {
+            foreach ($childRoot in $childRoots) { Remove-ChildScratchRoot -Path $childRoot }
+        }
+    }
+
+    # The fixture host removes a root whose staging failed before it announced the root.
+    $fixtureHost = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../runtime/test/fixtures/companion-root.ps1'))
+    $fixtureChild = Start-BoundedPwsh -Arguments @('-File', $fixtureHost, '-StagingFault')
+    $fixtureId = $fixtureChild.Process.Id
+    $fixtureRun = Complete-BoundedPwsh -Child $fixtureChild -TimeoutMilliseconds 60000
+    Assert-True -Condition ($fixtureRun.ExitCode -ne 0) -Message 'A fixture host whose staging fails exits nonzero.'
+    Assert-True -Condition $fixtureRun.StdErr.Contains('Injected fixture staging fault', [StringComparison]::Ordinal) -Message "The staging failure reaches stderr ($($fixtureRun.StdErr.Trim()))."
+    Assert-OrdinalEqual -Actual $fixtureRun.StdOut.Trim() -Expected '' -Message 'A fixture host whose staging fails announces no root.'
+    $fixtureLeft = @([IO.Directory]::GetDirectories($script:ProjectTmp) | Where-Object { [IO.Path]::GetFileName($_) -match "^runtime-fixture-$fixtureId-[0-9a-f]{32}$" })
+    Assert-Equal -Actual $fixtureLeft.Count -Expected 0 -Message "A fixture host whose staging fails leaves no root ($($fixtureLeft -join ', '))."
+}
+
 if (Test-Selected 'ConcurrentSweep') {
     # Several real sweepers start together against one large dead-process root, the shape
     # the shared helper reaps when parallel harnesses start in the same checkout.
@@ -301,3 +437,10 @@ if (Test-Selected 'StaggeredSweep') {
 }
 
 Write-Output 'PASS: scratch cleanup'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

@@ -4,6 +4,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force -DisableNameChecking
 
 # Arrange
@@ -708,3 +710,10 @@ Assert-ThrowsType -TypeName System.TimeoutException -Action {
 }
 
 Write-Output 'PASS: validated turn context'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

@@ -11,6 +11,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force
 
 function New-StagedGetDiffFixture {
@@ -805,3 +807,10 @@ Assert-Equal -Actual $advisoryInfra.ExitCode -Expected 1 -Message 'Validator inf
 Assert-True -Condition $advisoryInfra.StdErr.Contains('[compute] adapter-validator-infrastructure-failed', [StringComparison]::Ordinal) -Message 'The advisory validator-infrastructure read maps to compute with the registry reason.'
 
 Write-Output 'PASS: consumption'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

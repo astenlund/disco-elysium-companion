@@ -11,6 +11,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force
 
 # Test-only factory injected into the module scope (where the WatcherRuntimeServices
@@ -738,3 +740,10 @@ if ($Only -eq 'AcquisitionDomainIsolation') {
 }
 
 Write-Output 'PASS: watcher'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

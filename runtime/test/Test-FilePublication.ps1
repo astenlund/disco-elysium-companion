@@ -6,6 +6,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 Import-Module (Join-Path $repoRoot 'core/tests/TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 $nativeSources = @('NativeFiles.cs', 'JsonDocuments.cs', 'RuntimeFilePublication.cs') | ForEach-Object { Join-Path $repoRoot "runtime/scripts/$_" }
 Add-Type -Path $nativeSources
 $fixture = New-ScratchCompanionRoot -Prefix 'runtime-publication'
@@ -79,3 +81,10 @@ foreach ($invalid in @('{}', '<companion-turn-context>{"x":1,"x":2}</companion-t
     Assert-False -Condition ([IO.File]::Exists($preparedPath)) -Message 'invalid prepared bytes create no artifact'
 }
 Write-Output 'PASS: runtime file publication'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

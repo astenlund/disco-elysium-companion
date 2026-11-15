@@ -11,6 +11,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force -DisableNameChecking
 
 $script:Principal = 'S-1-5-21-1000-1001-1002-1003'
@@ -1916,3 +1918,10 @@ if (Test-Selected 'ReceiptFailure') {
 }
 
 Write-Output 'PASS: state events'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

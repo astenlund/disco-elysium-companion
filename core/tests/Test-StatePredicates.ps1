@@ -37,7 +37,7 @@ function Test-CurrentAdmission {
         Assert-Equal -Actual $staleOutcome -Expected 'stale' -Message 'Version-stale current is rejected before full admission.'
     }
     finally {
-        Remove-Item -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-OwnedScratchRoots -Path $root
     }
 }
 
@@ -52,7 +52,7 @@ function Test-StateWriter {
         Assert-Equal -Actual @([IO.Directory]::GetFiles((Split-Path -Parent $statePath), '*.tmp')).Count -Expected 0 -Message 'Writer removes owned temporary files.'
     }
     finally {
-        Remove-Item -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-OwnedScratchRoots -Path $root
     }
 }
 
@@ -75,15 +75,23 @@ function Test-WorkReaper {
         Assert-False -Condition ([IO.File]::Exists($work)) -Message 'Reaper deletes aged unleased work files.'
     }
     finally {
-        Remove-Item -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-OwnedScratchRoots -Path $root
     }
 }
 
-switch ($Only) {
-    'CurrentAdmission' { Test-CurrentAdmission }
-    'StateWriter' { Test-StateWriter }
-    'WorkReaper' { Test-WorkReaper }
-    'All' { Test-CurrentAdmission; Test-StateWriter; Test-WorkReaper }
-}
+try {
+    switch ($Only) {
+        'CurrentAdmission' { Test-CurrentAdmission }
+        'StateWriter' { Test-StateWriter }
+        'WorkReaper' { Test-WorkReaper }
+        'All' { Test-CurrentAdmission; Test-StateWriter; Test-WorkReaper }
+    }
 
-Write-Output 'PASS: state predicate'
+    Write-Output 'PASS: state predicate'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

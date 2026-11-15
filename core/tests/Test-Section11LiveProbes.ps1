@@ -162,9 +162,7 @@ function Test-Section11-01 {
         Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PASS'
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -187,9 +185,7 @@ function Test-Section11-02 {
         Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PASS'
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -262,9 +258,7 @@ function Test-Section11-06 {
         Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PASS'
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -297,9 +291,7 @@ function Test-Section11-07 {
         Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PASS'
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -330,9 +322,7 @@ function Test-Section11-29 {
         Write-Output 'STATE_EXTRACTION_ASSERTION_RESULT PASS'
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -346,9 +336,7 @@ function Invoke-Section11SaveSessionObservation {
         return Invoke-Section11LiveSaveMonitor -SaveDirectory (Get-RealSaveDirectory) -SaveGlob '*.ntwtf.zip' -ScratchRoot $probeRoot -SessionStartedAtUtc $game.StartTime.ToUniversalTime() -CloudSyncEnabled -TimeoutSeconds $ObservationTimeoutSeconds
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -448,9 +436,7 @@ function Test-Section11-60 {
         Assert-True -Condition ($LASTEXITCODE -eq 0) -Message 'the live one-shot cycle must exit 0; a fenced or failed cycle cannot witness the read-only guarantee.'
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 
     $after = @{}
@@ -499,9 +485,7 @@ function Test-Section11-72 {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 
     $mtimesAfter = @{}
@@ -531,13 +515,21 @@ $tests = [ordered]@{
     'Section11-60' = ${function:Test-Section11-60}
     'Section11-72' = ${function:Test-Section11-72}
 }
-if ($Only -eq 'All') {
-    foreach ($entry in $tests.GetEnumerator()) {
-        if ($entry.Key -notin @('Section11-56', 'Section11-56-59', 'Section11-59')) {
-            & $entry.Value
+try {
+    if ($Only -eq 'All') {
+        foreach ($entry in $tests.GetEnumerator()) {
+            if ($entry.Key -notin @('Section11-56', 'Section11-56-59', 'Section11-59')) {
+                & $entry.Value
+            }
         }
     }
-}
-else { & $tests[$Only] }
+    else { & $tests[$Only] }
 
-Write-Output 'PASS: section 11 live probes'
+    Write-Output 'PASS: section 11 live probes'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

@@ -6,7 +6,6 @@ $ErrorActionPreference = 'Stop'
 $script:ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $script:ProjectTmpRoot = Join-Path $script:ProjectRoot '.tmp'
 $script:ScratchRoots = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-$script:CleanupRegistered = $false
 $script:StaleScratchSwept = $false
 $script:ScratchRemovalAttempts = 3
 $script:ScratchResidueSampleLimit = 16
@@ -458,39 +457,9 @@ function New-StubAdapterCommandConfig {
     }
 }
 
-function Register-ScratchCleanup {
-    if ($script:CleanupRegistered) {
-        return
-    }
-
-    Assert-ScratchBoundarySafe
-    $cleanupContext = [pscustomobject]@{
-        ProjectRoot = $script:ProjectRoot
-        TemporaryRoot = $script:ProjectTmpRoot
-        ScratchRoots = $script:ScratchRoots
-    }
-    $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -SupportEvent -MessageData $cleanupContext -Action {
-        $projectRootItem = Get-Item -LiteralPath $event.MessageData.ProjectRoot -Force -ErrorAction SilentlyContinue
-        $temporaryRootItem = Get-Item -LiteralPath $event.MessageData.TemporaryRoot -Force -ErrorAction SilentlyContinue
-        if ($null -eq $projectRootItem -or $null -eq $temporaryRootItem -or
-            ($projectRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
-            ($temporaryRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            return
-        }
-        foreach ($root in $event.MessageData.ScratchRoots) {
-            $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
-            if ($null -ne $rootItem -and ($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0 -and
-                [string]::Equals([System.IO.Directory]::GetParent($rootItem.FullName).FullName, $event.MessageData.TemporaryRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $root -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
-            }
-        }
-    }
-    $script:CleanupRegistered = $true
-}
-
 function Clear-StaleScratchRoots {
-    # Crash-killed harnesses never reach Register-EngineEvent cleanup; their scratch
-    # roots accumulate under .tmp forever. A harness that creates new scratch reaps
+    # A harness killed before its Complete-ScratchHarness ran, or one whose roots survived
+    # it, leaves them under .tmp, where they would accumulate forever. A harness that creates new scratch reaps
     # its predecessors here: only directories matching the exact scratch shape
     # <prefix>-<pid>-<32hex> whose embedded process id is no longer alive, directly
     # beneath the project .tmp, non-reparse. A live PID is never touched (the creator
@@ -631,10 +600,9 @@ function Get-ScratchResidue {
     return [ordered]@{ kind = 'directory'; remaining = $remaining; sample = @($sample); listing = 'complete' }
 }
 
-# Removes a scratch root this process created, for a harness that must know the root is gone
-# instead of leaving it to the exit handler, whose removal is silent. A root that survives the
-# bounded attempts surfaces as an IOException whose Data['ScratchResidue'] holds its residue.
-# -Remove exists for tests.
+# Removes a scratch root this process created and throws unless it is gone. A root that survives
+# the bounded attempts surfaces as an IOException whose Data['ScratchResidue'] holds its residue,
+# and stays owned so a later removal can retry it. -Remove exists for tests.
 function Remove-ScratchCompanionRoot {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -658,6 +626,54 @@ function Remove-ScratchCompanionRoot {
         throw $failure
     }
     [void] $script:ScratchRoots.Remove($root)
+}
+
+# Removes the named scratch roots this process created, or every one when -Path is absent, and
+# keeps going past a root that survives, so each root gets its attempt. A survivor stays owned and
+# its failure goes to stderr as one scratchResidue JSON line rather than being thrown, because this
+# runs in finally blocks where a throw would replace the failure already unwinding. Complete-ScratchHarness
+# then fails the harness for every root still owned. Naming a root this process did not create is a
+# caller error and throws before anything is removed.
+function Remove-OwnedScratchRoots {
+    param([Parameter()] [string[]] $Path)
+
+    $targets = if ($PSBoundParameters.ContainsKey('Path')) { @($Path | ForEach-Object { [System.IO.Path]::GetFullPath($_) }) } else { @($script:ScratchRoots) }
+    foreach ($root in $targets) {
+        if (-not $script:ScratchRoots.Contains($root)) {
+            throw [System.InvalidOperationException]::new("Only a scratch root this process created can be removed explicitly: $root")
+        }
+    }
+
+    foreach ($root in $targets) {
+        try {
+            Remove-ScratchCompanionRoot -Path $root
+        }
+        catch {
+            $report = [ordered]@{ root = $root; error = $_.Exception.Message; residue = $_.Exception.Data['ScratchResidue'] }
+            [Console]::Error.WriteLine((ConvertTo-Json -InputObject ([ordered]@{ scratchResidue = $report }) -Depth 4 -Compress))
+        }
+    }
+}
+
+# A harness's top-level finally: removes every scratch root this process still owns and, when any
+# survives, exits 1 after naming them, overriding the exit code the harness was leaving with. The
+# harness's catch has already reported a failure, so overriding hides nothing. A harness exits 0
+# only when its body succeeded and none of its scratch is left.
+function Complete-ScratchHarness {
+    Remove-OwnedScratchRoots
+    if ($script:ScratchRoots.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: $($script:ScratchRoots.Count) scratch root(s) survived removal: $([string]::Join(', ', $script:ScratchRoots))")
+        exit 1
+    }
+}
+
+# A harness's top-level catch: writes the failure as the host would have and exits 1. Catching it
+# here, rather than letting it unwind, keeps it visible when Complete-ScratchHarness then exits on residue.
+function Exit-HarnessFailure {
+    param([Parameter(Mandatory)] [System.Management.Automation.ErrorRecord] $ErrorRecord)
+
+    [Console]::Error.WriteLine(($ErrorRecord | Out-String).TrimEnd())
+    exit 1
 }
 
 # What stands at a scratch tree's path: 'gone' only on a not-found error, 'directory' for an
@@ -699,7 +715,6 @@ function New-ScratchCompanionRoot {
         throw [System.InvalidOperationException]::new('Scratch companion root escaped project .tmp.')
     }
 
-    Register-ScratchCleanup
     Assert-ScratchBoundarySafe
     [void] [System.IO.Directory]::CreateDirectory($scratchRoot)
     [void] $script:ScratchRoots.Add($scratchRoot)
@@ -923,4 +938,4 @@ function New-StagedRuntimeContextRoot {
     return [pscustomobject]@{ Root = $root; ScopeSha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($scopeBytes)); SafetySha256 = [Convert]::ToHexStringLower([Security.Cryptography.SHA256]::HashData($safetyBytes)) }
 }
 
-Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Remove-ScratchCompanionRoot, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample
+Export-ModuleMember -Function Assert-True, Assert-False, Assert-Equal, Assert-OrdinalEqual, Assert-ThrowsType, Invoke-BoundedPwsh, Invoke-BoundedPwshBytes, Start-BoundedPwsh, Complete-BoundedPwsh, Stop-BoundedPwsh, Wait-TestSentinel, Copy-CompanionCoreTree, Add-StagedCoreOverride, Add-StagedCoreFault, Install-StubAdapterRelease, New-StubAdapterCommandConfig, New-StagedStubAcquisitionRoot, New-StagedStateEventRoot, New-StagedRuntimeContextRoot, New-StagedRuntimeCoordinatorRoot, New-ScratchCompanionRoot, Remove-ScratchCompanionRoot, Remove-OwnedScratchRoots, Complete-ScratchHarness, Exit-HarnessFailure, Get-TreeFingerprint, Assert-TreeFingerprintEqual, Invoke-InCompanionModule, New-AdapterFixtureTree, New-ConsumePrivateSuccess, New-RuntimePayloadSample, New-RuntimeAcceptedPayloadSample

@@ -849,9 +849,17 @@ $tests = [ordered]@{
     ResolutionReasons = ${function:Test-ResolutionReasonsAcrossEntryPoints}; SaveCandidates = ${function:Test-SaveCandidatesUseOrdinalTieBreakAndEmptyArray}; FileWriteStable = ${function:Test-FileWriteStableReturnsAfterMatchingSamples}; FileWriteStableUnstable = ${function:Test-FileWriteStableRejectsMismatchingSamples}; FileWriteStableCancellation = ${function:Test-FileWriteStableCancellationReturnsFalse}; FileWriteStableClassification = ${function:Test-FileWriteStableClassifiesSamplingFailures}; MissingSource = ${function:Test-SaveDigestClassifiesMissingSourceAsVanished}; CopyFidelitySizeLimit = ${function:Test-SaveDigestClassifiesSizeLimitAsUnreadableCopyFailure}; CopyFidelityReasons = ${function:Test-CycleMapsCopyFailureReasonsToDispositionAndRetryable}; AdapterFailureReason = ${function:Test-AdapterCommandFailureReasonClassifiesExitAndMissingOutput}; OutcomeClosure = ${function:Test-CycleOutcomeRejectsIllegalCombinations}; OutcomeFreeze = ${function:Test-CycleOutcomeFreezesWarningsAfterResultDisposal}; StagedOneShot = ${function:Test-StagedOneShotKeepsPreCycleOrdering}; ScratchDefault = ${function:Test-StagedOneShotUsesScratchDefaultRootAndReleasesEntryLeaseAfterConfigFailure}; CopyFailure = ${function:Test-CycleMapsInjectedCopyFailureToRetryableSourceOutcome}; AdapterFailures = ${function:Test-CycleMapsInjectedAdapterStageFailures}; CurrentReadFailure = ${function:Test-CycleMapsInjectedCurrentReadFailureToCommitOutcome}; CurrentWriteFailure = ${function:Test-CycleMapsInjectedCurrentWriteFailureToCommitOutcome}; CacheWriteFailure = ${function:Test-CycleMapsInjectedCacheWriteFailureAfterCommit}; BookkeepingFailure = ${function:Test-CycleMapsInjectedBookkeepingFailureAfterCommit}; GuardDiscard = ${function:Test-GuardDiscardSkipsCacheAndStillWritesBookkeeping}; BaselineFallback = ${function:Test-CycleBaselineFallbackWarningsReachSuccessfulOutcome}; Cancellation = ${function:Test-CycleCancellationProducesNoOrdinaryOutcome}; CheckpointCancellation = ${function:Test-CycleCheckpointCancellationDisposesResultBeforeSignal}; CurrentWriteCancellation = ${function:Test-CancellationAfterAtomicCurrentWritePreservesCurrentAndSkipsDerivedStages}; CheckpointPropagation = ${function:Test-EveryCycleCheckpointPropagatesOnlyCancellationSignal}; SaveCandidatesEnumerationFailure = ${function:Test-SaveCandidatesEnumerationFailure}; PackageMemberRemediation = ${function:Test-PackageMemberRemediation}; CacheClassification = ${function:Test-CycleClassifiesCachePhaseFailures}; DigestInfrastructure = ${function:Test-SaveDigestClassifiesValidatorInfrastructure}
 }
 
-if ($Only -eq 'All') {
-    foreach ($test in $tests.Values) { & $test }
-}
-else { & $tests[$Only] }
+try {
+    if ($Only -eq 'All') {
+        foreach ($test in $tests.Values) { & $test }
+    }
+    else { & $tests[$Only] }
 
-Write-Output 'PASS: Acquisition'
+    Write-Output 'PASS: Acquisition'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

@@ -6,6 +6,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 Import-Module (Join-Path $repoRoot 'core/tests/TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 Add-Type -Path (Join-Path $repoRoot 'runtime/scripts/NativeFiles.cs')
 $fixture = New-ScratchCompanionRoot -Prefix 'runtime-admission'
 $owned = Join-Path $fixture 'owned'
@@ -61,3 +63,10 @@ Assert-True -Condition ($longFile.Length -gt 260) -Message 'fixture reaches the 
 $longAdmission = [Companion.Runtime.NativeFiles]::AdmitWithin($owned, $longFile, $false)
 Assert-True -Condition $longAdmission.Exists -Message 'ordinary long path remains admissible'
 Write-Output 'PASS: native path admission'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

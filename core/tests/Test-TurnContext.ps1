@@ -11,6 +11,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'TestSupport.psm1') -Force
+# The body below is deliberately not indented under this try, so its here-string fixtures keep their bytes.
+try {
 Import-Module (Join-Path $PSScriptRoot '../DigestDiff.psm1') -Force
 
 $detail = Invoke-InCompanionModule { New-TurnContextDetail -Class 'busy' -Reason 'lock-timeout' -Atoms @{ timeoutSeconds = 10 } }
@@ -1625,3 +1627,10 @@ Assert-Equal -Actual $fencedRun.ExitCode -Expected 1 -Message 'A sentinel-fenced
 Assert-OrdinalEqual -Actual $fencedRun.StdErr.Trim() -Expected '[maintenance] state extraction maintenance is active' -Message 'A sentinel-fenced turn-context wrapper emits the fixed maintenance line before any turn-context protocol output.'
 
 Write-Output 'PASS: turn context'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

@@ -317,13 +317,21 @@ $tests = [ordered]@{
     WarmHold = ${function:Test-WatcherWarmHoldAmortizesValidatorImports}
 }
 
-if ($Only -eq 'All') {
-    foreach ($test in $tests.Values) {
-        & $test
+try {
+    if ($Only -eq 'All') {
+        foreach ($test in $tests.Values) {
+            & $test
+        }
     }
-}
-else {
-    & $tests[$Only]
-}
+    else {
+        & $tests[$Only]
+    }
 
-Write-Output 'PASS: Adapter configuration'
+    Write-Output 'PASS: Adapter configuration'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

@@ -254,12 +254,7 @@ function Test-RealArchiveValidationUsesTheStabilityGateBeforeZipOpen {
         Assert-True -Condition $result.ZipValid -Message 'the stable archive copy opens as a ZIP'
     }
     finally {
-        if (Test-Path -LiteralPath $sourceRoot) {
-            Remove-Item -LiteralPath $sourceRoot -Recurse -Force -Confirm:$false
-        }
-        if (Test-Path -LiteralPath $scratchRoot) {
-            Remove-Item -LiteralPath $scratchRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $sourceRoot, $scratchRoot
     }
 }
 
@@ -278,9 +273,7 @@ function Test-LiveArchiveRejectsScratchOverlapWithSource {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -300,9 +293,7 @@ function Test-LiveArchiveRejectsScratchOutsideProjectTmp {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $probeRoot) {
-            Remove-Item -LiteralPath $probeRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $probeRoot
     }
 }
 
@@ -336,12 +327,7 @@ function Test-UnstableArchiveNeverCreatesAValidationCopy {
     }
     finally {
         Stop-BoundedPwsh -Child $writer
-        if (Test-Path -LiteralPath $sourceRoot) {
-            Remove-Item -LiteralPath $sourceRoot -Recurse -Force -Confirm:$false
-        }
-        if (Test-Path -LiteralPath $scratchRoot) {
-            Remove-Item -LiteralPath $scratchRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $sourceRoot, $scratchRoot
     }
 }
 
@@ -373,12 +359,7 @@ function Test-LiveFrameValidatesOnlySessionArchivesAndFingerprintsOlderCandidate
         Assert-True -Condition $sessionRecord.ZipValid -Message 'the session archive copy opens as a ZIP'
     }
     finally {
-        if (Test-Path -LiteralPath $saveRoot) {
-            Remove-Item -LiteralPath $saveRoot -Recurse -Force -Confirm:$false
-        }
-        if (Test-Path -LiteralPath $scratchRoot) {
-            Remove-Item -LiteralPath $scratchRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $saveRoot, $scratchRoot
     }
 }
 
@@ -406,12 +387,7 @@ function Test-LiveFrameOmitsArchiveThatVanishesDuringValidation {
         Assert-Equal -Actual @($frame.Files).Count -Expected 0 -Message 'a save that rotates away during validation is omitted from the frame'
     }
     finally {
-        if (Test-Path -LiteralPath $saveRoot) {
-            Remove-Item -LiteralPath $saveRoot -Recurse -Force -Confirm:$false
-        }
-        if (Test-Path -LiteralPath $scratchRoot) {
-            Remove-Item -LiteralPath $scratchRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $saveRoot, $scratchRoot
     }
 }
 
@@ -439,12 +415,7 @@ function Test-LiveFrameRethrowsUnreadableValidationFailure {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $saveRoot) {
-            Remove-Item -LiteralPath $saveRoot -Recurse -Force -Confirm:$false
-        }
-        if (Test-Path -LiteralPath $scratchRoot) {
-            Remove-Item -LiteralPath $scratchRoot -Recurse -Force -Confirm:$false
-        }
+        Remove-OwnedScratchRoots -Path $saveRoot, $scratchRoot
     }
 }
 
@@ -515,23 +486,31 @@ function Test-LiveMonitorRejectsAnyMatchingCandidateMutation {
     }
 }
 
-Test-FramesCloseBothClaimsWithoutMeaningfulGameChanges
-Test-MatchingCandidateMutationFailsImmutabilityClaim
-Test-StableInvalidArchiveFailsStabilityClaim
-Test-UnstableArchiveCanSettleOnALaterFrame
-Test-UnstableSiblingDoesNotHideAStableRotationEvent
-Test-Claim59RequiresAutosaveAfterMonitorStart
-Test-LaterFrameTimestampControlsLiveAutosaveEvidence
-Test-Claim59RequiresAnOlderCandidateToSurviveALaterSave
-Test-RealArchiveValidationUsesTheStabilityGateBeforeZipOpen
-Test-LiveArchiveRejectsScratchOverlapWithSource
-Test-LiveArchiveRejectsScratchOutsideProjectTmp
-Test-UnstableArchiveNeverCreatesAValidationCopy
-Test-LiveFrameValidatesOnlySessionArchivesAndFingerprintsOlderCandidates
-Test-LiveFrameOmitsArchiveThatVanishesDuringValidation
-Test-LiveFrameRethrowsUnreadableValidationFailure
-Test-LiveMonitorStopsWhenBothClaimsPass
-Test-LiveMonitorRejectsAnyInvalidStableArchive
-Test-LiveMonitorRejectsAnyMatchingCandidateMutation
+try {
+    Test-FramesCloseBothClaimsWithoutMeaningfulGameChanges
+    Test-MatchingCandidateMutationFailsImmutabilityClaim
+    Test-StableInvalidArchiveFailsStabilityClaim
+    Test-UnstableArchiveCanSettleOnALaterFrame
+    Test-UnstableSiblingDoesNotHideAStableRotationEvent
+    Test-Claim59RequiresAutosaveAfterMonitorStart
+    Test-LaterFrameTimestampControlsLiveAutosaveEvidence
+    Test-Claim59RequiresAnOlderCandidateToSurviveALaterSave
+    Test-RealArchiveValidationUsesTheStabilityGateBeforeZipOpen
+    Test-LiveArchiveRejectsScratchOverlapWithSource
+    Test-LiveArchiveRejectsScratchOutsideProjectTmp
+    Test-UnstableArchiveNeverCreatesAValidationCopy
+    Test-LiveFrameValidatesOnlySessionArchivesAndFingerprintsOlderCandidates
+    Test-LiveFrameOmitsArchiveThatVanishesDuringValidation
+    Test-LiveFrameRethrowsUnreadableValidationFailure
+    Test-LiveMonitorStopsWhenBothClaimsPass
+    Test-LiveMonitorRejectsAnyInvalidStableArchive
+    Test-LiveMonitorRejectsAnyMatchingCandidateMutation
 
-Write-Output 'PASS: section 11 live-probe support tests'
+    Write-Output 'PASS: section 11 live-probe support tests'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}
