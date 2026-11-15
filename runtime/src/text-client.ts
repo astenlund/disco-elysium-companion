@@ -38,6 +38,9 @@ const capacityRestore: Readonly<Record<CapacityReason, string>> = {
   codecScope: 'Restore codec-scope authority and recheck.',
   otherAuthority: 'Restore the unavailable authority and recheck.',
 };
+/** The operator remedy for an unavailable capacity slot's reason, shared by the status readout and the command-line refusal. */
+export function capacityRemedy(reason: CapacityReason | null): string { return capacityRestore[reason ?? 'otherAuthority']; }
+
 const owedKeys = ['unacknowledgedEvents', 'pendingOutboxRecords', 'unfinishedOperations', 'protectedHandoffs', 'safetyObligation', 'historyDisclosure'] as const satisfies readonly (keyof CapacityOwed)[];
 
 export function formatCapacityOwed(owed: CapacityOwed): string {
@@ -47,7 +50,7 @@ export function formatCapacityOwed(owed: CapacityOwed): string {
 export function formatCapacity(capacity: CapacityStatus): string {
   const refused = capacityTransitions.flatMap(kind => {
     const slot = capacity[kind];
-    if (slot.state === 'unavailable') { return [`capacity unavailable (${kind}: ${slot.reason ?? 'otherAuthority'}). ${capacityRestore[slot.reason ?? 'otherAuthority']}`]; }
+    if (slot.state === 'unavailable') { return [`capacity unavailable (${kind}: ${slot.reason ?? 'otherAuthority'}). ${capacityRemedy(slot.reason)}`]; }
     if (slot.state === 'exhausted') { return [`capacity exhausted (${kind}: ${slot.dimensions.join(', ')}). Actual resources or obligations must change before the measured limit can be passed; exit chat and run repair to recheck. Separate explicit operator choice: consumer bridge --abandon-undelivered abandons undelivered state and may be refused.`]; }
     return [];
   });

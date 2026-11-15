@@ -12,7 +12,7 @@ import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
 import { createChatRuntime } from './runtime.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
-import { formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
+import { capacityRemedy, formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
 
 export type CliCommand = BackendCommand | { readonly kind: 'status' };
 export function parseCommand(args: readonly string[]): CliCommand | null {
@@ -41,8 +41,9 @@ export function operatorExitCode(kind: 'consumer' | 'repair', result: BackendSta
 export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityOwed = unknownCapacityOwed()): string {
   const slot = capacitySlot(error);
   const transition = error.transition ?? 'unclassified';
-  const diagnosis = slot.state === 'unavailable' ? `capacity unavailable (${transition}: ${slot.reason})` : `capacity exhausted (${transition}: ${slot.dimensions.join(', ')})`;
-  return `${diagnosis}; owed: ${formatCapacityOwed(owed)}`;
+  if (slot.state !== 'unavailable') { return `capacity exhausted (${transition}: ${slot.dimensions.join(', ')}); owed: ${formatCapacityOwed(owed)}`; }
+
+  return `capacity unavailable (${transition}: ${slot.reason}); owed: ${formatCapacityOwed(owed)}. ${capacityRemedy(slot.reason)}`;
 }
 
 export function formatCliError(error: unknown): string {

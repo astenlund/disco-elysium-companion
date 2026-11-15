@@ -86,6 +86,28 @@ test('startup capacity errors retain the outer fatal code and unknown owed value
   assert.doesNotMatch(formatCliError(wrapped), /internal path/);
 });
 
+test('a startup capacity refusal names its inventory failure cause with the remedy and no path', () => {
+  const cases = [
+    ['workspaceResidue', /guarded cleanup runs\. Residue that cleanup does not recognize stays; move it out by hand/],
+    ['helperUnavailable', /native helper could not answer; exit chat and run status to check the helper/],
+    ['foreignEntryQuarantine', /sits in quarantine; move it out by hand, since the runtime never deletes it/],
+    ['inventoryUnreadable', /could not be read; restore its readability/],
+  ] as const;
+  for (const [reason, remedy] of cases) {
+    // Arrange
+    const refusal = new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: [reason] }, 'runtimeMarker');
+    const wrapped = new DataRootUnavailableError('internal path must not appear', { cause: refusal });
+
+    // Act
+    const rendered = formatCliError(wrapped);
+
+    // Assert
+    assert.match(rendered, new RegExp(`^dataRootUnavailable: capacity unavailable \\(runtimeMarker: ${reason}\\); owed: `));
+    assert.match(rendered, remedy);
+    assert.doesNotMatch(rendered, /internal path/);
+  }
+});
+
 test('a refused bridge release names its known reasons while other errors keep their format', () => {
   // Arrange
   const refusal = new ReleaseRefusedError(['2 outbox records', '3 unacknowledged events', 'repair-0123456789abcdef0123456789abcdef', 'recoveryDisclosureOwed']);
