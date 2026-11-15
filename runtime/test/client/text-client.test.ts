@@ -328,14 +328,14 @@ test('text client directs a restart while an unfinished repair holds state valid
 
 test('capacity readout names each inventory failure category with its own remedy and no path', () => {
   const remedies = {
-    workspaceResidue: /restart chat or run repair so its guarded cleanup runs.*move it out by hand, since the runtime never deletes it/,
+    workspaceResidue: /restart chat, or run repair outside chat, so its guarded cleanup runs.*move it out by hand, since the runtime never deletes it/,
     foreignEntryScopeRoot: /sits in the runtime data folder; move it out by hand, since the runtime never deletes it/,
     foreignEntryJournal: /sits in journal; move it out by hand/,
     foreignEntryJournalEvents: /sits in journal\/events; move it out by hand/,
     foreignEntryOperations: /sits in operations; move it out by hand/,
     foreignEntryQuarantine: /sits in quarantine; move it out by hand/,
     inventoryUnreadable: /could not be read; restore its readability/,
-    helperUnavailable: /native helper could not answer; exit chat and run status to check the helper/,
+    helperUnavailable: /native helper could not answer; run status outside chat to check the helper/,
   } as const;
   for (const reason of inventoryFailureReasons) {
     // Arrange

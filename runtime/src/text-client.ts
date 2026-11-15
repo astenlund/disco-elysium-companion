@@ -17,14 +17,14 @@ function foreignEntryRemedy(directory: string): string {
 
 const capacityRestore: Readonly<Record<CapacityReason, string>> = {
   inventory: 'Restore a complete resource inventory and recheck.',
-  workspaceResidue: 'Publication residue remains in the runtime data; exit chat and restart chat or run repair so its guarded cleanup runs. Residue that cleanup does not recognize stays; move it out by hand, since the runtime never deletes it.',
+  workspaceResidue: 'Publication residue remains in the runtime data; restart chat, or run repair outside chat, so its guarded cleanup runs. Residue that cleanup does not recognize stays; move it out by hand, since the runtime never deletes it.',
   foreignEntryScopeRoot: foreignEntryRemedy('the runtime data folder'),
   foreignEntryJournal: foreignEntryRemedy('journal'),
   foreignEntryJournalEvents: foreignEntryRemedy('journal/events'),
   foreignEntryOperations: foreignEntryRemedy('operations'),
   foreignEntryQuarantine: foreignEntryRemedy('quarantine'),
   inventoryUnreadable: 'An owned runtime file could not be read; restore its readability, for example by closing a program holding it, and recheck.',
-  helperUnavailable: 'The native helper could not answer; exit chat and run status to check the helper, then restart chat or run repair.',
+  helperUnavailable: 'The native helper could not answer; run status outside chat to check the helper, then restart chat or run repair.',
   documentInventory: 'Restore a complete document inventory and recheck.',
   additions: 'Restore the prospective addition inventory and recheck.',
   recoveryAuthority: 'Restore recovery authority and recheck.',
