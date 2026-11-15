@@ -4,9 +4,10 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import type { PathAdmission } from '../src/admission.ts';
+import type { PathAdmission, PathInspector } from '../src/admission.ts';
 import { RuntimeCapacityError } from '../src/capacity.ts';
-import { Journal, JournalForeignEntryError, journalFailureReason, JournalUnavailableError } from '../src/journal.ts';
+import { type Journal, JournalForeignEntryError, journalFailureReason, JournalUnavailableError } from '../src/journal.ts';
+import { readOnlyJournal } from './support/journal.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -20,11 +21,8 @@ async function journalWith(entry: string, directory: boolean): Promise<{ journal
     ? { path: target, exists: true, kind: 'directory', links: 1, volume: 'v', identity: 'i', missing: [] }
     : { path: target, exists: false, kind: null, links: null, volume: null, identity: null, missing: [target] };
   const inspector = { inspectMany: async (_root: string, targets: readonly string[]) => targets.map(admission) };
-  const journal = new Journal({ root: scratch, game: 'stubgame', principal: 'principal',
-    identities: { runtimeInstanceId: 'a'.repeat(32), runtimeSessionId: 'b'.repeat(32), adapterBindingEpoch: 'c'.repeat(32) },
-    inspector: inspector as never, publisher: {} as never, codec: {} as never, admitMutation: async () => {}, eventIdAvailable: async () => true });
 
-  return { journal, scratch };
+  return { journal: readOnlyJournal(scratch, inspector as unknown as PathInspector), scratch };
 }
 
 describe('foreign journal events entries', () => {

@@ -5,21 +5,14 @@ import path from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
-import type { PayloadCodec } from '../src/codec.ts';
 import { Deadline } from '../src/deadline.ts';
-import type { FilePublisher } from '../src/files.ts';
-import { Journal } from '../src/journal.ts';
 import { eventFileName, eventRewriteMetadata } from '../src/journal-records.ts';
 import { parseStrictJson, stringifyJson } from '../src/json.ts';
 import { scopeComponents } from '../src/scope.ts';
 import { companionFixture } from './support/companion.ts';
+import { readOnlyJournal } from './support/journal.ts';
 import { journalEvent } from './support/journal-event.ts';
 import { createTestNative } from './support/native-helper.ts';
-
-function readOnlyJournal(root: string, inspector: PathInspector): Journal {
-  return new Journal({ root, game: 'game', principal: 'principal', identities: { runtimeInstanceId: '1'.repeat(32), runtimeSessionId: '2'.repeat(32), adapterBindingEpoch: '3'.repeat(32) },
-    inspector, publisher: {} as FilePublisher, codec: {} as PayloadCodec, admitMutation: async () => { throw new Error('unexpected mutation'); }, eventIdAvailable: async () => { throw new Error('unexpected mutation'); } });
-}
 
 async function measureColdHistory(context: TestContext, count: number): Promise<void> {
     const fixture = await companionFixture('context-event');

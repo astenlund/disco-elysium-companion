@@ -1,17 +1,12 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { PathInspector } from '../src/admission.ts';
 import { RuntimeCapacityError } from '../src/capacity.ts';
-import type { OperationStore } from '../src/operations.ts';
-import { ResourceAuthority } from '../src/resource-lifecycle/resources.ts';
-import type { RuntimeScope } from '../src/scope.ts';
-import { bytesHash } from '../src/storage.ts';
-import { createTestNative } from './support/native-helper.ts';
+import { resourceScopeFixture } from './support/resource-scope.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const eventFixture = path.join(repository, 'runtime', 'native', 'helper', 'internal', 'events', 'testdata', 'event-created.json');
@@ -29,18 +24,12 @@ async function paddedEvent(padding: number): Promise<Buffer> {
 
 test('admits a state-event document larger than the request frame through a staged Event-mode input', { timeout: 120000 }, async () => {
   // Arrange: a scope under the repository, a valid event over 2 MiB and a copy whose payload no longer matches its binding.
-  const root = path.join(repository, '.tmp', `event-admission-${randomUUID()}`);
-  const dataRoot = path.join(root, 'data');
-  const events = path.join(dataRoot, 'journal', 'events');
-  await fs.mkdir(events, { recursive: true });
-  const binding = Buffer.from(JSON.stringify({ runtimeScopeVersion: 1, game: 'game', principal: 'principal' }));
-  await fs.writeFile(path.join(dataRoot, 'scope.json'), binding);
-  const scope = { dataRoot, companionRoot: root, bindingSha256: bytesHash(binding), game: 'game', principal: 'principal' } as RuntimeScope;
-  const native = await createTestNative(root);
+  const fixture = await resourceScopeFixture('event-admission');
+  const events = path.join(fixture.dataRoot, 'journal', 'events');
   const large = await paddedEvent(2_500_000);
   const damaged = Buffer.from(large.toString('utf8').replace('"padding":"x', '"padding":"y'), 'utf8');
   try {
-    const resources = new ResourceAuthority(scope, new PathInspector(native.supervisor), {} as OperationStore);
+    const { resources } = fixture;
     resources.inventory = async () => ({ complete: true, counts: { uncompactedEvents: 0, retainedHandoffs: 0, fullTerminalOperations: 0 },
       potentialHandoffs: 0, unfinishedOperations: 0, invalidEvents: 0, pendingOutbox: 0, freeBytes: 4000000000n, uncertainWorkspace: false });
 
@@ -58,7 +47,6 @@ test('admits a state-event document larger than the request frame through a stag
     assert.ok(large.length > 2_097_152);
     assert.deepEqual(await fs.readdir(events), []);
   } finally {
-    await native.close();
-    await fs.rm(root, { recursive: true, force: true });
+    await fixture.close();
   }
 });
