@@ -41,9 +41,8 @@ export function operatorExitCode(kind: 'consumer' | 'repair', result: BackendSta
 export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityOwed = unknownCapacityOwed()): string {
   const slot = capacitySlot(error);
   const transition = error.transition ?? 'unclassified';
-  if (slot.state !== 'unavailable') { return `capacity exhausted (${transition}: ${slot.dimensions.join(', ')}); owed: ${formatCapacityOwed(owed)}`; }
-
-  return `capacity unavailable (${transition}: ${slot.reason}); owed: ${formatCapacityOwed(owed)}. ${capacityRemedy(slot.reason)}`;
+  const diagnosis = slot.state === 'unavailable' ? `capacity unavailable (${transition}: ${slot.reason})` : `capacity exhausted (${transition}: ${slot.dimensions.join(', ')})`;
+  return `${diagnosis}; owed: ${formatCapacityOwed(owed)}`;
 }
 
 export function formatCliError(error: unknown): string {
@@ -51,7 +50,11 @@ export function formatCliError(error: unknown): string {
   if (error instanceof ReleaseRefusedError) { return error.details.length === 0 ? `${error.code}: ${error.message}` : `${error.code}: ${error.message} Reasons: ${error.details.join(', ')}.`; }
   const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
   const capacity = error instanceof RuntimeCapacityError ? error : error instanceof Error && error.cause instanceof RuntimeCapacityError ? error.cause : null;
-  return capacity === null ? `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}` : `${code}: ${formatCapacityError(capacity)}`;
+  if (capacity === null) { return `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}`; }
+  // No status readout precedes this line, so it carries the remedy of an unavailable refusal itself.
+  const slot = capacitySlot(capacity);
+
+  return slot.state === 'unavailable' ? `${code}: ${formatCapacityError(capacity)}. ${capacityRemedy(slot.reason)}` : `${code}: ${formatCapacityError(capacity)}`;
 }
 
 export function formatCapacityRewind(result: CapacityRewindResult | null): string {

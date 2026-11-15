@@ -10,6 +10,7 @@ import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCli
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
+import { capacityRemedy } from '../../src/text-client.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 
@@ -104,6 +105,8 @@ test('a startup capacity refusal names its inventory failure cause with the reme
     // Assert
     assert.match(rendered, new RegExp(`^dataRootUnavailable: capacity unavailable \\(runtimeMarker: ${reason}\\); owed: `));
     assert.match(rendered, remedy);
+    assert.equal(rendered.split(capacityRemedy(reason)).length, 2, 'the remedy appears exactly once');
+    assert.doesNotMatch(formatCapacityError(refusal), remedy, 'the operator readout already carries the remedy beside this line');
     assert.doesNotMatch(rendered, /internal path/);
   }
 });
