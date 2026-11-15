@@ -14,4 +14,4 @@ Track bounded, source-owned diagnostic categories and directory labels for recog
 
 ## Status
 
-The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice.
+The user chose to track this item on 2026-10-12. No fix, publication, or real-root cutover was authorized by that choice. The user selected it for delivery on 2026-11-15. The evidence above describes the code before the fix. The native inventory now names a foreign entry by its owned directory and an unreadable owned file, the runtime adds residue and helper failure and carries each cause into the capacity refusal with its own remedy, and an unowned `journal/events` entry reports `journalForeignEntry`, as the [runtime design](../features/companion-execution-runtime.md) states. Fixed and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md) on 2026-11-15.

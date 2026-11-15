@@ -27,16 +27,6 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 (The reputation-mapping observability entry was resolved 2026-08-12 via the documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md) remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value clauses it names are spec-deferred, not open bugs.)
 
-## Coordinator MVP deferred bugs
-
-These user-tracked findings came from Nightshift run cffcf94d-49be-4cab-afcb-3fad1dabfd95. Each linked diagnosis preserves its evidence and uncertainty; tracking does not authorize a fix.
-
-### [Inventory failure categories](bugs/runtime-inventory-diagnostic-opacity.md)
-
-Distinguish residue, unexpected owned entries, and helper transport failures without exposing paths or authorizing deletion.
-
-**Requires:** none.
-
 ## Startup prototype deferred bugs
 
 These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
