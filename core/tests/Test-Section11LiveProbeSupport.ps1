@@ -486,6 +486,23 @@ function Test-LiveMonitorRejectsAnyMatchingCandidateMutation {
     }
 }
 
+function Test-SupportImportKeepsCallerDigestDiffCommands {
+    # Production mutation caught: a forced nested DigestDiff import inside the
+    # support module removes the caller's own DigestDiff import, so the live-probe
+    # harness loses commands such as New-CompanionWarningSink.
+    # Arrange
+    Import-Module (Join-Path (Split-Path $PSScriptRoot -Parent) 'DigestDiff.psm1') -Force -DisableNameChecking
+    $exported = @((Get-Module DigestDiff).ExportedFunctions.Keys)
+    Assert-True -Condition ($exported.Count -gt 0) -Message 'DigestDiff exports functions to the caller before the support import'
+
+    # Act
+    Import-Module $modulePath -Force
+
+    # Assert
+    $missing = @($exported | Where-Object { $null -eq (Get-Command -Name $_ -CommandType Function -ErrorAction SilentlyContinue) })
+    Assert-Equal -Actual ($missing -join ', ') -Expected '' -Message 'importing the support module after DigestDiff leaves every DigestDiff export resolvable by the caller'
+}
+
 try {
     Test-FramesCloseBothClaimsWithoutMeaningfulGameChanges
     Test-MatchingCandidateMutationFailsImmutabilityClaim
@@ -505,6 +522,7 @@ try {
     Test-LiveMonitorStopsWhenBothClaimsPass
     Test-LiveMonitorRejectsAnyInvalidStableArchive
     Test-LiveMonitorRejectsAnyMatchingCandidateMutation
+    Test-SupportImportKeepsCallerDigestDiffCommands
 
     Write-Output 'PASS: section 11 live-probe support tests'
 }

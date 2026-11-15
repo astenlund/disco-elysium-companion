@@ -53,16 +53,6 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
-## Scratch cleanup follow-ups
-
-These user-tracked findings came from Nightshift run 4c9ec3e7-cbd5-4d5e-a544-7be74dd8cb2e. Tracking does not authorize a fix.
-
-### Live probe 06 cannot build its warning sink
-
-`core/tests/Test-Section11LiveProbes.ps1 -Only Section11-06` fails with "The term 'New-CompanionWarningSink' is not recognized" where the probe builds a Walk warning sink before calling `Invoke-WorkFileReaper`, and it failed identically at commit 0d6e1e48040f49a2064c4ada901da3ceb25f06e6 (observed 2026-11-15), so the probe's reaper check has no passing run. The cause is not established: `DigestDiff.psm1` exports the function, and `Section11LiveProbeSupport.psm1`, which the harness imports last, re-imports `DigestDiff.psm1` with `-Force` from inside its own module, which may hide the harness's import; that was not checked. Find why the command is unresolved in the probe's scope, fix it, then rerun `-Only Section11-06`, which needs no save.
-
-**Requires:** none.
-
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
