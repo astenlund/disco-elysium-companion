@@ -38,7 +38,7 @@ The earlier private timing fixture also killed a run at attachment and restarted
 |---|---|
 | Not-owner exit | After releasing to the bridge, chat through `runCli` returned 1 with the `notOwner` line and a terminal `notOwner` progress event, before any provider phase; handing back to the runtime and restarting attached healthy in 5.3 s. |
 | Normal exit | `createChatRuntime` returned ready and every completed chat run shut down normally and exited 0. The CLI's own exit through `runCli` was not run, because `runCli` builds the real provider for chat, so it belongs to the live run. |
-| Provider-start refusal | A provider whose real child refuses every start returned `providerUnavailable` after 43.0 s and five starts: the initial start, its fallback and the three retries after 1, 5 and 30 seconds. The startup workers closed; the next start attached healthy in 7.4 s. |
+| Provider-start refusal | A provider whose real child refuses every start returned `providerUnavailable` after 43.0 s of chat startup (43.4 s on the harness clock) and five starts: the initial start, its fallback and the three retries after 1, 5 and 30 seconds. The startup workers closed; the next start attached healthy in 7.4 s. |
 | Worker killed on sight | Killing `StartupCoreReplyWorker.ps1` as soon as it appeared failed the start closed with `Startup worker transport is unavailable.` after 0.7 s; the next start attached healthy in 5.3 s. |
 | Worker killed during acquisition | The start attached status-only after 13.8 s with freshness `failed` (`settlementPending`), safety `recovering`, correction `contextUncertain` and no provider start. The restart attached degraded with a ready provider in 6.5 s and the same correction, took no turn and was not healthy within 180 s; the next start's acknowledged turn returned safety to ready. |
 | 120-second gate, success | A newly staged save and an acknowledged turn: healthy attachment in 6.2 s and the turn completed. |
@@ -59,7 +59,7 @@ Commit `c07929d` adds regressions for the gates that had none: `startup-worker-f
 
 ## Superseded runs
 
-Three harness defects invalidated parts of earlier runs that day, and their figures are not used above. The helper that suspends the settlement script matched its own command line, suspended itself and hung the first run for about 3 hours 20 minutes; the same flaw made its first worker kill on sight inconclusive. The early harness waited only for `turn.completed`, so the gate-failed turn appeared to hang for 300 seconds although it had failed at the gate. And until settling runs were added, later runs inherited a `contextUncertain` correction, so that run's recovery and watcher comparisons measured degraded starts rather than recovery from a healthy predecessor.
+Three harness defects invalidated parts of earlier runs that day, and their figures are not used above. The helper that suspends the settlement script matched its own command line, suspended itself and hung the first run for about 3 hours 20 minutes; the same flaw made its first worker kill on sight inconclusive. The early harness waited only for `turn.completed`, so the gate-failed turn appeared to hang for 300 seconds although it had failed at the gate. And until settling runs were added, later runs inherited a `contextUncertain` correction, so the third run's recovery and watcher comparisons measured degraded starts rather than recovery from a healthy predecessor.
 
 ## Limits
 
