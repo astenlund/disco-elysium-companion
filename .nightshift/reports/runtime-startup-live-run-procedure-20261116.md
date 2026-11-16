@@ -45,7 +45,7 @@ Run the new-save, acknowledged-restart and recovery cases at least three times e
    if ($workers.Count -eq 1) { Stop-Process -Id $workers[0].ProcessId } else { "Found $($workers.Count) workers; stopping none." }
    ```
 
-   In the private gates this start attached status-only with provider input withheld; the following start attached degraded and took no turn, and an acknowledged turn in the start after it returned safety to ready. Record the attachment time and status of each start until the status reads healthy again. If the kill lands outside that phase, record the progress line it followed and the outcome: in the private gates a kill before acquisition failed the start closed with `Startup worker transport is unavailable.` instead of attaching status-only, and a repeat attempt is needed.
+   The private gates killed the worker during an acquisition with no newly detected save, so a kill while a new save is being published is a condition they did not cover, and its outcome and the correction it leaves may differ; record them as observed. In the private gates this start attached status-only with provider input withheld; the following start attached degraded and took no turn, and an acknowledged turn in the start after it returned safety to ready. Record the attachment time and status of each start until the status reads healthy again. If the kill lands outside that phase, record the progress line it followed and the outcome: in the private gates a kill before acquisition failed the start closed with `Startup worker transport is unavailable.` instead of attaching status-only, and a repeat attempt is needed.
 
 ## Record
 
