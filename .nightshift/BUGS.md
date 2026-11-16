@@ -33,7 +33,7 @@ These user-tracked findings came from Nightshift run f424ec69-4a55-4373-86b5-17a
 
 ### [Foreign quarantine entry fails maintenance opaquely](bugs/runtime-quarantine-foreign-file.md)
 
-A quarantine file outside the quarantined-file name grammar passes the inventory, then fails every maintenance pass's quarantine trim with no named cause; naming it needs a user decision between a new refusal and a diagnostic surface.
+A quarantine file outside the quarantined-file name grammar passes the inventory, then fails every maintenance pass's quarantine trim with no named cause; the user chose to refuse the maintenance slot as foreignEntryQuarantine with its move-it-out remedy.
 
 **Requires:** none.
 
