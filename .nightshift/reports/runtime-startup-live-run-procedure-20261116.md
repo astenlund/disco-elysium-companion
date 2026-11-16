@@ -5,6 +5,7 @@ Written on 2026-11-16 for [Coordinator startup latency](../features/runtime-star
 ## Preconditions
 
 - The private gates are recorded, and fresh independent code and documentation reviews of the work they measured are clean.
+- The [startup execution design](../features/runtime-startup-execution-30.md) also requires direct source and pre-guard write proof before the live measurement. No record shows that proof passed, or that the helper MVP retired it, so it is an open precondition: establish it, or record its retirement, first.
 - The real companion root (this repository) is already owned by the runtime consumer. This study runs no consumer command on the real root; if a start reports another owner, stop and record it instead of switching.
 - The game's own save folder stays read-only to everyone but the game: the tester saves only from inside the game, and copies, moves or deletes nothing there.
 - The acceptance matrix also requires that provider initialization sends no model input, calls no tool and writes only within the approved provider-owned footprint. No established method in this repository proves that yet: the live provider probe at `runtime/test/live/probe-provider.ts` lists the default-profile auxiliary-write footprint and the native file-operation footprints as unverified. Until a method exists and passes, a live timing result is recorded but cannot close the gate.
