@@ -251,7 +251,8 @@ await run('restart-after-provider-refusal', ['chat', '0']);
 // startup acquisition; each restart is a recovery run.
 await settle('worker-killed-on-sight');
 await run('worker-killed-on-sight', ['chat', '0'], { onStart: () => act('StartupCoreReplyWorker.ps1', 'kill', 30000), expect: record => killed(record)
-  ?? (resultOf(record)['status'] === 'failed' && resultOf(record)['name'] === 'DataRootUnavailableError' ? null : 'the start did not fail closed with the transport refusal') });
+  ?? (resultOf(record)['status'] === 'failed' && resultOf(record)['name'] === 'DataRootUnavailableError' && resultOf(record)['message'] === 'Startup worker transport is unavailable.'
+    ? null : 'the start did not fail closed with the transport refusal') });
 await run('restart-after-worker-kill-on-sight', ['chat', '0'], { env: awaitHealthy, expect: recoveryHealthy });
 await settle('worker-killed-at-acquisition');
 let acquisitionKilled = false;
@@ -268,19 +269,25 @@ const goSuccess = path.join(output, 'go-success');
 await run('interaction-success', ['chat', '1', goSuccess], { onEvent: async event => {
   if (event['event'] === 'awaiting-go') { await stage(1, true); await fs.writeFile(goSuccess, ''); }
 } });
+// The suspend action is the run's first action, so the run always waits for the helper. A still-suspended settlement is ended
+// by finding it again by script and root rather than by a pid the runtime may already have released, both when the turn
+// ends and after the run whatever its outcome, so it can never reach the next run.
+const endSuspendedSettlement = (): Promise<Event> => act('Set-StateEventSettlement.ps1', 'kill', 1000);
 const goFailure = path.join(output, 'go-failure');
-let suspended: Promise<Event> | null = null;
 await run('interaction-settlement-suspended', ['chat', '1', goFailure], { timeoutMs: longRunTimeoutMs, onEvent: async event => {
-  if (event['event'] === 'awaiting-go') { suspended = act('Set-StateEventSettlement.ps1', 'suspend', 200000); await stage(2, true); await fs.writeFile(goFailure, ''); }
-  if (event['event'] === 'turn' && suspended !== null) {
-    const found = await suspended;
-    if (found['found'] === true) { await execute('taskkill', ['/PID', String(found['pid']), '/F']).catch(() => undefined); }
-    return found;
+  if (event['event'] === 'awaiting-go') {
+    const suspended = act('Set-StateEventSettlement.ps1', 'suspend', 200000);
+    await stage(2, true);
+    await fs.writeFile(goFailure, '');
+    return suspended;
   }
+  if (event['event'] === 'turn') { return endSuspendedSettlement(); }
   return undefined;
 }, expect: record => firstAction(record)['found'] === true && firstAction(record)['status'] === 0
-  && turnOf(record)?.['outcome'] === 'failed:stateInvalidated' && afterTurn(record)['freshnessReason'] === 'settlementPending' && afterTurn(record)['safety'] !== 'ready'
-  ? null : 'the settlement was not suspended, or the gate did not fail the turn with settlementPending and unready safety' });
+  && turnOf(record)?.['outcome'] === 'failed:stateInvalidated' && Number(turnOf(record)?.['turnMs'] ?? 0) >= 120000
+  && afterTurn(record)['freshnessReason'] === 'settlementPending' && afterTurn(record)['safety'] !== 'ready'
+  ? null : 'the settlement was not suspended, or the gate did not fail the turn after 120 s with settlementPending and unready safety' });
+await endSuspendedSettlement();
 await run('recovery-after-suspended-settlement', ['chat', '1'], { env: awaitHealthy, timeoutMs: longRunTimeoutMs, expect: recoveryHealthy });
 
 // Gate: enabled-watcher recovery after a kill at attachment, compared with the same recovery with the watcher disabled. A

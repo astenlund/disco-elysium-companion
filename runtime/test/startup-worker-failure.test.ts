@@ -25,6 +25,7 @@ for (const item of [
   test(`a real startup worker that ${item.name} fails closed with a verified stop`, { timeout: 60000 }, async () => {
     // Arrange
     const scratch = path.join(root, '.tmp', `startup-worker-failure-${randomUUID()}`);
+    assert.equal(path.relative(root, scratch).startsWith('..'), false);
     await fs.mkdir(path.join(scratch, '.tmp'), { recursive: true });
     const native = await createTestNative(path.join(scratch, 'scope'));
     const scope = { companionRoot: scratch, dataRoot: path.join(scratch, 'runtime-data'), bindingSha256: 'a'.repeat(64) } as unknown as RuntimeScope;
@@ -43,9 +44,7 @@ for (const item of [
       const next = await native.supervisor.run('startupCoreReply', { command: process.execPath, args: [processChild, 'arguments', 'after-failure'], cwd: root }, 15000);
       assert.equal(next.stdout.toString('utf8'), '["after-failure"]');
     } finally {
-      await native.close();
-      assert.equal(path.relative(root, scratch).startsWith('..'), false);
-      await fs.rm(scratch, { recursive: true, force: true });
+      try { await native.close(); } finally { await fs.rm(scratch, { recursive: true, force: true }); }
     }
   });
 }
