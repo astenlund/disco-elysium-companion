@@ -27,6 +27,12 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 (The reputation-mapping observability entry was resolved 2026-08-12 via the documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md) remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value clauses it names are spec-deferred, not open bugs.)
 
+### Inventory of the event ceiling misses its timing budget
+
+`TestInventoryOfTheEventCeilingAtProductionDepthFitsTheBudget` in `runtime/native/helper/internal/inventory/timing_test.go` failed three times on 2026-11-16 on this machine: reading 8,193 compact events at production depth took 45.9 to 51.9 seconds (about 5.6 to 6.3 ms per event) against its 15-second budget, also over the runtime's 30-second inventory budget that the test protects. It failed the same way on the unchanged commit before that day's quarantine and journal remedy fixes, so they did not cause it. The [Go native helper MVP report](runs/reports/2026-10-24-go-native-helper-mvp.md) recorded about 0.13 ms per event. Unconfirmed: whether this is a code regression since then or a machine condition (load, antivirus scanning of the temp folder), and whether a real data root at the ceiling would now exceed the runtime's inventory deadline.
+
+**Requires:** none.
+
 ## Startup prototype deferred bugs
 
 These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.
