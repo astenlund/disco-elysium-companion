@@ -55,6 +55,12 @@ Found on 2026-11-16 by the kernel traces in the [pre-guard write proof](reports/
 
 **Requires:** none.
 
+### Recovery needs extra starts or a turn before it is healthy
+
+Found on 2026-11-16 by the private startup gates ([gate evidence](reports/runtime-startup-gate-evidence-20261116.md)): two recovery paths never reach healthy status on the first restart, against the 180-second healthy-recovery target of [Coordinator startup latency](features/runtime-startup-latency.md). After the warm core-reply worker is killed during startup acquisition, the restart attaches in 6.5 to 10.1 seconds across the recorded runs as a degraded ready client with safety `recovering` and correction `contextUncertain`, and stays degraded until an acknowledged turn. After a turn fails at the 120-second interaction gate, the first restart attaches status-only in 14.3 to 18.5 seconds with no provider start attempted and cannot clear the correction itself; a second restart attaches degraded and an acknowledged turn then returns safety to ready. The correction is discharged only on the acknowledgement path (`dischargeCorrection`, reached from `acknowledge` in `runtime/src/backend/delivery.ts`); why the first restart after a gate-failed turn never starts the provider was not established. Make recovery reach healthy status on the first restart without weakening the correction's disclosure to the provider or any readiness, settlement or safety check, or decide with the user that these paths fall outside the healthy-recovery target. The private gate harness (`runtime/test/acceptance/startup-gates/run-gates.ts`) records both restarts as missed, so it can verify a fix.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
