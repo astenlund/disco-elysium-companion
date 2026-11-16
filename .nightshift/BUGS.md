@@ -49,6 +49,12 @@ Found on 2026-11-16 while writing the live startup procedure: the chat client's 
 
 **Requires:** none.
 
+### Runtime PowerShell children write to the user profile
+
+Found on 2026-11-16 by the kernel traces in the [pre-guard write proof](reports/runtime-pre-guard-write-proof-20261116.md): after the instance guard, the PowerShell processes a chat start runs (5 in the image-present start, 3 in the image-absent one) write PowerShell's own startup cache `%LOCALAPPDATA%\Microsoft\PowerShell\StartupProfileData-NonInteractive` (157,601 and 78,811 writes) and create and delete `__PSScriptPolicyTest_*` files in `%TEMP%`, all outside the repository. The selected path before the Go native helper gave its helper PowerShell processes a fresh profile under the installation's `.tmp` on every start ([Per-start helper profiles accumulate](bugs/runtime-helper-profile-accumulation.md)); the helper MVP dropped that machinery, and the quick win "Contained test pwsh profiles" covers tests only. Decide whether the runtime's PowerShell children should run with a contained profile, keeping in mind that per-start profiles once accumulated and that a reused profile could keep PowerShell's startup cache warm.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
