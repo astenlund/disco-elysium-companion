@@ -43,6 +43,12 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
+### Watcher state missing from the chat client readout
+
+Found on 2026-11-16 while writing the live startup procedure: the chat client's status line (`formatStatus` in `runtime/src/text-client.ts`, printed at attachment, on each status change and for `/status`) names consumer, state, operational warnings, journal, safety, provider, API-key source, window recovery and capacity, but not the watcher, while the standalone `status` command (`runtime/src/cli.ts`) tells the user that watcher state is available only in the running chat client. A counted healthy attachment requires a running watcher, so a live tester cannot confirm that condition from the client; the [live-run procedure](reports/runtime-startup-live-run-procedure-20261116.md) substitutes a weaker process check. Add the watcher state to the client readout, or correct the status command's claim, with a regression for the rendered line.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
