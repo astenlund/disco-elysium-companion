@@ -1,6 +1,6 @@
 # Cold inventory of the event ceiling may exceed the runtime budget
 
-Tracked on 2026-11-16, first as a failing timing test, then restated as the runtime risk below after the measurements showed the failure was not a code regression.
+Tracked on 2026-11-16, first as a failing timing test, then restated as the runtime risk below after the measurements showed the failure was not a helper source regression.
 
 ## Recorded evidence
 
