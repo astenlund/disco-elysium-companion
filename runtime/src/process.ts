@@ -434,9 +434,12 @@ export class ProcessSupervisor {
           await Promise.race([owner.terminated, new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); })]);
           clearTimeout(timer);
         }
-        if (!owner.brokerClosed && !owner.kill()) { throw new SupervisorError('termination-unverified', 'Owned process termination could not be requested.'); }
+        // A refused signal is no verdict: a broker that already exited refuses it before its close event arrives, and one that
+        // survives fails the bounded termination proof below.
+        const signalled = owner.brokerClosed || owner.kill();
         await Promise.race([owner.terminated, new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new SupervisorError('termination-unverified', 'Owned process termination did not become verifiable.')), 10000);
+          timer = setTimeout(() => reject(new SupervisorError('termination-unverified', signalled ? 'Owned process termination did not become verifiable.'
+            : 'Owned process termination could not be requested.')), 10000);
         })]);
         await this.verifyQuiescent(role);
       } finally { clearTimeout(timer); }

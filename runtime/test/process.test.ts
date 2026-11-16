@@ -186,6 +186,34 @@ describe('owned process transport', () => {
     await assert.rejects(supervisor.stop('core', -1), SupervisorError);
   });
 
+  it('verifies a stop whose broker already exited before its close event arrived', { timeout: 30000 }, async () => {
+    // Arrange: the broker dies outside the supervisor, and this turn waits synchronously until it is gone so that its close
+    // event cannot have been delivered when the stop asks it to terminate.
+    const supervisor = await create();
+    const child = supervisor.spawn('core', options('wait'));
+    child.stdout.resume(); child.stderr.resume(); child.stdin.end();
+    await child.ready;
+    const brokerPid = child.brokerPid!;
+    process.kill(brokerPid);
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = performance.now() + 10000;
+    let gone = false;
+    while (!gone && performance.now() < deadline) {
+      try { process.kill(brokerPid, 0); Atomics.wait(pause, 0, 0, 10); } catch (error) { gone = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    }
+    assert.equal(gone, true);
+    assert.equal(child.brokerClosed, false);
+
+    // Act
+    await supervisor.stop('core');
+
+    // Assert
+    assert.equal(child.terminationState, 'verified');
+    await supervisor.verifyQuiescent('core');
+    const next = await supervisor.run('core', options('arguments', 'after-exited-broker'), 15000);
+    assert.equal(next.stdout.toString('utf8'), '["after-exited-broker"]');
+  });
+
   it('rejects oversized control metadata before allocating a broker', { timeout: 30000 }, async () => {
     const supervisor = await create();
     assert.throws(() => supervisor.spawn('core', options('arguments', 'x'.repeat(1_048_576))));
