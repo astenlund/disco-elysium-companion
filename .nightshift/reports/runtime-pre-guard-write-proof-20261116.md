@@ -1,0 +1,41 @@
+# Pre-guard write proof, 2026-11-16
+
+The [startup execution design](../features/runtime-startup-execution-30.md) allows the user-coordinated live measurement of [Coordinator startup latency](../features/runtime-startup-latency.md) only after "direct source and pre-guard write proof", among other gates. The earlier kernel trace in the [selected-image fixture evidence](runtime-selected-image-fixture-evidence-20261019.md) did not discharge it: it traced the fixture main rather than the direct CLI entry, ran on images that were later rebuilt, and traced no absent-image start. This report records a trace of the current helper path and the user's decision on the gate.
+
+## What the gate covers on the helper path
+
+The source half concerned the selected direct CLI path, which captured fixed sources and transferred process-scoped image pins before guard acquisition. The [Go native helper](../features/runtime-powershell-dependency.md) removed that path; its retirement list names the selected images and their selector and the selected-bootstrap pin transfer. The helper path instead checks the helper's source set and digests against its manifest before it uses or builds the image (`ensureNativeHelperImage` in `runtime/src/native-image.ts`).
+
+The write half still has a subject. Before the instance guard, the current chat start can write: `prepareNativeImage` in `runtime/src/cli.ts` calls `ensureNativeHelperImage` with `build: true`, which sweeps leftover build folders under `.tmp/native-build` and, when the image is absent or unpinned, builds the helper with Go under its own build guard and publishes it create-only into `runtime/native/`. `openBackend` then starts the helper service and a read-only inspection and discovers the scope before `takeInstanceGuard`, whose guard is a named pipe.
+
+## Method
+
+An elevated NT Kernel Logger session (`PROC_THREAD`, `LOADER`, `FILE_IO`, `FILE_IO_INIT`, `FILENAME`), started and stopped through `gsudo` with the user's approval, recorded each traced start; the starts themselves ran unelevated. Each start was the product CLI function `runCli(['chat'])` on a fresh copied companion root, called by a small private wrapper, the way the CLI's own main calls it, with `CLAUDE_CONFIG_DIR` pointing at an empty folder so that the provider refused before any SDK started. When progress reported the `instanceGuard` phase, which `openBackend` reports immediately before taking the guard, the wrapper wrote a marker file synchronously; the marker's create in the trace separates the pre-guard interval from the rest.
+
+The analyzer is the earlier one, extended: it streams the merged trace with `xperf`, roots the process tree at the traced `node.exe` alone, and attributes each write-class operation (writes, deletes, renames, security and extended-attribute changes, file-altering set-information classes, and creates that can create or overwrite) to the tree when a tree process issues it, or to the System lazy writer when it flushes a file object a tree process holds open. Two defects were found and fixed during this work. The earlier analyzer read the set-information class as a number, but this `xperf` prints it as a name (`FileEndOfFileInformation`), so it had silently counted no set-information write at all; it now accepts both forms. And a tree rooted at any process whose command line named the marker had swept in the shell that launched one start; the tree is now rooted at the traced `node.exe` only. Every result below comes from the corrected analyzer. The scratch tools and reports are in `.tmp/startup38-30f1940e/trace/`.
+
+## Results
+
+Both traces lost 0 buffers and 0 events.
+
+| Case | Pre-guard writes issued by tree processes | Writes outside the repository issued by tree processes |
+|---|---|---|
+| Image present: a normal start, refused at provider start after the guard | None besides the boundary marker | Only after the guard: PowerShell profile writes (below) |
+| A second start while the first held the guard; it failed with `RuntimeAlreadyRunningError` | None besides the boundary marker | None |
+| Image absent: the start rebuilt the helper with Go | Only the build folder and its `.claim` file under `.tmp/native-build`, besides the harness's own marker and output log | Only after the guard: PowerShell profile writes (below) |
+
+The rebuilt image was byte-identical to the pinned image removed before the trace (SHA-256 `aa06872a...4ccb81`). The first trace covered the first two cases in 30 seconds; the second covered the absent-image start in 41 seconds.
+
+The traces also attribute some operations outside the repository to the System lazy writer: 10, 2 and 7 after the guard in the three cases, and 32 before the guard in the image-absent case. After the guard in the image-present case they are flushes of the PowerShell profile files covered below. The rest are flushes of file metadata and data on Windows system files, Prefetch files, files of the PowerShell and Go installations and files of other software running at the time, such as Nightshift's registry database. The attribution goes through a kernel file-object address that a tree process held, and those addresses are reused. For the two that touched profile-owned Go state before the guard, a Go build-cache entry under `%LOCALAPPDATA%\go-build` and a Go telemetry counter under `%APPDATA%\go\telemetry`, the raw trace shows only System opening those files and no tree process; no tree process issued a write outside the repository before the guard.
+
+The kernel logger configuration records no event for hard-link creation, so the create-only publication of the image, a hard link from the build output into `runtime/native/`, does not appear; its result does, as the published image with the pinned hash. Production code creates hard links at two sites only, both in `runtime/src/native-image.ts`: the build's owner record inside its own build folder and that publication. A search of the runtime's TypeScript and the repository's PowerShell, C# and Go sources for hard-link, symbolic-link and junction creation found no other production site.
+
+After the guard, in both chat starts that reached it, the PowerShell processes the runtime starts wrote outside the repository: `%LOCALAPPDATA%\Microsoft\PowerShell\StartupProfileData-NonInteractive` (about 157,600 writes in the present-image start and 78,800 in the absent-image start) and short-lived `__PSScriptPolicyTest_*` files in `%TEMP%`. This is outside the pre-guard gate and is tracked as [Runtime PowerShell children write to the user profile](../BUGS.md).
+
+## Decision
+
+On 2026-11-16 the user recorded the gate as discharged: the write proof by these traces, and the source proof as retired with the selected path, whose role the helper's manifest check takes. The user decided on the first analysis, before the set-information defect was found; the corrected analysis gives the same pre-guard result and adds the hard-link limit below.
+
+## Limits
+
+The traced entry was the product `runCli` function called by a wrapper, not `runtime/src/cli.ts`'s own main; both call the same function. The provider refused before any SDK started, so the trace says nothing about the real SDK's write footprint, which the live procedure keeps as its own proof. Each case ran once. Hard-link creation is invisible to this trace and is bounded by the code search above instead. The [selected-image fixture evidence](runtime-selected-image-fixture-evidence-20261019.md) used the uncorrected analyzer; if its `xperf` printed set-information classes by name as this one does, its counts omitted those writes, so its no-write-outside-the-repository finding covers the other write classes only.
