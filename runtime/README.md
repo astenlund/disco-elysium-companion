@@ -45,6 +45,8 @@ The provider's default-profile transcript/configuration persistence is separate 
 
 The live provider probes under `runtime/test/live/` make real requests using the configured provider and default profile. They are separate from the ordinary test command. Their outcomes do not establish game cutover, complete file-tool isolation, or the complete provider auxiliary-write footprint.
 
+The private startup gate harness under `runtime/test/acceptance/startup-gates/` is also separate from the ordinary test command. `node runtime/test/acceptance/startup-gates/run-gates.ts <folder of save copies>` runs every startup gate against a fresh copied companion root under `.tmp` with the synthetic provider, refusing the adapter's live save folder, and records each run with a verdict in a report that `summarize.mjs` prints; a full run took about 13 minutes on the development machine. Its results are in the [startup gate evidence](../.nightshift/reports/runtime-startup-gate-evidence-20261116.md).
+
 The [runtime timing record](../.nightshift/reports/runtime-timing-verification.md) distinguishes private integration and steady-state measurements from startup costs and unresolved acceptance work.
 
 ## Native helper

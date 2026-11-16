@@ -17,13 +17,13 @@ Run every start from a PowerShell prompt at the repository root, printing the wa
 Get-Date -Format o; node runtime/src/cli.ts chat
 ```
 
-The start time is the printed timestamp. The end time is the timestamp on the `startup: chat client ready` progress line, which goes to stderr; its `elapsed` figure starts later, after the native image check, so do not use it as the launch-to-attachment time. Record the progress lines of every start, since they name the phases that limit a miss.
+The start time is the printed timestamp. The end time is the timestamp on the `startup: chat client ready` progress line, which goes to stderr; its `elapsed` figure starts later, after the native image check, so do not use it as the launch-to-attachment time. The launch timestamp is local time with its offset and the progress timestamp is UTC (ending in `Z`), so convert both to the same zone before subtracting, for example by parsing each with `[DateTimeOffset]::Parse`. Record the progress lines of every start, since they name the phases that limit a miss.
 
-The status line the client prints right after attachment decides health. A counted healthy attachment shows `consumer: owner`, `state: fresh`, `journal: healthy`, `safety: ready` and `provider: ready`, and also has a running watcher. The client does not print the watcher (tracked as [Watcher state missing from the chat client readout](../BUGS.md)), so while the client is attached, check from a second prompt that the real root's watcher process exists. The runtime starts each watcher and startup worker with `-CompanionRoot <root>`, and private fixture roots live under this repository's `.tmp`, so the query requires the real root and excludes those:
+The status line the client prints right after attachment decides health. A counted healthy attachment shows `consumer: owner`, `state: fresh`, `journal: healthy`, `safety: ready` and `provider: ready`, and also has a running watcher. The client does not print the watcher (tracked as [Watcher state missing from the chat client readout](../BUGS.md)), so while the client is attached, check from a second prompt that the real root's watcher process exists. The runtime starts each watcher and startup worker with `-CompanionRoot <root>`, the watcher with it as its last argument and the worker followed by `-DataRoot`, while private fixture roots live under this repository's `.tmp`. The query therefore requires exactly the real root as that argument, which leaves out fixture roots and any sibling folder whose name starts the same way:
 
 ```
 $root = 'C:\Git\disco-elysium-companion'
-function Get-RootProcess([string]$Script) { @(Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" | Where-Object { $_.CommandLine -like "*$Script*" -and $_.CommandLine -like "*-CompanionRoot $root*" -and $_.CommandLine -notlike "*$root\.tmp*" }) }
+function Get-RootProcess([string]$Script) { @(Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" | Where-Object { $_.CommandLine -like "*$Script*" -and ($_.CommandLine -like "*-CompanionRoot $root" -or $_.CommandLine -like "*-CompanionRoot $root -*") }) }
 Get-RootProcess 'Watch-Saves.ps1' | Select-Object ProcessId, CreationDate, CommandLine
 ```
 
@@ -38,15 +38,15 @@ Run the new-save, acknowledged-restart and recovery cases at least three times e
 1. **New save.** With chat closed, make a new manual save in the game, then start chat. The start publishes, journals and settles that save before attachment. Target: healthy within 30 seconds. Ask one short question so the turn is acknowledged, then `/quit`.
 2. **Acknowledged restart.** After a session whose last turn completed, `/quit` and start chat again without saving in the game. Target: healthy within 30 seconds.
 3. **Recovery.** After a healthy attachment, end the chat process abruptly by closing its terminal window, then start chat again. Target: healthy within 180 seconds. In the private gates this case recovered healthy in seconds from a settled predecessor; if the restart attaches with `safety: recovering`, record it as degraded, then record how many further starts and turns it takes to reach `safety: ready`.
-4. **Status-only control (optional).** This deliberately leaves a correction on the real data root, so run it only if the user agrees. While a start shows the startup acquisition phase, stop the real root's warm worker from a second prompt that has `Get-RootProcess` defined as above, and only when exactly one worker matches:
+4. **Status-only control.** The acceptance matrix requires status-only controls, so declining this case leaves the gate open. It deliberately leaves a correction on the real data root, so run it only if the user agrees. While a start shows the startup acquisition phase, stop the real root's warm worker from a second prompt that has `Get-RootProcess` defined as above, and only when exactly one worker matches:
 
    ```
    $workers = Get-RootProcess 'StartupCoreReplyWorker.ps1'
    if ($workers.Count -eq 1) { Stop-Process -Id $workers[0].ProcessId } else { "Found $($workers.Count) workers; stopping none." }
    ```
 
-   In the private gates this start attached status-only with provider input withheld, and the following start attached degraded until one acknowledged turn returned safety to ready. Record the attachment time and status of each start until the status reads healthy again.
+   In the private gates this start attached status-only with provider input withheld; the following start attached degraded and took no turn, and an acknowledged turn in the start after it returned safety to ready. Record the attachment time and status of each start until the status reads healthy again.
 
 ## Record
 
-For each start, record the case, attempt number, launch timestamp, ready timestamp, launch-to-attachment seconds, the attachment status line, the watcher process check, the progress lines and, for a session ended with `/quit`, its exit code. Both routine cases must repeatedly attach healthy within 30 seconds, recovery must repeatedly attach healthy within 180 seconds, and every `/quit` must exit with 0. A miss, an unmeasured case, an unapproved write or a failed proof leaves the feature open: record the limiting phases from the progress lines and bring the result back to the user without changing any readiness, settlement, watcher or safety check.
+For each start, record the case, attempt number, launch timestamp, ready timestamp, launch-to-attachment seconds, the attachment status line, the watcher process check, the progress lines and, for a session ended with `/quit`, its exit code. Both routine cases must repeatedly attach healthy within 30 seconds, recovery must repeatedly attach healthy within 180 seconds, every `/quit` must exit with 0, and the status-only control must have been run and recorded. A miss, an unmeasured case, an unapproved write or a failed proof leaves the feature open: record the limiting phases from the progress lines and bring the result back to the user without changing any readiness, settlement, watcher or safety check.
