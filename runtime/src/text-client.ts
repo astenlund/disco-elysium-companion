@@ -11,16 +11,19 @@ export function credentialSourceLabel(source: string | null): string {
   return source;
 }
 
-function foreignEntryRemedy(directory: string): string {
-  return `An entry the runtime does not own sits in ${directory}; move it out by hand, since the runtime never deletes it, and recheck.`;
+function foreignEntryRemedy(directory: string, recheck = 'and recheck'): string {
+  return `An entry the runtime does not own sits in ${directory}; move it out by hand, since the runtime never deletes it, ${recheck}.`;
 }
+
+/** The remedy for a foreign journal/events entry, shared by its capacity refusal, the status line and operator command output. */
+export const journalEventsForeignEntryRemedy = foreignEntryRemedy('journal/events', 'then restart chat or run repair');
 
 const capacityRestore: Readonly<Record<CapacityReason, string>> = {
   inventory: 'Restore a complete resource inventory and recheck.',
   workspaceResidue: 'Publication residue remains in the runtime data; restart chat, or run repair outside chat, so its guarded cleanup runs. Residue that cleanup does not recognize stays; move it out by hand, since the runtime never deletes it.',
   foreignEntryScopeRoot: foreignEntryRemedy('the runtime data folder'),
   foreignEntryJournal: foreignEntryRemedy('journal'),
-  foreignEntryJournalEvents: foreignEntryRemedy('journal/events'),
+  foreignEntryJournalEvents: journalEventsForeignEntryRemedy,
   foreignEntryOperations: foreignEntryRemedy('operations'),
   foreignEntryQuarantine: foreignEntryRemedy('quarantine'),
   inventoryUnreadable: 'An owned runtime file could not be read; restore its readability, for example by closing a program holding it, and recheck.',
@@ -78,13 +81,25 @@ export function formatSafetyRefusal(remedy: SafetyRefusalRemedy): string {
     : `Provider start refused: state safety needs startup recovery. ${restartRemedy}`;
 }
 
+/**
+ * The journal/events remedy when freshness failed on a foreign entry there, or null otherwise. A capacity readout that
+ * already names the same remedy suppresses it, so one status line or command output carries it once.
+ */
+export function formatJournalForeignEntry(status: Pick<HostStatus, 'freshness' | 'capacity'>): string | null {
+  const foreign = status.freshness.state === 'failed' && status.freshness.class === 'journal' && status.freshness.reason === 'journalForeignEntry';
+  const shown = capacityTransitions.some(kind => status.capacity[kind].state === 'unavailable' && status.capacity[kind].reason === 'foreignEntryJournalEvents');
+
+  return foreign && !shown ? `The journal is unavailable. ${journalEventsForeignEntryRemedy}` : null;
+}
+
 export function formatStatus(status: HostStatus): string {
   const fault = status.journal.fault === null ? '' : ` (${status.journal.fault})`;
   // A live repairFailed fault means an unfinished repair that resumes only at the next chat or repair start.
   const repairRemedy = status.journal.fault === 'repairFailed' ? ` State validation waits for an unfinished repair. ${restartRemedy}` : '';
   const safetyRemedy = status.provider.safetyRefusal === null ? '' : ` ${formatSafetyRefusal(status.provider.safetyRefusal)}`;
-  const journalRemedy = status.freshness.state === 'failed' && status.freshness.class === 'journal' && status.freshness.reason === 'journalForeignEntry'
-    ? ' The journal is unavailable: an entry the runtime does not own sits in journal/events; move it out by hand, since the runtime never deletes it, then restart chat or run repair.' : '';
+  const journalForeignEntry = formatJournalForeignEntry(status);
+  const journalRemedy = journalForeignEntry === null ? '' : ` ${journalForeignEntry}`;
+
   return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}${journalRemedy}${safetyRemedy}`;
 }
 

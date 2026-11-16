@@ -21,6 +21,16 @@ export class ReleaseRefusedError extends Error {
   constructor(details: readonly string[]) { super('Explicit abandonment is required before releasing undelivered state.'); this.details = details; }
 }
 
+/**
+ * Refuses a bridge release, with or without abandonment, whose journal/events holds an entry the runtime does not own:
+ * release evidence cannot be read past it, and abandonment does not remove it. It wraps the journal failure.
+ */
+export class ReleaseJournalForeignEntryError extends Error {
+  override readonly name = 'ReleaseJournalForeignEntryError';
+  readonly code = 'journalForeignEntry';
+  constructor(options?: ErrorOptions) { super('The journal cannot be released while journal/events holds an entry the runtime does not own.', options); }
+}
+
 class ConsumerResumeError extends Error {
   readonly result: Extract<CoreResult<ConsumerReceipt>, { success: false }>;
   constructor(result: Extract<CoreResult<ConsumerReceipt>, { success: false }>) {
@@ -108,7 +118,12 @@ export class ConsumerCoordinator {
     let snapshot: Awaited<ReturnType<typeof k.journal.read>> | null = null;
     let inventory: Awaited<ReturnType<typeof k.operations.list>> | null = null;
     let safety: Awaited<ReturnType<typeof k.safety>> | null = null;
-    try { snapshot = await k.journal.read(); } catch (error) { details.push(journalFailureReason(error)); }
+    try { snapshot = await k.journal.read(); }
+    catch (error) {
+      const reason = journalFailureReason(error);
+      if (reason === 'journalForeignEntry') { throw new ReleaseJournalForeignEntryError({ cause: error }); }
+      details.push(reason);
+    }
     try { inventory = await k.operations.list(); } catch { details.push('operationsUnavailable'); }
     try { safety = await k.safety(); } catch { details.push('contextUnavailable'); }
     try { if (inventory === null || !hasCarryAuthority(await k.carryHash(), inventory)) { details.push('recoveryCarryUnbound'); } }

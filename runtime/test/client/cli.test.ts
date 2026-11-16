@@ -5,12 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DataRootUnavailableError } from '../../src/admission.ts';
-import { ReleaseRefusedError } from '../../src/backend/consumer.ts';
+import { openBackend } from '../../src/backend/index.ts';
+import { ReleaseJournalForeignEntryError, ReleaseRefusedError } from '../../src/backend/consumer.ts';
 import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCliError, operatorExitCode, parseCommand, runChatClient, runCli } from '../../src/cli.ts';
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
-import { capacityRemedy } from '../../src/text-client.ts';
+import { capacityRemedy, journalEventsForeignEntryRemedy } from '../../src/text-client.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 
@@ -174,6 +175,44 @@ test('an operator run settles through the shared cleanup rule, mapping its exit 
   assert.ok(refusal instanceof NativeHelperUnavailableError && refusal.reason === 'unavailable' && refusal.cause === startupFailure);
   assert.deepEqual(clean, { status: 'fulfilled', value: 1 });
 });
+
+/** Opens and closes a backend so the fixture's scope exists, then writes a file the runtime does not own into its journal/events. */
+async function strayJournalEvent(root: string): Promise<void> {
+  const backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: root });
+  const events = path.join(backend.scope.dataRoot, 'journal', 'events');
+  await backend.shutdown(true);
+  await fs.mkdir(events, { recursive: true });
+  await fs.writeFile(path.join(events, 'notes.txt'), 'stray');
+}
+
+for (const args of [['repair'], ['consumer', 'bridge'], ['consumer', 'bridge', '--abandon-undelivered']]) {
+  test(`${args.join(' ')} over a stray journal/events file names the foreign entry and its remedy once`, { timeout: 600000 }, async () => {
+    // Arrange
+    await testHelperImage();
+    const fixture = await companionFixture('runtime-owned-empty');
+    const output: string[] = [];
+    try {
+      await strayJournalEvent(fixture.root);
+
+      // Act
+      let failure: unknown = null;
+      try { await runCli(args, fixture.root, text => output.push(text), () => {}, () => {}); } catch (error) { failure = error; }
+
+      // Assert: the bridge refuses with the named reason before listing journal/events; repair reports it beside its readout.
+      const rendered = [...output, ...failure === null ? [] : [formatCliError(failure)]].join('\n');
+      if (args[0] === 'consumer') {
+        assert.ok(failure instanceof ReleaseJournalForeignEntryError, String(failure));
+        assert.match(formatCliError(failure), /^journalForeignEntry: /);
+      } else {
+        assert.equal(failure, null, String(failure));
+        assert.ok(output.includes(`The journal is unavailable. ${journalEventsForeignEntryRemedy}`), rendered);
+      }
+      assert.equal(rendered.split(journalEventsForeignEntryRemedy).length - 1, 1, rendered);
+      assert.doesNotMatch(rendered, /Persisted control metadata is invalid/);
+      assert.doesNotMatch(rendered, /notes\.txt/);
+    } finally { await fixture.close(); }
+  });
+}
 
 test('the chat client exit takes the exhausted-helper classification only while the helper is exhausted', async () => {
   // Arrange

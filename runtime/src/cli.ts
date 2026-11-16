@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
-import { ReleaseRefusedError } from './backend/consumer.ts';
+import { ReleaseJournalForeignEntryError, ReleaseRefusedError } from './backend/consumer.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { ConfigurationError, loadRuntimeConfig } from './config.ts';
 import { admitInstallationRoot } from './launch-directory.ts';
@@ -12,7 +12,7 @@ import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
 import { createChatRuntime } from './runtime.ts';
 import { formatStartupProgress, StartupProgressReporter, type StartupProgressSink } from './startup-progress.ts';
-import { capacityRemedy, formatCapacity, formatCapacityOwed, runTextClient } from './text-client.ts';
+import { capacityRemedy, formatCapacity, formatCapacityOwed, formatJournalForeignEntry, journalEventsForeignEntryRemedy, runTextClient } from './text-client.ts';
 
 export type CliCommand = BackendCommand | { readonly kind: 'status' };
 export function parseCommand(args: readonly string[]): CliCommand | null {
@@ -48,6 +48,7 @@ export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityO
 export function formatCliError(error: unknown): string {
   if (error instanceof NativeHelperUnavailableError) { return `${error.code} (${error.reason}): ${error.message}`; }
   if (error instanceof ReleaseRefusedError) { return error.details.length === 0 ? `${error.code}: ${error.message}` : `${error.code}: ${error.message} Reasons: ${error.details.join(', ')}.`; }
+  if (error instanceof ReleaseJournalForeignEntryError) { return `${error.code}: ${error.message} ${journalEventsForeignEntryRemedy}`; }
   const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
   const capacity = error instanceof RuntimeCapacityError ? error : error instanceof Error && error.cause instanceof RuntimeCapacityError ? error.cause : null;
   if (capacity === null) { return `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}`; }
@@ -137,6 +138,11 @@ async function runCliInternal(args: readonly string[], givenRoot: string,
   const nativeImage = await prepareNativeImage(progressSink, diagnose);
   const backend = await openBackend({ companionRoot, nativeImage });
   const helper = backend.supervisor.nativeHelper;
+  // Operator commands print no status line, so the journal/events remedy follows the capacity readout instead.
+  const writeJournalForeignEntry = (): void => {
+    const remedy = formatJournalForeignEntry(backend.status);
+    if (remedy !== null) { write(remedy); }
+  };
   let outcome: OperatorOutcome;
   try {
     const result = await backend.startup(command);
@@ -144,11 +150,13 @@ async function runCliInternal(args: readonly string[], givenRoot: string,
     write(JSON.stringify(command.kind === 'consumer' ? { consumerResult: result.consumerResult ?? { result: 'consumerUnavailable' }, requiredWorkCompleted: result.requiredWorkCompleted, status: backend.status }
       : { result: result.notOwner ? 'notOwner' : exitCode === 0 ? 'completed' : 'incomplete', capacityRewind: result.capacityRewind, status: backend.status }));
     write(formatCapacity(backend.status.capacity));
+    writeJournalForeignEntry();
     if (command.kind === 'repair') { write(formatCapacityRewind(result.capacityRewind)); }
     outcome = { exitCode };
   } catch (error) {
-    if (error instanceof RuntimeCapacityError && !helper.exhausted) { write(formatCapacity(backend.status.capacity)); write(formatCapacityError(error, backend.status.capacity.owed)); outcome = { exitCode: 1 }; }
-    else { outcome = { failure: error }; }
+    if (error instanceof RuntimeCapacityError && !helper.exhausted) {
+      write(formatCapacity(backend.status.capacity)); writeJournalForeignEntry(); write(formatCapacityError(error, backend.status.capacity.owed)); outcome = { exitCode: 1 };
+    } else { outcome = { failure: error }; }
   }
   return finishOperatorRun(outcome, () => backend.shutdown(true), helper);
 }

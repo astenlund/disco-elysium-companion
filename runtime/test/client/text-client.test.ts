@@ -7,7 +7,7 @@ import { SessionHost } from '../../src/session-host.ts';
 import type { SessionHostV1 } from '../../src/session-host-contract.ts';
 import { initialCapacity, inventoryFailureReasons } from '../../src/capacity.ts';
 import type { DialogAnswer } from '../../src/provider.ts';
-import { credentialSourceLabel, formatCapacity, formatStatus, runTextClient } from '../../src/text-client.ts';
+import { credentialSourceLabel, formatCapacity, formatStatus, journalEventsForeignEntryRemedy, runTextClient } from '../../src/text-client.ts';
 import { deferred, FakeBackend, FakeProvider, instructionHash, until } from './support.ts';
 
 function clientStreams() {
@@ -357,7 +357,7 @@ test('status names a foreign journal events entry and its manual remedy', () => 
   const backend = new FakeBackend();
   const host = new SessionHost({ backend: backend.asRuntime(), provider: new FakeProvider(), instructionsSha256: instructionHash,
     providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
-  const remedy = 'an entry the runtime does not own sits in journal/events; move it out by hand, since the runtime never deletes it, then restart chat or run repair.';
+  const remedy = 'The journal is unavailable. An entry the runtime does not own sits in journal/events; move it out by hand, since the runtime never deletes it, then restart chat or run repair.';
 
   // Act
   Object.assign(backend.status, { freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalForeignEntry' } });
@@ -368,6 +368,22 @@ test('status names a foreign journal events entry and its manual remedy', () => 
   // Assert
   assert.ok(foreign.includes(remedy), foreign);
   assert.equal(generic.includes('journal/events'), false);
+});
+
+test('status carries the journal/events remedy once when the capacity readout already names it', () => {
+  // Arrange
+  const backend = new FakeBackend();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider: new FakeProvider(), instructionsSha256: instructionHash,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  Object.assign(backend.status, { freshness: { ...backend.status.freshness, state: 'failed', class: 'journal', reason: 'journalForeignEntry' },
+    capacity: { ...backend.status.capacity, ordinary: { state: 'unavailable', reason: 'foreignEntryJournalEvents', dimensions: [] } } });
+
+  // Act
+  const rendered = formatStatus(host.status);
+
+  // Assert
+  assert.ok(rendered.includes('capacity unavailable (ordinary: foreignEntryJournalEvents).'), rendered);
+  assert.equal(rendered.split(journalEventsForeignEntryRemedy).length - 1, 1, rendered);
 });
 
 test('capacity readout keeps fixed slot order and labels each unknown obligation', () => {
