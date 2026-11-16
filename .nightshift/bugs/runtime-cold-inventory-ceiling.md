@@ -16,12 +16,14 @@ Production does not write events the way the test fixture does: on every complet
 
 The probe's read-back matched the helper's own first read, the same `nativefs.ReadBounded` in the writing process, but it differs from production in at least two ways: the helper publishes each event by writing a temporary sibling and moving or replacing it into place (`nativefs.PublishValidated`) before the codec reads the final path back, not by writing the final path; and the helper creates that temporary exclusively and flushes it before closing (`writeNew`), while the probe wrote through `os.WriteFile` without a flush.
 
+## Publication and reboot probe
+
+A second scratch probe on LUMINOS on 2026-11-16 published each of the 8,193 events through `nativefs.PublishValidated`, as the helper does, into a data root under the repository's `.tmp` folder, then read each back through `nativefs.ReadBounded`: the publications took 64.7 seconds in total (about 7.9 ms per event), the read-backs 1.6 seconds (about 0.19 ms per event), and an Inventory that followed 1.16 seconds (about 0.14 ms per event). After the user rebooted LUMINOS, the first Inventory of that untouched data root took 3.72 seconds (about 0.45 ms per event) and a second 1.48 seconds (about 0.18 ms per event). With the production publication path, the first-open cost thus landed on the publication itself, and a reboot left the files far inside the budget. Both warm figures are close to the MVP report's 0.13 ms, which suggests the slower warm reads above owe to the files having been written through `os.WriteFile`.
+
 ## Open questions
 
-- Whether a file published by that move or replace and then read back is as warm for the next Inventory as the probe's in-place files were, which the probe could not show.
-- Whether a reboot or a scanner update makes the host forget what it has scanned, so that the first Inventory afterwards reads a ceiling-sized data root cold, after which its files are warm again.
+- Whether a scanner signature update makes the host rescan files it has already seen, so that the first Inventory afterwards reads a ceiling-sized data root fully cold; the reboot did not.
 - What a missed budget does to the player's turn. The runtime refuses any inspector native request budgeted over 30 seconds, its resource observation budgets Inventory at 30 seconds or the operation's remaining deadline if that is shorter, and it turns a failed Inventory into an unavailable capacity refusal.
-- Why a warm read is still two to three times slower per event than the MVP report's figure, which the first-open hypothesis does not explain. At the warm rate the ceiling still fits well inside the budget.
 
 Packing settled history into fewer files, recorded as a candidate in [Long-lived runtime history](../features/runtime-long-lived-history-preservation.md), would likely shrink a cold read if its cost is per open rather than per byte scanned, which is unmeasured.
 

@@ -29,7 +29,7 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 ### [Cold inventory of the event ceiling may exceed the runtime budget](bugs/runtime-cold-inventory-ceiling.md)
 
-A cold native Inventory of 8,193 compact events, one past the 8,192 retained-handoff bound the timing test models, took 38 to 59 seconds on LUMINOS, over the runtime's 30-second budget, nearly all of it in the first read-access open of each newly written file; a probe suggests the codec's read-back after each write absorbs that cost in ordinary play, while the effect of staged publication and of a reboot or scanner update remains unmeasured.
+A cold native Inventory of 8,193 compact events, one past the 8,192 retained-handoff bound the timing test models, took 38 to 59 seconds on LUMINOS, over the runtime's 30-second budget, nearly all of it in the first read-access open of each newly written file; probes show the production publication path absorbs that cost at write time and a reboot leaves the files warm (3.7 seconds), while the effect of a scanner signature update remains unmeasured.
 
 **Requires:** none.
 
