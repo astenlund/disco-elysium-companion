@@ -4,7 +4,7 @@
 // sequence with the synthetic provider and records each run in a report.
 //
 // Usage: node run-gates.ts <folder of save copies>
-//   The folder holds at least three save copies; they are only read, and the run fails if any changes. The live save folder
+//   The absolute folder holds at least three `.ntwtf.zip` save copies; they are only read, and the run fails if any changes. The live save folder
 //   the repository's adapter names is refused, so the game's own saves are never read or touched.
 //   GATES_ONLY=<fragment,...> runs only the runs whose labels contain a fragment, plus the baseline new save.
 // Each run records a verdict: `met`, or `missed: <reason>` against that run's gate check. Prints one JSON line per run
@@ -59,10 +59,11 @@ const saveSource = await fs.realpath(suppliedSaves);
 const liveSaves = (JSON.parse(await fs.readFile(path.join(repository, 'adapters', 'disco_elysium', 'adapter.json'), 'utf8')) as { saveDirectory: string }).saveDirectory;
 const liveSavesReal = await fs.realpath(liveSaves).catch(() => path.resolve(liveSaves));
 if (within(liveSavesReal.toLowerCase(), saveSource.toLowerCase())) { throw new Error('The live save folder is refused; supply a folder of copies.'); }
-const candidates = (await Promise.all((await fs.readdir(saveSource, { withFileTypes: true })).filter(entry => entry.isFile())
+// Only files the adapter would read as saves are candidates, so a stray newer file in the folder is never staged.
+const candidates = (await Promise.all((await fs.readdir(saveSource, { withFileTypes: true })).filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.ntwtf.zip'))
   .map(async entry => ({ name: entry.name, info: await fs.stat(path.join(saveSource, entry.name)) }))))
   .sort((left, right) => right.info.mtimeMs - left.info.mtimeMs);
-if (candidates.length < 3) { throw new Error('The save folder needs at least three save copies.'); }
+if (candidates.length < 3) { throw new Error('The save folder needs at least three .ntwtf.zip save copies.'); }
 const sourceHashes = await Promise.all(candidates.slice(0, 3).map(async item => hash(path.join(saveSource, item.name))));
 
 // Prepare the copied root.
@@ -205,17 +206,21 @@ const exitCode = (expected: number, firstLine?: string): Expectation => record =
   return firstLine === undefined || lines[0]?.startsWith(firstLine) === true ? null : `first line ${JSON.stringify(lines[0] ?? null)}`;
 };
 const killed = (record: Event): string | null => firstAction(record)['found'] === true ? null : 'the worker was not found and killed';
-const noHealthyAttachment: Expectation = record => killed(record) ?? (attachedSnapshot(record)?.['healthy'] === true ? 'a healthy status was reported after the fault' : null);
-const killedAtAttachment: Expectation = record => attachedSnapshot(record) === null ? 'the run never attached' : null;
+const noHealthyAttachment: Expectation = record => killed(record)
+  ?? (resultOf(record)['status'] !== 'completed' || attachedSnapshot(record) === null ? `the run did not complete attached (${String(resultOf(record)['status'])})`
+    : attachedSnapshot(record)?.['healthy'] === true ? 'a healthy status was reported after the fault' : null);
+// The kill must be what ended the run: an attached run that exited on its own, or reported a result, was not killed attached.
+const killedAtAttachment: Expectation = record => attachedSnapshot(record) === null ? 'the run never attached'
+  : record['code'] === null && record['result'] === null ? null : 'the run ended on its own rather than by the kill at attachment';
 const disabledWatcherStart: Expectation = record => {
   const attached = attachedSnapshot(record);
   return attached !== null && attached['watcher'] === 'disabled' && attached['freshness'] === 'fresh' && attached['safety'] === 'ready' && attached['provider'] === 'ready'
     ? null : 'the start did not attach fresh with ready safety and provider and a disabled watcher';
 };
 
-// Each worker, interaction and watcher fault case starts from a settling run that takes one acknowledged turn, which clears
-// any outstanding correction, and must end with ready safety; if it does not, the fault run that follows records a missed
-// verdict. Its label carries the gate's own so a GATES_ONLY filter keeps it.
+// A settling run takes one acknowledged turn, which clears any outstanding correction, and must end with ready safety. One
+// precedes each worker fault, the interaction gate's success and failure pair, and each watcher comparison sequence; if it
+// does not end ready, the run it names records a missed verdict. Its label carries that run's own so a GATES_ONLY filter keeps it.
 async function settle(before: string): Promise<void> {
   const record = await run(`settle-before-${before}`, ['chat', '1'], { expect: settled });
   if (record['skipped'] !== true && record['verdict'] !== 'met') {
@@ -281,7 +286,8 @@ await run('recovery-after-suspended-settlement', ['chat', '1'], { env: awaitHeal
 // Gate: enabled-watcher recovery after a kill at attachment, compared with the same recovery with the watcher disabled. A
 // disabled watcher never satisfies the healthy predicate, so its runs record timing and state without awaiting health.
 async function killAtAttachment(label: string): Promise<void> {
-  await run(label, ['chat', '0'], { onEvent: (event, child) => { if (event['event'] === 'attached') { child.kill(); } }, expect: killedAtAttachment });
+  await run(label, ['chat', '0'], { env: { ...product(), GATE_HOLD_AFTER_ATTACH_MS: '60000' },
+    onEvent: (event, child) => { if (event['event'] === 'attached') { child.kill(); } }, expect: killedAtAttachment });
 }
 await settle('killed-at-attachment-watcher-enabled');
 await killAtAttachment('killed-at-attachment-watcher-enabled');

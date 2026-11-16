@@ -3,6 +3,7 @@
 //   node gate-main.ts <root> provider-refusal       start chat with a provider whose every start its own child refuses
 //   node gate-main.ts <root> cli <args...>          run the product CLI function on the root (consumer and notOwner chat only)
 // With GATE_AWAIT_HEALTHY=1, a chat run waits up to 180 s from process start for healthy status: the healthy-recovery gate.
+// With GATE_HOLD_AFTER_ATTACH_MS=<n>, a chat run stays attached for n milliseconds before shutdown, so a kill at attachment lands.
 // Emits JSON lines on stdout: live `phase` events, `attached`, `healthy`, `awaiting-go`, `turn`, then one final `result`.
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -24,6 +25,7 @@ const turnWaitMs = 300000;
 const acknowledgementWaitMs = 30000;
 const recoveryBoundMs = 180000;
 const awaitHealthy = process.env['GATE_AWAIT_HEALTHY'] === '1';
+const holdAfterAttachMs = Number(process.env['GATE_HOLD_AFTER_ATTACH_MS'] ?? 0) || 0;
 const emit = (value: Record<string, unknown>): void => { process.stdout.write(JSON.stringify({ processMs: performance.now(), ...value }) + newline); };
 const pause = (milliseconds: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, milliseconds); });
 
@@ -98,6 +100,8 @@ async function chat(root: string, turns: number, goFile: string | null): Promise
       if (healthy(snapshot(ready, current))) { healthyAtMs = performance.now(); }
     }
     emit({ event: 'healthy', awaited: awaitHealthy, healthyAtMs, ...snapshot(ready, current) });
+    // A run the driver kills at attachment stays attached until the kill arrives, so the kill lands on an attached runtime.
+    if (holdAfterAttachMs > 0) { await pause(holdAfterAttachMs); }
     let turn: Record<string, unknown> | null = null;
     if (turns === 1 && current.status.provider.state !== 'ready') { turn = { outcome: 'skipped-provider-not-ready', after: snapshot(ready, current) }; }
     if (turns === 1 && current.status.provider.state === 'ready') {

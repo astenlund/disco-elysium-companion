@@ -16,9 +16,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const fixture = (name: string): string => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 const processChild = fixture('process-child.ts');
 
+// Both failures raise the same refusal, so the elapsed time tells the branches apart: the exiting worker must be refused at its
+// end of output, well before the 30-second handshake deadline, and the silent one only once its 3-second deadline expired.
 for (const item of [
-  { name: 'exits before its hello', script: 'startup-worker-exit.ps1', handshakeTimeoutMs: 30000 },
-  { name: 'stays silent past its handshake deadline', script: 'startup-worker-silent.ps1', handshakeTimeoutMs: 3000 },
+  { name: 'exits before its hello', script: 'startup-worker-exit.ps1', handshakeTimeoutMs: 30000, refusedWithinMs: [0, 15000] },
+  { name: 'stays silent past its handshake deadline', script: 'startup-worker-silent.ps1', handshakeTimeoutMs: 3000, refusedWithinMs: [3000, 30000] },
 ] as const) {
   test(`a real startup worker that ${item.name} fails closed with a verified stop`, { timeout: 60000 }, async () => {
     // Arrange
@@ -28,12 +30,15 @@ for (const item of [
     const scope = { companionRoot: scratch, dataRoot: path.join(scratch, 'runtime-data'), bindingSha256: 'a'.repeat(64) } as unknown as RuntimeScope;
     try {
       // Act
+      const started = performance.now();
       const failure = await StartupWorkerTransport.open(native.supervisor, scope, 'startupCoreReply', fixture(item.script), 'b'.repeat(64),
         item.handshakeTimeoutMs).then(() => null, (error: unknown) => error);
+      const elapsedMs = performance.now() - started;
 
       // Assert
       assert.ok(failure instanceof DataRootUnavailableError, `Expected the transport refusal, got ${String(failure)}.`);
       assert.equal(failure.message, 'Startup worker transport is unavailable.');
+      assert.ok(elapsedMs >= item.refusedWithinMs[0] && elapsedMs < item.refusedWithinMs[1], `Refused after ${Math.round(elapsedMs)} ms.`);
       await native.supervisor.verifyQuiescent('startupCoreReply');
       const next = await native.supervisor.run('startupCoreReply', { command: process.execPath, args: [processChild, 'arguments', 'after-failure'], cwd: root }, 15000);
       assert.equal(next.stdout.toString('utf8'), '["after-failure"]');
