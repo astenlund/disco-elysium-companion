@@ -109,7 +109,8 @@ async function chat(root: string, turns: number, goFile: string | null): Promise
       };
       let acknowledged = false;
       const originalAcknowledge = ready.acknowledge.bind(ready);
-      ready.acknowledge = async (...args) => { const result = await originalAcknowledge(...args); acknowledged = true; return result; };
+      // A refused acknowledgement returns null, so only a returned binding counts.
+      ready.acknowledge = async (...args) => { const result = await originalAcknowledge(...args); acknowledged ||= result !== null; return result; };
       const submitted = performance.now();
       const admission = current.submitChat({ text: 'Inspect the copied fixture.', questionOverride: false }).result;
       if (admission !== 'admitted') { throw new Error(`The fixture turn was not admitted: ${admission}.`); }
@@ -129,7 +130,8 @@ async function chat(root: string, turns: number, goFile: string | null): Promise
     const shutdownStarted = performance.now();
     await current.shutdown();
     host = null;
-    emit({ event: 'result', status: 'passed', attachment: atAttach, healthyAtMs, turn, shutdownMs: performance.now() - shutdownStarted });
+    // `completed` means the run finished; whether it met its gate is the driver's verdict.
+    emit({ event: 'result', status: 'completed', attachment: atAttach, healthyAtMs, turn, shutdownMs: performance.now() - shutdownStarted });
     return 0;
   } catch (error) {
     if (host !== null) { try { await host.shutdown(); } catch { /* The driver inspects the root afterwards. */ } }
@@ -147,7 +149,7 @@ async function providerRefusal(root: string): Promise<number> {
     const opened = await createChatRuntime(root, phase => emit({ event: 'phase', phase }), { [privateRuntimeStartup]: { providerFactory: (_text, _tools, current) => {
       provider ??= new RefusingProvider(current.supervisor, root); return provider;
     } } }, image);
-    emit({ event: 'result', status: opened.result === 'providerUnavailable' ? 'passed' : 'unexpected', result: opened.result,
+    emit({ event: 'result', status: 'completed', result: opened.result,
       starts: (provider as RefusingProvider | null)?.starts ?? 0, durationMs: performance.now() - started });
     if (opened.result === 'ready') { await opened.host.shutdown(); }
     return opened.result === 'providerUnavailable' ? 0 : 1;

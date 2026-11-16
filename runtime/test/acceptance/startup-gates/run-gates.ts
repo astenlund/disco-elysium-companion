@@ -7,8 +7,8 @@
 //   The folder holds at least three save copies; they are only read, and the run fails if any changes. The live save folder
 //   the repository's adapter names is refused, so the game's own saves are never read or touched.
 //   GATES_ONLY=<fragment,...> runs only the runs whose labels contain a fragment, plus the baseline new save.
-// Prints one JSON line per run start, end and timeout, and finally the report path; watch-log.mjs follows that output and
-// summarize.mjs reads the report.
+// Each run records a verdict: `met`, or `missed: <reason>` against that run's gate check. Prints one JSON line per run
+// start, end and timeout, and finally the report path; watch-log.mjs follows that output and summarize.mjs reads the report.
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -22,11 +22,14 @@ import { openBackend } from '../../../src/backend/index.ts';
 import { testHelperImage } from '../../support/native-helper.ts';
 
 type Event = Record<string, unknown>;
+/** A gate check over a finished run's record: null when the run met its gate, otherwise the reason it did not. */
+type Expectation = (record: Event) => string | null;
 interface RunOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly onEvent?: (event: Event, child: ReturnType<typeof spawn>) => Promise<unknown> | unknown;
-  readonly onStart?: () => void;
+  readonly onStart?: () => Promise<unknown> | undefined;
   readonly timeoutMs?: number;
+  readonly expect?: Expectation;
 }
 
 const execute = promisify(execFile);
@@ -108,50 +111,93 @@ async function act(script: string, action: 'kill' | 'suspend', waitMs: number): 
   return JSON.parse(stdout.trim() || '{"found":null,"helper":"silent"}') as Event;
 }
 
+const killTree = (pid: number | undefined): Promise<unknown> => pid === undefined ? Promise.resolve() : execute('taskkill', ['/PID', String(pid), '/T', '/F']).catch(() => undefined);
+
 async function run(label: string, args: string[], options: RunOptions = {}): Promise<Event> {
   if (only.length > 0 && label !== 'new-save' && !only.some(part => label.includes(part))) { console.log(JSON.stringify({ label, event: 'skipped' })); return { label, skipped: true }; }
   const started = performance.now();
   const child = spawn(process.execPath, [main, root, ...args], { cwd: root, env: options.env ?? product(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Registered at spawn: a child killed by a signal has no exit code, and its exit event can precede the end of its output.
+  const exited = new Promise<number | null>(resolve => { child.once('exit', code => resolve(code)); });
   let timedOut = false;
   const deadline = setTimeout(() => {
     timedOut = true;
     console.log(JSON.stringify({ label, event: 'timeout', afterMs: performance.now() - started }));
-    void execute('taskkill', ['/PID', String(child.pid), '/T', '/F']).catch(() => undefined);
+    void killTree(child.pid);
   }, options.timeoutMs ?? runTimeoutMs);
-  console.log(JSON.stringify({ label, event: 'start', pid: child.pid }));
-  options.onStart?.();
-  let stderr = '';
-  child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString('utf8')).slice(-4000); });
-  const events: Event[] = [];
-  const actions: Promise<unknown>[] = [];
-  let attachedMs: number | null = null;
-  for await (const line of createInterface({ input: child.stdout })) {
-    let event: Event;
-    try { event = JSON.parse(line) as Event; } catch { continue; }
-    event['harnessMs'] = performance.now() - started;
-    if (event['event'] === 'attached') { attachedMs = performance.now() - started; }
-    events.push(event);
-    if (options.onEvent !== undefined) { actions.push(Promise.resolve(options.onEvent(event, child))); }
+  let finished = false;
+  try {
+    console.log(JSON.stringify({ label, event: 'start', pid: child.pid }));
+    const recordFailure = (error: unknown): Event => ({ actionError: error instanceof Error ? error.message : String(error) });
+    const actions: Promise<unknown>[] = [];
+    const startAction = options.onStart?.();
+    if (startAction !== undefined) { actions.push(startAction.catch(recordFailure)); }
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString('utf8')).slice(-4000); });
+    const events: Event[] = [];
+    let attachedMs: number | null = null;
+    for await (const line of createInterface({ input: child.stdout })) {
+      let event: Event;
+      try { event = JSON.parse(line) as Event; } catch { continue; }
+      event['harnessMs'] = performance.now() - started;
+      if (event['event'] === 'attached') { attachedMs = performance.now() - started; }
+      events.push(event);
+      const onEvent = options.onEvent;
+      // A failed action is recorded on the run rather than left to reject unobserved and end the driver.
+      if (onEvent !== undefined) { actions.push(Promise.resolve().then(() => onEvent(event, child)).catch(recordFailure)); }
+    }
+    const code = await exited;
+    finished = true;
+    const acted = await Promise.all(actions);
+    const record: Event = { label, args, code, timedOut, attachedMs, durationMs: performance.now() - started, result: events.find(event => event['event'] === 'result') ?? null,
+      attached: events.find(event => event['event'] === 'attached') ?? null,
+      phases: events.filter(event => event['event'] === 'phase').map(event => `${String(event['phase'])}@${(Number(event['processMs']) / 1000).toFixed(1)}`),
+      acted: acted.filter(item => item !== undefined), stderr: code === 0 ? '' : stderr };
+    const missed = timedOut ? 'the run timed out' : (options.expect ?? (args[0] === 'chat' ? healthyStart : () => 'no gate check was given'))(record);
+    record['verdict'] = missed === null ? 'met' : `missed: ${missed}`;
+    runs.push(record);
+    console.log(JSON.stringify({ label, event: 'end', code, timedOut, attachedMs, durationMs: record['durationMs'], verdict: record['verdict'] }));
+    await fs.writeFile(reportPath, JSON.stringify({ ...report, runs, stagedSaves }, null, 2) + newline);
+    return record;
+  } finally {
+    clearTimeout(deadline);
+    if (!finished) { await killTree(child.pid); }
   }
-  const code = child.exitCode ?? await new Promise<number | null>(resolve => { child.once('exit', resolve); });
-  clearTimeout(deadline);
-  const acted = await Promise.all(actions);
-  const record: Event = { label, args, code, timedOut, attachedMs, durationMs: performance.now() - started, result: events.find(event => event['event'] === 'result') ?? null,
-    attached: events.find(event => event['event'] === 'attached') ?? null,
-    phases: events.filter(event => event['event'] === 'phase').map(event => `${String(event['phase'])}@${(Number(event['processMs']) / 1000).toFixed(1)}`),
-    acted: acted.filter(item => item !== undefined), stderr: code === 0 ? '' : stderr };
-  runs.push(record);
-  console.log(JSON.stringify({ label, event: 'end', code, timedOut, attachedMs, durationMs: record['durationMs'], status: (record['result'] as Event | null)?.['status'] ?? null }));
-  await fs.writeFile(reportPath, JSON.stringify({ ...report, runs, stagedSaves }, null, 2) + newline);
-  return record;
 }
+
+// Gate checks. Each reads only the run's own record.
+const resultOf = (record: Event): Event => (record['result'] as Event | null) ?? {};
+const turnOf = (record: Event): Event | null => (resultOf(record)['turn'] as Event | null | undefined) ?? null;
+const afterTurn = (record: Event): Event => (turnOf(record)?.['after'] as Event | undefined) ?? {};
+const firstAction = (record: Event): Event => ((record['acted'] as Event[])[0]) ?? {};
+const attachedSnapshot = (record: Event): Event | null => (record['attached'] as Event | null) ?? null;
+/** A counted healthy start: healthy status by the end of the run's wait, and, when a turn was requested, an acknowledged one. */
+const healthyStart: Expectation = record => {
+  if (resultOf(record)['status'] !== 'completed') { return `the run did not complete (${String(resultOf(record)['status'])})`; }
+  if (resultOf(record)['healthyAtMs'] === null || resultOf(record)['healthyAtMs'] === undefined) { return 'no healthy status was observed'; }
+  if ((record['args'] as string[])[1] === '1' && (turnOf(record)?.['outcome'] !== 'completed' || turnOf(record)?.['acknowledged'] !== true)) { return 'the turn did not complete with an acknowledgement'; }
+  return null;
+};
+const settled: Expectation = record => turnOf(record)?.['outcome'] === 'completed' && turnOf(record)?.['acknowledged'] === true && afterTurn(record)['safety'] === 'ready' ? null : 'the turn did not leave ready safety';
+const exitCode = (expected: number, firstLine?: string): Expectation => record => {
+  const lines = (resultOf(record)['lines'] as string[] | undefined) ?? [];
+  if (resultOf(record)['code'] !== expected) { return `exit code ${String(resultOf(record)['code'])}`; }
+  return firstLine === undefined || lines[0]?.startsWith(firstLine) === true ? null : `first line ${JSON.stringify(lines[0] ?? null)}`;
+};
+const killed = (record: Event): string | null => firstAction(record)['found'] === true ? null : 'the worker was not found and killed';
+const noHealthyAttachment: Expectation = record => killed(record) ?? (attachedSnapshot(record)?.['healthy'] === true ? 'a healthy status was reported after the fault' : null);
+const killedAtAttachment: Expectation = record => attachedSnapshot(record) === null ? 'the run never attached' : null;
+const disabledWatcherStart: Expectation = record => {
+  const attached = attachedSnapshot(record);
+  return attached !== null && attached['watcher'] === 'disabled' && attached['freshness'] === 'fresh' && attached['safety'] === 'ready' && attached['provider'] === 'ready'
+    ? null : 'the start did not attach fresh with ready safety and provider and a disabled watcher';
+};
 
 // Every fault case starts from a verified healthy predecessor: a settling run takes one acknowledged turn, which clears any
 // outstanding correction, and must end with ready safety. Its label carries the gate's own so a GATES_ONLY filter keeps it.
 async function settle(before: string): Promise<void> {
-  const record = await run(`settle-before-${before}`, ['chat', '1']);
-  const after = ((record['result'] as Event | null)?.['turn'] as Event | null | undefined)?.['after'] as Event | undefined;
-  if (record['skipped'] !== true && after?.['safety'] !== 'ready') { console.log(JSON.stringify({ label: `settle-before-${before}`, event: 'unsettled', after })); }
+  const record = await run(`settle-before-${before}`, ['chat', '1'], { expect: settled });
+  if (record['skipped'] !== true && record['verdict'] !== 'met') { console.log(JSON.stringify({ label: `settle-before-${before}`, event: 'unsettled', after: afterTurn(record) })); }
 }
 const awaitHealthy = { ...product(), GATE_AWAIT_HEALTHY: '1' };
 
@@ -161,28 +207,28 @@ await run('acknowledged-restart', ['chat', '1']);
 
 // Gate: entry-point exits. Release to the bridge; chat through the CLI function must then exit notOwner before any provider.
 const refusingEnv = { ...product(), CLAUDE_CONFIG_DIR: emptyProviderConfig };
-await run('cli-consumer-bridge', ['cli', 'consumer', 'bridge']);
-await run('cli-chat-not-owner', ['cli', 'chat'], { env: refusingEnv });
-await run('cli-consumer-runtime', ['cli', 'consumer', 'runtime']);
+await run('cli-consumer-bridge', ['cli', 'consumer', 'bridge'], { expect: exitCode(0) });
+await run('cli-chat-not-owner', ['cli', 'chat'], { env: refusingEnv, expect: record => exitCode(1, 'notOwner:')(record)
+  ?? (((resultOf(record)['progress'] as Event[] | undefined) ?? []).some(event => String(event['phase'] ?? '').startsWith('provider')) ? 'a provider phase ran' : null) });
+await run('cli-consumer-runtime', ['cli', 'consumer', 'runtime'], { expect: exitCode(0) });
 await run('restart-after-rehandover', ['chat', '1']);
 
 // Gate: provider-start refusal, then a healthy start.
-await run('provider-refusal', ['provider-refusal']);
+await run('provider-refusal', ['provider-refusal'], { expect: record => resultOf(record)['result'] === 'providerUnavailable' ? null : `chat startup returned ${String(resultOf(record)['result'])}` });
 await run('restart-after-provider-refusal', ['chat', '0']);
 
 // Gate: a real warm core reply worker failure before its first reply, killed as soon as it appears and killed during
 // startup acquisition; each restart is a recovery run.
 await settle('worker-killed-on-sight');
-let earlyKill: Promise<Event> | null = null;
-await run('worker-killed-on-sight', ['chat', '0'], { onStart: () => { earlyKill = act('StartupCoreReplyWorker.ps1', 'kill', 30000); } });
-if (earlyKill !== null) { runs.at(-1)!['acted'] = [await earlyKill]; }
+await run('worker-killed-on-sight', ['chat', '0'], { onStart: () => act('StartupCoreReplyWorker.ps1', 'kill', 30000), expect: record => killed(record)
+  ?? (resultOf(record)['status'] === 'failed' && resultOf(record)['name'] === 'DataRootUnavailableError' ? null : 'the start did not fail closed with the transport refusal') });
 await run('restart-after-worker-kill-on-sight', ['chat', '0'], { env: awaitHealthy });
 await settle('worker-killed-at-acquisition');
 let acquisitionKilled = false;
 await run('worker-killed-at-acquisition', ['chat', '0'], { onEvent: async event => {
   if (event['event'] === 'phase' && event['phase'] === 'startupAcquisition' && !acquisitionKilled) { acquisitionKilled = true; return act('StartupCoreReplyWorker.ps1', 'kill', 5000); }
   return undefined;
-} });
+}, expect: noHealthyAttachment });
 await run('restart-after-worker-kill-at-acquisition', ['chat', '0'], { env: awaitHealthy });
 
 // Gate: the 120-second interaction gate. A complete acknowledged turn over a newly staged save, then one whose settlement
@@ -202,22 +248,23 @@ await run('interaction-settlement-suspended', ['chat', '1', goFailure], { timeou
     return found;
   }
   return undefined;
-} });
+}, expect: record => turnOf(record)?.['outcome'] === 'failed:stateInvalidated' && afterTurn(record)['freshnessReason'] === 'settlementPending' && afterTurn(record)['safety'] !== 'ready'
+  ? null : 'the gate did not fail the turn with settlementPending and unready safety' });
 await run('recovery-after-suspended-settlement', ['chat', '1'], { env: awaitHealthy, timeoutMs: longRunTimeoutMs });
 
 // Gate: enabled-watcher recovery after a kill at attachment, compared with the same recovery with the watcher disabled. A
 // disabled watcher never satisfies the healthy predicate, so its runs record timing and state without awaiting health.
 async function killAtAttachment(label: string): Promise<void> {
-  await run(label, ['chat', '0'], { onEvent: (event, child) => { if (event['event'] === 'attached') { child.kill(); } } });
+  await run(label, ['chat', '0'], { onEvent: (event, child) => { if (event['event'] === 'attached') { child.kill(); } }, expect: killedAtAttachment });
 }
 await settle('killed-at-attachment-watcher-enabled');
 await killAtAttachment('killed-at-attachment-watcher-enabled');
 await run('recovery-watcher-enabled', ['chat', '0'], { env: awaitHealthy });
 await settle('clean-start-watcher-disabled');
 await fs.writeFile(configPath, JSON.stringify({ ...config, watcher: { ...config.watcher, enabled: false } }) + newline);
-await run('clean-start-watcher-disabled', ['chat', '0']);
+await run('clean-start-watcher-disabled', ['chat', '0'], { expect: disabledWatcherStart });
 await killAtAttachment('killed-at-attachment-watcher-disabled');
-await run('recovery-watcher-disabled', ['chat', '0']);
+await run('recovery-watcher-disabled', ['chat', '0'], { expect: disabledWatcherStart });
 await fs.writeFile(configPath, JSON.stringify(config) + newline);
 await run('clean-start-watcher-reenabled', ['chat', '1']);
 

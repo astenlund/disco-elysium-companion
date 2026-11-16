@@ -1,4 +1,4 @@
-// Prints a run-gates.ts report: one line per run with exit code, attach time, attach-time health and its inputs, the time
+// Prints a run-gates.ts report: one line per run with its gate verdict, exit code, attach time, attach-time health and its inputs, the time
 // healthy status arrived when the run awaited it, and the turn outcome. With a label, prints that run's turn timeline too.
 // Usage: node summarize.mjs <report.json> [label]
 import { readFileSync } from 'node:fs';
@@ -11,7 +11,7 @@ for (const run of report.runs) {
   if (run.skipped) { continue; }
   const a = run.attached;
   const turn = run.result?.turn;
-  console.log([run.label.padEnd(50), `code=${run.code}`, run.timedOut ? 'TIMED-OUT' : '', `attach=${seconds(run.attachedMs)}`,
+  console.log([run.label.padEnd(50), `verdict=${run.verdict ?? '-'}`, `code=${run.code}`, run.timedOut ? 'TIMED-OUT' : '', `attach=${seconds(run.attachedMs)}`,
     a === null ? 'no-attach' : `healthy=${a.healthy} fresh=${a.freshness}/${a.freshnessReason} safety=${a.safety}/${a.correction} provider=${a.provider} watcher=${a.watcher}`,
     run.result?.healthyAtMs !== undefined ? `healthyAt=${seconds(run.result.healthyAtMs)}` : '',
     turn ? `turn=${turn.outcome} ack=${turn.acknowledged} after=${turn.after?.safety}/${turn.after?.correction}` : '',
