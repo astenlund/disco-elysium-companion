@@ -13,7 +13,7 @@
   "helper": {
     "file": "companion-helper.exe",
     "bytes": 4678656,
-    "sha256": "67840f7cb9fe59980c18edfe0254b1c43d3a7a2a024e9be2f6ad02e8689f48eb",
+    "sha256": "aa06872a4b1a5f2b2e8b7c4ccff111cedcc0e99c70598561ace45acefd4ccb81",
     "sources": [
       {
         "path": "runtime/native/helper/go.mod",
@@ -109,11 +109,11 @@
       },
       {
         "path": "runtime/native/helper/internal/inventory/categories_test.go",
-        "sha256": "e9de7b0c0f304c696585d4746090fe6176a4a422da91ba75dcba7fce767a84a9"
+        "sha256": "90c41015de04656a10addea2cf10e8062dfcf87c08f751703a1971b7b17dcc6c"
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory.go",
-        "sha256": "cf56fde987e358f2c1affcde52c79f6a27e4a95b1afdc15d44d4ef0373932b60"
+        "sha256": "8b60d33331dd7f4d08ba49f252e4447343356821a7c310e75638af4cf6efc9fa"
       },
       {
         "path": "runtime/native/helper/internal/inventory/inventory_test.go",

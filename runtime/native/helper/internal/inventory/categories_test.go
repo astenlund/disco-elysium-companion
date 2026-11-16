@@ -76,6 +76,7 @@ func TestQuarantineTrimNamesAForeignQuarantineEntry(t *testing.T) {
 		{"misnamed file", "notes.txt", false, true},
 		{"folder", "unexpected", true, true},
 		{"publication temporary", "record." + strings.Repeat("a", 32) + ".quarantined." + strings.Repeat("b", 32) + ".tmp", false, false},
+		{"publication backup", "record." + strings.Repeat("a", 32) + ".quarantined." + strings.Repeat("b", 32) + ".bak", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

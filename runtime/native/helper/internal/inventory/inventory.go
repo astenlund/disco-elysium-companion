@@ -478,8 +478,9 @@ func CheckEventExpansion(data []byte) ([]byte, error) {
 	return []byte(`{"admitted":true}`), nil
 }
 
-// TrimQuarantine removes the oldest unprotected quarantined files beyond the retention limit. A folder or a file outside
-// the quarantined-file grammar fails it as a foreign quarantine entry, so the maintenance refusal can name its remedy.
+// TrimQuarantine removes the oldest unprotected quarantined files beyond the retention limit. A folder, or a file that is
+// neither a quarantined file nor a publication temporary, fails it as a foreign quarantine entry, so the maintenance
+// refusal can name its remedy.
 // gate is consulted before the first deletion, the trim's commit point; later deletions proceed regardless of time.
 func TrimQuarantine(root, scopeSha256 string, protectedBytes []byte, gate nativefs.Gate) ([]byte, error) {
 	if err := verifyScope(root, scopeSha256); err != nil {
