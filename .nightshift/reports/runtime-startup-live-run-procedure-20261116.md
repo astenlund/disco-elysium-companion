@@ -27,7 +27,7 @@ function Get-RootProcess([string]$Script) { @(Get-CimInstance Win32_Process -Fil
 Get-RootProcess 'Watch-Saves.ps1' | Select-Object ProcessId, CreationDate, CommandLine
 ```
 
-Exactly one watcher should be listed. The process check shows that a watcher is running, not that it completed its startup observation, so record it as weaker evidence than a status readout. Verified startup-worker stop is not printed either; the [startup execution design](../features/runtime-startup-execution-30.md) withholds attachment on a failed or uncertain worker stop, so the private gates are the evidence for it, not this live check.
+Exactly one watcher should be listed. The process check shows that a watcher process for this root exists, not that the attached runtime started it and reports it running, so record it as weaker evidence than a status readout. Verified startup-worker stop is not printed either; the [startup execution design](../features/runtime-startup-execution-30.md) withholds attachment on a failed or uncertain worker stop, so the private gates are the evidence for it, not this live check.
 
 Any other status at attachment is a degraded or status-only attachment: record its time and status separately, and do not count it toward either target.
 
@@ -38,14 +38,14 @@ Run the new-save, acknowledged-restart and recovery cases at least three times e
 1. **New save.** With chat closed, make a new manual save in the game, then start chat. The start publishes, journals and settles that save before attachment. Target: healthy within 30 seconds. Ask one short question so the turn is acknowledged, then `/quit`.
 2. **Acknowledged restart.** After a session whose last turn completed, `/quit` and start chat again without saving in the game. Target: healthy within 30 seconds.
 3. **Recovery.** After a healthy attachment, end the chat process abruptly by closing its terminal window, then start chat again. Target: healthy within 180 seconds. In the private gates this case recovered healthy in seconds from a settled predecessor; if the restart attaches with `safety: recovering`, record it as degraded, then record how many further starts and turns it takes to reach `safety: ready`.
-4. **Status-only control.** The acceptance matrix requires status-only controls, so declining this case leaves the gate open. It deliberately leaves a correction on the real data root, so run it only if the user agrees. While a start shows the startup acquisition phase, stop the real root's warm worker from a second prompt that has `Get-RootProcess` defined as above, and only when exactly one worker matches:
+4. **Status-only control.** The acceptance matrix requires status-only controls, so declining this case leaves the gate open. It deliberately leaves a correction on the real data root, so run it only if the user agrees. Make a new manual save in the game first: the start then publishes and settles it during acquisition, which lengthened that phase to about 11 seconds in the private gates, against about 3 seconds without one. While the start's progress shows `acquiring current state`, stop the real root's warm worker from a second prompt that has `Get-RootProcess` defined as above, and only when exactly one worker matches:
 
    ```
    $workers = Get-RootProcess 'StartupCoreReplyWorker.ps1'
    if ($workers.Count -eq 1) { Stop-Process -Id $workers[0].ProcessId } else { "Found $($workers.Count) workers; stopping none." }
    ```
 
-   In the private gates this start attached status-only with provider input withheld; the following start attached degraded and took no turn, and an acknowledged turn in the start after it returned safety to ready. Record the attachment time and status of each start until the status reads healthy again.
+   In the private gates this start attached status-only with provider input withheld; the following start attached degraded and took no turn, and an acknowledged turn in the start after it returned safety to ready. Record the attachment time and status of each start until the status reads healthy again. If the kill lands outside that phase, record the progress line it followed and the outcome: in the private gates a kill before acquisition failed the start closed with `Startup worker transport is unavailable.` instead of attaching status-only, and a repeat attempt is needed.
 
 ## Record
 
