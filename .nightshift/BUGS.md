@@ -27,12 +27,6 @@ A missing `Requires:` line is a structural error. `/nightshift:ready` parses the
 
 (The reputation-mapping observability entry was resolved 2026-08-12 via the documented option-b narrowing and archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md); its diagnosis file [`bugs/mapper-reputation-observability.md`](bugs/mapper-reputation-observability.md) remains as the historical record. The duplicate-vendor / misspelled-entry / bad-initial-value clauses it names are spec-deferred, not open bugs.)
 
-### [Cold inventory of the event ceiling may exceed the runtime budget](bugs/runtime-cold-inventory-ceiling.md)
-
-A cold native Inventory of 8,193 compact events, one past the 8,192 retained-handoff bound the timing test models, took 38 to 59 seconds on LUMINOS, over the runtime's 30-second budget, nearly all of it in the first read-access open of each newly written file; probes show the production publication path absorbs that cost at write time and a reboot leaves the files warm (3.7 seconds), while the effect of a scanner signature update remains unmeasured.
-
-**Requires:** none.
-
 ## Startup prototype deferred bugs
 
 These findings belong to the private healthy-startup branch. They remain separate from its safety and timing acceptance gates.

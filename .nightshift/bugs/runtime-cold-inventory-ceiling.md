@@ -29,4 +29,4 @@ Packing settled history into fewer files, recorded as a candidate in [Long-lived
 
 ## Status
 
-Open. No fix is designed or authorized by this record.
+Closed by the user on 2026-11-16 after the publication and reboot probe, with a scanner signature update's effect unmeasured, and archived in [`BUGS_HISTORY.md`](../BUGS_HISTORY.md). No code fix was made beyond the timing test change; the record stays as the diagnosis.
