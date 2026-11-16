@@ -125,7 +125,7 @@
       },
       {
         "path": "runtime/native/helper/internal/inventory/timing_test.go",
-        "sha256": "a6c748935dbbdac1f5df57777e31564539fab2a850baf8029b45fb931aa800ef"
+        "sha256": "7475e73cae5fe1b3c723758016768bb48789ecd0b1d76968850843fb428cdbf2"
       },
       {
         "path": "runtime/native/helper/internal/jsondoc/jsondoc.go",

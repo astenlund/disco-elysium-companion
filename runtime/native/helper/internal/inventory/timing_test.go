@@ -9,8 +9,8 @@ import (
 	"companion-helper/internal/nativefs"
 )
 
-// productionDepthBudget is well inside the runtime's 30-second inventory budget, so a read of the retained-event
-// ceiling at production depth keeps room for slower machines.
+// productionDepthBudget is well inside the runtime's 30-second inventory budget, so a repeated read of the
+// retained-event ceiling at production depth keeps room for slower machines.
 const productionDepthBudget = 15 * time.Second
 
 // The budget gates a second read of the same files. The first read of newly written files can be dominated by the
