@@ -8,7 +8,7 @@ The committed harness `runtime/test/acceptance/startup-gates/run-gates.ts` copie
 
 Times run from the harness spawning a gate process to receiving its `attached` frame, so each is an upper bound that includes Node startup. A run counts as healthy only when the attachment shows the runtime as consumer, fresh state, ready safety, a healthy journal, a running watcher and a ready provider, the counted healthy attachment of the [startup execution objective](../features/runtime-startup-execution-30.md). Recovery runs wait up to 180 seconds from process start for that status. Every fault case starts from a settling run whose acknowledged turn must end with ready safety, so no run inherits an earlier run's correction.
 
-The final run, recorded below, measured commit `eaed5d3`, whose runtime source is that of `b0cfbcc`; the supplied and staged saves were unchanged afterwards.
+The final run, recorded below, measured commit `eaed5d3`, whose runtime source is that of `b0cfbcc`; the supplied and staged saves were unchanged afterwards. Review then corrected the harness at `b58af35`: each run now records a verdict against its own gate check, an acknowledgement counts only when the backend returned a binding, and a failed event action or a signal-killed run can no longer end or hang the driver with a gate process left running. A full run of the corrected harness at `b58af35` gave the same outcomes, with every run meeting its check except the two recoveries that need an acknowledged turn, described below.
 
 ## Routine timing
 
@@ -22,8 +22,9 @@ No routine start missed 30 seconds. Every attempt on 2026-11-16, in order:
 | Gate harness, filtered rerun | `c3e4c8c` with the stop fix uncommitted | 26.3 s | not run |
 | Gate harness, settled run | same | 12.8 s | 5.5 s |
 | Committed harness | `eaed5d3` | 13.9 s | 5.3 s |
+| Corrected harness | `b58af35` | 19.5 s | 6.9 s |
 
-All of these attached healthy. In the final new-save run the startup acquisition phase ran from 2.0 to 13.3 seconds of process time and dominates the start; the phases after it, from safety reconciliation through startup-worker closure, ran from 13.3 to 13.8 seconds. In the 26.3-second attempt the same phase took 20.8 seconds and its turn took 11.6 seconds, against 4 to 7 seconds elsewhere, so the PowerShell core work as a whole ran slower in that run; the cause was not established. Other healthy starts in the final run attached in 5.2 to 8.5 seconds.
+All of these attached healthy. In the final new-save run the startup acquisition phase ran from 2.0 to 13.3 seconds of process time and dominates the start; the phases after it, from safety reconciliation through startup-worker closure, ran from 13.3 to 13.8 seconds. In the 26.3-second attempt the same phase took 20.8 seconds and its turn took 11.6 seconds, against 4 to 7 seconds for the other turns that acquired no new save, so the PowerShell core work as a whole ran slower in that run; the cause was not established. Other healthy starts in the final run attached in 5.2 to 8.5 seconds.
 
 The earlier private timing fixture also killed a run at attachment and restarted it: 6.7 and 7.2, 5.6 and 6.3, and 5.6 and 5.6 seconds in its three batches. The previous comparable figures, 13.8 and 5.5 seconds at `180acf3` ([helper fixture evidence](go-native-helper-fixture-evidence-20261023.md)), are within the same range.
 
@@ -58,4 +59,4 @@ Three harness defects invalidated parts of earlier runs that day, and their figu
 
 ## Limits
 
-The provider is synthetic and no real client attached, so these runs say nothing about the real SDK's initialization, its write footprint or live readiness. Timings come from one machine, whose new-save attempts ranged from 12.8 to 14.4 seconds apart from one at 26.3 seconds. The worker kill on sight lands after the broker reports the worker's identity, so the transport's fallback for a worker that exits before its identity is not exercised here. The client does not print the watcher state ([Watcher state missing from the chat client readout](../BUGS.md)), which matters for the live run but not for these runs, since the harness reads backend status directly.
+The provider is synthetic and no real client attached, so these runs say nothing about the real SDK's initialization, its write footprint or live readiness. Timings come from one machine, whose new-save attempts ranged from 12.8 to 19.5 seconds apart from one at 26.3 seconds. The worker kill on sight lands after the broker reports the worker's identity, so the transport's fallback for a worker that exits before its identity is not exercised here. The client does not print the watcher state ([Watcher state missing from the chat client readout](../BUGS.md)), which matters for the live run but not for these runs, since the harness reads backend status directly.
