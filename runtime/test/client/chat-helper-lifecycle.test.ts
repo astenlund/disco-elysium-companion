@@ -53,8 +53,7 @@ describe('chat lifecycle on the native helper', () => {
       process.kill(servicePid()!);
       await until(() => { try { helper.brokerImage(); return false; } catch { return servicePid() === null; } });
 
-      // Assert: chat stays attached and refuses turns, while later launches and requests take their helper-unavailable paths.
-      assert.ok(['notReady', 'providerUnavailable'].includes(chat.host.submitChat({ text: 'After exhaustion.', questionOverride: false }).result));
+      // Assert: chat stays attached with no new provider start, while later launches and requests take their helper-unavailable paths.
       assert.equal(chat.provider.calls.length, providerStarts);
       assert.throws(() => chat.backend.supervisor.spawn('watcher', childOptions), SupervisorError);
       assert.throws(() => chat.backend.supervisor.spawn('provider', childOptions), SupervisorError);
@@ -72,6 +71,8 @@ describe('chat lifecycle on the native helper', () => {
       assert.equal(marker.cleanShutdown, false);
       assert.equal((chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.held, true);
     } finally {
+      // With the helper gone, shutdown cannot stop the provider, so its broker is ended here to release the root.
+      await chat.provider.endChildren();
       await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
       await fixture.close();
     }

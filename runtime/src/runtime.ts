@@ -88,6 +88,17 @@ export async function finalizeAttachmentSafety(host: SessionHost, backend: Runti
 }
 
 /**
+ * @internal Hands a host an invalidation signaled before it existed. With the guard held and every signaled invalidation durably
+ * published, the host only discloses it, since its initial start's full providerSafety reads the published generation and
+ * correction; without that positive evidence the host latches it as an initial-startup invalidation.
+ */
+export function settlePreHostInvalidation(host: Pick<SessionHost, 'invalidate' | 'discloseStartupInvalidation'>,
+  backend: Pick<RuntimeBackend, 'guardHeld' | 'invalidationsPublished'>, reason: Correction['reason']): void {
+  if (backend.guardHeld() && backend.invalidationsPublished()) { host.discloseStartupInvalidation(reason); }
+  else { host.invalidate(reason); }
+}
+
+/**
  * @internal Starts the final provider whether or not phase D-H work completed: provider safety, not the startup result, decides
  * between a bound provider and a status-only client.
  */
@@ -143,6 +154,8 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
     reportPhase?.('providerPreparation');
     const instructions = await assembleInstructions(backend.inspector, backend.scope.companionRoot);
     if (pending !== null && (earlyInstructions?.sha256 !== instructions.sha256 || earlyInstructions.text !== instructions.text)) { await pending.cancel(); pending = null; }
+    // A prestart candidate belongs to the generation a pre-host invalidation replaced, so it is cancelled here.
+    if (invalidatedBeforeHost !== null) { await pending?.cancel(); pending = null; }
     files ??= await makeTools();
     const fileTools = files;
     const provider = makeProvider(instructions.text, fileTools);
@@ -150,7 +163,7 @@ export async function createChatRuntime(companionRoot: string, onStartupPhase?: 
       pendingStart: pending,
       providerTerminated: instance => fileTools.providerTerminated(instance), verifyTools: () => fileTools.verifyQuiescent(), closeTools: () => fileTools.release() });
     pending = null;
-    if (invalidatedBeforeHost !== null) { host.invalidate(invalidatedBeforeHost); }
+    if (invalidatedBeforeHost !== null) { settlePreHostInvalidation(host, backend, invalidatedBeforeHost); }
     // A phase D-H fault cancelled the unbound candidate above; the final start still runs and providerSafety decides.
     return await startChatProvider(host, backend, reportPhase);
   } catch (error) {

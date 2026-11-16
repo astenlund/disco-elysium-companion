@@ -20,6 +20,7 @@ import { promisify } from 'node:util';
 
 import { openBackend } from '../../../src/backend/index.ts';
 import { testHelperImage } from '../../support/native-helper.ts';
+import { healthy } from './healthy.ts';
 
 type Event = Record<string, unknown>;
 /** A gate check over a finished run's record: null when the run met its gate, otherwise the reason it did not. */
@@ -199,6 +200,21 @@ const healthyWithin = (boundMs: number): Expectation => record => {
   return null;
 };
 const recoveryHealthy = healthyWithin(recoveryBoundMs);
+/**
+ * Recovery from a fault that leaves a context correction, which only an acknowledged turn discharges: a ready attachment,
+ * healthy or degraded, whose acknowledged turn leaves healthy status within `boundMs` of the driver spawning the run.
+ */
+const recoveredByTurnWithin = (boundMs: number): Expectation => record => {
+  if (resultOf(record)['status'] !== 'completed') { return `the run did not complete (${String(resultOf(record)['status'])})`; }
+  const attached = attachedSnapshot(record);
+  if (attached === null || attached['provider'] !== 'ready') { return `the run did not attach with a ready provider (${String(attached?.['provider'] ?? 'unattached')})`; }
+  const turn = turnOf(record);
+  if (turn?.['outcome'] !== 'completed' || turn['acknowledged'] !== true) { return `the turn did not complete with an acknowledgement (${String(turn?.['outcome'] ?? 'no turn')})`; }
+  if (!healthy(afterTurn(record))) { return 'the acknowledged turn did not leave healthy status'; }
+  const healthyHarnessMs = Number(turn['submittedAtMs']) + Number(turn['turnMs']) + Number(attached['harnessMs']) - Number(attached['processMs']);
+  return healthyHarnessMs <= boundMs ? null : `healthy status after the turn arrived after ${(healthyHarnessMs / 1000).toFixed(1)} s, beyond ${boundMs / 1000} s`;
+};
+const recoveredByTurn = recoveredByTurnWithin(recoveryBoundMs);
 const settled: Expectation = record => turnOf(record)?.['outcome'] === 'completed' && turnOf(record)?.['acknowledged'] === true && afterTurn(record)['safety'] === 'ready' ? null : 'the turn did not leave ready safety';
 const exitCode = (expected: number, firstLine?: string): Expectation => record => {
   const lines = (resultOf(record)['lines'] as string[] | undefined) ?? [];
@@ -260,7 +276,8 @@ await run('worker-killed-at-acquisition', ['chat', '0'], { onEvent: async event 
   if (event['event'] === 'phase' && event['phase'] === 'startupAcquisition' && !acquisitionKilled) { acquisitionKilled = true; return act('StartupCoreReplyWorker.ps1', 'kill', 5000); }
   return undefined;
 }, expect: noHealthyAttachment });
-await run('restart-after-worker-kill-at-acquisition', ['chat', '0'], { env: awaitHealthy, expect: recoveryHealthy });
+// The kill leaves a context correction, so this recovery is measured to the acknowledged turn that clears it.
+await run('restart-after-worker-kill-at-acquisition', ['chat', '1'], { expect: recoveredByTurn });
 
 // Gate: the 120-second interaction gate. A complete acknowledged turn over a newly staged save, then one whose settlement
 // core child is suspended so the gate must close the turn, then a restart that must recover.
@@ -288,7 +305,8 @@ await run('interaction-settlement-suspended', ['chat', '1', goFailure], { timeou
   && afterTurn(record)['freshnessReason'] === 'settlementPending' && afterTurn(record)['safety'] !== 'ready'
   ? null : 'the settlement was not suspended, or the gate did not fail the turn after 120 s with settlementPending and unready safety' });
 await endSuspendedSettlement();
-await run('recovery-after-suspended-settlement', ['chat', '1'], { env: awaitHealthy, timeoutMs: longRunTimeoutMs, expect: recoveryHealthy });
+// The failed turn leaves a context correction, so this recovery is measured to the acknowledged turn that clears it.
+await run('recovery-after-suspended-settlement', ['chat', '1'], { timeoutMs: longRunTimeoutMs, expect: recoveredByTurn });
 
 // Gate: enabled-watcher recovery after a kill at attachment, compared with the same recovery with the watcher disabled. A
 // disabled watcher never satisfies the healthy predicate, so its runs record timing and state without awaiting health.

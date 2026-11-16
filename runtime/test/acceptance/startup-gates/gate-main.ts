@@ -16,6 +16,7 @@ import type { ProviderSession } from '../../../src/provider.ts';
 import { createChatRuntime, privateRuntimeStartup } from '../../../src/runtime.ts';
 import type { SessionHost } from '../../../src/session-host.ts';
 import { SyntheticProvider } from '../../support/synthetic-provider.ts';
+import { healthy } from './healthy.ts';
 
 type Snapshot = Record<string, unknown>;
 
@@ -51,12 +52,6 @@ function snapshot(backend: RuntimeBackend, host: SessionHost): Snapshot {
   return { consumer: status.consumer, freshness: status.freshness.state, freshnessReason: status.freshness.reason, safety: status.stateSafety.state,
     correction: status.stateSafety.correction?.reason ?? null, journal: status.journal.state, journalFault: status.journal.fault,
     unacknowledged: status.journal.unacknowledgedEvents, watcher: status.watcher, provider: host.status.provider.state };
-}
-
-/** The counted healthy attachment of the startup objective: owner, fresh, ready safety, healthy journal, running watcher, ready provider. */
-function healthy(observed: Snapshot): boolean {
-  return observed['consumer'] === 'owner' && observed['freshness'] === 'fresh' && observed['safety'] === 'ready'
-    && observed['journal'] === 'healthy' && observed['watcher'] === 'running' && observed['provider'] === 'ready';
 }
 
 async function waitFor(file: string): Promise<void> {

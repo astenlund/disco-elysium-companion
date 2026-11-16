@@ -124,4 +124,34 @@ describe('durable safety transitions', () => {
     assert.equal(state.writes, 0);
     await assert.rejects(safety.initializeNew());
   });
+
+  it('reports invalidations as published only after each signaled one reached the durable record', async () => {
+    // Arrange
+    const { state, safety } = fixture();
+    const initiallyPublished = safety.invalidationsPublished;
+
+    // Act
+    const queued = safety.invalidate('contextUncertain');
+    const whileQueued = safety.invalidationsPublished;
+    await queued;
+    const afterPublication = safety.invalidationsPublished;
+    state.unreadable = true;
+    const failed = safety.invalidate('coreRejected');
+    await assert.rejects(failed, /storage unreadable/);
+    state.unreadable = false;
+    await safety.invalidate('contextUncertain');
+    const afterLaterPublication = safety.invalidationsPublished;
+    const invalidRecord = fixture();
+    invalidRecord.state.invalid = true;
+    await assert.rejects(invalidRecord.safety.recoverUnknown(owner, null, unproved));
+
+    // Assert
+    assert.equal(initiallyPublished, true);
+    assert.equal(whileQueued, false);
+    assert.equal(afterPublication, true);
+    assert.equal(afterLaterPublication, false, 'A failed publication is never covered by a later successful one.');
+    assert.deepEqual(state.suppressed, ['contextUncertain', 'coreRejected', 'contextUncertain']);
+    assert.deepEqual(invalidRecord.state.suppressed, ['contextUncertain']);
+    assert.equal(invalidRecord.safety.invalidationsPublished, false, 'An unproved recovery signals suppression without publishing it.');
+  });
 });

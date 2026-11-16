@@ -98,6 +98,11 @@ export interface RuntimeBackend {
   readonly inspector: PathInspector;
   readonly status: BackendStatus;
   guardHeld(): boolean;
+  /**
+   * True when every invalidation the safety store signaled through `onInvalidated` in this process has been durably published.
+   * A lost instance guard also signals `onInvalidated` but publishes nothing; `guardHeld` reports that case.
+   */
+  invalidationsPublished(): boolean;
   startup(command: BackendCommand): Promise<BackendStartup>;
   safety(deadline?: Deadline): Promise<StateSafety>;
   providerSafety(deadline?: Deadline): Promise<StateSafety>;

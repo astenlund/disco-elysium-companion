@@ -445,6 +445,15 @@ export class SessionHost implements SessionHostV1 {
     return 'interrupted';
   }
 
+  /**
+   * Discloses an invalidation backend startup durably published before this host existed. Unlike `invalidate` it latches
+   * nothing: the initial start's full provider authority reads the published generation and its correction.
+   */
+  discloseStartupInvalidation(reason: Correction['reason']): void {
+    if (this.initialStartCompleted) { throw new Error('A startup invalidation is disclosed only before the initial start.'); }
+    this.emit({ type: 'notice', code: 'stateContextInvalidated', reason });
+  }
+
   invalidate(reason: Correction['reason']): void {
     this.attachmentSafetyWitness = null;
     this.invalidations += 1;

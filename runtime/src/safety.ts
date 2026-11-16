@@ -21,8 +21,29 @@ export class SafetyStore {
   private readonly options: SafetyOptions;
   private readonly queue = new SerialQueue();
   private invalidationEpoch = 0;
+  private signaledInvalidations = 0;
+  private publishedInvalidations = 0;
 
   constructor(options: SafetyOptions) { this.options = options; }
+
+  /**
+   * True when every provider suppression this store signaled was followed by its own durable publication, so the safety
+   * record on disk carries each invalidation. A failed or still-queued publication leaves it false for the rest of the process.
+   */
+  get invalidationsPublished(): boolean { return this.publishedInvalidations === this.signaledInvalidations; }
+
+  private signalInvalidation(reason: CorrectionReason): void {
+    this.invalidationEpoch++;
+    this.signaledInvalidations++;
+    this.options.suppressProvider(reason);
+  }
+
+  private async publishInvalidation(value: StateSafety, expectedSha256: string | null, deadline?: Deadline): Promise<StoredSafety> {
+    const written = await this.publish(value, expectedSha256, deadline);
+    this.publishedInvalidations++;
+
+    return written;
+  }
 
   read(deadline?: Deadline): Promise<StoredDocument<StateSafety>> {
     return this.options.storage.read('state-safety.json', 'config', value => parseStateSafety(value, this.options.storage.scope.bindingSha256), deadline);
@@ -56,8 +77,7 @@ export class SafetyStore {
   }
 
   recoverUnknown(owner: RecoveryOwner, knownCorrection: Correction | null, proof: SafetyProof, deadline?: Deadline): Promise<StoredSafety> {
-    this.invalidationEpoch++;
-    this.options.suppressProvider(knownCorrection?.reason ?? 'contextUncertain');
+    this.signalInvalidation(knownCorrection?.reason ?? 'contextUncertain');
     return this.queue.run(async () => {
       deadline?.check();
       const existing = await this.read(deadline);
@@ -66,7 +86,7 @@ export class SafetyStore {
       const candidate: StateSafety = { stateSafetyVersion: 1, generation: freshGeneration(null, await this.options.bindingGenerations(deadline)), pendingCheck: null, correction,
         recoveryWitness: { scopeSha256: this.options.storage.scope.bindingSha256, owner, phase: 'preparing', successor: null, disclosure: null } };
       requireControl(await proof.verify(candidate, deadline));
-      return this.publish(candidate, existing.status === 'absent' ? null : existing.sha256, deadline);
+      return this.publishInvalidation(candidate, existing.status === 'absent' ? null : existing.sha256, deadline);
     });
   }
 
@@ -95,13 +115,12 @@ export class SafetyStore {
 
   invalidate(reason: CorrectionReason, deadline?: Deadline, obligationCorrectionId?: string): Promise<StoredSafety> {
     if (obligationCorrectionId !== undefined) { controlHash(obligationCorrectionId, 32); }
-    this.invalidationEpoch++;
-    this.options.suppressProvider(reason);
+    this.signalInvalidation(reason);
     return this.queue.run(async () => {
       deadline?.check();
       const current = await this.current(deadline);
       const candidate = invalidatedSafety(current.value, reason, await this.options.bindingGenerations(deadline), newIdentity, obligationCorrectionId);
-      return this.publish(candidate, current.sha256, deadline);
+      return this.publishInvalidation(candidate, current.sha256, deadline);
     });
   }
 
