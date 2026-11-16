@@ -236,6 +236,36 @@ test('a hand-over from the bridge over a stray journal/events file names the for
   } finally { await fixture.close(); }
 });
 
+test('chat on a bridge-owned root exits notOwner before any provider phase', { timeout: 600000 }, async () => {
+  // Arrange: release the fixture to the bridge. A chat that got past notOwner would build the real provider, so the provider
+  // configuration folder points at an empty folder for the duration as a safety net.
+  const fixture = await companionFixture('runtime-owned-empty');
+  const emptyConfig = path.join(fixture.root, 'empty-provider-config');
+  const previousConfig = process.env['CLAUDE_CONFIG_DIR'];
+  const output: string[] = [];
+  const progress: StartupProgress[] = [];
+  try {
+    const backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
+    try { assert.equal((await backend.startup({ kind: 'consumer', owner: 'bridge', abandonUndelivered: true })).consumerResult?.success, true); }
+    finally { await backend.shutdown(true); }
+    await fs.mkdir(emptyConfig);
+    process.env['CLAUDE_CONFIG_DIR'] = emptyConfig;
+
+    // Act
+    const code = await runCli(['chat'], fixture.root, text => output.push(text), event => progress.push(event), () => {});
+
+    // Assert
+    assert.equal(code, 1);
+    assert.deepEqual(output, ['notOwner: Continue in the bridge client, or explicitly run consumer runtime to hand ownership over.']);
+    assert.equal(progress.at(-1)?.kind, 'notOwner');
+    const phases = progress.flatMap(event => event.kind === 'phase' && event.phase !== null ? [event.phase] : []);
+    assert.equal(phases.some(phase => phase.startsWith('provider')), false, phases.join(', '));
+  } finally {
+    if (previousConfig === undefined) { delete process.env['CLAUDE_CONFIG_DIR']; } else { process.env['CLAUDE_CONFIG_DIR'] = previousConfig; }
+    await fixture.close();
+  }
+});
+
 test('a foreign journal/events failure names its reason and remedy however it is wrapped', () => {
   // Arrange
   const foreign = new JournalForeignEntryError('Journal inventory contains an entry it does not own.');
