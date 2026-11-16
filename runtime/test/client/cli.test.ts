@@ -11,6 +11,7 @@ import { finishOperatorRun, formatCapacityError, formatCapacityRewind, formatCli
 import { RuntimeCapacityError } from '../../src/capacity.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import type { StartupProgress } from '../../src/startup-progress.ts';
+import { JournalForeignEntryError, JournalUnavailableError } from '../../src/journal.ts';
 import { capacityRemedy, journalEventsForeignEntryRemedy } from '../../src/text-client.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
@@ -213,6 +214,44 @@ for (const args of [['repair'], ['consumer', 'bridge'], ['consumer', 'bridge', '
     } finally { await fixture.close(); }
   });
 }
+
+test('a hand-over from the bridge over a stray journal/events file names the foreign entry and its remedy', { timeout: 600000 }, async () => {
+  // Arrange: release the fixture to the bridge, so consumer runtime hands over and then reads the journal.
+  const fixture = await companionFixture('runtime-owned-empty');
+  try {
+    const backend = await openBackend({ nativeImage: await testHelperImage(), companionRoot: fixture.root });
+    try { assert.equal((await backend.startup({ kind: 'consumer', owner: 'bridge', abandonUndelivered: true })).consumerResult?.success, true); }
+    finally { await backend.shutdown(true); }
+    await strayJournalEvent(fixture.root);
+
+    // Act
+    const failure = await runCli(['consumer', 'runtime'], fixture.root, () => {}, () => {}, () => {}).then(() => null, (error: unknown) => error);
+
+    // Assert
+    assert.ok(failure instanceof Error, String(failure));
+    const rendered = formatCliError(failure);
+    assert.match(rendered, /^journalForeignEntry: /);
+    assert.equal(rendered.split(journalEventsForeignEntryRemedy).length - 1, 1, rendered);
+    assert.doesNotMatch(rendered, /notes\.txt/);
+  } finally { await fixture.close(); }
+});
+
+test('a foreign journal/events failure names its reason and remedy however it is wrapped', () => {
+  // Arrange
+  const foreign = new JournalForeignEntryError('Journal inventory contains an entry it does not own.');
+  const wrapped = new Error('Startup failed.', { cause: foreign });
+  const generic = new JournalUnavailableError('Journal inventory is unavailable.');
+
+  // Act
+  const rendered = [foreign, wrapped].map(formatCliError);
+
+  // Assert
+  for (const line of rendered) {
+    assert.match(line, /^journalForeignEntry: /);
+    assert.equal(line.split(journalEventsForeignEntryRemedy).length - 1, 1, line);
+  }
+  assert.equal(formatCliError(generic).includes(journalEventsForeignEntryRemedy), false);
+});
 
 test('the chat client exit takes the exhausted-helper classification only while the helper is exhausted', async () => {
   // Arrange

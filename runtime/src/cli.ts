@@ -4,9 +4,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openBackend, readBackendStatus } from './backend/index.ts';
 import type { BackendCommand, BackendStartup, CapacityRewindResult } from './backend/api.ts';
-import { ReleaseJournalForeignEntryError, ReleaseRefusedError } from './backend/consumer.ts';
+import { ReleaseRefusedError } from './backend/consumer.ts';
 import { capacitySlot, RuntimeCapacityError, unknownCapacityOwed, type CapacityOwed } from './capacity.ts';
 import { ConfigurationError, loadRuntimeConfig } from './config.ts';
+import { journalFailureReason } from './journal.ts';
 import { admitInstallationRoot } from './launch-directory.ts';
 import { classifyHelperFailure, finishAfterCleanup, NativeHelperUnavailableError } from './native-helper-error.ts';
 import { ensureNativeHelperImage, type HelperImage, type NativeImageOptions } from './native-image.ts';
@@ -48,7 +49,9 @@ export function formatCapacityError(error: RuntimeCapacityError, owed: CapacityO
 export function formatCliError(error: unknown): string {
   if (error instanceof NativeHelperUnavailableError) { return `${error.code} (${error.reason}): ${error.message}`; }
   if (error instanceof ReleaseRefusedError) { return error.details.length === 0 ? `${error.code}: ${error.message}` : `${error.code}: ${error.message} Reasons: ${error.details.join(', ')}.`; }
-  if (error instanceof ReleaseJournalForeignEntryError) { return `${error.code}: ${error.message} ${journalEventsForeignEntryRemedy}`; }
+  // Any operator path that failed on a foreign journal/events entry, the bridge refusal or a hand-over or abandon release
+  // reading the journal, names that reason and its remedy.
+  if (journalFailureReason(error) === 'journalForeignEntry') { return `journalForeignEntry: ${(error as Error).message} ${journalEventsForeignEntryRemedy}`; }
   const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'runtimeUnavailable';
   const capacity = error instanceof RuntimeCapacityError ? error : error instanceof Error && error.cause instanceof RuntimeCapacityError ? error.cause : null;
   if (capacity === null) { return `${code}: ${error instanceof Error ? error.message : 'Runtime operation failed.'}`; }
