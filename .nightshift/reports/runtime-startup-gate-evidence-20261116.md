@@ -1,0 +1,61 @@
+# Startup gate evidence, 2026-11-16
+
+These private results re-measure the routine startup timing of [Coordinator startup latency](../features/runtime-startup-latency.md) on current main and exercise the private gates its feature record listed as open: enabled-watcher recovery, entry-point exits, provider-start refusal, a real warm core-reply worker failure before its first reply, and the separately timed 120-second interaction gate. The live real-provider gate is not part of this report; its procedure is in [the live-run procedure](runtime-startup-live-run-procedure-20261116.md).
+
+## Method
+
+The committed harness `runtime/test/acceptance/startup-gates/run-gates.ts` copies `core` and the Disco Elysium adapter into a fresh companion root under the repository's `.tmp`, points the copy's adapter at a save folder inside that root, enables the watcher, hands consumption to the runtime, and stages the newest of the supplied save copies with its write time. It runs `gate-main.ts` once per gate as its own Node process with the synthetic provider and no provider prestart; the CLI gates call the product `runCli` on the copied root. Each run has a deadline after which its process tree is killed, and `watch-log.mjs` follows the output. The supplied saves were the private bench copies of real saves already used by earlier fixtures; the harness refuses the adapter's live save folder, and it checks that the supplied copies and the staged copies are unchanged at the end.
+
+Times run from the harness spawning a gate process to receiving its `attached` frame, so each is an upper bound that includes Node startup. A run counts as healthy only when the attachment shows the runtime as consumer, fresh state, ready safety, a healthy journal, a running watcher and a ready provider, the counted healthy attachment of the [startup execution objective](../features/runtime-startup-execution-30.md). Recovery runs wait up to 180 seconds from process start for that status. Every fault case starts from a settling run whose acknowledged turn must end with ready safety, so no run inherits an earlier run's correction.
+
+The final run, recorded below, measured commit `eaed5d3`, whose runtime source is that of `b0cfbcc`; the supplied and staged saves were unchanged afterwards.
+
+## Routine timing
+
+No routine start missed 30 seconds. Every attempt on 2026-11-16, in order:
+
+| Batch | Source | New save | Acknowledged restart |
+|---|---|---|---|
+| Private timing fixture, three batches | `c3e4c8c` | 13.7, 14.1, 14.3 s | 5.8, 5.5, 6.1 s |
+| Gate harness, first run | `c3e4c8c` | 13.4 s | 5.5 s |
+| Gate harness, second run | `c3e4c8c` | 14.4 s | 6.0 s |
+| Gate harness, filtered rerun | `c3e4c8c` with the stop fix uncommitted | 26.3 s | not run |
+| Gate harness, settled run | same | 12.8 s | 5.5 s |
+| Committed harness | `eaed5d3` | 13.9 s | 5.3 s |
+
+All of these attached healthy. In the final new-save run the startup acquisition phase ran from 2.0 to 13.3 seconds of process time and dominates the start; the phases after it, from safety reconciliation through startup-worker closure, ran from 13.3 to 13.8 seconds. In the 26.3-second attempt the same phase took 20.8 seconds and its turn took 11.6 seconds, against 4 to 7 seconds elsewhere, so the PowerShell core work as a whole ran slower in that run; the cause was not established. Other healthy starts in the final run attached in 5.2 to 8.5 seconds.
+
+The earlier private timing fixture also killed a run at attachment and restarted it: 6.7 and 7.2, 5.6 and 6.3, and 5.6 and 5.6 seconds in its three batches. The previous comparable figures, 13.8 and 5.5 seconds at `180acf3` ([helper fixture evidence](go-native-helper-fixture-evidence-20261023.md)), are within the same range.
+
+## Gates
+
+| Gate | Result in the final run |
+|---|---|
+| Not-owner exit | After releasing to the bridge, chat through `runCli` returned 1 with the `notOwner` line and a terminal `notOwner` progress event, before any provider phase; handing back to the runtime and restarting attached healthy in 5.3 s. |
+| Normal exit | Not run: `runCli` builds the real provider for chat, so this belongs to the live run. |
+| Provider-start refusal | A provider whose real child refuses every start returned `providerUnavailable` after 43.0 s and five starts: the initial start, its fallback and the three retries after 1, 5 and 30 seconds. The startup workers closed; the next start attached healthy in 7.4 s. |
+| Worker killed on sight | Killing `StartupCoreReplyWorker.ps1` as soon as it appeared failed the start closed with `Startup worker transport is unavailable.` after 0.7 s; the next start attached healthy in 5.3 s. |
+| Worker killed during acquisition | The start attached status-only after 13.8 s with freshness `settlementPending`, safety `recovering`, correction `contextUncertain` and no provider start. The restart attached degraded with a ready provider in 6.5 s and the same correction; the next start's acknowledged turn returned safety to ready. |
+| 120-second gate, success | A newly staged save and an acknowledged turn: healthy attachment in 6.2 s and the turn completed. |
+| 120-second gate, failure | With `Set-StateEventSettlement.ps1` suspended, freshness stayed `acquiring` until the turn failed with `stateInvalidated` 129.9 s after submission, leaving freshness `settlementPending`, safety `recovering` and the provider ready; no status read healthy. |
+| Recovery after the gate failure | The first restart attached status-only in 15.5 s with safety `recovering`, correction `contextUncertain` and no provider start, and was not healthy within 180 s. The second restart attached degraded with a ready provider in 12.9 s, and its acknowledged turn returned safety to ready. |
+| Enabled-watcher recovery | From a settled start killed at attachment, the restart attached healthy in 6.6 s. |
+| Disabled-watcher comparison | Clean start 8.2 s, kill at attachment, recovery 7.1 s; each had ready safety and a ready provider but a disabled watcher, so none counts as healthy. Re-enabling the watcher, a clean start attached healthy in 8.5 s. |
+
+The settled run before the final one gave the same outcomes, with the enabled-watcher recovery also healthy in 6.6 s and the gate failure's turn ending at 129.7 s.
+
+The recovery after a gate-failed turn needs two restarts and a turn to become healthy, so that path never reaches healthy recovery within 180 seconds on its own. The startup design allows it ("a later guarded startup reconciles the durable correction"), and the user chose to record it as an open question for the recovery target rather than open a backlog entry. During that status-only session the provider read `starting` throughout, which is the label [Suppressed provider readiness readout](../bugs/runtime-suppressed-provider-ready.md) already records.
+
+## Defect found and fixed
+
+The first worker kill on sight failed the start with `Owned process termination could not be requested.`, not the transport refusal. When an owned process exits before Node delivers its broker's `close` event, `ChildProcess.kill()` returns false, and `ProcessSupervisor.stop` treated that as a final refusal and threw `termination-unverified` without awaiting the termination proof. Commit `b0cfbcc` makes a refused signal fall through to the same bounded termination wait and quiescence proof, so a process that truly survives still fails closed; `process.test.ts` reproduces the race deterministically and failed with that message before the fix. The same race could have blocked the transport's fallback after a worker died mid-request, since that fallback requires a verified stop.
+
+Commit `c07929d` adds regressions for the gates that had none: `startup-worker-failure.test.ts` runs real startup workers that exit before their hello or stay silent past the handshake deadline, and requires the transport refusal, a verified stop and a launchable role; `client/start-chat-provider.test.ts` pins `providerUnavailable` with one worker closure and no attachment safety; and `client/cli.test.ts` pins the `notOwner` exit with no provider phase.
+
+## Superseded runs
+
+Three harness defects invalidated parts of earlier runs that day, and their figures are not used above. The helper that suspends the settlement script matched its own command line, suspended itself and hung the first run for about 3 hours 20 minutes; the same flaw made its first worker kill on sight inconclusive. The early harness waited only for `turn.completed`, so the gate-failed turn appeared to hang for 300 seconds although it had failed at the gate. And until settling runs were added, later runs inherited a `contextUncertain` correction, so that run's recovery and watcher comparisons measured degraded starts rather than recovery from a healthy predecessor.
+
+## Limits
+
+The provider is synthetic and no real client attached, so these runs say nothing about the real SDK's initialization, its write footprint or live readiness. Timings come from one machine, whose new-save attempts ranged from 12.8 to 14.4 seconds apart from one at 26.3 seconds. The worker kill on sight lands after the broker reports the worker's identity, so the transport's fallback for a worker that exits before its identity is not exercised here. The client does not print the watcher state ([Watcher state missing from the chat client readout](../BUGS.md)), which matters for the live run but not for these runs, since the harness reads backend status directly.
