@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import type { PathInspector } from '../admission.ts';
+import { NativeOperationError, type PathInspector } from '../admission.ts';
 import { isOpaqueToken } from '../identity.ts';
 import { RuntimeCapacityError, runtimeLimits } from '../capacity.ts';
 import { requireControl } from '../control-values.ts';
@@ -369,14 +369,23 @@ export async function maintainRuntimeStorage(deps: MaintenanceDependencies, dead
   }
 }
 
-async function trimQuarantine(deps: MaintenanceDependencies, protectedPaths: ReadonlySet<string>, deadline?: Deadline): Promise<number> {
+/**
+ * @internal Trims quarantine through the native helper. A foreign quarantine entry refuses the maintenance slot under its
+ * own reason, so the operator sees its move-it-out remedy; every other helper failure is a control failure.
+ */
+export async function trimQuarantine(deps: Pick<MaintenanceDependencies, 'scope' | 'inspector' | 'storage'>, protectedPaths: ReadonlySet<string>, deadline?: Deadline): Promise<number> {
   await deps.storage.ensureDirectory('quarantine', deadline);
   const control = Buffer.from(stringifyJson([...protectedPaths]), 'utf8');
   let reply: JsonValue = null;
   try {
     reply = await deps.inspector.native('inventory', { root: deps.scope.dataRoot, scopeSha256: deps.scope.bindingSha256, companionRoot: null,
       mode: 'Quarantine', inputBase64: control.toString('base64'), inputFile: null, inputSha256: null }, deadline?.remaining());
-  } catch { requireControl(false); }
+  } catch (error) {
+    if (error instanceof NativeOperationError && error.code === 'foreignEntryQuarantine') {
+      throw new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: ['foreignEntryQuarantine'] }, 'maintenance', { cause: error });
+    }
+    requireControl(false);
+  }
   requireControl(hasExactKeys(reply, ['removed', 'remaining']));
   const removed = asInteger(reply['removed']);
   const remaining = asInteger(reply['remaining']);

@@ -27,10 +27,11 @@ export const noOperations = { list: async () => ({ records: [], invalid: [], han
 /**
  * A scratch runtime-data scope under the repository's .tmp, holding its scope binding and an empty journal/events folder,
  * with the real native helper and a resource authority over it. `prepare` adds the entries a case needs before the helper
- * starts; `close` stops the helper and removes the scratch root.
+ * starts; `bound` binds the helper to the scope, which requests confined to the bound data root, such as the quarantine
+ * trim, need; `close` stops the helper and removes the scratch root.
  */
 export async function resourceScopeFixture(name: string, prepare: (dataRoot: string) => Promise<void> = async () => {},
-  operations: OperationStore = {} as OperationStore): Promise<ResourceScopeFixture> {
+  operations: OperationStore = {} as OperationStore, bound = false): Promise<ResourceScopeFixture> {
   const root = path.join(repository, '.tmp', `${name}-${randomUUID()}`);
   const dataRoot = path.join(root, 'data');
   await fs.mkdir(path.join(dataRoot, 'journal', 'events'), { recursive: true });
@@ -41,7 +42,7 @@ export async function resourceScopeFixture(name: string, prepare: (dataRoot: str
   let native: TestNative;
   try {
     await prepare(dataRoot);
-    native = await createTestNative(root);
+    native = await createTestNative(root, bound ? { companionRoot: root, dataRoot } : undefined);
   } catch (error) {
     await close();
     throw error;
