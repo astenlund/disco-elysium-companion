@@ -67,6 +67,48 @@ func TestForeignEntriesNameTheirOwnedDirectoryAndStayUnavailable(t *testing.T) {
 	}
 }
 
+func TestQuarantineTrimNamesAForeignQuarantineEntry(t *testing.T) {
+	cases := []struct {
+		name, entry string
+		directory   bool
+		foreign     bool
+	}{
+		{"misnamed file", "notes.txt", false, true},
+		{"folder", "unexpected", true, true},
+		{"publication temporary", "record." + strings.Repeat("a", 32) + ".quarantined." + strings.Repeat("b", 32) + ".tmp", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Arrange
+			f := newResourceScope(t)
+			writeTestFile(t, filepath.Join(f.scope, "quarantine", "record."+strings.Repeat("c", 32)+".quarantined"), "diagnostic")
+			target := filepath.Join(f.scope, "quarantine", c.entry)
+			if c.directory {
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				writeTestFile(t, target, "stray")
+			}
+
+			// Act
+			_, err := TrimQuarantine(f.scope, f.hash, []byte(`[]`), nativefs.NoDeadline)
+
+			// Assert
+			var foreign *ForeignEntryError
+			if c.foreign && (!errors.As(err, &foreign) || foreign.Directory != Quarantine) {
+				t.Fatalf("got %v, want a foreign entry in quarantine", err)
+			}
+			if !c.foreign && (!errors.Is(err, ErrUnavailable) || errors.As(err, &foreign)) {
+				t.Fatalf("got %v, want the generic unavailable class", err)
+			}
+			if strings.Contains(err.Error(), c.entry) || strings.Contains(err.Error(), f.scope) {
+				t.Fatalf("the failure names the entry or its path: %v", err)
+			}
+		})
+	}
+}
+
 func TestAnOwnedEntryThatCannotBeReadIsUnreadable(t *testing.T) {
 	// Arrange
 	f := newResourceScope(t)

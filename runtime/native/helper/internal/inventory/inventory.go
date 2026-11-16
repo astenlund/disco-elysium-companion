@@ -478,7 +478,8 @@ func CheckEventExpansion(data []byte) ([]byte, error) {
 	return []byte(`{"admitted":true}`), nil
 }
 
-// TrimQuarantine removes the oldest unprotected quarantined files beyond the retention limit.
+// TrimQuarantine removes the oldest unprotected quarantined files beyond the retention limit. A folder or a file outside
+// the quarantined-file grammar fails it as a foreign quarantine entry, so the maintenance refusal can name its remedy.
 // gate is consulted before the first deletion, the trim's commit point; later deletions proceed regardless of time.
 func TrimQuarantine(root, scopeSha256 string, protectedBytes []byte, gate nativefs.Gate) ([]byte, error) {
 	if err := verifyScope(root, scopeSha256); err != nil {
@@ -522,7 +523,14 @@ func TrimQuarantine(root, scopeSha256 string, protectedBytes []byte, gate native
 			return nil, err
 		}
 		admitted, err := nativefs.AdmitChild(directory, name)
-		if err != nil || admitted.IsDirectory || !quarantineName.MatchString(name) {
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+		if admitted.IsDirectory || !quarantineName.MatchString(name) && !temporaryName.MatchString(name) {
+			return nil, foreignEntry("quarantine/")
+		}
+		// A publication temporary is residue of an interrupted write, not a foreign entry, and keeps the generic class.
+		if !quarantineName.MatchString(name) {
 			return nil, ErrUnavailable
 		}
 		path := admitted.Path

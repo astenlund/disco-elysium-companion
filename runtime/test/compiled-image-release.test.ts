@@ -10,8 +10,8 @@ import { NativeHelperUnavailableError } from '../src/native-helper-error.ts';
 import { canonicalInstallationRoot, compileHelper, helperSourcePaths, verifyHelperSources } from '../src/native-image.ts';
 
 // The reviewed pins, repeated here so a pin change is visible in review; the pin tool rewrites both copies.
-const compiledImageGeneration = '486a2450b29446c2475a921c104de7a659a64d0c9a29c8502b8a7316a6125ff1';
-const nativeHelperSha256 = '3401ea6a7bd5848df57b067fa661eb6cbed174828e03d67d2c548290b914a1aa';
+const compiledImageGeneration = '1047264858b0b565d3669775a5917325043f41779459bbf8932b8fd8aeeadd41';
+const nativeHelperSha256 = '67840f7cb9fe59980c18edfe0254b1c43d3a7a2a024e9be2f6ad02e8689f48eb';
 
 const root = canonicalInstallationRoot();
 
