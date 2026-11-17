@@ -102,6 +102,7 @@ export class FakeBackend {
   safetyValue: StateSafety = { stateSafetyVersion: 1, generation, pendingCheck: null, correction: null, recoveryWitness: null };
   unavailable = false;
   held = true;
+  published = true;
   acquireWait: Promise<void> | null = null;
   ackWait: Promise<void> | null = null;
   ackCount = 0;
@@ -135,6 +136,7 @@ export class FakeBackend {
 
   async safety(): Promise<StateSafety> { if (this.unavailable) { throw new Error('Safety unavailable.'); } return this.safetyValue; }
   guardHeld(): boolean { return this.held; }
+  invalidationsPublished(): boolean { return this.published; }
   async providerSafety(): Promise<StateSafety> {
     const safety = await this.safety();
     if (safety.pendingCheck !== null || safety.correction !== null && safety.correction.recoveryOperationId === null) { throw new Error('Provider history admission is unresolved.'); }

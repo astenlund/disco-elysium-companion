@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { openBackend } from '../../src/backend/index.ts';
@@ -52,6 +54,45 @@ describe('chat start after startup recovery invalidates context', () => {
       assert.equal(attached.result, 'attached');
       assert.deepEqual(events.flatMap(event => event.type === 'notice' && event.code === 'stateContextInvalidated' ? [event.reason] : []), ['contextUncertain']);
     } finally {
+      await restarted?.host.shutdown();
+      await fixture.close();
+    }
+  });
+
+  it('keeps the provider unstarted when the startup invalidation could not be written', { timeout: 600000 }, async () => {
+    // Arrange: the same armed check, but the safety record cannot be replaced, so the restart's recovery signals its
+    // invalidation without publishing it.
+    const fixture = await companionFixture('runtime-owned');
+    const image = await testHelperImage();
+    let restarted: SyntheticChat | null = null;
+    let safetyPath: string | null = null;
+    try {
+      const first = await openSyntheticChat(fixture.root, image);
+      safetyPath = path.join(first.backend.scope.dataRoot, 'state-safety.json');
+      await first.host.shutdown();
+      const backend = await openBackend({ nativeImage: image, companionRoot: fixture.root });
+      try {
+        assert.equal((await backend.startup({ kind: 'chat' })).notOwner, false);
+        const k = (backend as unknown as { readonly kernel: Kernel }).kernel;
+        await k.resources.withTransition('ordinary', async () => { await k.resources.reserve('ordinary'); await k.safetyStore.armCheck(); });
+      } finally { await backend.shutdown(true); }
+      await fs.chmod(safetyPath, 0o444);
+
+      // Act
+      restarted = await openSyntheticChat(fixture.root, image);
+      const status = restarted.host.status;
+      const lifecycle = (restarted.host as unknown as { readonly lifecycle: { readonly startSafetyRefusal: unknown } }).lifecycle;
+
+      // Assert: the invalidation was signaled but never written, so the host latched it and never asked the provider
+      // lifecycle to start, rather than leaving the decision to the provider safety check.
+      assert.equal(restarted.backend.guardHeld(), true);
+      assert.equal(restarted.backend.invalidationsPublished(), false);
+      assert.notEqual(status.provider.state, 'ready');
+      assert.equal(status.provider.safetyRefusal, 'restartRequired');
+      assert.equal(lifecycle.startSafetyRefusal, null);
+      assert.equal(restarted.provider.calls.length, 0);
+    } finally {
+      if (safetyPath !== null) { await fs.chmod(safetyPath, 0o644).catch(() => undefined); }
       await restarted?.host.shutdown();
       await fixture.close();
     }

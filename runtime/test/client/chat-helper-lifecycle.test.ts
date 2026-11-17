@@ -72,9 +72,11 @@ describe('chat lifecycle on the native helper', () => {
       assert.equal((chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.held, true);
     } finally {
       // With the helper gone, shutdown cannot stop the provider, so its broker is ended here to release the root.
-      await chat.provider.endChildren();
-      await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
-      await fixture.close();
+      try { await chat.provider.endChildren(); }
+      finally {
+        await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
+        await fixture.close();
+      }
     }
   });
 
