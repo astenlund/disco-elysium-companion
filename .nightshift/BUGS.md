@@ -49,6 +49,24 @@ Found on 2026-11-16 while writing the live startup procedure: the chat client's 
 
 **Requires:** none.
 
+### Turn after helper exhaustion fails as a provider error
+
+Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before it is healthy" (see [bug history](BUGS_HISTORY.md)): once the native helper is exhausted, after its service and that service's one replacement have both died, chat stays attached, and a turn submitted with a ready provider is admitted and then fails with `providerError`. `SessionHost.runTurn` acquires state before any provider send, that acquisition first reserves capacity through a native inventory, and the exhausted helper refuses every request, so the failure most likely comes before the send and the `providerError` code hides the helper cause; this is read from the code, not observed. Before that fix the `runtime-owned` test fixture's first start never started its provider, so `runtime/test/client/chat-helper-lifecycle.test.ts` asserted a provider-unavailable refusal for such a turn; the fix removed that assertion. No design rule found says how such a turn must be refused. Confirm where it fails, decide the intended refusal and what the client shows, and pin it with a test.
+
+**Requires:** none.
+
+### Provider outlives a failed shutdown after helper exhaustion
+
+Found on 2026-11-16 with the entry above: after helper exhaustion, shutdown fails with `nativeHelperUnavailable (unavailable)` and leaves the runtime marker unclean and the guard held, and the synthetic provider's broker stays alive while the runtime process lives, so `chat-helper-lifecycle.test.ts` now ends it with `SyntheticProvider.endChildren()` before releasing the guard. Whether a real provider ends when chat exits in that state is unverified. Check a real chat exit after helper exhaustion and make the failed shutdown end the provider if it survives.
+
+**Requires:** none.
+
+### Provider start retried on a restart that carries a correction
+
+Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before it is healthy": on a restart whose recovery publishes a `contextUncertain` correction, the provider's first start attempt fails and `ProviderLifecycle` retries it after its 1-second `providerRetry` delay, so `runtime/test/client/startup-recovery-invalidation.test.ts` recorded two fresh provider starts when it was written. The same retry appeared in gate runs before that fix, and it lengthens the attachment of both recovery paths the startup gates measure. Its cause has not been investigated. Find why the first attempt fails and remove the retry if it is avoidable.
+
+**Requires:** none.
+
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
