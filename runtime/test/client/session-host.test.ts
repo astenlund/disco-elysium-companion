@@ -1449,6 +1449,7 @@ for (const { name, exhausted, failure, code, retryable } of [
   { name: 'a plain failure with the helper exhausted', exhausted: true, failure: () => new Error('acquisition failed'), code: 'nativeHelperUnavailable', retryable: false },
   { name: 'a capacity refusal with the helper exhausted', exhausted: true,
     failure: () => new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: ['helperUnavailable'] }, 'ordinary'), code: 'nativeHelperUnavailable', retryable: false },
+  { name: 'a pending state check with the helper exhausted', exhausted: true, failure: () => new PendingStateCheckError(), code: 'stateInvalidated', retryable: false },
 ] as const) {
   test(`a turn that fails before send on ${name} fails with ${code}`, async () => {
     // Arrange
@@ -1464,6 +1465,50 @@ for (const { name, exhausted, failure, code, retryable } of [
     const failed = events.filter(event => event.type === 'turn.failed');
     assert.deepEqual(failed.map(event => [event.code, event.retryable]), [[code, retryable]]);
     assert.equal(provider.current.requests.length, 0);
+    await host.shutdown();
+  });
+}
+
+test('an interrupt during acquisition still ends a turn as interrupted when the exhausted helper then fails it', async () => {
+  // Arrange
+  const { host, backend, events } = await fixture();
+  backend.supervisor.nativeHelper.exhausted = true;
+  let failAcquisition: (error: Error) => void = () => {};
+  backend.acquireWait = new Promise<void>((_, reject) => { failAcquisition = reject; });
+  assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+  await until(() => backend.acquisitionCount === 1);
+
+  // Act
+  assert.equal(await host.interrupt(), 'interrupted');
+  failAcquisition(new Error('The native helper service can no longer serve.'));
+  await until(() => !host.turnInProgress);
+
+  // Assert
+  assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => event.code), ['interrupted']);
+  await host.shutdown();
+});
+
+for (const { exhausted, code, retryable } of [
+  { exhausted: false, code: 'providerError', retryable: true },
+  { exhausted: true, code: 'nativeHelperUnavailable', retryable: false },
+] as const) {
+  test(`a send-time copy failure the provider relays as providerError fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
+    // Arrange: a session that turns a throwing send gate into a providerError outcome, as ClaudeSession does.
+    const { host, backend, provider, events } = await fixture();
+    backend.supervisor.nativeHelper.exhausted = exhausted;
+    backend.copyForSend = async () => { throw new Error('The native helper service can no longer serve.'); };
+    provider.current.sendTurn = async request => {
+      try { await request.beforeSend(request.contextBlock); }
+      catch { return { kind: 'failed', code: 'providerError', retryable: true }; }
+      throw new Error('The send gate unexpectedly passed.');
+    };
+
+    // Act
+    assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => !host.turnInProgress);
+
+    // Assert
+    assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => [event.code, event.retryable]), [[code, retryable]]);
     await host.shutdown();
   });
 }

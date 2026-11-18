@@ -617,6 +617,9 @@ export class SessionHost implements SessionHostV1 {
           if (acknowledged !== null) { this.lifecycle.updateBinding(acknowledged.binding); }
         });
         await this.maintenance.idle();
+      } else if (!turn.sent && outcome.code === 'providerError' && this.helperRefuses(outcome)) {
+        // A provider relays a failure of the runtime's own send gates, such as the send-time copy, as providerError.
+        this.fail(turn, 'nativeHelperUnavailable', false);
       } else {
         let retryable = outcome.retryable;
         if (outcome.code === 'contextExhausted') {
@@ -641,10 +644,7 @@ export class SessionHost implements SessionHostV1 {
       if (pendingCheck) { this.pendingCheckBlocked = true; }
       this.statusChanged();
       const invalidated = pendingCheck || turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable';
-      // While the helper reports itself exhausted, every failure it classifies is its unavailable refusal, which no retry in this process can clear.
-      const helper = this.options.backend.supervisor.nativeHelper;
-      const helperRefused = classifyHelperFailure(error, helper) instanceof NativeHelperUnavailableError && helper.exhausted;
-      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : helperRefused ? 'nativeHelperUnavailable'
+      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : this.helperRefuses(error) ? 'nativeHelperUnavailable'
         : capacity ? 'capacityBlocked' : 'providerError';
       this.fail(turn, code, !this.closing && !pendingCheck && code !== 'capacityBlocked' && code !== 'nativeHelperUnavailable');
     } finally {
@@ -658,6 +658,16 @@ export class SessionHost implements SessionHostV1 {
       this.statusChanged();
       if (!this.closing) { this.endLatchedSession(); this.scheduleTransition(); }
     }
+  }
+
+  /**
+   * Whether a turn failure is the native helper's refusal: while the helper reports itself exhausted, every failure it
+   * classifies is its unavailable refusal, which no retry in this process can clear.
+   */
+  private helperRefuses(failure: unknown): boolean {
+    const helper = this.options.backend.supervisor.nativeHelper;
+
+    return helper.exhausted && classifyHelperFailure(failure, helper) instanceof NativeHelperUnavailableError;
   }
 
   private scheduleTransition(): void {
