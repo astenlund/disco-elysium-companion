@@ -618,7 +618,8 @@ export class SessionHost implements SessionHostV1 {
         });
         await this.maintenance.idle();
       } else if (!turn.sent && outcome.code === 'providerError' && this.helperRefuses(outcome)) {
-        // A provider relays a failure of the runtime's own send gates, such as the send-time copy, as providerError.
+        // An unsent providerError, from a runtime send gate such as the send-time copy or from the provider itself, cannot be
+        // retried in this process once the helper is exhausted.
         this.fail(turn, 'nativeHelperUnavailable', false);
       } else {
         let retryable = outcome.retryable;

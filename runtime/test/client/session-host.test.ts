@@ -1513,6 +1513,26 @@ for (const { exhausted, code, retryable } of [
   });
 }
 
+for (const { exhausted, code, retryable } of [
+  { exhausted: false, code: 'providerError', retryable: true },
+  { exhausted: true, code: 'nativeHelperUnavailable', retryable: false },
+] as const) {
+  test(`a provider's own unsent providerError fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
+    // Arrange: a session that refuses the turn before its send gate, as ClaudeSession does for a rejected override setup call.
+    const { host, backend, provider, events } = await fixture();
+    backend.supervisor.nativeHelper.exhausted = exhausted;
+    provider.current.sendTurn = async () => ({ kind: 'failed', code: 'providerError', retryable: true });
+
+    // Act
+    assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => !host.turnInProgress);
+
+    // Assert
+    assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => [event.code, event.retryable]), [[code, retryable]]);
+    await host.shutdown();
+  });
+}
+
 test('a required capacity refusal is reported after status and blocks later input without changing the provider session', async () => {
   const { host, backend, provider, events } = await fixture();
   const prior = provider.current;
