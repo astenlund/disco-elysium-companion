@@ -29,22 +29,26 @@ async function attach(chat: SyntheticChat, sink: (event: HostEvent) => void = ()
 
 /**
  * Ends any provider broker a test left running, as one that fails before its shutdown can, and then releases the guard
- * that a shutdown failed on the exhausted helper keeps held, before the fixture is closed.
+ * that a shutdown failed on the exhausted helper keeps held, before the fixture is closed. A chat that never opened leaves
+ * only the fixture to close.
  */
-async function releaseExhaustedChat(chat: SyntheticChat, fixture: { close(): Promise<void> }): Promise<void> {
-  try { await chat.provider.endChildren(); }
-  finally {
-    await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
-    await fixture.close();
-  }
+async function releaseExhaustedChat(chat: SyntheticChat | null, fixture: { close(): Promise<void> }): Promise<void> {
+  try {
+    if (chat !== null) {
+      try { await chat.provider.endChildren(); }
+      finally { await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined); }
+    }
+  } finally { await fixture.close(); }
 }
 
 describe('chat lifecycle on the native helper', () => {
   it('stays attached after the restart is spent, refuses later launches without a process and keeps the guard on shutdown', { timeout: 600000 }, async () => {
     // Arrange: a fresh-scope start that reaches attachment.
     const fixture = await companionFixture('runtime-owned');
-    const chat = await openSyntheticChat(fixture.root, await testHelperImage());
+    let opened: SyntheticChat | null = null;
     try {
+      const chat = await openSyntheticChat(fixture.root, await testHelperImage());
+      opened = chat;
       await attach(chat);
       const helper = chat.backend.supervisor.nativeHelper;
       const providerStarts = chat.provider.calls.length;
@@ -69,14 +73,16 @@ describe('chat lifecycle on the native helper', () => {
       const marker = JSON.parse(await fs.readFile(path.join(chat.backend.scope.dataRoot, 'runtime.json'), 'utf8')) as { cleanShutdown: boolean };
       assert.equal(marker.cleanShutdown, false);
       assert.equal((chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.held, true);
-    } finally { await releaseExhaustedChat(chat, fixture); }
+    } finally { await releaseExhaustedChat(opened, fixture); }
   });
 
   it('fails a turn submitted after the restart is spent with the helper refusal before any provider send, and refuses later turns at submission', { timeout: 600000 }, async () => {
     // Arrange: an attached chat with a ready provider whose helper is then exhausted.
     const fixture = await companionFixture('runtime-owned');
-    const chat = await openSyntheticChat(fixture.root, await testHelperImage());
+    let opened: SyntheticChat | null = null;
     try {
+      const chat = await openSyntheticChat(fixture.root, await testHelperImage());
+      opened = chat;
       const events: HostEvent[] = [];
       let terminal: ((event: HostEvent) => void) | null = null;
       await attach(chat, event => { events.push(event); if (event.type === 'turn.completed' || event.type === 'turn.failed') { terminal?.(event); } });
@@ -99,7 +105,7 @@ describe('chat lifecycle on the native helper', () => {
       assert.equal(sendCount(), sends);
       assert.equal(second, 'notReady');
       assert.deepEqual(chat.host.status.capacity.ordinary, { state: 'unavailable', reason: 'helperUnavailable', dimensions: [] });
-    } finally { await releaseExhaustedChat(chat, fixture); }
+    } finally { await releaseExhaustedChat(opened, fixture); }
   });
 
   it('has ended the provider when a shutdown the exhausted helper failed returns, and the chat process then exits on its own', { timeout: 600000 }, async () => {
