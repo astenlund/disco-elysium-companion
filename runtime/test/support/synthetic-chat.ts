@@ -37,6 +37,28 @@ export async function openSyntheticChat(companionRoot: string, image: HelperImag
   return { host: opened.host, backend, provider };
 }
 
+/**
+ * Kills the chat's helper service and then its one replacement, and returns once the helper reports itself exhausted with
+ * no service running. Throws when either step does not happen within its timeout.
+ */
+export async function exhaustHelper(chat: SyntheticChat, timeoutMs = 30_000): Promise<void> {
+  const helper = chat.backend.supervisor.nativeHelper;
+  const servicePid = (): number | null => { try { return helper.owner().pid; } catch { return null; } };
+  const until = async (condition: () => boolean, step: string): Promise<void> => {
+    const deadline = performance.now() + timeoutMs;
+    while (!condition()) {
+      if (performance.now() > deadline) { throw new Error(`The helper did not reach ${step}.`); }
+      await new Promise<void>(resolve => { setTimeout(resolve, 50); });
+    }
+  };
+  const first = servicePid();
+  if (first === null) { throw new Error('The helper has no running service to kill.'); }
+  process.kill(first);
+  await until(() => { const current = servicePid(); return current !== null && current !== first; }, 'a replacement service');
+  process.kill(servicePid()!);
+  await until(() => helper.exhausted && servicePid() === null, 'exhaustion');
+}
+
 /** A clean first chat start and shutdown, naming the watcher job and runtime marker of the scope it leaves behind. */
 export async function startAndStopSyntheticChat(companionRoot: string, image: HelperImage): Promise<{ readonly watcherJob: string; readonly marker: string }> {
   const first = await openSyntheticChat(companionRoot, image);

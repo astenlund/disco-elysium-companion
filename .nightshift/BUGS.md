@@ -55,12 +55,6 @@ Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before i
 
 **Requires:** none.
 
-### Provider outlives a failed shutdown after helper exhaustion
-
-Found on 2026-11-16 with the entry above: after helper exhaustion, shutdown fails with `nativeHelperUnavailable (unavailable)` and leaves the runtime marker unclean and the guard held, and the synthetic provider's broker stays alive while the runtime process lives, so `chat-helper-lifecycle.test.ts` now ends it with `SyntheticProvider.endChildren()` before releasing the guard. Whether a real provider ends when chat exits in that state is unverified. Check a real chat exit after helper exhaustion and make the failed shutdown end the provider if it survives.
-
-**Requires:** none.
-
 ### Provider start retried on a restart that carries a correction
 
 Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before it is healthy": on a restart whose recovery publishes a `contextUncertain` correction, the provider's first start attempt fails and `ProviderLifecycle` retries it after its 1-second `providerRetry` delay, so `runtime/test/client/startup-recovery-invalidation.test.ts` recorded two fresh provider starts when it was written. The same retry appeared in gate runs before that fix, and it lengthens the attachment of both recovery paths the startup gates measure. Its cause has not been investigated. Find why the first attempt fails and remove the retry if it is avoidable.

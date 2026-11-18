@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
-import type { OwnedProcess, ProcessSupervisor } from '../../src/process.ts';
+import type { OwnedProcess, ProcessIdentity, ProcessSupervisor } from '../../src/process.ts';
 import { FakeProvider } from '../client/support.ts';
 
 const script = fileURLToPath(new URL('./synthetic-provider-child.mjs', import.meta.url));
@@ -32,6 +32,9 @@ export class SyntheticProvider extends FakeProvider {
       await new Promise<void>(resolve => { setTimeout(resolve, 50); });
     }
   }
+
+  /** The process identities of every child this provider spawned, each once its broker reported it. */
+  childIdentities(): Promise<ProcessIdentity[]> { return Promise.all(this.children.map(child => child.ready)); }
 
   override async start(resume: string | null, signal?: AbortSignal) {
     signal?.throwIfAborted();

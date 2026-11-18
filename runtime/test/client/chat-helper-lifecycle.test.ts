@@ -14,10 +14,11 @@ import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { SupervisorError } from '../../src/process.ts';
 import { companionFixture } from '../support/companion.ts';
 import { helperProxies, testHelperImage } from '../support/native-helper.ts';
-import { openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
+import { exhaustHelper, openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
 const attachAndWait = fileURLToPath(new URL('../support/attach-and-wait.ts', import.meta.url));
+const exhaustAndExit = fileURLToPath(new URL('../support/exhaust-and-exit.ts', import.meta.url));
 const childScript = fileURLToPath(new URL('../fixtures/process-child.ts', import.meta.url));
 const childOptions = { command: process.execPath, args: [childScript, 'arguments', 'refused'], cwd: repository };
 const pause = (milliseconds: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, milliseconds); });
@@ -30,9 +31,24 @@ async function until(condition: () => boolean, timeoutMs = 30_000): Promise<void
   }
 }
 
+/** True unless the process is positively gone; any probe failure other than a missing process counts as present. */
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+}
+
 async function attach(chat: SyntheticChat): Promise<void> {
   const attached = await chat.host.attachVerified(() => {});
   assert.equal(attached.result, 'attached');
+}
+
+/** With the helper gone, shutdown cannot stop the provider, so its broker is ended here before the guard is released. */
+async function releaseExhaustedChat(chat: SyntheticChat, fixture: { close(): Promise<void> }): Promise<void> {
+  try { await chat.provider.endChildren(); }
+  finally {
+    await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
+    await fixture.close();
+  }
 }
 
 describe('chat lifecycle on the native helper', () => {
@@ -43,15 +59,10 @@ describe('chat lifecycle on the native helper', () => {
     try {
       await attach(chat);
       const helper = chat.backend.supervisor.nativeHelper;
-      const servicePid = (): number | null => { try { return helper.owner().pid; } catch { return null; } };
-      const first = servicePid()!;
       const providerStarts = chat.provider.calls.length;
 
       // Act: the service is killed, replaced once, and the replacement is killed too.
-      process.kill(first);
-      await until(() => { const current = servicePid(); return current !== null && current !== first; });
-      process.kill(servicePid()!);
-      await until(() => { try { helper.brokerImage(); return false; } catch { return servicePid() === null; } });
+      await exhaustHelper(chat);
 
       // Assert: chat stays attached with no new provider start, while later launches and requests take their helper-unavailable paths.
       assert.equal(chat.provider.calls.length, providerStarts);
@@ -70,13 +81,31 @@ describe('chat lifecycle on the native helper', () => {
       const marker = JSON.parse(await fs.readFile(path.join(chat.backend.scope.dataRoot, 'runtime.json'), 'utf8')) as { cleanShutdown: boolean };
       assert.equal(marker.cleanShutdown, false);
       assert.equal((chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.held, true);
+    } finally { await releaseExhaustedChat(chat, fixture); }
+  });
+
+  it('ends the chat process and its provider when chat exits after a shutdown the exhausted helper failed', { timeout: 600000 }, async () => {
+    // Arrange: a chat process that exhausts its helper, lets shutdown fail and then returns as the CLI does.
+    const fixture = await companionFixture('runtime-owned');
+    const child = spawn(process.execPath, [exhaustAndExit, fixture.root], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
+    const exited = new Promise<number | null>(resolve => { child.once('exit', code => resolve(code)); });
+    try {
+      const first = await createInterface({ input: child.stdout })[Symbol.asyncIterator]().next();
+      assert.equal(first.done, false, 'the chat process ended before reporting');
+      const report = JSON.parse(first.value as string) as { attached: string; exhausted: boolean; shutdown: string; code: unknown; providers: { pid: number }[] };
+      assert.ok(report.attached === 'attached' && report.exhausted && report.shutdown === 'rejected', JSON.stringify(report));
+      assert.equal(report.code, 'nativeHelperUnavailable');
+      assert.ok(report.providers.length > 0);
+
+      // Act: wait for the chat process to end on its own.
+      const code = await Promise.race([exited, pause(60_000).then(() => 'timeout' as const)]);
+
+      // Assert: the process ended with the failed shutdown's exit code, and no provider child outlived it.
+      assert.equal(code, 1, 'the chat process did not end on its own after its failed shutdown');
+      await until(() => report.providers.every(provider => !processExists(provider.pid)));
     } finally {
-      // With the helper gone, shutdown cannot stop the provider, so its broker is ended here to release the root.
-      try { await chat.provider.endChildren(); }
-      finally {
-        await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
-        await fixture.close();
-      }
+      if (child.exitCode === null) { child.kill(); await exited; }
+      await fixture.close();
     }
   });
 
