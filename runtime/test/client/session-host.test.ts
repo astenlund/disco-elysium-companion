@@ -1454,8 +1454,8 @@ for (const { name, exhausted, failure, code, retryable } of [
   test(`a turn that fails before send on ${name} fails with ${code}`, async () => {
     // Arrange
     const { host, backend, provider, events } = await fixture();
-    backend.supervisor.nativeHelper.exhausted = exhausted;
-    backend.acquire = async () => { backend.acquisitionCount += 1; throw failure(); };
+    // The helper exhausts as the acquisition fails, so the classification must read its state at failure time.
+    backend.acquire = async () => { backend.acquisitionCount += 1; backend.supervisor.nativeHelper.exhausted = exhausted; throw failure(); };
 
     // Act
     assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
@@ -1495,8 +1495,7 @@ for (const { exhausted, code, retryable } of [
   test(`a send-time copy failure the provider relays as providerError fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
     // Arrange: a session that turns a throwing send gate into a providerError outcome, as ClaudeSession does.
     const { host, backend, provider, events } = await fixture();
-    backend.supervisor.nativeHelper.exhausted = exhausted;
-    backend.copyForSend = async () => { throw new Error('The native helper service can no longer serve.'); };
+    backend.copyForSend = async () => { backend.supervisor.nativeHelper.exhausted = exhausted; throw new Error('The native helper service can no longer serve.'); };
     provider.current.sendTurn = async request => {
       try { await request.beforeSend(request.contextBlock); }
       catch { return { kind: 'failed', code: 'providerError', retryable: true }; }
@@ -1520,11 +1519,11 @@ for (const { exhausted, code, retryable } of [
   test(`a provider's providerError after a send fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
     // Arrange: a session that sends the turn and then reports a generic failure, as ClaudeSession can after onSent.
     const { host, backend, provider, events } = await fixture();
-    backend.supervisor.nativeHelper.exhausted = exhausted;
     provider.current.sendTurn = async request => {
       await request.beforeSend(request.contextBlock);
       request.beforeEnqueue();
       request.onSent();
+      backend.supervisor.nativeHelper.exhausted = exhausted;
       return { kind: 'failed', code: 'providerError', retryable: true };
     };
 
@@ -1540,8 +1539,7 @@ for (const { exhausted, code, retryable } of [
   test(`a provider's own unsent providerError fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
     // Arrange: a session that refuses the turn before its send gate, as ClaudeSession does for a rejected override setup call.
     const { host, backend, provider, events } = await fixture();
-    backend.supervisor.nativeHelper.exhausted = exhausted;
-    provider.current.sendTurn = async () => ({ kind: 'failed', code: 'providerError', retryable: true });
+    provider.current.sendTurn = async () => { backend.supervisor.nativeHelper.exhausted = exhausted; return { kind: 'failed', code: 'providerError', retryable: true }; };
 
     // Act
     assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
