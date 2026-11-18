@@ -114,18 +114,20 @@ describe('chat lifecycle on the native helper', () => {
       const first = await Promise.race([createInterface({ input: child.stdout })[Symbol.asyncIterator]().next(), expired]);
       assert.ok(first !== 'timeout', 'the chat process sent no report within the deadline');
       assert.equal(first.done, false, 'the chat process ended before reporting');
-      const report = JSON.parse(first.value as string) as { attached: string; exhausted: boolean; shutdown: string; code: unknown;
-        providers: { pid: number; brokerClosed: boolean; running: boolean }[] };
+      type Child = { pid: number; brokerClosed: boolean; running: boolean };
+      const report = JSON.parse(first.value as string) as { attached: string; exhausted: boolean; before: { provider: string; children: Child[] };
+        shutdown: string; code: unknown; providers: Child[] };
 
       // Act: wait for the chat process to end on its own.
       const code = await Promise.race([exited, expired]);
 
-      // Assert: the shutdown failed with the helper refusal only after it had closed every provider broker and its child had
-      // exited, and the chat process then ended with the failed shutdown's exit code.
+      // Assert: a provider was live when shutdown began, the shutdown failed with the helper refusal only after it had closed
+      // each live provider's broker and its child had exited, and the chat process then ended with the failed shutdown's exit code.
       assert.ok(report.attached === 'attached' && report.exhausted && report.shutdown === 'rejected', JSON.stringify(report));
       assert.equal(report.code, 'nativeHelperUnavailable');
-      assert.ok(report.providers.length > 0);
-      assert.ok(report.providers.every(provider => provider.brokerClosed && !provider.running), JSON.stringify(report.providers));
+      const live = report.before.children.filter(child => !child.brokerClosed && child.running);
+      assert.ok(report.before.provider === 'ready' && live.length > 0, `no provider was live when shutdown began: ${JSON.stringify(report.before)}`);
+      assert.ok(live.every(child => report.providers.some(after => after.pid === child.pid && after.brokerClosed && !after.running)), JSON.stringify(report.providers));
       assert.equal(code, 1, 'the chat process did not end on its own after its failed shutdown');
     } finally {
       clearTimeout(deadline);

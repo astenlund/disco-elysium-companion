@@ -13,9 +13,12 @@ const chat = await openSyntheticChat(root, await testHelperImage());
 const helper = chat.backend.supervisor.nativeHelper;
 const attached = await chat.host.attachVerified(() => {});
 await exhaustHelper(chat);
+const providerChildren = async () => (await chat.provider.childStates())
+  .map(state => ({ pid: state.identity.pid, brokerClosed: state.brokerClosed, running: processRunning(state.identity.pid) }));
+const before = { provider: chat.host.status.provider.state, children: await providerChildren() };
 const shutdown = await Promise.allSettled([runChatClient({ host: chat.host, helper }, host => host.shutdown())]);
 const outcome = shutdown[0]!;
-const providers = (await chat.provider.childStates()).map(state => ({ pid: state.identity.pid, brokerClosed: state.brokerClosed, running: processRunning(state.identity.pid) }));
-process.stdout.write(`${JSON.stringify({ attached: attached.result, exhausted: helper.exhausted, shutdown: outcome.status,
+const providers = await providerChildren();
+process.stdout.write(`${JSON.stringify({ attached: attached.result, exhausted: helper.exhausted, before, shutdown: outcome.status,
   code: outcome.status === 'rejected' ? (outcome.reason as { code?: unknown }).code ?? null : null, providers })}${String.fromCharCode(10)}`);
 process.exitCode = outcome.status === 'rejected' ? 1 : 0;
