@@ -21,28 +21,15 @@ const attachAndWait = fileURLToPath(new URL('../support/attach-and-wait.ts', imp
 const exhaustAndExit = fileURLToPath(new URL('../support/exhaust-and-exit.ts', import.meta.url));
 const childScript = fileURLToPath(new URL('../fixtures/process-child.ts', import.meta.url));
 const childOptions = { command: process.execPath, args: [childScript, 'arguments', 'refused'], cwd: repository };
-const pause = (milliseconds: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, milliseconds); });
-
-async function until(condition: () => boolean, timeoutMs = 30_000): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  while (!condition()) {
-    if (performance.now() > deadline) { throw new Error('Condition not reached.'); }
-    await pause(50);
-  }
-}
-
-/** True unless the process is positively gone; any probe failure other than a missing process counts as present. */
-function processExists(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
-}
-
 async function attach(chat: SyntheticChat): Promise<void> {
   const attached = await chat.host.attachVerified(() => {});
   assert.equal(attached.result, 'attached');
 }
 
-/** With the helper gone, shutdown cannot stop the provider, so its broker is ended here before the guard is released. */
+/**
+ * Ends any provider broker a test left running, as one that fails before its shutdown can, and then releases the guard
+ * that a shutdown failed on the exhausted helper keeps held, before the fixture is closed.
+ */
 async function releaseExhaustedChat(chat: SyntheticChat, fixture: { close(): Promise<void> }): Promise<void> {
   try { await chat.provider.endChildren(); }
   finally {
@@ -84,26 +71,30 @@ describe('chat lifecycle on the native helper', () => {
     } finally { await releaseExhaustedChat(chat, fixture); }
   });
 
-  it('ends the chat process and its provider when chat exits after a shutdown the exhausted helper failed', { timeout: 600000 }, async () => {
-    // Arrange: a chat process that exhausts its helper, lets shutdown fail and then returns as the CLI does.
+  it('has ended the provider when a shutdown the exhausted helper failed returns, and the chat process then exits on its own', { timeout: 600000 }, async () => {
+    // Arrange: a chat process that exhausts its helper, lets shutdown fail, reports its provider children and then returns as the CLI does.
     const fixture = await companionFixture('runtime-owned');
     const child = spawn(process.execPath, [exhaustAndExit, fixture.root], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
     const exited = new Promise<number | null>(resolve => { child.once('exit', code => resolve(code)); });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
       const first = await createInterface({ input: child.stdout })[Symbol.asyncIterator]().next();
       assert.equal(first.done, false, 'the chat process ended before reporting');
-      const report = JSON.parse(first.value as string) as { attached: string; exhausted: boolean; shutdown: string; code: unknown; providers: { pid: number }[] };
+      const report = JSON.parse(first.value as string) as { attached: string; exhausted: boolean; shutdown: string; code: unknown;
+        providers: { pid: number; brokerClosed: boolean; running: boolean }[] };
+
+      // Act: wait for the chat process to end on its own.
+      const code = await Promise.race([exited, new Promise<'timeout'>(resolve => { deadline = setTimeout(() => resolve('timeout'), 60_000); })]);
+
+      // Assert: the shutdown failed with the helper refusal only after it had closed every provider broker and its child had
+      // exited, and the chat process then ended with the failed shutdown's exit code.
       assert.ok(report.attached === 'attached' && report.exhausted && report.shutdown === 'rejected', JSON.stringify(report));
       assert.equal(report.code, 'nativeHelperUnavailable');
       assert.ok(report.providers.length > 0);
-
-      // Act: wait for the chat process to end on its own.
-      const code = await Promise.race([exited, pause(60_000).then(() => 'timeout' as const)]);
-
-      // Assert: the process ended with the failed shutdown's exit code, and no provider child outlived it.
+      assert.ok(report.providers.every(provider => provider.brokerClosed && !provider.running), JSON.stringify(report.providers));
       assert.equal(code, 1, 'the chat process did not end on its own after its failed shutdown');
-      await until(() => report.providers.every(provider => !processExists(provider.pid)));
     } finally {
+      clearTimeout(deadline);
       if (child.exitCode === null) { child.kill(); await exited; }
       await fixture.close();
     }

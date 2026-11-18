@@ -20,8 +20,8 @@ export class SyntheticProvider extends FakeProvider {
   }
 
   /**
-   * Ends every child this provider spawned whose broker is still running, by killing the broker that owns its job. For a test
-   * whose shutdown cannot stop the provider, such as one that exhausted the native helper, so the child releases the root.
+   * Ends every child this provider spawned whose broker is still running, by killing the broker that owns its job, so the
+   * child releases the root. Cleanup for a test that may end before its shutdown stopped the provider.
    */
   async endChildren(): Promise<void> {
     const running = this.children.filter(child => !child.brokerClosed);
@@ -33,8 +33,10 @@ export class SyntheticProvider extends FakeProvider {
     }
   }
 
-  /** The process identities of every child this provider spawned, each once its broker reported it. */
-  childIdentities(): Promise<ProcessIdentity[]> { return Promise.all(this.children.map(child => child.ready)); }
+  /** Every child this provider spawned, with its identity once its broker reported it and whether that broker has closed. */
+  async childStates(): Promise<{ readonly identity: ProcessIdentity; readonly brokerClosed: boolean }[]> {
+    return Promise.all(this.children.map(async child => ({ identity: await child.ready, brokerClosed: child.brokerClosed })));
+  }
 
   override async start(resume: string | null, signal?: AbortSignal) {
     signal?.throwIfAborted();
