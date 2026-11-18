@@ -95,6 +95,8 @@ export class FakeBackend {
   readonly identities = { runtimeInstanceId: 'a'.repeat(32), runtimeSessionId: 'b'.repeat(32), adapterBindingEpoch: 'c'.repeat(32) };
   readonly scope = { companionRoot: 'C:\\fixture', dataRoot: 'C:\\fixture\\runtime-data', game: 'fixture', principal: 'fixture-principal', bindingSha256: 'd'.repeat(64) };
   readonly events: string[] = [];
+  /** Only the native helper's exhaustion, which turn failure classification reads; a test sets it to exhaust the helper. */
+  readonly supervisor = { nativeHelper: { exhausted: false } };
   binding: AgentSessionBinding | null = null;
   index: AgentSessionIndex | null = null;
   readonly status: BackendStatus = { consumer: 'owner', freshness: { state: 'fresh', class: null, reason: null, lastGoodGeneratedAt: timestamp, checkedAt: timestamp },

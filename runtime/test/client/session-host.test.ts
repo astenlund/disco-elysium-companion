@@ -1444,6 +1444,30 @@ for (const stage of ['copy', 'enqueue'] as const) {
   });
 }
 
+for (const { name, exhausted, failure, code, retryable } of [
+  { name: 'a plain failure with the helper serving', exhausted: false, failure: () => new Error('acquisition failed'), code: 'providerError', retryable: true },
+  { name: 'a plain failure with the helper exhausted', exhausted: true, failure: () => new Error('acquisition failed'), code: 'nativeHelperUnavailable', retryable: false },
+  { name: 'a capacity refusal with the helper exhausted', exhausted: true,
+    failure: () => new RuntimeCapacityError({ admitted: false, state: 'unavailable', dimensions: ['helperUnavailable'] }, 'ordinary'), code: 'nativeHelperUnavailable', retryable: false },
+] as const) {
+  test(`a turn that fails before send on ${name} fails with ${code}`, async () => {
+    // Arrange
+    const { host, backend, provider, events } = await fixture();
+    backend.supervisor.nativeHelper.exhausted = exhausted;
+    backend.acquire = async () => { backend.acquisitionCount += 1; throw failure(); };
+
+    // Act
+    assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => !host.turnInProgress);
+
+    // Assert
+    const failed = events.filter(event => event.type === 'turn.failed');
+    assert.deepEqual(failed.map(event => [event.code, event.retryable]), [[code, retryable]]);
+    assert.equal(provider.current.requests.length, 0);
+    await host.shutdown();
+  });
+}
+
 test('a required capacity refusal is reported after status and blocks later input without changing the provider session', async () => {
   const { host, backend, provider, events } = await fixture();
   const prior = provider.current;

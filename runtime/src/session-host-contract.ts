@@ -50,7 +50,8 @@ export type HostNotice =
   | { readonly type: 'notice'; readonly code: 'stateRedelivered'; readonly reason: null }
   | { readonly type: 'notice'; readonly code: 'stateContextInvalidated'; readonly reason: Correction['reason'] }
   | { readonly type: 'notice'; readonly code: 'providerSafetyRefused'; readonly reason: SafetyRefusalRemedy };
-export type TurnFailure = 'interrupted' | 'subprocessExited' | 'providerError' | 'authenticationFailed' | 'rateLimited' | 'contextExhausted' | 'capacityBlocked' | 'stateInvalidated';
+export type TurnFailure = 'interrupted' | 'subprocessExited' | 'providerError' | 'authenticationFailed' | 'rateLimited' | 'contextExhausted' | 'capacityBlocked' | 'stateInvalidated'
+  | 'nativeHelperUnavailable';
 export type HostEvent = HostNotice
   | ({ readonly type: 'turn.started' } & Interaction)
   | ({ readonly type: 'turn.delta'; readonly fragment: string } & Interaction)

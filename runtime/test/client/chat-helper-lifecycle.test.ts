@@ -12,6 +12,7 @@ import type { Kernel } from '../../src/backend/kernel.ts';
 import { formatCliError, runChatClient } from '../../src/cli.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { SupervisorError } from '../../src/process.ts';
+import type { HostEvent } from '../../src/session-host-contract.ts';
 import { companionFixture } from '../support/companion.ts';
 import { helperProxies, testHelperImage } from '../support/native-helper.ts';
 import { exhaustHelper, openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
@@ -21,8 +22,8 @@ const attachAndWait = fileURLToPath(new URL('../support/attach-and-wait.ts', imp
 const exhaustAndExit = fileURLToPath(new URL('../support/exhaust-and-exit.ts', import.meta.url));
 const childScript = fileURLToPath(new URL('../fixtures/process-child.ts', import.meta.url));
 const childOptions = { command: process.execPath, args: [childScript, 'arguments', 'refused'], cwd: repository };
-async function attach(chat: SyntheticChat): Promise<void> {
-  const attached = await chat.host.attachVerified(() => {});
+async function attach(chat: SyntheticChat, sink: (event: HostEvent) => void = () => {}): Promise<void> {
+  const attached = await chat.host.attachVerified(sink);
   assert.equal(attached.result, 'attached');
 }
 
@@ -68,6 +69,36 @@ describe('chat lifecycle on the native helper', () => {
       const marker = JSON.parse(await fs.readFile(path.join(chat.backend.scope.dataRoot, 'runtime.json'), 'utf8')) as { cleanShutdown: boolean };
       assert.equal(marker.cleanShutdown, false);
       assert.equal((chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.held, true);
+    } finally { await releaseExhaustedChat(chat, fixture); }
+  });
+
+  it('fails a turn submitted after the restart is spent with the helper refusal before any provider send, and refuses later turns at submission', { timeout: 600000 }, async () => {
+    // Arrange: an attached chat with a ready provider whose helper is then exhausted.
+    const fixture = await companionFixture('runtime-owned');
+    const chat = await openSyntheticChat(fixture.root, await testHelperImage());
+    try {
+      const events: HostEvent[] = [];
+      let terminal: ((event: HostEvent) => void) | null = null;
+      await attach(chat, event => { events.push(event); if (event.type === 'turn.completed' || event.type === 'turn.failed') { terminal?.(event); } });
+      await exhaustHelper(chat);
+      const sendCount = (): number => chat.provider.sessions.reduce((total, session) => total + session.requests.length, 0);
+      const sends = sendCount();
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const ended = new Promise<HostEvent | 'timeout'>(resolve => { terminal = resolve; deadline = setTimeout(() => resolve('timeout'), 120_000); });
+
+      // Act: one turn awaited to its terminal event, then a second submission.
+      const first = chat.host.submitChat({ text: 'First question after exhaustion.', questionOverride: false }).result;
+      const outcome = await ended;
+      clearTimeout(deadline);
+      const second = chat.host.submitChat({ text: 'Second question after exhaustion.', questionOverride: false }).result;
+
+      // Assert: the admitted turn failed with the non-retryable helper refusal and reached no provider, and the capacity
+      // slot its failure marked unavailable refuses the next submission.
+      assert.equal(first, 'admitted');
+      assert.ok(outcome !== 'timeout' && outcome.type === 'turn.failed' && outcome.code === 'nativeHelperUnavailable' && !outcome.retryable, JSON.stringify(outcome));
+      assert.equal(sendCount(), sends);
+      assert.equal(second, 'notReady');
+      assert.deepEqual(chat.host.status.capacity.ordinary, { state: 'unavailable', reason: 'helperUnavailable', dimensions: [] });
     } finally { await releaseExhaustedChat(chat, fixture); }
   });
 

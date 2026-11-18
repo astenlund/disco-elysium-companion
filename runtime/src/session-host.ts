@@ -5,6 +5,7 @@ import { isCapacityBlocked, RuntimeCapacityError } from './capacity.ts';
 import { Dialogs } from './dialogs.ts';
 import { newIdentity } from './identity.ts';
 import { utcNow } from './json.ts';
+import { classifyHelperFailure, NativeHelperUnavailableError } from './native-helper-error.ts';
 import { ProviderLifecycle, type PendingProviderStart } from './provider-lifecycle.ts';
 import { UnsentTurnRefusal, type Provider, type ProviderReconnectReason, type ProviderSession, type ProviderSignal } from './provider.ts';
 import { SerialQueue } from './serial.ts';
@@ -640,8 +641,12 @@ export class SessionHost implements SessionHostV1 {
       if (pendingCheck) { this.pendingCheckBlocked = true; }
       this.statusChanged();
       const invalidated = pendingCheck || turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable';
-      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : capacity ? 'capacityBlocked' : 'providerError';
-      this.fail(turn, code, !this.closing && !pendingCheck && code !== 'capacityBlocked');
+      // While the helper reports itself exhausted, every failure it classifies is its unavailable refusal, which no retry in this process can clear.
+      const helper = this.options.backend.supervisor.nativeHelper;
+      const helperRefused = classifyHelperFailure(error, helper) instanceof NativeHelperUnavailableError && helper.exhausted;
+      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : helperRefused ? 'nativeHelperUnavailable'
+        : capacity ? 'capacityBlocked' : 'providerError';
+      this.fail(turn, code, !this.closing && !pendingCheck && code !== 'capacityBlocked' && code !== 'nativeHelperUnavailable');
     } finally {
       if (ticket !== null) {
         try { if (turn.sent && session !== null) { this.recovery.finished(ticket, session.providerInstanceId, 'otherFailure'); } else { this.recovery.cancelBeforeSend(ticket); } }

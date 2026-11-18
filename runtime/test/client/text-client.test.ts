@@ -227,6 +227,31 @@ test('text client names what may still be finishing after an interrupt during ac
   await running;
 });
 
+test('text client names the restart remedy for a turn the exhausted native helper refused', async () => {
+  // Arrange: a ready host whose helper is exhausted and whose acquisition fails.
+  const backend = new FakeBackend();
+  const provider = new FakeProvider();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider, instructionsSha256: instructionHash, providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {}, delay: async () => {} });
+  assert.equal(await host.start(), true);
+  backend.supervisor.nativeHelper.exhausted = true;
+  const refused = Promise.reject(new Error('The native helper service can no longer serve.'));
+  refused.catch(() => undefined);
+  backend.acquireWait = refused;
+  const { input, output, read } = clientStreams();
+  const running = runTextClient(host, { input, output, terminal: false });
+
+  // Act
+  input.write('Original question.\n');
+  await until(() => read().includes('Turn failed:'));
+
+  // Assert
+  assert.match(read(), /Turn failed: The native helper service can no longer serve: .*Restart the runtime\. Use \/quit and start chat again\. The question was not automatically resent\./);
+  assert.doesNotMatch(read(), /providerError/);
+  assert.equal(provider.current.requests.length, 0);
+  input.write('/quit\n');
+  await running;
+});
+
 test('text client gives the same interrupt notice while the provider is still settling', async () => {
   // Arrange
   const backend = new FakeBackend();

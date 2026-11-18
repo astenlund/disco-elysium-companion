@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 
 import { capacityTransitions, type CapacityOwed, type CapacityReason, type CapacityStatus } from './capacity.ts';
+import { nativeHelperReasons } from './native-helper-error.ts';
 import type { VerifiedAttachResult } from './session-host.ts';
 import type { HostDialog, HostEvent, HostStatus, SafetyRefusalRemedy, SessionHostV1 } from './session-host-contract.ts';
 
@@ -151,6 +152,8 @@ export async function runTextClient(host: SessionHostV1, options: TextClientOpti
           ? `The attempted combined input exceeded provider capacity. ${event.retryable ? 'Another player submission may attempt a smaller context.' : 'No further attempt is currently admitted for this unchanged input.'} Changing the question, an available model choice, or /new may help; none is guaranteed.`
           : event.code === 'interrupted' && event.retryable
           ? 'Turn interrupted. A state check or the provider may still be finishing, and a new question is refused until it does. The question was not automatically resent.'
+          : event.code === 'nativeHelperUnavailable'
+          ? `Turn failed: ${nativeHelperReasons.unavailable} Use /quit and start chat again. The question was not automatically resent.`
           : `Turn failed: ${event.code}.`);
     } else if (event.type === 'dialog.requested') { dialog = event; question = 0; answers = emptyAnswers(); renderQuestion(); }
     else if (event.type === 'dialog.closed') { if (dialog?.dialogId === event.dialogId) { dialog = null; answers = emptyAnswers(); } }

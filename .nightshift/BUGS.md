@@ -49,12 +49,6 @@ Found on 2026-11-16 while writing the live startup procedure: the chat client's 
 
 **Requires:** none.
 
-### Turn after helper exhaustion fails as a provider error
-
-Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before it is healthy" (see [bug history](BUGS_HISTORY.md)): once the native helper is exhausted, after its service and that service's one replacement have both died, chat stays attached, and a turn submitted with a ready provider is admitted and then fails with `providerError`. `SessionHost.runTurn` acquires state before any provider send, that acquisition first reserves capacity through a native inventory, and the exhausted helper refuses every request, so the failure most likely comes before the send and the `providerError` code hides the helper cause; this is read from the code, not observed. Before that fix the `runtime-owned` test fixture's first start never started its provider, so `runtime/test/client/chat-helper-lifecycle.test.ts` asserted a provider-unavailable refusal for such a turn; the fix removed that assertion. No design rule found says how such a turn must be refused. Confirm where it fails, decide the intended refusal and what the client shows, and pin it with a test.
-
-**Requires:** none.
-
 ### Provider start retried on a restart that carries a correction
 
 Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before it is healthy": on a restart whose recovery publishes a `contextUncertain` correction, the provider's first start attempt fails and `ProviderLifecycle` retries it after its 1-second `providerRetry` delay, so `runtime/test/client/startup-recovery-invalidation.test.ts` recorded two fresh provider starts when it was written. The same retry appeared in gate runs before that fix, and it lengthens the attachment of both recovery paths the startup gates measure. Its cause has not been investigated. Find why the first attempt fails and remove the retry if it is avoidable.
