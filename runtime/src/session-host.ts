@@ -617,8 +617,8 @@ export class SessionHost implements SessionHostV1 {
           if (acknowledged !== null) { this.lifecycle.updateBinding(acknowledged.binding); }
         });
         await this.maintenance.idle();
-      } else if (!turn.sent && outcome.code === 'providerError' && this.helperRefuses(outcome)) {
-        // An unsent providerError, from a runtime send gate such as the send-time copy or from the provider itself, cannot be
+      } else if (outcome.code === 'providerError' && this.helperRefuses(outcome)) {
+        // A providerError, whether a runtime send gate such as the send-time copy or the provider itself reports it, cannot be
         // retried in this process once the helper is exhausted.
         this.fail(turn, 'nativeHelperUnavailable', false);
       } else {

@@ -107,15 +107,18 @@ describe('chat lifecycle on the native helper', () => {
     const fixture = await companionFixture('runtime-owned');
     const child = spawn(process.execPath, [exhaustAndExit, fixture.root], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
     const exited = new Promise<number | null>(resolve => { child.once('exit', code => resolve(code)); });
+    // One deadline bounds every wait on the chat process, so a stalled start or shutdown still reaches the cleanup below.
     let deadline: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<'timeout'>(resolve => { deadline = setTimeout(() => resolve('timeout'), 300_000); });
     try {
-      const first = await createInterface({ input: child.stdout })[Symbol.asyncIterator]().next();
+      const first = await Promise.race([createInterface({ input: child.stdout })[Symbol.asyncIterator]().next(), expired]);
+      assert.ok(first !== 'timeout', 'the chat process sent no report within the deadline');
       assert.equal(first.done, false, 'the chat process ended before reporting');
       const report = JSON.parse(first.value as string) as { attached: string; exhausted: boolean; shutdown: string; code: unknown;
         providers: { pid: number; brokerClosed: boolean; running: boolean }[] };
 
       // Act: wait for the chat process to end on its own.
-      const code = await Promise.race([exited, new Promise<'timeout'>(resolve => { deadline = setTimeout(() => resolve('timeout'), 60_000); })]);
+      const code = await Promise.race([exited, expired]);
 
       // Assert: the shutdown failed with the helper refusal only after it had closed every provider broker and its child had
       // exited, and the chat process then ended with the failed shutdown's exit code.

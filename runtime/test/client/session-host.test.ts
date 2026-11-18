@@ -1517,6 +1517,26 @@ for (const { exhausted, code, retryable } of [
   { exhausted: false, code: 'providerError', retryable: true },
   { exhausted: true, code: 'nativeHelperUnavailable', retryable: false },
 ] as const) {
+  test(`a provider's providerError after a send fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
+    // Arrange: a session that sends the turn and then reports a generic failure, as ClaudeSession can after onSent.
+    const { host, backend, provider, events } = await fixture();
+    backend.supervisor.nativeHelper.exhausted = exhausted;
+    provider.current.sendTurn = async request => {
+      await request.beforeSend(request.contextBlock);
+      request.beforeEnqueue();
+      request.onSent();
+      return { kind: 'failed', code: 'providerError', retryable: true };
+    };
+
+    // Act
+    assert.equal(host.submitChat({ text: 'question', questionOverride: false }).result, 'admitted');
+    await until(() => !host.turnInProgress);
+
+    // Assert
+    assert.deepEqual(events.filter(event => event.type === 'turn.failed').map(event => [event.code, event.retryable]), [[code, retryable]]);
+    await host.shutdown();
+  });
+
   test(`a provider's own unsent providerError fails with ${code} when the helper ${exhausted ? 'is exhausted' : 'serves'}`, async () => {
     // Arrange: a session that refuses the turn before its send gate, as ClaudeSession does for a rejected override setup call.
     const { host, backend, provider, events } = await fixture();
