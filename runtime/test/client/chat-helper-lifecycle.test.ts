@@ -108,6 +108,39 @@ describe('chat lifecycle on the native helper', () => {
     } finally { await releaseExhaustedChat(opened, fixture); }
   });
 
+  it('fails a turn whose acquisition the helper exhaustion interrupts with the helper refusal, not a retryable invalidation', { timeout: 600000 }, async () => {
+    // Arrange: an attached chat whose helper is exhausted by real kills once the admitted turn's acquisition reaches its
+    // settlement drain, so the safety observation after it reads unavailable because the helper cannot serve.
+    const fixture = await companionFixture('runtime-owned');
+    let opened: SyntheticChat | null = null;
+    try {
+      const chat = await openSyntheticChat(fixture.root, await testHelperImage());
+      opened = chat;
+      let terminal: ((event: HostEvent) => void) | null = null;
+      await attach(chat, event => { if (event.type === 'turn.completed' || event.type === 'turn.failed') { terminal?.(event); } });
+      const kernel = (chat.backend as unknown as { readonly kernel: Kernel }).kernel;
+      const drain = kernel.drain.bind(kernel);
+      let exhausted = false;
+      kernel.drain = async (...args: Parameters<Kernel['drain']>) => {
+        if (!exhausted) { exhausted = true; await exhaustHelper(chat); }
+        return drain(...args);
+      };
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const ended = new Promise<HostEvent | 'timeout'>(resolve => { terminal = resolve; deadline = setTimeout(() => resolve('timeout'), 180_000); });
+
+      // Act
+      const admitted = chat.host.submitChat({ text: 'Question whose acquisition loses the helper.', questionOverride: false }).result;
+      const outcome = await ended;
+      clearTimeout(deadline);
+
+      // Assert: the acquisition published unavailable safety, and the turn still ended with the non-retryable helper refusal.
+      assert.equal(admitted, 'admitted');
+      assert.equal(exhausted, true);
+      assert.equal(chat.host.status.stateSafety.state, 'unavailable');
+      assert.ok(outcome !== 'timeout' && outcome.type === 'turn.failed' && outcome.code === 'nativeHelperUnavailable' && !outcome.retryable, JSON.stringify(outcome));
+    } finally { await releaseExhaustedChat(opened, fixture); }
+  });
+
   it('has ended the provider when a shutdown the exhausted helper failed returns, and the chat process then exits on its own', { timeout: 600000 }, async () => {
     // Arrange: a chat process that exhausts its helper, lets shutdown fail, reports its provider children and then returns as the CLI does.
     const fixture = await companionFixture('runtime-owned');

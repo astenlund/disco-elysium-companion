@@ -644,8 +644,10 @@ export class SessionHost implements SessionHostV1 {
       const capacity = error instanceof RuntimeCapacityError;
       if (pendingCheck) { this.pendingCheckBlocked = true; }
       this.statusChanged();
-      const invalidated = pendingCheck || turn.invalidated || this.options.backend.status.stateSafety.state === 'unavailable';
-      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : this.helperRefuses(error) ? 'nativeHelperUnavailable'
+      // An exhausted helper cannot serve any state read, so the unavailable safety it leaves is its refusal, not an invalidation.
+      const helperRefused = this.helperRefuses(error);
+      const invalidated = pendingCheck || turn.invalidated || !helperRefused && this.options.backend.status.stateSafety.state === 'unavailable';
+      const code: TurnFailure = invalidated ? 'stateInvalidated' : turn.interrupted || this.closing ? 'interrupted' : helperRefused ? 'nativeHelperUnavailable'
         : capacity ? 'capacityBlocked' : 'providerError';
       this.fail(turn, code, !this.closing && !pendingCheck && code !== 'capacityBlocked' && code !== 'nativeHelperUnavailable');
     } finally {
