@@ -395,6 +395,22 @@ test('status names a foreign journal events entry and its manual remedy', () => 
   assert.equal(generic.includes('journal/events'), false);
 });
 
+test('status names the watcher state beside safety and provider', () => {
+  // Arrange
+  const backend = new FakeBackend();
+  const host = new SessionHost({ backend: backend.asRuntime(), provider: new FakeProvider(), instructionsSha256: instructionHash,
+    providerTerminated: async () => {}, verifyTools: async () => {}, closeTools: async () => {} });
+  const watchers = ['disabled', 'running', 'restarting', 'stopped'] as const;
+
+  // Act
+  const rendered = watchers.map(watcher => { Object.assign(backend.status, { watcher }); return { watcher, line: formatStatus(host.status) }; });
+
+  // Assert
+  for (const { watcher, line } of rendered) {
+    assert.match(line, new RegExp(`; safety: [a-z]+; watcher: ${watcher}; provider: `), line);
+  }
+});
+
 test('status carries the journal/events remedy once when the capacity readout already names it', () => {
   // Arrange
   const backend = new FakeBackend();

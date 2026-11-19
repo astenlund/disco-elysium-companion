@@ -101,7 +101,7 @@ export function formatStatus(status: HostStatus): string {
   const journalForeignEntry = formatJournalForeignEntry(status);
   const journalRemedy = journalForeignEntry === null ? '' : ` ${journalForeignEntry}`;
 
-  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}${journalRemedy}${safetyRemedy}`;
+  return `consumer: ${status.consumer}; state: ${status.freshness.state}; ${formatOperational(status.operational)}; journal: ${status.journal.state}${fault}; safety: ${status.stateSafety.state}; watcher: ${status.watcher}; provider: ${status.provider.state}; API-key source: ${credentialSourceLabel(status.provider.credentialSource)}; window recovery: ${status.windowRecovery?.state ?? 'unavailable'}; ${formatCapacity(status.capacity)}${repairRemedy}${journalRemedy}${safetyRemedy}`;
 }
 
 export interface TextClientOptions { readonly input?: Readable; readonly output?: Writable; readonly terminal?: boolean; readonly onAttached?: () => void }
