@@ -82,12 +82,14 @@ export class FakeProvider implements Provider {
   async start(resume: string | null): Promise<ProviderSession> {
     this.calls.push(resume);
     if (this.failAll || resume !== null && this.failures.has(resume)) { throw new Error('Provider start failed.'); }
-    const session = new FakeSession(this.sessions.length + 1, resume ?? `session-${this.sessions.length + 1}`, this.capabilities);
+    const session = new FakeSession(this.sessions.length + 1, resume ?? this.freshSessionId(this.sessions.length + 1), this.capabilities);
     this.configure(session);
     this.sessions.push(session);
     return session;
   }
   get current(): FakeSession { return this.sessions.at(-1)!; }
+  /** Names a fresh session by its ordinal within this provider instance; a provider that outlives one runtime overrides it. */
+  protected freshSessionId(ordinal: number): string { return `session-${ordinal}`; }
 }
 
 export class FakeBackend {

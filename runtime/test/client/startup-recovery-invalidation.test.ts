@@ -48,7 +48,7 @@ describe('chat start after startup recovery invalidates context', () => {
       assert.equal(safety.correction?.reason, 'contextUncertain');
       assert.equal(status.provider.state, 'ready');
       assert.equal(status.provider.safetyRefusal, null);
-      assert.ok(restarted.provider.calls.length > 0 && restarted.provider.calls.every(resume => resume === null), 'The invalidated binding is never resumed.');
+      assert.deepEqual(restarted.provider.calls, [null], 'The invalidated binding is never resumed, and one fresh start binds without a retry.');
       assert.equal(status.stateSafety.correction?.reason, 'contextUncertain');
       assert.equal(restarted.backend.invalidationsPublished(), true);
       assert.equal(attached.result, 'attached');

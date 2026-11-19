@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import type { OwnedProcess, ProcessIdentity, ProcessSupervisor } from '../../src/process.ts';
@@ -37,6 +38,12 @@ export class SyntheticProvider extends FakeProvider {
   async childStates(): Promise<{ readonly identity: ProcessIdentity; readonly brokerClosed: boolean }[]> {
     return Promise.all(this.children.map(async child => ({ identity: await child.ready, brokerClosed: child.brokerClosed })));
   }
+
+  /**
+   * Each runtime constructs its own provider over a root an earlier runtime may have bound, so a fresh session id must be
+   * unique across instances, as a real provider's is; an ordinal alone repeats the earlier binding's id with another history.
+   */
+  protected override freshSessionId(): string { return `session-${randomUUID()}`; }
 
   override async start(resume: string | null, signal?: AbortSignal) {
     signal?.throwIfAborted();
