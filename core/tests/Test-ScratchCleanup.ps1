@@ -240,31 +240,37 @@ if (Test-Selected 'FileSweep') {
     # harness can take or add its inputs.
     $deadProcess = Start-ExitedProcess
     $deadId = $deadProcess.Id
+    # A separate live process stands in for another harness and its sweeper, so the kept entries depend on the liveness
+    # lookup and not on matching the sweeping process's own id.
     $boundary = Join-Path $fileScratch 'sweep-boundary'
     [void] [IO.Directory]::CreateDirectory($boundary)
-    $deadFile = Join-Path $boundary "scratch-file-dead-$deadId-$([guid]::NewGuid().ToString('N'))"
-    $abandonedClaim = Join-Path $boundary "scratch-sweep-claim-$deadId-$([guid]::NewGuid().ToString('N'))"
-    $liveFile = Join-Path $boundary "scratch-file-live-$PID-$([guid]::NewGuid().ToString('N'))"
-    $liveClaim = Join-Path $boundary "scratch-sweep-claim-$PID-$([guid]::NewGuid().ToString('N'))"
-    $unshapedFile = Join-Path $boundary "scratch-file-unshaped-$deadId-$([guid]::NewGuid().ToString('N')).txt"
-    $heldFile = Join-Path $boundary "scratch-file-held-$deadId-$([guid]::NewGuid().ToString('N'))"
-    foreach ($file in @($deadFile, $abandonedClaim, $liveFile, $liveClaim, $unshapedFile, $heldFile)) { [IO.File]::WriteAllText($file, 'residue', $script:Utf8) }
     $projectTmpRoot = & $script:TestSupport { $script:ProjectTmpRoot }
-    $holder = [IO.File]::Open($heldFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $liveOwner = Start-BoundedPwsh -Arguments @('-Command', 'Start-Sleep -Seconds 120')
+    $holder = $null
     try {
+        $liveId = $liveOwner.Process.Id
+        $deadFile = Join-Path $boundary "scratch-file-dead-$deadId-$([guid]::NewGuid().ToString('N'))"
+        $abandonedClaim = Join-Path $boundary "scratch-sweep-claim-$deadId-$([guid]::NewGuid().ToString('N'))"
+        $liveFile = Join-Path $boundary "scratch-file-live-$liveId-$([guid]::NewGuid().ToString('N'))"
+        $liveClaim = Join-Path $boundary "scratch-sweep-claim-$liveId-$([guid]::NewGuid().ToString('N'))"
+        $unshapedFile = Join-Path $boundary "scratch-file-unshaped-$deadId-$([guid]::NewGuid().ToString('N')).txt"
+        $heldFile = Join-Path $boundary "scratch-file-held-$deadId-$([guid]::NewGuid().ToString('N'))"
+        foreach ($file in @($deadFile, $abandonedClaim, $liveFile, $liveClaim, $unshapedFile, $heldFile)) { [IO.File]::WriteAllText($file, 'residue', $script:Utf8) }
+        $holder = [IO.File]::Open($heldFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
         & $script:TestSupport { param($Boundary) $script:ProjectTmpRoot = $Boundary; $script:StaleScratchSwept = $false; Clear-StaleScratchRoots } $boundary
     }
     finally {
         & $script:TestSupport { param($Root) $script:ProjectTmpRoot = $Root } $projectTmpRoot
-        $holder.Dispose()
+        if ($null -ne $holder) { $holder.Dispose() }
+        Stop-BoundedPwsh -Child $liveOwner
     }
     Assert-False -Condition (Test-Path -LiteralPath $deadFile) -Message 'A scratch-shaped file whose creator exited is reaped.'
     Assert-False -Condition (Test-Path -LiteralPath $abandonedClaim) -Message 'An abandoned claim of a file, whose sweeper exited, is reaped.'
     Assert-True -Condition ([IO.File]::Exists($liveFile)) -Message 'A scratch-shaped file whose creator is alive is kept.'
-    Assert-True -Condition ([IO.File]::Exists($liveClaim)) -Message 'A claim carrying a live sweeper''s process id is kept.'
+    Assert-True -Condition ([IO.File]::Exists($liveClaim)) -Message 'A claim carrying another live sweeper''s process id is kept.'
     Assert-True -Condition ([IO.File]::Exists($unshapedFile)) -Message 'A file whose name is not scratch-shaped is kept.'
     Assert-True -Condition ([IO.File]::Exists($heldFile)) -Message 'A file held open with no sharing is skipped, not failed, and kept for a later sweep.'
-    Assert-Equal -Actual @(Get-ClaimNames -Directory $boundary -ProcessIds @($PID)).Count -Expected 1 -Message 'The sweep leaves no claim of its own behind; only the staged live claim remains.'
+    Assert-Equal -Actual @(Get-ClaimNames -Directory $boundary -ProcessIds @($PID)).Count -Expected 0 -Message 'The sweep leaves no claim of its own behind.'
 
     # The claim is an atomic rename beside the file to a scratch-shaped name carrying this process id, done before the deletion.
     $named = Join-Path $fileScratch 'named'
