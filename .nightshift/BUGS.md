@@ -43,24 +43,6 @@ Text entered while the asynchronous attachment proof is pending can be lost befo
 
 **Requires:** [Coordinator startup latency](features/runtime-startup-latency.md).
 
-### Watcher state missing from the chat client readout
-
-Found on 2026-11-16 while writing the live startup procedure: the chat client's status line (`formatStatus` in `runtime/src/text-client.ts`, printed at attachment, on each status change and for `/status`) names consumer, state, operational warnings, journal, safety, provider, API-key source, window recovery and capacity, but not the watcher, while the standalone `status` command (`runtime/src/cli.ts`) tells the user that watcher state is available only in the running chat client, and the "Starting the save watcher" row of `runtime/STARTUP.md` says its status appears in the client. A counted healthy attachment requires a running watcher, so a live tester cannot confirm that condition from the client; the [live-run procedure](reports/runtime-startup-live-run-procedure-20261116.md) substitutes a weaker process check. Add the watcher state to the client readout, with a regression for the rendered line, or correct both claims.
-
-**Requires:** none.
-
-### Provider start retried on a restart that carries a correction
-
-Found on 2026-11-16 while fixing "Recovery needs extra starts or a turn before it is healthy": on a restart whose recovery publishes a `contextUncertain` correction, the provider's first start attempt fails and `ProviderLifecycle` retries it after its 1-second `providerRetry` delay, so `runtime/test/client/startup-recovery-invalidation.test.ts` recorded two fresh provider starts when it was written. The same retry appeared in gate runs before that fix, and it lengthens the attachment of both recovery paths the startup gates measure. Its cause has not been investigated. Find why the first attempt fails and remove the retry if it is avoidable.
-
-**Requires:** none.
-
-### Exhausted-helper turn reported as a retryable invalidation
-
-Found on 2026-11-18 by the skeptic of Nightshift run 3765cdf2 and tracked by the user at triage: when an admitted turn fails in the runtime's own processing while the native helper reports itself exhausted, `SessionHost.runTurn` in `runtime/src/session-host.ts` ranks invalidation first, so if `stateSafety` reads unavailable when the catch runs (for a turn not already ended, a failure other than a pending state check, and a host not closing), the turn ends `turn.failed` with `stateInvalidated` and `retryable: true`, and the text client prints only that code instead of the helper's restart remedy, although an exhausted helper never recovers in that process. Safety can become unavailable before the turn, through a status refresh, or during it: when `deliveryCall` in `runtime/src/backend/index.ts` observes safety after a capacity failure and before rethrowing it, or when `DeliveryCoordinator.acquire` in `runtime/src/backend/delivery.ts` publishes the safety it observed after acquisition and throws `SafetyUnavailableError`. The catch behavior is read from the code, and end-to-end reachability is unverified. First probe whether any of these paths is reachable, then decide whether that case becomes `nativeHelperUnavailable`, not retryable, while the helper is exhausted.
-
-**Requires:** none.
-
 ## History
 
 Fixed bugs are archived in [`BUGS_HISTORY.md`](BUGS_HISTORY.md), loaded on demand only (not at session start) so the active list above stays scannable. When a bug is fixed, append its entry there rather than to this file, AND walk every other `**Requires:**` line in `FEATURES.md` / `BUGS.md`: remove the now-satisfied reference (if it was the only one, set the line to `**Requires:** none.`). The active `Requires:` lines describe what is *currently* blocking, so `/nightshift:ready` never has to consult the history file; the dependency graph settles as bugs are fixed. The bug's breakout record, when present, stays in place and gains a status note saying it was fixed and archived; records archived before 2026-10-24 carry no such note, and for them the history entry is authoritative.
