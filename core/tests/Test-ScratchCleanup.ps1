@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet('All', 'Removal', 'HarnessCleanup', 'ConcurrentSweep', 'StaggeredSweep', IgnoreCase = $false)]
+    [ValidateSet('All', 'Removal', 'FileSweep', 'HarnessCleanup', 'ConcurrentSweep', 'StaggeredSweep', IgnoreCase = $false)]
     [string] $Only = 'All',
 
     # The concurrent races are timing-dependent, so the stress rounds trade run time for the
@@ -42,13 +42,13 @@ function New-ScratchTree {
 }
 
 function Invoke-StaleRootRemoval {
-    param([Parameter(Mandatory)] [string] $Path, [scriptblock] $Remove)
+    param([Parameter(Mandatory)] [string] $Path, [scriptblock] $Remove, [ValidateSet('Remove-StaleScratchRoot', 'Remove-StaleScratchFile')] [string] $Command = 'Remove-StaleScratchRoot')
 
     if ($null -eq $Remove) {
-        & $script:TestSupport { param($Path) Remove-StaleScratchRoot -Path $Path } $Path
+        & $script:TestSupport { param($Command, $Path) & $Command -Path $Path } $Command $Path
     }
     else {
-        & $script:TestSupport { param($Path, $Remove) Remove-StaleScratchRoot -Path $Path -Remove $Remove } $Path $Remove
+        & $script:TestSupport { param($Command, $Path, $Remove) & $Command -Path $Path -Remove $Remove } $Command $Path $Remove
     }
 }
 
@@ -228,6 +228,74 @@ if (Test-Selected 'Removal') {
     [IO.File]::Delete($occupied)
     Remove-ScratchCompanionRoot -Path $occupied
     Assert-False -Condition (Test-Path -LiteralPath $occupied) -Message 'An owned root reported as residue stays owned and can be removed once cleared.'
+}
+
+if (Test-Selected 'FileSweep') {
+    # The sweep reaps a scratch-shaped file whose creator has exited, as a crashed harness leaves when a file stands at
+    # its root's path, and keeps one whose creator is alive or whose name is not scratch-shaped. It places those files in
+    # the shared .tmp, so a concurrent harness's first sweep could reap the dead one first; run it with no other harness.
+    $deadProcess = Start-ExitedProcess
+    $deadId = $deadProcess.Id
+    [void] [IO.Directory]::CreateDirectory($script:ProjectTmp)
+    $deadFile = Join-Path $script:ProjectTmp "scratch-file-dead-$deadId-$([guid]::NewGuid().ToString('N'))"
+    $liveFile = Join-Path $script:ProjectTmp "scratch-file-live-$PID-$([guid]::NewGuid().ToString('N'))"
+    $unshapedFile = Join-Path $script:ProjectTmp "scratch-file-unshaped-$deadId-$([guid]::NewGuid().ToString('N')).txt"
+    $placed = @($deadFile, $liveFile, $unshapedFile)
+    try {
+        foreach ($file in $placed) { [IO.File]::WriteAllText($file, 'residue', $script:Utf8) }
+        & $script:TestSupport { $script:StaleScratchSwept = $false; Clear-StaleScratchRoots }
+        Assert-False -Condition (Test-Path -LiteralPath $deadFile) -Message 'A scratch-shaped file whose creator exited is reaped.'
+        Assert-True -Condition ([IO.File]::Exists($liveFile)) -Message 'A scratch-shaped file whose creator is alive is kept.'
+        Assert-True -Condition ([IO.File]::Exists($unshapedFile)) -Message 'A file whose name is not scratch-shaped is kept.'
+        Assert-Equal -Actual @(Get-ClaimNames -Directory $script:ProjectTmp -ProcessIds @($PID)).Count -Expected 0 -Message 'A reaped file leaves no claim behind.'
+    }
+    finally {
+        foreach ($file in $placed) { if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) } }
+    }
+
+    $fileScratch = New-ScratchCompanionRoot -Prefix 'scratch-file-removal'
+
+    # The claim is an atomic rename beside the file to a scratch-shaped name carrying this process id, done before the deletion.
+    $named = Join-Path $fileScratch 'named'
+    [IO.File]::WriteAllText($named, 'residue', $script:Utf8)
+    $namedSeen = @{ target = $null; fileGone = $false }
+    Invoke-StaleRootRemoval -Command 'Remove-StaleScratchFile' -Path $named -Remove { param($Target) $namedSeen.target = $Target; $namedSeen.fileGone = -not [IO.File]::Exists($named); [IO.File]::Delete($Target) }.GetNewClosure()
+    Assert-True -Condition $namedSeen.fileGone -Message 'The file is renamed away before its deletion.'
+    Assert-OrdinalEqual -Actual ([IO.Path]::GetDirectoryName($namedSeen.target)) -Expected $fileScratch -Message 'The file claim stays beside the file.'
+    $fileClaimMatch = [regex]::Match([IO.Path]::GetFileName($namedSeen.target), $script:ClaimPattern)
+    Assert-True -Condition ($fileClaimMatch.Success -and [int] $fileClaimMatch.Groups[1].Value -eq $PID) -Message "The file claim name carries this live process id ($($namedSeen.target))."
+    Assert-False -Condition (Test-Path -LiteralPath $namedSeen.target) -Message 'A claimed file is gone after its deletion.'
+
+    # A file another sweeper already claimed or removed is skipped without any deletion.
+    $lostFileCalls = @{ count = 0 }
+    Invoke-StaleRootRemoval -Command 'Remove-StaleScratchFile' -Path (Join-Path $fileScratch 'already-gone') -Remove { param($Target) $lostFileCalls.count++ }.GetNewClosure()
+    Assert-Equal -Actual $lostFileCalls.count -Expected 0 -Message 'A file that is already gone is not deleted.'
+
+    # A deletion failure surfaces at once, naming the claim and the original file and keeping its cause.
+    $failingFile = Join-Path $fileScratch 'failing'
+    [IO.File]::WriteAllText($failingFile, 'residue', $script:Utf8)
+    $failingFileSeen = @{ count = 0; target = $null }
+    $failingFileError = $null
+    try { Invoke-StaleRootRemoval -Command 'Remove-StaleScratchFile' -Path $failingFile -Remove { param($Target) $failingFileSeen.count++; $failingFileSeen.target = $Target; throw [ComponentModel.Win32Exception]::new(5) }.GetNewClosure() }
+    catch { $failingFileError = $_.Exception }
+    $failingFileCause = $failingFileError
+    while ($null -ne $failingFileCause -and $failingFileCause -isnot [ComponentModel.Win32Exception]) { $failingFileCause = $failingFileCause.InnerException }
+    Assert-True -Condition ($null -ne $failingFileCause -and $failingFileCause.NativeErrorCode -eq 5) -Message 'A file deletion failure is rethrown.'
+    Assert-True -Condition ($failingFileError -is [IO.IOException] -and $failingFileError.Message.Contains($failingFileSeen.target, [StringComparison]::Ordinal) -and $failingFileError.Message.Contains($failingFile, [StringComparison]::Ordinal)) -Message "A file deletion failure names the claim and the original file ($($failingFileError.Message))."
+    Assert-True -Condition ($null -ne $failingFileCause -and $failingFileError.Message.Contains($failingFileCause.Message, [StringComparison]::Ordinal)) -Message "A file deletion failure keeps its cause in the message ($($failingFileError.Message))."
+    Assert-Equal -Actual $failingFileSeen.count -Expected 1 -Message 'A file deletion failure is not retried.'
+    [IO.File]::Delete($failingFileSeen.target)
+
+    # A claimed file the deletion leaves in place surfaces, naming the claim and the original file, and stays for inspection.
+    $survivingFile = Join-Path $fileScratch 'surviving'
+    [IO.File]::WriteAllText($survivingFile, 'residue', $script:Utf8)
+    $survivingFileSeen = @{ target = $null }
+    $survivingFileError = $null
+    try { Invoke-StaleRootRemoval -Command 'Remove-StaleScratchFile' -Path $survivingFile -Remove { param($Target) $survivingFileSeen.target = $Target }.GetNewClosure() }
+    catch { $survivingFileError = $_.Exception }
+    Assert-True -Condition ($survivingFileError -is [IO.IOException] -and $survivingFileError.Message.Contains($survivingFileSeen.target, [StringComparison]::Ordinal) -and $survivingFileError.Message.Contains($survivingFile, [StringComparison]::Ordinal)) -Message "A surviving claimed file is reported, naming the claim and the original file ($survivingFileError)."
+    Assert-True -Condition ([IO.File]::Exists($survivingFileSeen.target)) -Message 'A surviving claimed file is left for inspection.'
+    [IO.File]::Delete($survivingFileSeen.target)
 }
 
 if (Test-Selected 'HarnessCleanup') {

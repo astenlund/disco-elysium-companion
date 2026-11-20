@@ -11,6 +11,8 @@ $script:ScratchRemovalAttempts = 3
 $script:ScratchResidueSampleLimit = 16
 # The default removal of one scratch tree; an attempt that leaves part of it is judged by its caller, not here.
 $script:RemoveScratchTree = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
+# The default removal of one stale scratch file; a file it leaves is judged by its caller.
+$script:RemoveScratchFile = { param($Target) [System.IO.File]::Delete($Target) }
 
 function Assert-ScratchBoundarySafe {
     if (-not (Test-Path -LiteralPath $script:ProjectRoot -PathType Container)) {
@@ -460,9 +462,10 @@ function New-StubAdapterCommandConfig {
 function Clear-StaleScratchRoots {
     # A harness killed before its Complete-ScratchHarness ran, or one whose roots survived
     # it, leaves them under .tmp, where they would accumulate forever. A harness that creates new scratch reaps
-    # its predecessors here: only directories matching the exact scratch shape
+    # its predecessors here: only directories and files matching the exact scratch shape
     # <prefix>-<pid>-<32hex> whose embedded process id is no longer alive, directly
-    # beneath the project .tmp, non-reparse. A live PID is never touched (the creator
+    # beneath the project .tmp, non-reparse. A file stands there when a harness crashed
+    # while one occupied its root's path. A live PID is never touched (the creator
     # may still be running), and liveness is decided per entry when it is reached, so a
     # harness or sweeper that started during this sweep is seen as live; migration
     # artifacts, evidence roots, and hand-placed fixtures do not match the shape and are
@@ -484,8 +487,7 @@ function Clear-StaleScratchRoots {
 
     foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($temporaryRoot)) {
         $entryItem = Get-Item -LiteralPath $entry -Force -ErrorAction SilentlyContinue
-        if ($null -eq $entryItem -or $entryItem -isnot [System.IO.DirectoryInfo] -or
-            ($entryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        if ($null -eq $entryItem -or ($entryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             continue
         }
         if (-not ([System.IO.Directory]::GetParent($entryItem.FullName).FullName.TrimEnd([System.IO.Path]::DirectorySeparatorChar) -ceq $temporaryRoot)) {
@@ -499,7 +501,12 @@ function Clear-StaleScratchRoots {
         if (-not [int]::TryParse($match.Groups[1].Value, [ref] $creatorId) -or -not (Test-ScratchCreatorExited -ProcessId $creatorId)) {
             continue
         }
-        Remove-StaleScratchRoot -Path $entryItem.FullName
+        if ($entryItem -is [System.IO.DirectoryInfo]) {
+            Remove-StaleScratchRoot -Path $entryItem.FullName
+        }
+        else {
+            Remove-StaleScratchFile -Path $entryItem.FullName
+        }
     }
 }
 
@@ -538,7 +545,7 @@ function Remove-StaleScratchRoot {
         [Parameter()] [scriptblock] $Remove = $script:RemoveScratchTree
     )
 
-    $claim = Join-Path ([System.IO.Path]::GetDirectoryName($Path)) "scratch-sweep-claim-$PID-$([guid]::NewGuid().ToString('N'))"
+    $claim = Get-ScratchSweepClaimPath -Path $Path
     try {
         [System.IO.Directory]::Move($Path, $claim)
     }
@@ -552,10 +559,47 @@ function Remove-StaleScratchRoot {
     catch {
         throw [System.IO.IOException]::new("Removing claimed stale scratch root $claim (originally $Path) failed: $($_.Exception.Message)", $_.Exception)
     }
-    # A claim replaced by something other than a directory is left alone, as no sweep removes it.
+    # A claim replaced by something other than a directory is left alone here; a later sweep reaps a file standing
+    # there once this process has exited, and never follows a reparse point.
     if ($state -cne 'gone' -and $state -cne 'other') {
         throw [System.IO.IOException]::new("Claimed stale scratch root survived $script:ScratchRemovalAttempts removal attempts: $claim (originally $Path)")
     }
+}
+
+# A stale scratch file is claimed like a root, so concurrent sweepers agree on one winner, and then deleted once,
+# since a file has no partial removal to retry. A deletion failure and a file that outlasts it surface, naming both
+# the claim and the original file. -Remove exists for tests.
+function Remove-StaleScratchFile {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter()] [scriptblock] $Remove = $script:RemoveScratchFile
+    )
+
+    $claim = Get-ScratchSweepClaimPath -Path $Path
+    try {
+        [System.IO.File]::Move($Path, $claim)
+    }
+    catch [System.IO.DirectoryNotFoundException], [System.IO.FileNotFoundException] {
+        return
+    }
+
+    try {
+        & $Remove $claim
+    }
+    catch {
+        throw [System.IO.IOException]::new("Removing claimed stale scratch file $claim (originally $Path) failed: $($_.Exception.Message)", $_.Exception)
+    }
+    if ((Get-ScratchTreeState -Path $claim) -cne 'gone') {
+        throw [System.IO.IOException]::new("Claimed stale scratch file survived its removal: $claim (originally $Path)")
+    }
+}
+
+# The name a sweeper renames a stale entry to before removing it: beside the entry, scratch-shaped and carrying this
+# live process id, so a claim abandoned by a crash is reaped by a later sweep once this process has exited.
+function Get-ScratchSweepClaimPath {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    return Join-Path ([System.IO.Path]::GetDirectoryName($Path)) "scratch-sweep-claim-$PID-$([guid]::NewGuid().ToString('N'))"
 }
 
 # Runs a removal against one scratch tree, at most a fixed number of times, and returns what
