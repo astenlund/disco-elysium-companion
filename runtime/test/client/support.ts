@@ -88,7 +88,10 @@ export class FakeProvider implements Provider {
     return session;
   }
   get current(): FakeSession { return this.sessions.at(-1)!; }
-  /** Names a fresh session by its ordinal within this provider instance; a provider that outlives one runtime overrides it. */
+  /**
+   * Names a fresh session by its ordinal, which is unique only within this provider instance; a provider constructed over a
+   * root whose binding an earlier instance left overrides it.
+   */
   protected freshSessionId(ordinal: number): string { return `session-${ordinal}`; }
 }
 

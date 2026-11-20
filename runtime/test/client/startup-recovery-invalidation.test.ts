@@ -21,6 +21,9 @@ describe('chat start after startup recovery invalidates context', () => {
     let restarted: SyntheticChat | null = null;
     try {
       const first = await openSyntheticChat(fixture.root, image);
+      // The restart must coexist with the binding this first start leaves, so the first start has to have bound one fresh session.
+      assert.equal(first.host.status.provider.state, 'ready');
+      assert.deepEqual(first.provider.calls, [null]);
       await first.host.shutdown();
       const backend = await openBackend({ nativeImage: image, companionRoot: fixture.root });
       let armedGeneration: string;
