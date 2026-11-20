@@ -97,7 +97,11 @@ export class CrashFixture {
         selectedCases: selected, skippedCases: allCases.filter(value => !selected.includes(value)) }, null, 2) + '\n');
       const supervisor = (await createTestNative(inside(root, path.join(root, 'crash-driver')))).supervisor;
       return new CrashFixture(fixture, supervisor, manifest, evidence);
-    } catch (error) { await fixture.close(); throw error; }
+    } catch (error) {
+      // A cleanup failure must never replace the setup error this rethrows.
+      await fixture.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async child(mode: string, boundary = '', expectedExit = 0): Promise<ChildProof> {

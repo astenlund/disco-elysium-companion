@@ -21,7 +21,7 @@ import { companionFixture } from '../support/companion.ts';
 import { deferredRepair, repair } from '../backend/authority-fixtures.ts';
 import { createTestNative, helperProxies, testHelperImage, type TestNative } from '../support/native-helper.ts';
 import { startOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
-import { releaseAll } from '../support/release.ts';
+import { releaseAfter, releaseAll } from '../support/release.ts';
 
 const idlePublisher = { quiesce: async () => true };
 
@@ -90,6 +90,8 @@ describe('native runtime platform', () => {
     let publisher: FilePublisher | null = null;
     // Every deferred that holds the publication queue, so teardown can release them before it waits for the publisher.
     const queueHolds: PromiseWithResolvers<void>[] = [];
+    // The residue cleanup waits outside the publication queue, so teardown joins it before closing what it uses.
+    let pendingCleanup: Promise<unknown> | null = null;
     try {
       native = await createTestNative(fixture.root);
       const inspector = new PathInspector(native.supervisor);
@@ -108,6 +110,7 @@ describe('native runtime platform', () => {
       // Act: cleanup starts while the publish is in flight.
       let settled = false;
       const cleanup = cleanupPublicationResidue(scope, guard, inspector, publisher).finally(() => { settled = true; });
+      pendingCleanup = cleanup;
       await new Promise(resolve => { setTimeout(resolve, 500); });
 
       // Assert: nothing is removed until the publish settles, then cleanup completes.
@@ -128,7 +131,8 @@ describe('native runtime platform', () => {
       await stalled;
     } finally {
       for (const hold of queueHolds) { hold.resolve(); }
-      await releaseAll(() => publisher?.idle(), () => native?.close(), () => guard?.release(), () => fixture.close());
+      // A rejection of the joined cleanup only follows a failure the test body has already reported.
+      await releaseAll(() => publisher?.idle(), () => pendingCleanup?.catch(() => undefined), releaseAfter(() => native?.close(), () => guard?.release()), () => fixture.close());
     }
   });
 
