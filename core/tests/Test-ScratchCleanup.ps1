@@ -244,7 +244,8 @@ if (Test-Selected 'FileSweep') {
     $placed = @($deadFile, $liveFile, $unshapedFile)
     $deadMarker = [guid]::NewGuid().ToString('N')
     $removedContents = [Collections.Generic.List[string]]::new()
-    $defaultFileRemoval = & $script:TestSupport { $script:RemoveScratchFile }
+    # Read without throwing, so this section still reaches its reap assertion against a module that has no file removal.
+    $defaultFileRemoval = & $script:TestSupport { Get-Variable -Name RemoveScratchFile -Scope Script -ValueOnly -ErrorAction Ignore }
     try {
         foreach ($file in $placed) { [IO.File]::WriteAllText($file, 'residue', $script:Utf8) }
         [IO.File]::WriteAllText($deadFile, $deadMarker, $script:Utf8)
