@@ -7,6 +7,7 @@ import { openBackend } from '../../src/backend/index.ts';
 import type { Kernel } from '../../src/backend/kernel.ts';
 import { settlePreHostInvalidation } from '../../src/runtime.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
+import type { StartupPhase } from '../../src/startup-progress.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 import { openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
@@ -34,7 +35,8 @@ describe('chat start after startup recovery invalidates context', () => {
       } finally { await backend.shutdown(true); }
 
       // Act
-      restarted = await openSyntheticChat(fixture.root, image);
+      const phases: StartupPhase[] = [];
+      restarted = await openSyntheticChat(fixture.root, image, false, phase => { phases.push(phase); });
       const status = restarted.host.status;
       const safety = await restarted.backend.safety();
       const events: HostEvent[] = [];
@@ -48,7 +50,9 @@ describe('chat start after startup recovery invalidates context', () => {
       assert.equal(safety.correction?.reason, 'contextUncertain');
       assert.equal(status.provider.state, 'ready');
       assert.equal(status.provider.safetyRefusal, null);
-      assert.deepEqual(restarted.provider.calls, [null], 'The invalidated binding is never resumed, and one fresh start binds without a retry.');
+      assert.deepEqual(restarted.provider.calls, [null], 'The invalidated binding is never resumed.');
+      assert.equal(phases.filter(phase => phase === 'providerStart').length, 1, phases.join(','));
+      assert.equal(phases.includes('providerRetry'), false, phases.join(','));
       assert.equal(status.stateSafety.correction?.reason, 'contextUncertain');
       assert.equal(restarted.backend.invalidationsPublished(), true);
       assert.equal(attached.result, 'attached');
