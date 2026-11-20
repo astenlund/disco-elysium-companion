@@ -20,7 +20,7 @@ function Test-ReadRejectsEscapeEquivalentDuplicate {
 }
 
 function Test-ReadBoundaryMatrixForBothInputs {
-    $path = Join-Path $script:Scratch 'matrix.json'
+    $path = Join-Path (New-ScratchCompanionRoot -Prefix 'companion-json') 'matrix.json'
     foreach ($json in @('{"x":1,"x":2}', '{"x":1,"\u0078":2}', '{"x":', '')) {
         [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
         Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $json -Budget config }
@@ -64,7 +64,7 @@ function Test-ReadHonorsBudgetsAndDepth {
     $depth65 = ('[' * ($maxDepth + 1)) + '0' + (']' * ($maxDepth + 1))
     $null = Read-CompanionJson -Json $depth64 -Budget dump
     Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $depth65 -Budget dump }
-    $path = Join-Path $script:Scratch 'depth.json'
+    $path = Join-Path (New-ScratchCompanionRoot -Prefix 'companion-json') 'depth.json'
     [IO.File]::WriteAllText($path, $depth64, [Text.UTF8Encoding]::new($false))
     $null = Read-CompanionJson -Path $path -Budget dump
     [IO.File]::WriteAllText($path, $depth65, [Text.UTF8Encoding]::new($false))
@@ -72,7 +72,7 @@ function Test-ReadHonorsBudgetsAndDepth {
 }
 
 function Test-ReadPathRejectsInvalidUtf8AndAllowsReplacement {
-    $path = Join-Path $script:Scratch 'invalid.json'
+    $path = Join-Path (New-ScratchCompanionRoot -Prefix 'companion-json') 'invalid.json'
     [IO.File]::WriteAllBytes($path, [byte[]](0x7B, 0x22, 0x78, 0x22, 0x3A, 0xC3, 0x28, 0x7D))
     Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget config }
     [IO.File]::WriteAllText($path, '{"x":true}', [Text.UTF8Encoding]::new($false))
@@ -84,7 +84,7 @@ function Test-ReadRejectsIsolatedSurrogateAndSupportsScalarAndNull {
     Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json ([string][char]0xDC00) -Budget config }
     Assert-Equal -Actual (Read-CompanionJson -Json '42' -Budget config).Materialized -Expected ([long] 42) -Message 'scalar root is retained'
     Assert-True -Condition ($null -eq (Read-CompanionJson -Json 'null' -Budget config).Materialized) -Message 'null root is retained'
-    $path = Join-Path $script:Scratch 'scalar.json'
+    $path = Join-Path (New-ScratchCompanionRoot -Prefix 'companion-json') 'scalar.json'
     [IO.File]::WriteAllText($path, '42', [Text.UTF8Encoding]::new($false))
     Assert-Equal -Actual (Read-CompanionJson -Path $path -Budget config).Materialized -Expected ([long] 42) -Message 'path scalar root is retained'
     [IO.File]::WriteAllText($path, 'null', [Text.UTF8Encoding]::new($false))
@@ -121,7 +121,6 @@ function Test-SerializationUsesStrictBoundedUtf8AndExactJsonElement {
 }
 
 try {
-    $script:Scratch = New-ScratchCompanionRoot -Prefix 'companion-json'
     $tests = [ordered]@{
         EscapeEquivalentDuplicate = ${function:Test-ReadRejectsEscapeEquivalentDuplicate}
         BoundaryMatrix = ${function:Test-ReadBoundaryMatrixForBothInputs}
