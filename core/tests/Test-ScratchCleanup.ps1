@@ -231,38 +231,40 @@ if (Test-Selected 'Removal') {
 }
 
 if (Test-Selected 'FileSweep') {
+    $fileScratch = New-ScratchCompanionRoot -Prefix 'scratch-file-removal'
+
     # The sweep reaps a scratch-shaped file whose creator has exited, as a crashed harness leaves when a file stands at
-    # its root's path, and keeps one whose creator is alive or whose name is not scratch-shaped. The files sit in the
-    # shared .tmp, where a concurrent harness's first sweep could reap the dead one first, so the dead file carries a
-    # unique marker and the sweep's file removal is observed: only this sweep deleting that marker counts as the reap.
+    # its root's path, and an abandoned claim of one; it keeps a file whose creator is alive, a live sweeper's claim, a
+    # file whose name is not scratch-shaped and a file held open with no sharing. The real sweep runs against a private
+    # boundary inside this harness's own scratch, standing in for the project .tmp for that one call, so no concurrent
+    # harness can take or add its inputs.
     $deadProcess = Start-ExitedProcess
     $deadId = $deadProcess.Id
-    [void] [IO.Directory]::CreateDirectory($script:ProjectTmp)
-    $deadFile = Join-Path $script:ProjectTmp "scratch-file-dead-$deadId-$([guid]::NewGuid().ToString('N'))"
-    $liveFile = Join-Path $script:ProjectTmp "scratch-file-live-$PID-$([guid]::NewGuid().ToString('N'))"
-    $unshapedFile = Join-Path $script:ProjectTmp "scratch-file-unshaped-$deadId-$([guid]::NewGuid().ToString('N')).txt"
-    $placed = @($deadFile, $liveFile, $unshapedFile)
-    $deadMarker = [guid]::NewGuid().ToString('N')
-    $removedContents = [Collections.Generic.List[string]]::new()
-    # Read without throwing, so this section still reaches its reap assertion against a module that has no file removal.
-    $defaultFileRemoval = & $script:TestSupport { Get-Variable -Name RemoveScratchFile -Scope Script -ValueOnly -ErrorAction Ignore }
+    $boundary = Join-Path $fileScratch 'sweep-boundary'
+    [void] [IO.Directory]::CreateDirectory($boundary)
+    $deadFile = Join-Path $boundary "scratch-file-dead-$deadId-$([guid]::NewGuid().ToString('N'))"
+    $abandonedClaim = Join-Path $boundary "scratch-sweep-claim-$deadId-$([guid]::NewGuid().ToString('N'))"
+    $liveFile = Join-Path $boundary "scratch-file-live-$PID-$([guid]::NewGuid().ToString('N'))"
+    $liveClaim = Join-Path $boundary "scratch-sweep-claim-$PID-$([guid]::NewGuid().ToString('N'))"
+    $unshapedFile = Join-Path $boundary "scratch-file-unshaped-$deadId-$([guid]::NewGuid().ToString('N')).txt"
+    $heldFile = Join-Path $boundary "scratch-file-held-$deadId-$([guid]::NewGuid().ToString('N'))"
+    foreach ($file in @($deadFile, $abandonedClaim, $liveFile, $liveClaim, $unshapedFile, $heldFile)) { [IO.File]::WriteAllText($file, 'residue', $script:Utf8) }
+    $projectTmpRoot = & $script:TestSupport { $script:ProjectTmpRoot }
+    $holder = [IO.File]::Open($heldFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     try {
-        foreach ($file in $placed) { [IO.File]::WriteAllText($file, 'residue', $script:Utf8) }
-        [IO.File]::WriteAllText($deadFile, $deadMarker, $script:Utf8)
-        $observedRemoval = { param($Target) $removedContents.Add([IO.File]::ReadAllText($Target)); [IO.File]::Delete($Target) }.GetNewClosure()
-        & $script:TestSupport { param($Removal) $script:RemoveScratchFile = $Removal; $script:StaleScratchSwept = $false; Clear-StaleScratchRoots } $observedRemoval
-        Assert-False -Condition (Test-Path -LiteralPath $deadFile) -Message 'A scratch-shaped file whose creator exited is reaped.'
-        Assert-True -Condition ($removedContents -ccontains $deadMarker) -Message 'This sweep claimed and deleted the dead-creator file itself, not a concurrent sweep.'
-        Assert-True -Condition ([IO.File]::Exists($liveFile)) -Message 'A scratch-shaped file whose creator is alive is kept.'
-        Assert-True -Condition ([IO.File]::Exists($unshapedFile)) -Message 'A file whose name is not scratch-shaped is kept.'
-        Assert-Equal -Actual @(Get-ClaimNames -Directory $script:ProjectTmp -ProcessIds @($PID)).Count -Expected 0 -Message 'A reaped file leaves no claim behind.'
+        & $script:TestSupport { param($Boundary) $script:ProjectTmpRoot = $Boundary; $script:StaleScratchSwept = $false; Clear-StaleScratchRoots } $boundary
     }
     finally {
-        & $script:TestSupport { param($Removal) $script:RemoveScratchFile = $Removal } $defaultFileRemoval
-        foreach ($file in $placed) { if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) } }
+        & $script:TestSupport { param($Root) $script:ProjectTmpRoot = $Root } $projectTmpRoot
+        $holder.Dispose()
     }
-
-    $fileScratch = New-ScratchCompanionRoot -Prefix 'scratch-file-removal'
+    Assert-False -Condition (Test-Path -LiteralPath $deadFile) -Message 'A scratch-shaped file whose creator exited is reaped.'
+    Assert-False -Condition (Test-Path -LiteralPath $abandonedClaim) -Message 'An abandoned claim of a file, whose sweeper exited, is reaped.'
+    Assert-True -Condition ([IO.File]::Exists($liveFile)) -Message 'A scratch-shaped file whose creator is alive is kept.'
+    Assert-True -Condition ([IO.File]::Exists($liveClaim)) -Message 'A claim carrying a live sweeper''s process id is kept.'
+    Assert-True -Condition ([IO.File]::Exists($unshapedFile)) -Message 'A file whose name is not scratch-shaped is kept.'
+    Assert-True -Condition ([IO.File]::Exists($heldFile)) -Message 'A file held open with no sharing is skipped, not failed, and kept for a later sweep.'
+    Assert-Equal -Actual @(Get-ClaimNames -Directory $boundary -ProcessIds @($PID)).Count -Expected 1 -Message 'The sweep leaves no claim of its own behind; only the staged live claim remains.'
 
     # The claim is an atomic rename beside the file to a scratch-shaped name carrying this process id, done before the deletion.
     $named = Join-Path $fileScratch 'named'

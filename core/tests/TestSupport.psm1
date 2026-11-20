@@ -13,6 +13,8 @@ $script:ScratchResidueSampleLimit = 16
 $script:RemoveScratchTree = { param($Target) Remove-Item -LiteralPath $Target -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue }
 # The default removal of one stale scratch file; a file it leaves is judged by its caller.
 $script:RemoveScratchFile = { param($Target) [System.IO.File]::Delete($Target) }
+# The HRESULTs of a file another handle holds open without sharing: ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+$script:FileInUseResults = @(-2147024864, -2147024863)
 
 function Assert-ScratchBoundarySafe {
     if (-not (Test-Path -LiteralPath $script:ProjectRoot -PathType Container)) {
@@ -567,8 +569,10 @@ function Remove-StaleScratchRoot {
 }
 
 # A stale scratch file is claimed like a root, so concurrent sweepers agree on one winner, and then deleted once,
-# since a file has no partial removal to retry. A deletion failure and a file that outlasts it surface, naming both
-# the claim and the original file. -Remove exists for tests.
+# since a file has no partial removal to retry. A file whose claim is refused because another handle holds it open
+# without sharing has a live holder, however its creator ended, so it is skipped like a live creator and left for a
+# later sweep. A deletion failure and a file that outlasts it surface, naming both the claim and the original file.
+# -Remove exists for tests.
 function Remove-StaleScratchFile {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -581,6 +585,14 @@ function Remove-StaleScratchFile {
     }
     catch [System.IO.DirectoryNotFoundException], [System.IO.FileNotFoundException] {
         return
+    }
+    catch [System.IO.IOException] {
+        $cause = $_.Exception
+        while ($null -ne $cause -and $cause -isnot [System.IO.IOException]) { $cause = $cause.InnerException }
+        if ($null -ne $cause -and $script:FileInUseResults -contains $cause.HResult) {
+            return
+        }
+        throw
     }
 
     try {
