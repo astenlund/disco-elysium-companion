@@ -14,10 +14,10 @@ describe('chat start over an orphaned watcher', () => {
     // Arrange: a first start creates the scope and its marker and shuts down; then a live process tree is planted in that
     // scope's watcher job and the marker is rewritten as an unclean runtime that recorded it as its watcher.
     const fixture = await companionFixture('runtime-owned');
-    const image = await testHelperImage();
     let orphan: OrphanWatcher | null = null;
     let second: SyntheticChat | null = null;
     try {
+      const image = await testHelperImage();
       const { watcherJob, marker } = await startAndStopSyntheticChat(fixture.root, image);
       orphan = await plantOrphanWatcher(fixture.root, watcherJob);
       await fs.rm(path.join(fixture.root, 'descendant.json'), { force: true });

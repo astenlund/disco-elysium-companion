@@ -17,9 +17,9 @@ describe('chat start after startup recovery invalidates context', () => {
     // Arrange: a first start, then a settlement check armed by the production writer that never finished, as a turn the
     // 120-second interaction gate failed leaves it. The next start's recovery invalidates the context before the host exists.
     const fixture = await companionFixture('runtime-owned');
-    const image = await testHelperImage();
     let restarted: SyntheticChat | null = null;
     try {
+      const image = await testHelperImage();
       const first = await openSyntheticChat(fixture.root, image);
       // The restart must coexist with the binding this first start leaves, so the first start has to have bound one fresh session.
       const firstProvider = first.host.status.provider.state;
@@ -72,10 +72,10 @@ describe('chat start after startup recovery invalidates context', () => {
     // Arrange: the same armed check, but the safety record cannot be replaced, so the restart's recovery signals its
     // invalidation without publishing it.
     const fixture = await companionFixture('runtime-owned');
-    const image = await testHelperImage();
     let restarted: SyntheticChat | null = null;
     let safetyPath: string | null = null;
     try {
+      const image = await testHelperImage();
       const first = await openSyntheticChat(fixture.root, image);
       safetyPath = path.join(first.backend.scope.dataRoot, 'state-safety.json');
       await first.host.shutdown();

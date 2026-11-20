@@ -12,10 +12,11 @@ describe('failed chat start cleanup on the native helper', () => {
   it('surfaces a provider refusal after file tools exist and releases the file-tool namespace', { timeout: 300000 }, async () => {
     // Arrange: a runtime-owned root and an inherited profile redirection the real provider refuses after file tools exist.
     const fixture = await companionFixture('runtime-owned');
-    const image = await testHelperImage();
     const previous = process.env['CLAUDE_CONFIG_DIR'];
-    process.env['CLAUDE_CONFIG_DIR'] = fixture.root;
     try {
+      const image = await testHelperImage();
+      process.env['CLAUDE_CONFIG_DIR'] = fixture.root;
+
       // Act
       const start = createChatRuntime(fixture.root, undefined, {}, image);
 

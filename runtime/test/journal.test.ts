@@ -9,7 +9,7 @@ import { Deadline } from '../src/deadline.ts';
 import { OutboxReader } from '../src/outbox.ts';
 import { authorityModel } from './backend/authority-fixtures.ts';
 import { FilePublisher } from '../src/files.ts';
-import { takeInstanceGuard } from '../src/guard.ts';
+import { takeInstanceGuard, type InstanceGuard } from '../src/guard.ts';
 import { Journal, JournalUnavailableError, SentMarkPublicationError, type JournalTransaction } from '../src/journal.ts';
 import { eventRewriteMetadata } from '../src/journal-records.ts';
 import { parseStrictJson, utcNow } from '../src/json.ts';
@@ -19,37 +19,41 @@ import { createTestNative } from './support/native-helper.ts';
 describe('journal durable write ordering', () => {
   it('recovers event-before-high-water without settling early and acknowledges only the accepted copy', { timeout: 360000 }, async () => {
     const fixture = await companionFixture('state-event');
-    const dataRoot = path.join(fixture.root, 'runtime-data');
-    await fs.mkdir(path.join(dataRoot, 'journal', 'events'), { recursive: true });
-    const supervisor = (await createTestNative(dataRoot, { companionRoot: fixture.root, dataRoot })).supervisor;
-    const inspector = new PathInspector(supervisor);
-    const native = inspector.native.bind(inspector);
-    let eventInspections = 0;
-    inspector.native = async (op, ...args) => {
-      if (op === 'eventBatch' || op === 'hash') { eventInspections++; }
-      return native(op, ...args);
-    };
-    const guard = await takeInstanceGuard(dataRoot, error => { throw error; });
-    let refuseHeader = false;
-    let refuseSent = false;
-    const publisher = new FilePublisher({
-      root: dataRoot, supervisor, inspector, guard, invalidate: () => {},
-      preflight: async (target, bytes, profile) => {
-        parseStrictJson(bytes, profile);
-        if (refuseHeader && path.basename(target) === 'journal.json') { refuseHeader = false; throw new Error('fixture high-water publication refused'); }
-        if (refuseSent && path.basename(target) === 'cursor-agent-session.json') { refuseSent = false; throw new Error('fixture sent-mark publication refused'); }
-      },
-    });
-    // This fixture checks storage ordering. Complete-transition capacity, safety and
-    // repair permissions are separate coordinator obligations and are stubbed here.
-    const codec = new PayloadCodec(publisher, async () => {});
-    const mutations: string[] = [];
-    const journal = new Journal({
-      root: dataRoot, game: 'stubgame', principal: 'S-1-5-21-1000-1001-1002-1003',
-      identities: { runtimeInstanceId: 'a'.repeat(32), runtimeSessionId: 'b'.repeat(32), adapterBindingEpoch: 'c'.repeat(32) },
-      inspector, publisher, codec, admitMutation: async kind => { mutations.push(kind); }, eventIdAvailable: async () => true,
-    });
+    let guard: InstanceGuard | null = null;
+    let publisher: FilePublisher | null = null;
+    let openedJournal: Journal | null = null;
     try {
+      const dataRoot = path.join(fixture.root, 'runtime-data');
+      await fs.mkdir(path.join(dataRoot, 'journal', 'events'), { recursive: true });
+      const supervisor = (await createTestNative(dataRoot, { companionRoot: fixture.root, dataRoot })).supervisor;
+      const inspector = new PathInspector(supervisor);
+      const native = inspector.native.bind(inspector);
+      let eventInspections = 0;
+      inspector.native = async (op, ...args) => {
+        if (op === 'eventBatch' || op === 'hash') { eventInspections++; }
+        return native(op, ...args);
+      };
+      guard = await takeInstanceGuard(dataRoot, error => { throw error; });
+      let refuseHeader = false;
+      let refuseSent = false;
+      publisher = new FilePublisher({
+        root: dataRoot, supervisor, inspector, guard, invalidate: () => {},
+        preflight: async (target, bytes, profile) => {
+          parseStrictJson(bytes, profile);
+          if (refuseHeader && path.basename(target) === 'journal.json') { refuseHeader = false; throw new Error('fixture high-water publication refused'); }
+          if (refuseSent && path.basename(target) === 'cursor-agent-session.json') { refuseSent = false; throw new Error('fixture sent-mark publication refused'); }
+        },
+      });
+      // This fixture checks storage ordering. Complete-transition capacity, safety and
+      // repair permissions are separate coordinator obligations and are stubbed here.
+      const codec = new PayloadCodec(publisher, async () => {});
+      const mutations: string[] = [];
+      const journal = new Journal({
+        root: dataRoot, game: 'stubgame', principal: 'S-1-5-21-1000-1001-1002-1003',
+        identities: { runtimeInstanceId: 'a'.repeat(32), runtimeSessionId: 'b'.repeat(32), adapterBindingEpoch: 'c'.repeat(32) },
+        inspector, publisher, codec, admitMutation: async kind => { mutations.push(kind); }, eventIdAvailable: async () => true,
+      });
+      openedJournal = journal;
       const now = utcNow();
       await publisher.publishJson('journal/journal.json', { journalVersion: 1, journalId: 'd'.repeat(32), createdAt: now, highWaterSequence: 0, historyVerified: false }, true);
       await publisher.publishJson('journal/cursor-agent-session.json', { cursorVersion: 1, journalId: 'd'.repeat(32), consumerId: 'agent-session', lastAckedSequence: 0, lastSentSequence: 0, lastAcceptedRevision: null, updatedAt: now }, true);
@@ -149,9 +153,9 @@ describe('journal durable write ordering', () => {
         await assert.rejects(work.markSent([], generation), JournalUnavailableError);
       }), JournalUnavailableError);
     } finally {
-      await journal.idle();
-      await publisher.idle();
-      await guard.release();
+      await openedJournal?.idle();
+      await publisher?.idle();
+      await guard?.release();
       await fixture.close();
     }
   });

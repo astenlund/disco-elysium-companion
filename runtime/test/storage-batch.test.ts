@@ -64,12 +64,13 @@ describe('bounded file-hash protocol', () => {
 describe('native storage batch admission', () => {
   it('reads many controls without writes and preserves exact invalid evidence', { timeout: 180000 }, async context => {
     const fixture = await companionFixture();
-    const supervisor = (await createTestNative(fixture.root)).supervisor;
-    const inspector = new PathInspector(supervisor);
-    const native = inspector.native.bind(inspector);
-    const calls: string[] = [];
-    inspector.native = (op, ...args) => { if (op !== 'admit') { calls.push(op); } return native(op, ...args); };
+    let inspector: PathInspector | null = null;
     try {
+      const supervisor = (await createTestNative(fixture.root)).supervisor;
+      inspector = new PathInspector(supervisor);
+      const native = inspector.native.bind(inspector);
+      const calls: string[] = [];
+      inspector.native = (op, ...args) => { if (op !== 'admit') { calls.push(op); } return native(op, ...args); };
       const binding = Buffer.from(stringifyJson({ runtimeScopeVersion: 1, game: 'game', principal: 'principal' }));
       await fs.writeFile(path.join(fixture.root, 'scope.json'), binding);
       const scope: RuntimeScope = { companionRoot: fixture.root, dataRoot: fixture.root, game: 'game', principal: 'principal', bindingSha256: bytesHash(binding), createdHere: false };
@@ -104,7 +105,7 @@ describe('native storage batch admission', () => {
       await fs.unlink(path.join(fixture.root, 'alias.json'));
       await assert.rejects(storage.readMany(['.'], 'config', value => value), DataRootUnavailableError);
       await assert.rejects(storage.readMany(['../outside.json'], 'config', value => value), DataRootUnavailableError);
-    } finally { await inspector.idle(); await fixture.close(); }
+    } finally { await inspector?.idle(); await fixture.close(); }
   });
 
   it('refuses changed bytes, lost reads and expired proof before returning authority', { timeout: 90000 }, async () => {

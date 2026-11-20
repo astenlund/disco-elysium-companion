@@ -15,11 +15,12 @@ import { createTestNative } from './support/native-helper.ts';
 describe('native bounded event metadata batches', () => {
   it('preserves complete valid and invalid hashes, absence and unreadable failures', { timeout: 120000 }, async () => {
     const fixture = await companionFixture('context-event');
-    const inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
-    const reader = new EventReader(fixture.root, inspector);
-    const target = path.join('journal', 'events', eventFileName(1));
-    const requests = [{ path: target, sequence: 1 }, { path: 'missing.json', sequence: 2 }, { path: 'invalid.json', sequence: 3 }];
+    let inspector: PathInspector | null = null;
     try {
+      inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
+      const reader = new EventReader(fixture.root, inspector);
+      const target = path.join('journal', 'events', eventFileName(1));
+      const requests = [{ path: target, sequence: 1 }, { path: 'missing.json', sequence: 2 }, { path: 'invalid.json', sequence: 3 }];
       const valid = await fs.readFile(path.join(fixture.root, target));
       const invalid = Buffer.from('{"broken":');
       await fs.writeFile(path.join(fixture.root, 'invalid.json'), invalid);
@@ -35,14 +36,15 @@ describe('native bounded event metadata batches', () => {
       const oversized = await reader.readInventory([{ path: 'oversized.json', sequence: 5 }]);
       assert.equal(oversized[0]!.status, 'invalid');
       assert.equal(oversized[0]!.sha256, createHash('sha256').update(bytes).digest('hex'));
-    } finally { await inspector.idle(); await fixture.close(); }
+    } finally { await inspector?.idle(); await fixture.close(); }
   });
 
   it('returns a useful prefix before the next full-profile file and preserves direct source mode', { timeout: 120000 }, async context => {
     const fixture = await companionFixture('context-event');
-    const inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
-    const reader = new EventReader(fixture.root, inspector);
+    let inspector: PathInspector | null = null;
     try {
+      inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
+      const reader = new EventReader(fixture.root, inspector);
       const first = path.join('journal', 'events', eventFileName(1));
       const template = await fs.readFile(path.join(fixture.root, first));
       const maximum = Buffer.alloc(jsonBudgets['state-event'].maxBytes, 32);
@@ -61,13 +63,14 @@ describe('native bounded event metadata batches', () => {
       const sourceRequest = JSON.stringify([{ path: path.join(fixture.root, 'missing-source.json'), sequence: 1 }]);
       const source = await native('eventMetadata', { root: fixture.root, requestsJson: sourceRequest, source: true });
       assert.deepEqual(JSON.parse(stringifyJson(source)), { documents: [{ path: path.join(fixture.root, 'missing-source.json'), status: 'absent', sha256: null, metadata: null }] });
-    } finally { await inspector.idle(); await fixture.close(); }
+    } finally { await inspector?.idle(); await fixture.close(); }
   });
 
   it('returns a correct metadata prefix of a large batch within the document budget', { timeout: 120000 }, async context => {
     const fixture = await companionFixture('context-event');
-    const inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
+    let inspector: PathInspector | null = null;
     try {
+      inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
       const directory = path.join(fixture.root, 'journal', 'events');
       const text = await fs.readFile(path.join(directory, eventFileName(1)), 'utf8');
       const marker = text.indexOf(',"payload":');
@@ -96,13 +99,14 @@ describe('native bounded event metadata batches', () => {
         assert.equal(document.sha256, expected.get(document.path));
       }
       context.diagnostic(`requested=${requests.length} returned=${result.documents.length} replyBytes=${Buffer.byteLength(reply, 'utf8')}`);
-    } finally { await inspector.idle(); await fixture.close(); }
+    } finally { await inspector?.idle(); await fixture.close(); }
   });
 
   it('rejects malformed, over-count, over-text and over-byte native requests', { timeout: 120000 }, async () => {
     const fixture = await companionFixture();
-    const inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
+    let inspector: PathInspector | null = null;
     try {
+      inspector = new PathInspector((await createTestNative(fixture.root)).supervisor);
       const badRequests = [
         '[{"path":"a","path":"b","sequence":1}]',
         '[{"path":"a","sequence":1.5}]',
@@ -115,6 +119,6 @@ describe('native bounded event metadata batches', () => {
           error => error instanceof NativeOperationError && error.code === 'inspectionUnavailable');
       }
       assert.deepEqual(await fs.readdir(fixture.root), []);
-    } finally { await inspector.idle(); await fixture.close(); }
+    } finally { await inspector?.idle(); await fixture.close(); }
   });
 });

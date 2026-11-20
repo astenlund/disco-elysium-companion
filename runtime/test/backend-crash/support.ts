@@ -88,13 +88,13 @@ export class CrashFixture {
   static async create(label: string, selected: readonly string[], allCases: readonly string[], fixtureMode: 'runtime' | 'runtime-owned' = 'runtime-owned'): Promise<CrashFixture> {
     const manifest = await sourceManifest();
     const fixture = await companionFixture(fixtureMode);
-    const root = privateFixture(fixture.root);
-    const evidence = path.join(repository, '.tmp/nightshift/backend-crash-impl', `${label}-${path.basename(root)}`);
-    await fs.mkdir(evidence, { recursive: true });
-    await fs.writeFile(path.join(evidence, 'source-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-    await fs.writeFile(path.join(evidence, 'run-context.json'), JSON.stringify({ node: process.version, argv: process.argv, filter: process.env['COMPANION_CRASH_CASES'] ?? null,
-      selectedCases: selected, skippedCases: allCases.filter(value => !selected.includes(value)) }, null, 2) + '\n');
     try {
+      const root = privateFixture(fixture.root);
+      const evidence = path.join(repository, '.tmp/nightshift/backend-crash-impl', `${label}-${path.basename(root)}`);
+      await fs.mkdir(evidence, { recursive: true });
+      await fs.writeFile(path.join(evidence, 'source-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+      await fs.writeFile(path.join(evidence, 'run-context.json'), JSON.stringify({ node: process.version, argv: process.argv, filter: process.env['COMPANION_CRASH_CASES'] ?? null,
+        selectedCases: selected, skippedCases: allCases.filter(value => !selected.includes(value)) }, null, 2) + '\n');
       const supervisor = (await createTestNative(inside(root, path.join(root, 'crash-driver')))).supervisor;
       return new CrashFixture(fixture, supervisor, manifest, evidence);
     } catch (error) { await fixture.close(); throw error; }

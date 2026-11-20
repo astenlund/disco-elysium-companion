@@ -8,7 +8,7 @@ import { PayloadCodec } from '../src/codec.ts';
 import { Deadline } from '../src/deadline.ts';
 import { admitStagingPaths, FilePublisher, PublicationError, type AdmitPublicationScope } from '../src/files.ts';
 import { firstCapacityRefusal, RuntimeCapacityError } from '../src/capacity.ts';
-import { takeInstanceGuard } from '../src/guard.ts';
+import { takeInstanceGuard, type InstanceGuard } from '../src/guard.ts';
 import { eventRewriteMetadata } from '../src/journal-records.ts';
 import type { OperationStore } from '../src/operations.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
@@ -143,35 +143,35 @@ test('publication awaits its preimage check before staging in combined and fallb
 
 test('stale preimage retires its resource lease without staging or borrowing a renewed lease', { timeout: 120000 }, async () => {
   const fixture = await companionFixture();
-  const dataRoot = path.join(fixture.root, 'runtime-data');
-  const binding = Buffer.from('{"privateScope":true}');
-  await fs.mkdir(path.join(dataRoot, 'operations'), { recursive: true });
-  await fs.writeFile(path.join(dataRoot, 'scope.json'), binding);
-  const scope = { dataRoot, companionRoot: fixture.root, bindingSha256: bytesHash(binding), game: 'stubgame', principal: 'principal' } as RuntimeScope;
-  const inspector = { inspectMany: async (_root: string, paths: readonly string[]) => Promise.all(paths.map(async target => {
-    try {
-      const stat = await fs.lstat(target);
-      const value: PathAdmission = { path: target, exists: true, kind: stat.isDirectory() ? 'directory' : 'file', links: 1,
-        volume: '1'.repeat(16), identity: '1'.repeat(32), missing: [] };
-      return value;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
-      return absent(target);
-    }
-  })) } as unknown as PathInspector;
-  const resources = capacityModel(scope, inspector);
-  let nativeCalls = 0;
-  const publisher = new FilePublisher({ root: dataRoot, guard: { held: true }, inspector,
-    supervisor: { run: async () => { nativeCalls++; throw new Error('Unexpected native publication.'); } } as unknown as ProcessSupervisor,
-    beforeWrite: (relative, deadline) => resources.beforeWrite(relative, deadline), bind: action => resources.bind(action),
-    preflight: (target, bytes, profile, deadline) => resources.preflight(target, bytes, profile, deadline),
-    preflightWithAdmission: (target, bytes, profile, admit, deadline) => resources.preflight(target, bytes, profile, deadline, admit),
-    invalidate: () => resources.invalidate() });
-  const storage = new ScopeStorage({ scope, guard: { held: true }, inspector, publisher,
-    beforeWrite: (relative, deadline) => resources.beforeWrite(relative, deadline), bind: action => resources.bind(action) });
-  const first = { ...repair(), scopeSha256: scope.bindingSha256 };
-  const second = { ...first, operationId: `jr-${'9'.repeat(32)}` };
   try {
+    const dataRoot = path.join(fixture.root, 'runtime-data');
+    const binding = Buffer.from('{"privateScope":true}');
+    await fs.mkdir(path.join(dataRoot, 'operations'), { recursive: true });
+    await fs.writeFile(path.join(dataRoot, 'scope.json'), binding);
+    const scope = { dataRoot, companionRoot: fixture.root, bindingSha256: bytesHash(binding), game: 'stubgame', principal: 'principal' } as RuntimeScope;
+    const inspector = { inspectMany: async (_root: string, paths: readonly string[]) => Promise.all(paths.map(async target => {
+      try {
+        const stat = await fs.lstat(target);
+        const value: PathAdmission = { path: target, exists: true, kind: stat.isDirectory() ? 'directory' : 'file', links: 1,
+          volume: '1'.repeat(16), identity: '1'.repeat(32), missing: [] };
+        return value;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+        return absent(target);
+      }
+    })) } as unknown as PathInspector;
+    const resources = capacityModel(scope, inspector);
+    let nativeCalls = 0;
+    const publisher = new FilePublisher({ root: dataRoot, guard: { held: true }, inspector,
+      supervisor: { run: async () => { nativeCalls++; throw new Error('Unexpected native publication.'); } } as unknown as ProcessSupervisor,
+      beforeWrite: (relative, deadline) => resources.beforeWrite(relative, deadline), bind: action => resources.bind(action),
+      preflight: (target, bytes, profile, deadline) => resources.preflight(target, bytes, profile, deadline),
+      preflightWithAdmission: (target, bytes, profile, admit, deadline) => resources.preflight(target, bytes, profile, deadline, admit),
+      invalidate: () => resources.invalidate() });
+    const storage = new ScopeStorage({ scope, guard: { held: true }, inspector, publisher,
+      beforeWrite: (relative, deadline) => resources.beforeWrite(relative, deadline), bind: action => resources.bind(action) });
+    const first = { ...repair(), scopeSha256: scope.bindingSha256 };
+    const second = { ...first, operationId: `jr-${'9'.repeat(32)}` };
     await resources.withTransition('release', async () => {
       await resources.reserve('release');
       const staleAction = resources.bind(async () => resources.assertReservation());
@@ -254,33 +254,36 @@ test('failed combined admission preserves sent-mark I/O classification only with
 
 test('production resource callbacks share native staging admission and retain scope verification', { timeout: 180000 }, async () => {
   const fixture = await companionFixture('state-event');
-  const dataRoot = path.join(fixture.root, 'runtime-data');
-  await fs.mkdir(dataRoot);
-  const binding = path.join(dataRoot, 'scope.json');
-  const bindingBytes = Buffer.from('{}');
-  await fs.writeFile(binding, bindingBytes);
-  const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot })).supervisor;
-  const inspector = new PathInspector(supervisor);
-  const guard = await takeInstanceGuard(dataRoot, error => { throw error; });
-  const scope = { dataRoot, companionRoot: fixture.root, bindingSha256: bytesHash(bindingBytes) } as RuntimeScope;
-  // Capacity inventory is modeled; scope admission, byte reads and publications are native.
-  const resources = capacityModel(scope, inspector);
-  const calls: string[][] = [];
-  const inspectMany = inspector.inspectMany.bind(inspector);
-  let changeScope: 'changed' | 'disappeared' | null = null;
-  inspector.inspectMany = async (...args) => {
-    calls.push([...args[1]]);
-    const values = await inspectMany(...args);
-    if (changeScope === 'changed') { await fs.writeFile(binding, '{"changed":true}'); }
-    if (changeScope === 'disappeared') { await fs.unlink(binding); }
-    return values;
-  };
-  const publisher = new FilePublisher({ root: dataRoot, guard, inspector, supervisor,
-    preflight: (target, bytes, profile, deadline) => resources.preflight(target, bytes, profile, deadline),
-    preflightWithAdmission: (target, bytes, profile, admit, deadline) => resources.preflight(target, bytes, profile, deadline, admit), invalidate: () => {} });
-  const storage = new ScopeStorage({ scope, guard, inspector, publisher });
-  const codec = new PayloadCodec(publisher, (reservation, deadline) => resources.codec(reservation, deadline), (reservation, admit, deadline) => resources.codec(reservation, deadline, admit));
+  let guard: InstanceGuard | null = null;
+  let openedPublisher: FilePublisher | null = null;
   try {
+    const dataRoot = path.join(fixture.root, 'runtime-data');
+    await fs.mkdir(dataRoot);
+    const binding = path.join(dataRoot, 'scope.json');
+    const bindingBytes = Buffer.from('{}');
+    await fs.writeFile(binding, bindingBytes);
+    const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot })).supervisor;
+    const inspector = new PathInspector(supervisor);
+    guard = await takeInstanceGuard(dataRoot, error => { throw error; });
+    const scope = { dataRoot, companionRoot: fixture.root, bindingSha256: bytesHash(bindingBytes) } as RuntimeScope;
+    // Capacity inventory is modeled; scope admission, byte reads and publications are native.
+    const resources = capacityModel(scope, inspector);
+    const calls: string[][] = [];
+    const inspectMany = inspector.inspectMany.bind(inspector);
+    let changeScope: 'changed' | 'disappeared' | null = null;
+    inspector.inspectMany = async (...args) => {
+      calls.push([...args[1]]);
+      const values = await inspectMany(...args);
+      if (changeScope === 'changed') { await fs.writeFile(binding, '{"changed":true}'); }
+      if (changeScope === 'disappeared') { await fs.unlink(binding); }
+      return values;
+    };
+    const publisher = new FilePublisher({ root: dataRoot, guard, inspector, supervisor,
+      preflight: (target, bytes, profile, deadline) => resources.preflight(target, bytes, profile, deadline),
+      preflightWithAdmission: (target, bytes, profile, admit, deadline) => resources.preflight(target, bytes, profile, deadline, admit), invalidate: () => {} });
+    openedPublisher = publisher;
+    const storage = new ScopeStorage({ scope, guard, inspector, publisher });
+    const codec = new PayloadCodec(publisher, (reservation, deadline) => resources.codec(reservation, deadline), (reservation, admit, deadline) => resources.codec(reservation, deadline, admit));
     await resources.withTransition('release', async () => {
       await resources.reserve('release');
       await storage.write('runtime.json', { value: 1 }, 'config', null);
@@ -331,8 +334,8 @@ test('production resource callbacks share native staging admission and retain sc
       }
     });
   } finally {
-    await publisher.idle();
-    await guard.release();
+    await openedPublisher?.idle();
+    await guard?.release();
     await fixture.close();
   }
 });

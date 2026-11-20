@@ -9,7 +9,7 @@ import type { RuntimeConfig } from '../../src/config.ts';
 import { resolvePrincipal } from '../../src/core-client.ts';
 import { Deadline } from '../../src/deadline.ts';
 import { FilePublisher } from '../../src/files.ts';
-import { takeInstanceGuard } from '../../src/guard.ts';
+import { takeInstanceGuard, type InstanceGuard } from '../../src/guard.ts';
 import { stringifyJson } from '../../src/json.ts';
 import { NativeHelperUnavailableError } from '../../src/native-helper-error.ts';
 import { readProcessIdentity, SupervisorError } from '../../src/process.ts';
@@ -19,8 +19,8 @@ import { readAdmittedRuntimeStatus, readRuntimeStatus, StatusIdentityError } fro
 import { reconcileWatcherOrphan } from '../../src/platform/watcher-supervisor.ts';
 import { companionFixture } from '../support/companion.ts';
 import { deferredRepair, repair } from '../backend/authority-fixtures.ts';
-import { createTestNative, helperProxies, testHelperImage } from '../support/native-helper.ts';
-import { startOrphanWatcher } from '../support/orphan-watcher.ts';
+import { createTestNative, helperProxies, testHelperImage, type TestNative } from '../support/native-helper.ts';
+import { startOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
 
 const idlePublisher = { quiesce: async () => true };
 
@@ -60,11 +60,12 @@ async function snapshot(root: string): Promise<readonly [string, string][]> {
 describe('native runtime platform', () => {
   it('removes only admitted publication residue and preserves authoritative targets and unknown files', { timeout: 180000 }, async () => {
     const fixture = await companionFixture();
-    const supervisor = (await createTestNative(fixture.root)).supervisor;
-    const inspector = new PathInspector(supervisor);
-    const scope = await seedScope(fixture.root, inspector);
-    const guard = await takeInstanceGuard(scope.dataRoot, error => { throw error; });
+    let guard: InstanceGuard | null = null;
     try {
+      const supervisor = (await createTestNative(fixture.root)).supervisor;
+      const inspector = new PathInspector(supervisor);
+      const scope = await seedScope(fixture.root, inspector);
+      guard = await takeInstanceGuard(scope.dataRoot, error => { throw error; });
       await fs.mkdir(path.join(scope.dataRoot, 'journal', 'events'), { recursive: true });
       await fs.mkdir(path.join(scope.dataRoot, 'operations'));
       const residue = ['runtime.json.' + '1'.repeat(32) + '.tmp', 'runtime.json.' + '2'.repeat(32) + '.bak',
@@ -78,17 +79,20 @@ describe('native runtime platform', () => {
       assert.equal(await fs.readFile(path.join(scope.dataRoot, 'runtime.json'), 'utf8'), 'authoritative bytes');
       assert.equal(await fs.readFile(path.join(scope.dataRoot, unknown), 'utf8'), 'unowned bytes');
       assert.deepEqual((await cleanupPublicationResidue(scope, guard, inspector, idlePublisher)).removed, []);
-    } finally { await guard.release(); await fixture.close(); }
+    } finally { await guard?.release(); await fixture.close(); }
   });
 
   it('waits for an in-flight publish before removing residue and refuses when its deadline passes first', { timeout: 180000 }, async () => {
     const fixture = await companionFixture();
-    const native = await createTestNative(fixture.root);
-    const inspector = new PathInspector(native.supervisor);
-    const scope = await seedScope(fixture.root, inspector);
-    const guard = await takeInstanceGuard(scope.dataRoot, error => { throw error; });
-    const publisher = new FilePublisher({ root: scope.dataRoot, guard, supervisor: native.supervisor, inspector, preflight: async () => {}, invalidate: () => {} });
+    let native: TestNative | null = null;
+    let guard: InstanceGuard | null = null;
+    let publisher: FilePublisher | null = null;
     try {
+      native = await createTestNative(fixture.root);
+      const inspector = new PathInspector(native.supervisor);
+      const scope = await seedScope(fixture.root, inspector);
+      guard = await takeInstanceGuard(scope.dataRoot, error => { throw error; });
+      publisher = new FilePublisher({ root: scope.dataRoot, guard, supervisor: native.supervisor, inspector, preflight: async () => {}, invalidate: () => {} });
       const residue = path.join(scope.dataRoot, 'runtime.json.' + '1'.repeat(32) + '.tmp');
       await fs.writeFile(residue, 'untrusted residue');
       // Arrange: a publish holds the publication queue.
@@ -117,17 +121,18 @@ describe('native runtime platform', () => {
       assert.equal(await fs.readFile(residue, 'utf8'), 'untrusted residue');
       held.resolve();
       await stalled;
-    } finally { await publisher.idle(); await native.close(); await guard.release(); await fixture.close(); }
+    } finally { await publisher?.idle(); await native?.close(); await guard?.release(); await fixture.close(); }
   });
 
   it('rejects linked residue and lost binding before deleting any candidates', { timeout: 120000 }, async () => {
     const fixture = await companionFixture();
-    const supervisor = (await createTestNative(fixture.root)).supervisor;
-    const inspector = new PathInspector(supervisor);
-    const scope = await seedScope(fixture.root, inspector);
-    const guard = await takeInstanceGuard(scope.dataRoot, error => { throw error; });
+    let guard: InstanceGuard | null = null;
     try {
-      const first = path.join(scope.dataRoot, 'runtime.json.' + '1'.repeat(32) + '.tmp');
+      const supervisor = (await createTestNative(fixture.root)).supervisor;
+      const inspector = new PathInspector(supervisor);
+      const scope = await seedScope(fixture.root, inspector);
+      guard = await takeInstanceGuard(scope.dataRoot, error => { throw error; });
+      const first =path.join(scope.dataRoot, 'runtime.json.' + '1'.repeat(32) + '.tmp');
       const linked = path.join(scope.dataRoot, 'runtime.json.' + '2'.repeat(32) + '.bak');
       const sentinel = path.join(fixture.root, 'sentinel');
       await fs.writeFile(first, 'keep until complete admission');
@@ -141,15 +146,15 @@ describe('native runtime platform', () => {
       await assert.rejects(cleanupPublicationResidue(scope, guard, inspector, idlePublisher), DataRootUnavailableError);
       assert.equal(await fs.readFile(first, 'utf8'), 'keep until complete admission');
       await assert.rejects(cleanupPublicationResidue(scope, { held: false }, inspector, idlePublisher), DataRootUnavailableError);
-    } finally { await guard.release(); await fixture.close(); }
+    } finally { await guard?.release(); await fixture.close(); }
   });
 
   it('reads initialized and uninitialized status beside a held writer guard without changing files', { timeout: 240000 }, async () => {
     const fixture = await companionFixture();
-    const supervisor = (await createTestNative(fixture.root)).supervisor;
-    const inspector = new PathInspector(supervisor);
-    await stageRuntimeConfig(fixture.root);
     try {
+      const supervisor = (await createTestNative(fixture.root)).supervisor;
+      const inspector = new PathInspector(supervisor);
+      await stageRuntimeConfig(fixture.root);
       const initial = await snapshot(fixture.root);
       const empty = await readRuntimeStatus(fixture.root);
       assert.equal(empty.initialized, false);
@@ -203,10 +208,11 @@ describe('native runtime platform', () => {
   it('reports the helper refusal with its restart remedy when the status helper spends its restart', { timeout: 240000 }, async () => {
     // Arrange: the first service dies on the principal request and its replacement on its first principal or job request.
     const fixture = await companionFixture();
-    await stageRuntimeConfig(fixture.root);
-    const die = [{ die: 'beforeForward' as const }];
-    const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: die } }, { rules: { principal: die, jobStates: die } }]);
     try {
+      await stageRuntimeConfig(fixture.root);
+      const die = [{ die: 'beforeForward' as const }];
+      const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: die } }, { rules: { principal: die, jobStates: die } }]);
+
       // Act
       const read = await Promise.allSettled([readRuntimeStatus(fixture.root, { nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
 
@@ -222,9 +228,10 @@ describe('native runtime platform', () => {
   it('keeps identityUnavailable with its cause for a principal failure while the status helper can still serve', { timeout: 240000 }, async () => {
     // Arrange: only the first service dies on the principal request, so its replacement serves and the helper is not exhausted.
     const fixture = await companionFixture();
-    await stageRuntimeConfig(fixture.root);
-    const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
     try {
+      await stageRuntimeConfig(fixture.root);
+      const proxies = await helperProxies(path.join(fixture.root, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
+
       // Act
       const read = await Promise.allSettled([readRuntimeStatus(fixture.root, { nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
 
@@ -240,10 +247,12 @@ describe('native runtime platform', () => {
   it('matches the recorded creation identity and kills the orphan job with its descendant', { timeout: 90000 }, async () => {
     // Arrange
     const fixture = await companionFixture();
-    const native = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
-    const supervisor = native.supervisor;
-    const orphan = await startOrphanWatcher(fixture.root, supervisor.jobName('watcher'), native.helper);
+    let native: TestNative | null = null;
+    let orphan: OrphanWatcher | null = null;
     try {
+      native = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
+      const supervisor = native.supervisor;
+      orphan = await startOrphanWatcher(fixture.root, supervisor.jobName('watcher'), native.helper);
       const identity = orphan.identity;
       const previous = { runtimeInstanceId: 'a'.repeat(32), startedAt: now, cleanShutdown: false, watcher: identity };
 
@@ -258,6 +267,6 @@ describe('native runtime platform', () => {
       assert.deepEqual(untouched, identity);
       assert.equal(await readProcessIdentity(native.helper, identity.pid), null);
       await reconcileWatcherOrphan(previous, supervisor);
-    } finally { orphan.kill(); await orphan.closed; await native.close(); await fixture.close(); }
+    } finally { orphan?.kill(); await orphan?.closed; await native?.close(); await fixture.close(); }
   });
 });

@@ -10,7 +10,7 @@ import { EventReader } from '../src/event-reader.ts';
 import { eventFileName } from '../src/journal-records.ts';
 import type { PayloadCodec } from '../src/codec.ts';
 import { FilePublisher } from '../src/files.ts';
-import { takeInstanceGuard } from '../src/guard.ts';
+import { takeInstanceGuard, type InstanceGuard } from '../src/guard.ts';
 import { HelperRequestFailedError, NativeHelper } from '../src/native-helper.ts';
 import { observeImageFile, type HelperImage } from '../src/native-image.ts';
 import { ProcessSupervisor, SupervisorError } from '../src/process.ts';
@@ -20,7 +20,7 @@ import type { RuntimeScope } from '../src/scope.ts';
 import { bytesHash } from '../src/storage.ts';
 import type { ProxyLaunch } from './support/helper-proxy.ts';
 import { companionFixture } from './support/companion.ts';
-import { createTestNative, helperProxies, testHelperImage, type HelperProxies } from './support/native-helper.ts';
+import { createTestNative, helperProxies, testHelperImage, type HelperProxies, type TestNative } from './support/native-helper.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const childScript = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
@@ -31,27 +31,39 @@ const pause = (milliseconds: number): Promise<void> => new Promise(resolve => { 
 async function faultHarness(launches: readonly ProxyLaunch[], image?: HelperImage) {
   const fixture = await companionFixture();
   const scratch = path.join(repository, '.tmp', `native-faults-${randomUUID()}`);
-  await fs.mkdir(scratch, { recursive: true });
-  const proxies: HelperProxies = await helperProxies(path.join(scratch, 'proxy.log'), launches);
-  const helper = await NativeHelper.start(image ?? await testHelperImage(), fixture.root, undefined, proxies.launcher);
-  const supervisor = await ProcessSupervisor.create(fixture.root, helper);
-  await supervisor.proveBindable();
-  await helper.bind({ token: supervisor.scopeToken, companionRoot: fixture.root, dataRoot: fixture.root });
-  const inspector = new PathInspector(supervisor);
-  const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
-  const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor, preflight: async () => {}, invalidate: () => {} });
-  return {
-    fixture, scratch, proxies, helper, supervisor, inspector, guard, publisher,
-    /** Records of one launch, by the real service pid behind it. */
-    recordsOf: async (launch: number) => (await proxies.records()).filter(record => record.pid === proxies.pids[launch]),
-    close: async () => {
-      await publisher.idle();
-      await helper.close().catch(() => undefined);
-      await guard.release();
-      await fixture.close();
-      await fs.rm(scratch, { recursive: true, force: true });
-    },
-  };
+  let startedHelper: NativeHelper | null = null;
+  let heldGuard: InstanceGuard | null = null;
+  try {
+    await fs.mkdir(scratch, { recursive: true });
+    const proxies: HelperProxies = await helperProxies(path.join(scratch, 'proxy.log'), launches);
+    const helper = await NativeHelper.start(image ?? await testHelperImage(), fixture.root, undefined, proxies.launcher);
+    startedHelper = helper;
+    const supervisor = await ProcessSupervisor.create(fixture.root, helper);
+    await supervisor.proveBindable();
+    await helper.bind({ token: supervisor.scopeToken, companionRoot: fixture.root, dataRoot: fixture.root });
+    const inspector = new PathInspector(supervisor);
+    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+    heldGuard = guard;
+    const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor, preflight: async () => {}, invalidate: () => {} });
+    return {
+      fixture, scratch, proxies, helper, supervisor, inspector, guard, publisher,
+      /** Records of one launch, by the real service pid behind it. */
+      recordsOf: async (launch: number) => (await proxies.records()).filter(record => record.pid === proxies.pids[launch]),
+      close: async () => {
+        await publisher.idle();
+        await helper.close().catch(() => undefined);
+        await guard.release();
+        await fixture.close();
+        await fs.rm(scratch, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    await startedHelper?.close().catch(() => undefined);
+    await heldGuard?.release();
+    await fixture.close();
+    await fs.rm(scratch, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function until(condition: () => boolean | Promise<boolean>, timeoutMs = 15_000): Promise<void> {
@@ -198,14 +210,23 @@ describe('native helper service faults against the real service', () => {
   it('serves eventBatch reads from a second service while the bound service replaces the same event file', { timeout: 180000 }, async () => {
     // Arrange: chat's bound service publishes, and a second, unbound service reads through its own inspector.
     const fixture = await companionFixture('context-event');
-    const chat = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
-    const reader = await createTestNative(fixture.root);
-    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
-    const inspector = new PathInspector(chat.supervisor);
-    const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor: chat.supervisor, preflight: async () => {}, invalidate: () => {} });
-    const relative = `journal/events/${eventFileName(1)}`;
-    const bytes = await fs.readFile(path.join(fixture.root, relative));
+    let openedChat: TestNative | null = null;
+    let openedReader: TestNative | null = null;
+    let heldGuard: InstanceGuard | null = null;
+    let openedPublisher: FilePublisher | null = null;
     try {
+      const chat = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
+      openedChat = chat;
+      const reader = await createTestNative(fixture.root);
+      openedReader = reader;
+      const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+      heldGuard = guard;
+      const inspector = new PathInspector(chat.supervisor);
+      const publisher = new FilePublisher({ root: fixture.root, guard, inspector, supervisor: chat.supervisor, preflight: async () => {}, invalidate: () => {} });
+      openedPublisher = publisher;
+      const relative = `journal/events/${eventFileName(1)}`;
+      const bytes = await fs.readFile(path.join(fixture.root, relative));
+
       // Act: every round replaces the event file while reads of it run on the other service.
       for (let round = 0; round < 12; round++) {
         const reads = Array.from({ length: 4 }, () => new EventReader(fixture.root, new PathInspector(reader.supervisor)).read([{ path: relative, sequence: 1 }]));
@@ -217,10 +238,10 @@ describe('native helper service faults against the real service', () => {
       }
       assert.deepEqual(await fs.readFile(path.join(fixture.root, relative)), bytes);
     } finally {
-      await publisher.idle();
-      await reader.close();
-      await chat.close();
-      await guard.release();
+      await openedPublisher?.idle();
+      await openedReader?.close();
+      await openedChat?.close();
+      await heldGuard?.release();
       await fixture.close();
     }
   });

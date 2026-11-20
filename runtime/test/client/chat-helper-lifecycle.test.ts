@@ -179,9 +179,10 @@ describe('chat lifecycle on the native helper', () => {
     // Arrange: both the first service and its replacement die on bindScope, so binding exhausts the helper.
     const fixture = await companionFixture('runtime-owned');
     const scratch = path.join(repository, '.tmp', `chat-lifecycle-${randomUUID()}`);
-    await fs.mkdir(scratch, { recursive: true });
-    const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { bindScope: [{ die: 'beforeForward' }] } }, { rules: { bindScope: [{ die: 'beforeForward' }] } }]);
     try {
+      await fs.mkdir(scratch, { recursive: true });
+      const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { bindScope: [{ die: 'beforeForward' }] } }, { rules: { bindScope: [{ die: 'beforeForward' }] } }]);
+
       // Act
       const opened = await Promise.allSettled([openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
       const again = await Promise.allSettled([openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage() })]);
@@ -203,9 +204,10 @@ describe('chat lifecycle on the native helper', () => {
     // Arrange: only the first service dies on the principal request, so its replacement serves and the helper is not exhausted.
     const fixture = await companionFixture('runtime-owned');
     const scratch = path.join(repository, '.tmp', `chat-lifecycle-${randomUUID()}`);
-    await fs.mkdir(scratch, { recursive: true });
-    const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
     try {
+      await fs.mkdir(scratch, { recursive: true });
+      const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { principal: [{ die: 'beforeForward' }] } }, {}]);
+
       // Act
       const opened = await Promise.allSettled([openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher })]);
 
@@ -227,9 +229,9 @@ describe('chat lifecycle on the native helper', () => {
     // Arrange: the first start's service dies on its first publication, after binding.
     const fixture = await companionFixture('runtime-owned');
     const scratch = path.join(repository, '.tmp', `chat-lifecycle-${randomUUID()}`);
-    await fs.mkdir(scratch, { recursive: true });
-    const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { publish: [{ die: 'beforeForward' }] } }, {}]);
     try {
+      await fs.mkdir(scratch, { recursive: true });
+      const proxies = await helperProxies(path.join(scratch, 'proxy.log'), [{ rules: { publish: [{ die: 'beforeForward' }] } }, {}]);
       await assert.rejects(openBackend({ companionRoot: fixture.root, nativeImage: await testHelperImage(), nativeLauncher: proxies.launcher }));
       assert.ok((await proxies.records()).some(record => record.op === 'bindScope'));
 

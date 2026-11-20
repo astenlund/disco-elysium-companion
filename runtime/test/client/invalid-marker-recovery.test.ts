@@ -25,10 +25,10 @@ describe('operator recovery from a content-invalid runtime marker', () => {
   it('refuses without writing, still refuses a live watcher job once moved aside, then starts as an unclean shutdown', { timeout: 600000 }, async () => {
     // Arrange: a first start shuts down cleanly, so an unclean reading afterward can only come from the marker's absence.
     const fixture = await companionFixture('runtime-owned');
-    const image = await testHelperImage();
     let orphan: OrphanWatcher | null = null;
     let second: SyntheticChat | null = null;
     try {
+      const image = await testHelperImage();
       const { watcherJob, marker } = await startAndStopSyntheticChat(fixture.root, image);
       const invalid = '{"runtimeInstanceId":"not a marker"}';
       await fs.writeFile(marker, invalid);

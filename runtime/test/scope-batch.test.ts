@@ -6,19 +6,21 @@ import test from 'node:test';
 import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
 import { discoverScope, readScope } from '../src/scope.ts';
 import { companionFixture } from './support/companion.ts';
-import { createTestNative } from './support/native-helper.ts';
+import { createTestNative, type TestNative } from './support/native-helper.ts';
 
 test('discovers and reads a scope with one fresh path batch per operation', { timeout: 120000 }, async () => {
   const fixture = await companionFixture();
-  const supervisor = (await createTestNative(fixture.root)).supervisor;
-  const inspector = new PathInspector(supervisor);
-  const original = inspector.inspectMany.bind(inspector);
-  const batches: { root: string; targets: readonly string[]; allowMissing: boolean }[] = [];
-  inspector.inspectMany = (root, targets, allowMissing = false, timeoutMs = 30000) => {
-    batches.push({ root, targets: [...targets], allowMissing });
-    return original(root, targets, allowMissing, timeoutMs);
-  };
+  let supervisor: TestNative['supervisor'] | null = null;
+  let inspector: PathInspector | null = null;
   try {
+    supervisor = (await createTestNative(fixture.root)).supervisor;
+    inspector = new PathInspector(supervisor);
+    const original = inspector.inspectMany.bind(inspector);
+    const batches: { root: string; targets: readonly string[]; allowMissing: boolean }[] = [];
+    inspector.inspectMany = (root, targets, allowMissing = false, timeoutMs = 30000) => {
+      batches.push({ root, targets: [...targets], allowMissing });
+      return original(root, targets, allowMissing, timeoutMs);
+    };
     const candidate = await discoverScope(inspector, fixture.root, 'stub', 'batch-principal');
     assert.deepEqual(batches, [{ root: fixture.root, targets: [fixture.root, candidate.dataRoot], allowMissing: true }]);
     batches.length = 0;
@@ -42,8 +44,8 @@ test('discovers and reads a scope with one fresh path batch per operation', { ti
     await fs.writeFile(binding, JSON.stringify({ runtimeScopeVersion: 1, game: 'stub', principal: 'other-principal' }));
     await assert.rejects(readScope(inspector, candidate), DataRootUnavailableError);
   } finally {
-    await inspector.idle();
-    await supervisor.verifyQuiescent('metadata');
+    await inspector?.idle();
+    await supervisor?.verifyQuiescent('metadata');
     await fixture.close();
   }
 });

@@ -8,14 +8,15 @@ import { PathInspector } from '../../src/admission.ts';
 import { takeInstanceGuard } from '../../src/guard.ts';
 import { newIdentity } from '../../src/identity.ts';
 import { companionFixture } from '../support/companion.ts';
-import { createTestNative } from '../support/native-helper.ts';
+import { createTestNative, type TestNative } from '../support/native-helper.ts';
 
 it('sends the precomputed redelivery bytes after a blocked sent publication and exits uncleanly', { timeout: 3600000 }, async () => {
   const fixture = await companionFixture('runtime-owned');
   const script = fileURLToPath(new URL('./fixtures/sent-mark-child.ts', import.meta.url));
-  const supervisor = (await createTestNative(path.join(fixture.root, `test-process-${newIdentity()}`))).supervisor;
+  let supervisor: TestNative['supervisor'] | null = null;
   let quiescent = false;
   try {
+    supervisor = (await createTestNative(path.join(fixture.root, `test-process-${newIdentity()}`))).supervisor;
     const result = await supervisor.run('core', { command: process.execPath, args: [script, fixture.root], cwd: fixture.root }, 3500000);
     quiescent = true;
     assert.equal(result.exitCode, 0, result.stderr.toString('utf8'));
@@ -38,7 +39,7 @@ it('sends the precomputed redelivery bytes after a blocked sent publication and 
     await inspector.idle();
     await supervisor.verifyQuiescent('metadata');
   } finally {
-    if (!quiescent) { await supervisor.verifyQuiescent('core'); quiescent = true; }
+    if (!quiescent) { await supervisor?.verifyQuiescent('core'); quiescent = true; }
     if (quiescent) { await fixture.close(); }
   }
 });

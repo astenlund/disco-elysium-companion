@@ -7,7 +7,7 @@ import { NativeOperationError, PathInspector } from '../src/admission.ts';
 import { PayloadCodec, CodecDocumentError } from '../src/codec.ts';
 import { EventReader } from '../src/event-reader.ts';
 import { FilePublisher, PublicationError } from '../src/files.ts';
-import { takeInstanceGuard } from '../src/guard.ts';
+import { takeInstanceGuard, type InstanceGuard } from '../src/guard.ts';
 import { asInteger, hasExactKeys, parseStrictJson, utcNow } from '../src/json.ts';
 import { OutboxReader } from '../src/outbox.ts';
 import { companionFixture } from './support/companion.ts';
@@ -16,21 +16,23 @@ import { createTestNative } from './support/native-helper.ts';
 describe('file-backed lossless codec', () => {
   it('preserves the payload through private-core settlement, reload, compaction and a lost helper reply', { timeout: 240000 }, async () => {
     const fixture = await companionFixture('state-event');
-    const dataRoot = path.join(fixture.root, 'runtime-data');
-    const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot })).supervisor;
-    const inspector = new PathInspector(supervisor);
-    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
-    await fs.mkdir(dataRoot);
-    const invalidated: string[] = [];
-    const publisher = new FilePublisher({ root: dataRoot, guard, supervisor, inspector, preflight: async () => {}, invalidate: target => invalidated.push(target) });
-    let reservations = 0;
-    const codec = new PayloadCodec(publisher, async reservation => {
-      assert.ok(reservation.inputBytes > 0 && reservation.controlBytes > 0);
-      assert.equal(reservation.maximumOutputBytes, reservation.publication ? 33554432 : 0);
-      reservations++;
-    });
-    const principal = 'S-1-5-21-1000-1001-1002-1003';
+    let guard: InstanceGuard | null = null;
+    let publisher: FilePublisher | null = null;
     try {
+      const dataRoot = path.join(fixture.root, 'runtime-data');
+      const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot })).supervisor;
+      const inspector = new PathInspector(supervisor);
+      guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+      await fs.mkdir(dataRoot);
+      const invalidated: string[] = [];
+      publisher = new FilePublisher({ root: dataRoot, guard, supervisor, inspector, preflight: async () => {}, invalidate: target => invalidated.push(target) });
+      let reservations = 0;
+      const codec = new PayloadCodec(publisher, async reservation => {
+        assert.ok(reservation.inputBytes > 0 && reservation.controlBytes > 0);
+        assert.equal(reservation.maximumOutputBytes, reservation.publication ? 33554432 : 0);
+        reservations++;
+      });
+      const principal = 'S-1-5-21-1000-1001-1002-1003';
       const core = async (name: string, args: string[]) => supervisor.run('core', { command: 'pwsh', args: ['-NoProfile', '-File', path.join(fixture.root, 'core', name), '-CompanionRoot', fixture.root, ...args], cwd: fixture.root }, 120000);
       const records = (await fs.readdir(path.join(fixture.root, 'state', 'outbox'))).filter(name => /^event-[0-9]{16}\.json$/.test(name));
       assert.equal(records.length, 1);
@@ -137,22 +139,23 @@ describe('file-backed lossless codec', () => {
       assert.equal(executions, 1);
       assert.equal(verifications, 1);
     } finally {
-      await publisher.idle();
-      await guard.release();
+      await publisher?.idle();
+      await guard?.release();
       await fixture.close();
     }
   });
 
   it('refuses a missing complete-transition reservation before creating staging', { timeout: 60000 }, async () => {
     const fixture = await companionFixture();
-    const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root })).supervisor;
-    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
-    const publisher = new FilePublisher({ root: fixture.root, guard, supervisor, inspector: new PathInspector(supervisor), preflight: async () => {}, invalidate: () => {} });
-    const codec = new PayloadCodec(publisher, async () => { throw new Error('transition refused'); });
+    let guard: InstanceGuard | null = null;
     try {
+      const supervisor = (await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root })).supervisor;
+      guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+      const publisher = new FilePublisher({ root: fixture.root, guard, supervisor, inspector: new PathInspector(supervisor), preflight: async () => {}, invalidate: () => {} });
+      const codec = new PayloadCodec(publisher, async () => { throw new Error('transition refused'); });
       await assert.rejects(codec.inspectSource(Buffer.from('{}'), 1), /transition refused/);
       assert.deepEqual(await fs.readdir(fixture.root), []);
       assert.equal(publisher.blocked, false);
-    } finally { await guard.release(); await fixture.close(); }
+    } finally { await guard?.release(); await fixture.close(); }
   });
 });

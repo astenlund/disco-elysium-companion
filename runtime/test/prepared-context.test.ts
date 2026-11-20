@@ -7,37 +7,48 @@ import { describe, it } from 'node:test';
 import { NativeOperationError, PathInspector } from '../src/admission.ts';
 import { Deadline, DeadlineExceededError } from '../src/deadline.ts';
 import { FilePublisher, PublicationError } from '../src/files.ts';
-import { takeInstanceGuard } from '../src/guard.ts';
+import { takeInstanceGuard, type InstanceGuard } from '../src/guard.ts';
 import { isObject, parseStrictJson, stringifyJson } from '../src/json.ts';
 import { ContextPreparer } from '../src/prepared-context.ts';
 import { ScopeStorage } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
-import { createTestNative } from './support/native-helper.ts';
+import { createTestNative, type TestNative } from './support/native-helper.ts';
 
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 async function contextHarness(withEvent = false) {
   const fixture = await companionFixture(withEvent ? 'context-event' : 'context');
-  const native = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
-  const supervisor = native.supervisor;
-  const inspector = new PathInspector(supervisor);
-  const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
-  const scopeSha256 = hash(await fs.readFile(path.join(fixture.root, 'scope.json')));
-  const safetySha256 = hash(await fs.readFile(path.join(fixture.root, 'state-safety.json')));
-  const control = { current: true, invalidated: [] as string[], beforeAdmission: async () => {} };
-  const publisher = new FilePublisher({ root: fixture.root, guard, supervisor, inspector, preflight: async () => {}, invalidate: target => control.invalidated.push(target) });
-  // This component fixture checks actual scope/safety files; full coordinator
-  // operation and provider-binding proofs belong to the production integration.
-  const scope = { companionRoot: fixture.root, dataRoot: fixture.root, game: 'game', principal: 'principal', bindingSha256: scopeSha256, createdHere: false };
-  const preparer = new ContextPreparer({ scope, publisher,
-    admit: async request => { await control.beforeAdmission(); return control.current && isObject(request) && request['safetySha256'] === hash(await fs.readFile(path.join(fixture.root, 'state-safety.json'))); },
-    reserve: async reservation => { assert.ok(reservation.inputBytes > 0); } });
-  const request = { contextRequestVersion: 1, scopeSha256, safetySha256, generation: '1'.repeat(32), journalId: null, game: 'game', principal: 'principal',
-    template: { companionTurnContextVersion: 1, interactionId: 'interaction', requestReceivedAt: '2026-10-08T06:00:00.0000000Z', sessionOpening: true,
-      freshness: { state: 'failed', class: 'journal', reason: 'settlementPending', lastGoodGeneratedAt: null }, operational: { state: 'unknown', warnings: [] }, correction: null },
-    events: [], state: null, stateWanted: true, shape: null, failedBlockBytes: null, instructionsSha256: 'a'.repeat(64), providerFingerprint: 'b'.repeat(64), disclosure: true };
-  return { fixture, supervisor, inspector, guard, control, publisher, preparer, request, scope,
-    close: async () => { await publisher.idle(); await native.close(); await guard.release(); await fixture.close(); } };
+  let openedNative: TestNative | null = null;
+  let heldGuard: InstanceGuard | null = null;
+  try {
+    const native = await createTestNative(fixture.root, { companionRoot: fixture.root, dataRoot: fixture.root });
+    openedNative = native;
+    const supervisor = native.supervisor;
+    const inspector = new PathInspector(supervisor);
+    const guard = await takeInstanceGuard(fixture.root, error => { throw error; });
+    heldGuard = guard;
+    const scopeSha256 = hash(await fs.readFile(path.join(fixture.root, 'scope.json')));
+    const safetySha256 = hash(await fs.readFile(path.join(fixture.root, 'state-safety.json')));
+    const control = { current: true, invalidated: [] as string[], beforeAdmission: async () => {} };
+    const publisher = new FilePublisher({ root: fixture.root, guard, supervisor, inspector, preflight: async () => {}, invalidate: target => control.invalidated.push(target) });
+    // This component fixture checks actual scope/safety files; full coordinator
+    // operation and provider-binding proofs belong to the production integration.
+    const scope = { companionRoot: fixture.root, dataRoot: fixture.root, game: 'game', principal: 'principal', bindingSha256: scopeSha256, createdHere: false };
+    const preparer = new ContextPreparer({ scope, publisher,
+      admit: async request => { await control.beforeAdmission(); return control.current && isObject(request) && request['safetySha256'] === hash(await fs.readFile(path.join(fixture.root, 'state-safety.json'))); },
+      reserve: async reservation => { assert.ok(reservation.inputBytes > 0); } });
+    const request = { contextRequestVersion: 1, scopeSha256, safetySha256, generation: '1'.repeat(32), journalId: null, game: 'game', principal: 'principal',
+      template: { companionTurnContextVersion: 1, interactionId: 'interaction', requestReceivedAt: '2026-10-08T06:00:00.0000000Z', sessionOpening: true,
+        freshness: { state: 'failed', class: 'journal', reason: 'settlementPending', lastGoodGeneratedAt: null }, operational: { state: 'unknown', warnings: [] }, correction: null },
+      events: [], state: null, stateWanted: true, shape: null, failedBlockBytes: null, instructionsSha256: 'a'.repeat(64), providerFingerprint: 'b'.repeat(64), disclosure: true };
+    return { fixture, supervisor, inspector, guard, control, publisher, preparer, request, scope,
+      close: async () => { await publisher.idle(); await native.close(); await guard.release(); await fixture.close(); } };
+  } catch (error) {
+    await openedNative?.close();
+    await heldGuard?.release();
+    await fixture.close();
+    throw error;
+  }
 }
 
 describe('prepared context ownership', () => {
