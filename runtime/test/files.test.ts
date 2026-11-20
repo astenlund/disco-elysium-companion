@@ -9,6 +9,7 @@ import { takeInstanceGuard, type InstanceGuard } from '../src/guard.ts';
 import { parseStrictJson } from '../src/json.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 describe('runtime publication boundary', () => {
   it('publishes exact bytes with a separate Node reader open and preserves create-only collisions', { timeout: 120000 }, async () => {
@@ -36,9 +37,7 @@ describe('runtime publication boundary', () => {
       assert.equal(invalidated.length, 1);
       assert.deepEqual(await fs.readdir(fixture.root), ['record.json']);
     } finally {
-      await publisher?.idle();
-      await guard?.release();
-      await fixture.close();
+      await releaseAll(() => publisher?.idle(), () => guard?.release(), () => fixture.close());
     }
   });
 
@@ -55,8 +54,7 @@ describe('runtime publication boundary', () => {
       await assert.rejects(publisher.publishJson('../outside.json', { value: 1 }));
       assert.deepEqual(await fs.readdir(fixture.root), []);
     } finally {
-      await guard?.release();
-      await fixture.close();
+      await releaseAll(() => guard?.release(), () => fixture.close());
     }
   });
 
@@ -90,8 +88,7 @@ describe('runtime publication boundary', () => {
       await assert.rejects(publisher.publishJson('another.json', { value: 'refused' }), PublicationError);
       assert.equal(calls, 1);
     } finally {
-      await guard?.release();
-      await fixture.close();
+      await releaseAll(() => guard?.release(), () => fixture.close());
     }
   });
 });

@@ -13,6 +13,7 @@ import type { RuntimeScope } from '../src/scope.ts';
 import { bytesHash } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 it('gates native carry deletion and recognizes its postimage after lost progress', { timeout: 120000 }, async () => {
   const fixture = await companionFixture();
@@ -51,8 +52,6 @@ it('gates native carry deletion and recognizes its postimage after lost progress
     owner = false;
     await assert.rejects(executor().execute(action), /durable matching owner/);
   } finally {
-    await openedPublisher?.idle();
-    await guard?.release();
-    await fixture.close();
+    await releaseAll(() => openedPublisher?.idle(), () => guard?.release(), () => fixture.close());
   }
 });

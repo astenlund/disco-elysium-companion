@@ -10,6 +10,7 @@ import type { HostEvent } from '../../src/session-host-contract.ts';
 import type { StartupPhase } from '../../src/startup-progress.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
+import { releaseAll } from '../support/release.ts';
 import { openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 describe('chat start after startup recovery invalidates context', () => {
@@ -63,8 +64,7 @@ describe('chat start after startup recovery invalidates context', () => {
       assert.equal(attached.result, 'attached');
       assert.deepEqual(events.flatMap(event => event.type === 'notice' && event.code === 'stateContextInvalidated' ? [event.reason] : []), ['contextUncertain']);
     } finally {
-      await restarted?.host.shutdown();
-      await fixture.close();
+      await releaseAll(() => restarted?.host.shutdown(), () => fixture.close());
     }
   });
 
@@ -102,8 +102,7 @@ describe('chat start after startup recovery invalidates context', () => {
       assert.equal(restarted.provider.calls.length, 0);
     } finally {
       if (safetyPath !== null) { await fs.chmod(safetyPath, 0o644).catch(() => undefined); }
-      await restarted?.host.shutdown();
-      await fixture.close();
+      await releaseAll(() => restarted?.host.shutdown(), () => fixture.close());
     }
   });
 

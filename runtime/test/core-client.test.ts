@@ -10,6 +10,7 @@ import { isObject } from '../src/json.ts';
 import { SupervisorError } from '../src/process.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 describe('validated core command boundary', () => {
   it('correlates ownership, publication and settlement against real private-core replies', { timeout: 240000 }, async () => {
@@ -60,7 +61,7 @@ describe('validated core command boundary', () => {
       assert.equal(release.success && release.value.owner, 'bridge');
       assert.equal(admitted[0]!.kind, 'publish');
       assert.equal(admitted[1]!.kind, 'consumer');
-    } finally { await client?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => client?.idle(), () => fixture.close()); }
   });
 
   it('refuses mutation before child launch when durable admission is unavailable', { timeout: 60000 }, async () => {
@@ -86,7 +87,7 @@ describe('validated core command boundary', () => {
       };
       client = new CoreClient({ companionRoot: fixture.root, adapter: 'stub', supervisor, inspector: new PathInspector(supervisor), admit: async () => {} });
       await assert.rejects(client.publish('fixture-principal'), error => error instanceof SupervisorError && error.reason === 'result-invalid');
-    } finally { await client?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => client?.idle(), () => fixture.close()); }
   });
 
   it('keeps the helper fault as the cause of an unavailable principal', async () => {

@@ -15,6 +15,7 @@ import { SupervisorError } from '../../src/process.ts';
 import type { HostEvent } from '../../src/session-host-contract.ts';
 import { companionFixture } from '../support/companion.ts';
 import { helperProxies, testHelperImage } from '../support/native-helper.ts';
+import { releaseAll } from '../support/release.ts';
 import { exhaustHelper, openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
@@ -199,8 +200,7 @@ describe('chat lifecycle on the native helper', () => {
       assert.equal(again[0]!.status, 'rejected');
       assert.equal(((again[0] as PromiseRejectedResult).reason as { code?: unknown }).code, 'runtimeAlreadyRunning');
     } finally {
-      await fixture.close();
-      await fs.rm(scratch, { recursive: true, force: true });
+      await releaseAll(() => fixture.close(), () => fs.rm(scratch, { recursive: true, force: true }));
     }
   });
 
@@ -224,8 +224,7 @@ describe('chat lifecycle on the native helper', () => {
       assert.ok(principal instanceof Error && principal.message === 'identityUnavailable', String(principal));
       assert.ok(principal.cause instanceof Error, 'the helper fault survives as the principal failure cause');
     } finally {
-      await fixture.close();
-      await fs.rm(scratch, { recursive: true, force: true });
+      await releaseAll(() => fixture.close(), () => fs.rm(scratch, { recursive: true, force: true }));
     }
   });
 
@@ -246,8 +245,7 @@ describe('chat lifecycle on the native helper', () => {
       try { await attach(chat); }
       finally { await chat.host.shutdown(); }
     } finally {
-      await fixture.close();
-      await fs.rm(scratch, { recursive: true, force: true });
+      await releaseAll(() => fixture.close(), () => fs.rm(scratch, { recursive: true, force: true }));
     }
   });
 

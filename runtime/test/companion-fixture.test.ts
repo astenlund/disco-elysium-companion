@@ -13,13 +13,16 @@ describe('companion fixture cleanup contract', () => {
   it('resolves close only after the fixture root is physically removed', { timeout: 120000 }, async () => {
     // Arrange
     const fixture = await companionFixture();
-    await fs.writeFile(path.join(fixture.root, 'plain.txt'), 'x');
+    try {
+      await fs.writeFile(path.join(fixture.root, 'plain.txt'), 'x');
 
-    // Act
-    await fixture.close();
+      // Act
+      await fixture.close();
 
-    // Assert
-    assert.equal(existsSync(fixture.root), false);
+      // Assert
+      assert.equal(existsSync(fixture.root), false);
+    }
+    finally { await fixture.close().catch(() => undefined); }
   });
 
   it('rejects with the host-reported, path-free residue when a held handle keeps the root alive', { timeout: 120000 }, async () => {
@@ -77,8 +80,9 @@ describe('companion fixture cleanup contract', () => {
   it('rejects with path-free residue, not a host failure, when the host fails while the root still stands', { timeout: 120000 }, async () => {
     // Arrange: a junction replaces the root, so the host's reparse guard refuses the removal and the host exits 1.
     const fixture = await companionFixture();
-    const sentinel = await fs.mkdtemp(path.join(repository, '.tmp', 'fixture-sentinel-'));
+    let sentinel: string | null = null;
     try {
+      sentinel = await fs.mkdtemp(path.join(repository, '.tmp', 'fixture-sentinel-'));
       await fs.writeFile(path.join(sentinel, 'kept.txt'), 'x');
       await fs.rm(fixture.root, { recursive: true });
       await fs.symlink(sentinel, fixture.root, 'junction');
@@ -96,9 +100,12 @@ describe('companion fixture cleanup contract', () => {
       assert.equal(existsSync(path.join(sentinel, 'kept.txt')), true);
     }
     finally {
+      // close() is memoized, so this shares the Act's completion, or closes a fixture whose setup failed before the Act; a
+      // close refused by the host's reparse guard while the junction stands reports residue, which is swallowed here.
+      await fixture.close().catch(() => undefined);
       // Removing the junction itself, never through it, leaves its target for the sentinel cleanup.
       await fs.rmdir(fixture.root).catch(() => undefined);
-      await fs.rm(sentinel, { recursive: true, force: true });
+      if (sentinel !== null) { await fs.rm(sentinel, { recursive: true, force: true }); }
     }
   });
 

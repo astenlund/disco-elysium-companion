@@ -10,6 +10,7 @@ import { SupervisorError } from '../src/process.ts';
 import { createReadOnlyInspection, type ReadOnlyInspection } from '../src/read-only-inspection.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative, startTestHelper } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 const childScript = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
 
@@ -34,7 +35,7 @@ describe('independent read-only metadata ownership', () => {
       await assert.rejects(first.inspector.inspect(fixture.root, fixture.root), DataRootUnavailableError);
       await assert.rejects(first.inspector.native('principal', {}), DataRootUnavailableError);
       assert.equal((await second.inspector.inspect(fixture.root, fixture.root)).kind, 'directory');
-    } finally { await first?.close(); await second?.close(); await helper?.close(); await fixture.close(); }
+    } finally { await releaseAll(() => first?.close(), () => second?.close(), () => helper?.close(), () => fixture.close()); }
   });
 
   it('retains verified process ownership in a distinct guarded namespace after bootstrap closes', { timeout: 30000 }, async () => {
@@ -56,6 +57,6 @@ describe('independent read-only metadata ownership', () => {
       } finally { await guarded.stop('watcher'); }
       await competitor.verifyQuiescent('watcher');
       assert.deepEqual(await fs.readdir(fixture.root), []);
-    } finally { await bootstrap?.close(); await helper?.close(); await fixture.close(); }
+    } finally { await releaseAll(() => bootstrap?.close(), () => helper?.close(), () => fixture.close()); }
   });
 });

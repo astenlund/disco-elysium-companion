@@ -7,6 +7,7 @@ import { DataRootUnavailableError, PathInspector } from '../src/admission.ts';
 import { discoverScope, readScope } from '../src/scope.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative, type TestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 test('discovers and reads a scope with one fresh path batch per operation', { timeout: 120000 }, async () => {
   const fixture = await companionFixture();
@@ -44,8 +45,6 @@ test('discovers and reads a scope with one fresh path batch per operation', { ti
     await fs.writeFile(binding, JSON.stringify({ runtimeScopeVersion: 1, game: 'stub', principal: 'other-principal' }));
     await assert.rejects(readScope(inspector, candidate), DataRootUnavailableError);
   } finally {
-    await inspector?.idle();
-    await supervisor?.verifyQuiescent('metadata');
-    await fixture.close();
+    await releaseAll(() => inspector?.idle(), () => supervisor?.verifyQuiescent('metadata'), () => fixture.close());
   }
 });

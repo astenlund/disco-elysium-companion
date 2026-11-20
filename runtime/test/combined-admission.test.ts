@@ -19,6 +19,7 @@ import { repair } from './backend/authority-fixtures.ts';
 import { companionFixture } from './support/companion.ts';
 import { journalEvent } from './support/journal-event.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 const root = 'C:/unopened-admission-fixture';
 const scopePath = path.resolve(root, 'scope.json');
@@ -334,8 +335,6 @@ test('production resource callbacks share native staging admission and retain sc
       }
     });
   } finally {
-    await openedPublisher?.idle();
-    await guard?.release();
-    await fixture.close();
+    await releaseAll(() => openedPublisher?.idle(), () => guard?.release(), () => fixture.close());
   }
 });

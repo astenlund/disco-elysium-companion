@@ -14,6 +14,7 @@ import { companionFixture } from './support/companion.ts';
 import { readOnlyJournal } from './support/journal.ts';
 import { journalEvent } from './support/journal-event.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 async function measureColdHistory(context: TestContext, count: number): Promise<void> {
     const fixture = await companionFixture('context-event');
@@ -109,7 +110,7 @@ async function measureColdHistory(context: TestContext, count: number): Promise<
           rawPayloadBytes: kind === 'full' ? Buffer.byteLength(rawPayloadSuffix.slice(11, -1)) : 0,
           elapsedMs, nativeMetadataCalls: batches.length, batches, maximumReplyBytes: Math.max(...batches.map(batch => batch.replyBytes)), completeHashesVerified: count }));
       }
-    } finally { await openedJournal?.idle(); await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => openedJournal?.idle(), () => inspector?.idle(), () => fixture.close()); }
 }
 
 describe('native journal cache admission', () => {
@@ -174,6 +175,6 @@ describe('native journal cache admission', () => {
       await fs.link(path.join(root, 'journal', 'journal.json'), controlLink);
       await assert.rejects(journal.read(), DataRootUnavailableError);
       await fs.unlink(controlLink);
-    } finally { await openedJournal?.idle(); await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => openedJournal?.idle(), () => inspector?.idle(), () => fixture.close()); }
   });
 });

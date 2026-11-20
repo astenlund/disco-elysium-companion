@@ -12,6 +12,7 @@ import { asInteger, hasExactKeys, parseStrictJson, utcNow } from '../src/json.ts
 import { OutboxReader } from '../src/outbox.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 describe('file-backed lossless codec', () => {
   it('preserves the payload through private-core settlement, reload, compaction and a lost helper reply', { timeout: 240000 }, async () => {
@@ -139,9 +140,7 @@ describe('file-backed lossless codec', () => {
       assert.equal(executions, 1);
       assert.equal(verifications, 1);
     } finally {
-      await publisher?.idle();
-      await guard?.release();
-      await fixture.close();
+      await releaseAll(() => publisher?.idle(), () => guard?.release(), () => fixture.close());
     }
   });
 
@@ -156,6 +155,6 @@ describe('file-backed lossless codec', () => {
       await assert.rejects(codec.inspectSource(Buffer.from('{}'), 1), /transition refused/);
       assert.deepEqual(await fs.readdir(fixture.root), []);
       assert.equal(publisher.blocked, false);
-    } finally { await guard?.release(); await fixture.close(); }
+    } finally { await releaseAll(() => guard?.release(), () => fixture.close()); }
   });
 });

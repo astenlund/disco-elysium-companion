@@ -21,6 +21,7 @@ import { companionFixture } from '../support/companion.ts';
 import { deferredRepair, repair } from '../backend/authority-fixtures.ts';
 import { createTestNative, helperProxies, testHelperImage, type TestNative } from '../support/native-helper.ts';
 import { startOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
+import { releaseAll } from '../support/release.ts';
 
 const idlePublisher = { quiesce: async () => true };
 
@@ -79,7 +80,7 @@ describe('native runtime platform', () => {
       assert.equal(await fs.readFile(path.join(scope.dataRoot, 'runtime.json'), 'utf8'), 'authoritative bytes');
       assert.equal(await fs.readFile(path.join(scope.dataRoot, unknown), 'utf8'), 'unowned bytes');
       assert.deepEqual((await cleanupPublicationResidue(scope, guard, inspector, idlePublisher)).removed, []);
-    } finally { await guard?.release(); await fixture.close(); }
+    } finally { await releaseAll(() => guard?.release(), () => fixture.close()); }
   });
 
   it('waits for an in-flight publish before removing residue and refuses when its deadline passes first', { timeout: 180000 }, async () => {
@@ -87,6 +88,8 @@ describe('native runtime platform', () => {
     let native: TestNative | null = null;
     let guard: InstanceGuard | null = null;
     let publisher: FilePublisher | null = null;
+    // Every deferred that holds the publication queue, so teardown can release them before it waits for the publisher.
+    const queueHolds: PromiseWithResolvers<void>[] = [];
     try {
       native = await createTestNative(fixture.root);
       const inspector = new PathInspector(native.supervisor);
@@ -98,6 +101,7 @@ describe('native runtime platform', () => {
       // Arrange: a publish holds the publication queue.
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
+      queueHolds.push(release);
       const publishing = publisher.exclusive(async () => { entered.resolve(); await release.promise; });
       await entered.promise;
 
@@ -116,12 +120,16 @@ describe('native runtime platform', () => {
       // Arrange, act and assert: a publish outlasting the cleanup deadline refuses cleanup without removing anything.
       await fs.writeFile(residue, 'untrusted residue');
       const held = Promise.withResolvers<void>();
+      queueHolds.push(held);
       const stalled = publisher.exclusive(() => held.promise);
       await assert.rejects(cleanupPublicationResidue(scope, guard, inspector, publisher, Deadline.after(300)), DataRootUnavailableError);
       assert.equal(await fs.readFile(residue, 'utf8'), 'untrusted residue');
       held.resolve();
       await stalled;
-    } finally { await publisher?.idle(); await native?.close(); await guard?.release(); await fixture.close(); }
+    } finally {
+      for (const hold of queueHolds) { hold.resolve(); }
+      await releaseAll(() => publisher?.idle(), () => native?.close(), () => guard?.release(), () => fixture.close());
+    }
   });
 
   it('rejects linked residue and lost binding before deleting any candidates', { timeout: 120000 }, async () => {
@@ -146,7 +154,7 @@ describe('native runtime platform', () => {
       await assert.rejects(cleanupPublicationResidue(scope, guard, inspector, idlePublisher), DataRootUnavailableError);
       assert.equal(await fs.readFile(first, 'utf8'), 'keep until complete admission');
       await assert.rejects(cleanupPublicationResidue(scope, { held: false }, inspector, idlePublisher), DataRootUnavailableError);
-    } finally { await guard?.release(); await fixture.close(); }
+    } finally { await releaseAll(() => guard?.release(), () => fixture.close()); }
   });
 
   it('reads initialized and uninitialized status beside a held writer guard without changing files', { timeout: 240000 }, async () => {
@@ -267,6 +275,6 @@ describe('native runtime platform', () => {
       assert.deepEqual(untouched, identity);
       assert.equal(await readProcessIdentity(native.helper, identity.pid), null);
       await reconcileWatcherOrphan(previous, supervisor);
-    } finally { orphan?.kill(); await orphan?.closed; await native?.close(); await fixture.close(); }
+    } finally { await releaseAll(() => orphan?.kill(), () => orphan?.closed, () => native?.close(), () => fixture.close()); }
   });
 });

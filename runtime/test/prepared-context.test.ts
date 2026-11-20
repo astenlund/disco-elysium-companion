@@ -13,6 +13,7 @@ import { ContextPreparer } from '../src/prepared-context.ts';
 import { ScopeStorage } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative, type TestNative } from './support/native-helper.ts';
+import { releaseAfter, releaseAll } from './support/release.ts';
 
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -42,11 +43,10 @@ async function contextHarness(withEvent = false) {
         freshness: { state: 'failed', class: 'journal', reason: 'settlementPending', lastGoodGeneratedAt: null }, operational: { state: 'unknown', warnings: [] }, correction: null },
       events: [], state: null, stateWanted: true, shape: null, failedBlockBytes: null, instructionsSha256: 'a'.repeat(64), providerFingerprint: 'b'.repeat(64), disclosure: true };
     return { fixture, supervisor, inspector, guard, control, publisher, preparer, request, scope,
-      close: async () => { await publisher.idle(); await native.close(); await guard.release(); await fixture.close(); } };
+      close: () => releaseAll(() => publisher.idle(), releaseAfter(() => native.close(), () => guard.release()), () => fixture.close()) };
   } catch (error) {
-    await openedNative?.close();
-    await heldGuard?.release();
-    await fixture.close();
+    // A cleanup failure must never replace the setup error this rethrows.
+    await releaseAll(releaseAfter(() => openedNative?.close(), () => heldGuard?.release()), () => fixture.close()).catch(() => undefined);
     throw error;
   }
 }

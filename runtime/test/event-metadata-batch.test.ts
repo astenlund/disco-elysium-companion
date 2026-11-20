@@ -11,6 +11,7 @@ import { eventFileName } from '../src/journal-records.ts';
 import { jsonBudgets, stringifyJson } from '../src/json.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 describe('native bounded event metadata batches', () => {
   it('preserves complete valid and invalid hashes, absence and unreadable failures', { timeout: 120000 }, async () => {
@@ -36,7 +37,7 @@ describe('native bounded event metadata batches', () => {
       const oversized = await reader.readInventory([{ path: 'oversized.json', sequence: 5 }]);
       assert.equal(oversized[0]!.status, 'invalid');
       assert.equal(oversized[0]!.sha256, createHash('sha256').update(bytes).digest('hex'));
-    } finally { await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => inspector?.idle(), () => fixture.close()); }
   });
 
   it('returns a useful prefix before the next full-profile file and preserves direct source mode', { timeout: 120000 }, async context => {
@@ -63,7 +64,7 @@ describe('native bounded event metadata batches', () => {
       const sourceRequest = JSON.stringify([{ path: path.join(fixture.root, 'missing-source.json'), sequence: 1 }]);
       const source = await native('eventMetadata', { root: fixture.root, requestsJson: sourceRequest, source: true });
       assert.deepEqual(JSON.parse(stringifyJson(source)), { documents: [{ path: path.join(fixture.root, 'missing-source.json'), status: 'absent', sha256: null, metadata: null }] });
-    } finally { await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => inspector?.idle(), () => fixture.close()); }
   });
 
   it('returns a correct metadata prefix of a large batch within the document budget', { timeout: 120000 }, async context => {
@@ -99,7 +100,7 @@ describe('native bounded event metadata batches', () => {
         assert.equal(document.sha256, expected.get(document.path));
       }
       context.diagnostic(`requested=${requests.length} returned=${result.documents.length} replyBytes=${Buffer.byteLength(reply, 'utf8')}`);
-    } finally { await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => inspector?.idle(), () => fixture.close()); }
   });
 
   it('rejects malformed, over-count, over-text and over-byte native requests', { timeout: 120000 }, async () => {
@@ -119,6 +120,6 @@ describe('native bounded event metadata batches', () => {
           error => error instanceof NativeOperationError && error.code === 'inspectionUnavailable');
       }
       assert.deepEqual(await fs.readdir(fixture.root), []);
-    } finally { await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => inspector?.idle(), () => fixture.close()); }
   });
 });

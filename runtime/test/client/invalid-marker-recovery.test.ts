@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 import { plantOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
+import { releaseAll } from '../support/release.ts';
 import { openSyntheticChat, startAndStopSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 const openChild = fileURLToPath(new URL('../backend/fixtures/open-backend-child.ts', import.meta.url));
@@ -55,10 +56,7 @@ describe('operator recovery from a content-invalid runtime marker', () => {
       assert.equal((JSON.parse(await fs.readFile(marker, 'utf8')) as { readonly cleanShutdown: boolean }).cleanShutdown, false);
       assert.equal(await fs.readFile(evidence, 'utf8'), invalid);
     } finally {
-      orphan?.kill();
-      await orphan?.closed;
-      await second?.host.shutdown();
-      await fixture.close();
+      await releaseAll(() => orphan?.kill(), () => orphan?.closed, () => second?.host.shutdown(), () => fixture.close());
     }
   });
 });

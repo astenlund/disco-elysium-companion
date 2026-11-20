@@ -21,6 +21,7 @@ import { bytesHash } from '../src/storage.ts';
 import type { ProxyLaunch } from './support/helper-proxy.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative, helperProxies, testHelperImage, type HelperProxies, type TestNative } from './support/native-helper.ts';
+import { releaseAfter, releaseAll } from './support/release.ts';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const childScript = fileURLToPath(new URL('./fixtures/process-child.ts', import.meta.url));
@@ -49,19 +50,20 @@ async function faultHarness(launches: readonly ProxyLaunch[], image?: HelperImag
       fixture, scratch, proxies, helper, supervisor, inspector, guard, publisher,
       /** Records of one launch, by the real service pid behind it. */
       recordsOf: async (launch: number) => (await proxies.records()).filter(record => record.pid === proxies.pids[launch]),
-      close: async () => {
-        await publisher.idle();
-        await helper.close().catch(() => undefined);
-        await guard.release();
-        await fixture.close();
-        await fs.rm(scratch, { recursive: true, force: true });
-      },
+      close: () => releaseAll(
+        () => publisher.idle(),
+        () => helper.close().catch(() => undefined),
+        () => guard.release(),
+        () => fixture.close(),
+        () => fs.rm(scratch, { recursive: true, force: true })),
     };
   } catch (error) {
-    await startedHelper?.close().catch(() => undefined);
-    await heldGuard?.release();
-    await fixture.close();
-    await fs.rm(scratch, { recursive: true, force: true });
+    // A cleanup failure must never replace the setup error this rethrows.
+    await releaseAll(
+      () => startedHelper?.close().catch(() => undefined),
+      () => heldGuard?.release(),
+      () => fixture.close(),
+      () => fs.rm(scratch, { recursive: true, force: true })).catch(() => undefined);
     throw error;
   }
 }
@@ -238,11 +240,7 @@ describe('native helper service faults against the real service', () => {
       }
       assert.deepEqual(await fs.readFile(path.join(fixture.root, relative)), bytes);
     } finally {
-      await openedPublisher?.idle();
-      await openedReader?.close();
-      await openedChat?.close();
-      await heldGuard?.release();
-      await fixture.close();
+      await releaseAll(() => openedPublisher?.idle(), releaseAfter(() => releaseAll(() => openedReader?.close(), () => openedChat?.close()), () => heldGuard?.release()), () => fixture.close());
     }
   });
 

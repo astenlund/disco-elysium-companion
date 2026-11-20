@@ -7,6 +7,7 @@ import { readProcessIdentity } from '../../src/process.ts';
 import { companionFixture } from '../support/companion.ts';
 import { testHelperImage } from '../support/native-helper.ts';
 import { plantOrphanWatcher, type OrphanWatcher } from '../support/orphan-watcher.ts';
+import { releaseAll } from '../support/release.ts';
 import { openSyntheticChat, startAndStopSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 describe('chat start over an orphaned watcher', () => {
@@ -35,10 +36,7 @@ describe('chat start over an orphaned watcher', () => {
       assert.equal(await second.backend.supervisor.observeJobAbsent('watcher'), true);
       assert.equal(attached.result, 'attached');
     } finally {
-      orphan?.kill();
-      await orphan?.closed;
-      await second?.host.shutdown();
-      await fixture.close();
+      await releaseAll(() => orphan?.kill(), () => orphan?.closed, () => second?.host.shutdown(), () => fixture.close());
     }
   });
 });

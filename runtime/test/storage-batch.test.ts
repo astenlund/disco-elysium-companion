@@ -14,6 +14,7 @@ import type { RuntimeScope } from '../src/scope.ts';
 import { bytesHash, ScopeStorage, StorageConflictError } from '../src/storage.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 describe('bounded file-hash protocol', () => {
   it('splits long paths by decoded-text budget and rejects uncorrelated or incomplete replies', async () => {
@@ -105,7 +106,7 @@ describe('native storage batch admission', () => {
       await fs.unlink(path.join(fixture.root, 'alias.json'));
       await assert.rejects(storage.readMany(['.'], 'config', value => value), DataRootUnavailableError);
       await assert.rejects(storage.readMany(['../outside.json'], 'config', value => value), DataRootUnavailableError);
-    } finally { await inspector?.idle(); await fixture.close(); }
+    } finally { await releaseAll(() => inspector?.idle(), () => fixture.close()); }
   });
 
   it('refuses changed bytes, lost reads and expired proof before returning authority', { timeout: 90000 }, async () => {

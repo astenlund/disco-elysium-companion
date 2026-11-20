@@ -15,6 +15,7 @@ import { eventRewriteMetadata } from '../src/journal-records.ts';
 import { parseStrictJson, utcNow } from '../src/json.ts';
 import { companionFixture } from './support/companion.ts';
 import { createTestNative } from './support/native-helper.ts';
+import { releaseAll } from './support/release.ts';
 
 describe('journal durable write ordering', () => {
   it('recovers event-before-high-water without settling early and acknowledges only the accepted copy', { timeout: 360000 }, async () => {
@@ -153,10 +154,7 @@ describe('journal durable write ordering', () => {
         await assert.rejects(work.markSent([], generation), JournalUnavailableError);
       }), JournalUnavailableError);
     } finally {
-      await openedJournal?.idle();
-      await publisher?.idle();
-      await guard?.release();
-      await fixture.close();
+      await releaseAll(() => openedJournal?.idle(), () => publisher?.idle(), () => guard?.release(), () => fixture.close());
     }
   });
 });
