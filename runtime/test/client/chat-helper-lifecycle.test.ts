@@ -28,15 +28,19 @@ async function attach(chat: SyntheticChat, sink: (event: HostEvent) => void = ()
 }
 
 /**
- * Ends any provider broker a test left running, as one that fails before its shutdown can, and then releases the guard
- * that a shutdown failed on the exhausted helper keeps held, before the fixture is closed. A chat that never opened leaves
- * only the fixture to close.
+ * Ends any provider broker a test left running, as one that fails before its shutdown can, closes the native helper, whether
+ * or not the test exhausted it, and only then releases the guard a failed shutdown keeps held, before the fixture is closed.
+ * A chat that never opened leaves only the fixture to close.
  */
 async function releaseExhaustedChat(chat: SyntheticChat | null, fixture: { close(): Promise<void> }): Promise<void> {
   try {
     if (chat !== null) {
       try { await chat.provider.endChildren(); }
-      finally { await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined); }
+      finally {
+        // A close the helper cannot complete must not keep the guard and fixture held, nor replace the test's own failure.
+        await chat.backend.supervisor.nativeHelper.close().catch(() => undefined);
+        await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
+      }
     }
   } finally { await fixture.close(); }
 }
