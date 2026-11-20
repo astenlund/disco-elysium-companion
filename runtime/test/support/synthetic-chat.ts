@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import type { RuntimeBackend } from '../../src/backend/api.ts';
+import type { Kernel } from '../../src/backend/kernel.ts';
 import type { HelperImage } from '../../src/native-image.ts';
 import { createChatRuntime, privateRuntimeStartup } from '../../src/runtime.ts';
 import type { SessionHost } from '../../src/session-host.ts';
@@ -57,6 +58,24 @@ export async function exhaustHelper(chat: SyntheticChat, timeoutMs = 30_000): Pr
   await until(() => { const current = servicePid(); return current !== null && current !== first; }, 'a replacement service');
   process.kill(servicePid()!);
   await until(() => helper.exhausted && servicePid() === null, 'exhaustion');
+}
+
+/**
+ * Ends any provider broker a test left running, as one that fails before its shutdown can, closes the native helper, whether
+ * or not the test exhausted it, and only then releases the guard a failed shutdown keeps held, before the fixture is closed.
+ * A chat that never opened leaves only the fixture to close.
+ */
+export async function releaseExhaustedChat(chat: SyntheticChat | null, fixture: { close(): Promise<void> }): Promise<void> {
+  try {
+    if (chat !== null) {
+      try { await chat.provider.endChildren(); }
+      finally {
+        // A close the helper cannot complete must not keep the guard and fixture held, nor replace the test's own failure.
+        await chat.backend.supervisor.nativeHelper.close().catch(() => undefined);
+        await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
+      }
+    }
+  } finally { await fixture.close(); }
 }
 
 /** A clean first chat start and shutdown, naming the watcher job and runtime marker of the scope it leaves behind. */

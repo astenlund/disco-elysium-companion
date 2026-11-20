@@ -16,34 +16,17 @@ import type { HostEvent } from '../../src/session-host-contract.ts';
 import { companionFixture } from '../support/companion.ts';
 import { helperProxies, testHelperImage } from '../support/native-helper.ts';
 import { releaseAll } from '../support/release.ts';
-import { exhaustHelper, openSyntheticChat, type SyntheticChat } from '../support/synthetic-chat.ts';
+import { exhaustHelper, openSyntheticChat, releaseExhaustedChat, type SyntheticChat } from '../support/synthetic-chat.ts';
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
 const attachAndWait = fileURLToPath(new URL('../support/attach-and-wait.ts', import.meta.url));
 const exhaustAndExit = fileURLToPath(new URL('../support/exhaust-and-exit.ts', import.meta.url));
 const childScript = fileURLToPath(new URL('../fixtures/process-child.ts', import.meta.url));
 const childOptions = { command: process.execPath, args: [childScript, 'arguments', 'refused'], cwd: repository };
+
 async function attach(chat: SyntheticChat, sink: (event: HostEvent) => void = () => {}): Promise<void> {
   const attached = await chat.host.attachVerified(sink);
   assert.equal(attached.result, 'attached');
-}
-
-/**
- * Ends any provider broker a test left running, as one that fails before its shutdown can, closes the native helper, whether
- * or not the test exhausted it, and only then releases the guard a failed shutdown keeps held, before the fixture is closed.
- * A chat that never opened leaves only the fixture to close.
- */
-async function releaseExhaustedChat(chat: SyntheticChat | null, fixture: { close(): Promise<void> }): Promise<void> {
-  try {
-    if (chat !== null) {
-      try { await chat.provider.endChildren(); }
-      finally {
-        // A close the helper cannot complete must not keep the guard and fixture held, nor replace the test's own failure.
-        await chat.backend.supervisor.nativeHelper.close().catch(() => undefined);
-        await (chat.backend as unknown as { readonly kernel: Kernel }).kernel.guard.release().catch(() => undefined);
-      }
-    }
-  } finally { await fixture.close(); }
 }
 
 describe('chat lifecycle on the native helper', () => {
