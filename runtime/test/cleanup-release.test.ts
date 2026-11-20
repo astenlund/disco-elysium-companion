@@ -62,13 +62,19 @@ describe('test teardown release helpers', () => {
   });
 
   it('closes the native helper before releasing the guard and still closes the fixture when broker cleanup fails', async () => {
-    // Arrange: broker cleanup rejects while the helper still runs, and the helper close itself also fails.
+    // Arrange: broker cleanup rejects while the helper still runs, and the helper close itself also fails. The close settles
+    // only after a later macrotask and records then, so a close that is started but not awaited would record after the guard.
     const calls: string[] = [];
     const brokerFailure = new Error('a broker did not exit');
+    const helperClose = async (): Promise<never> => {
+      await new Promise<void>(resolve => { setImmediate(resolve); });
+      calls.push('helper');
+      throw new Error('helper exit unobserved');
+    };
     const chat = {
       provider: { endChildren: async () => { calls.push('brokers'); throw brokerFailure; } },
       backend: {
-        supervisor: { nativeHelper: { close: async () => { calls.push('helper'); throw new Error('helper exit unobserved'); } } },
+        supervisor: { nativeHelper: { close: helperClose } },
         kernel: { guard: { release: async () => { calls.push('guard'); } } },
       },
     } as unknown as SyntheticChat;
