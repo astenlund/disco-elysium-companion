@@ -123,7 +123,7 @@ function Get-TestShellExecutable {
 }
 
 function Test-RelativeExecutableResolution {
-    $scratch = Join-Path (Split-Path $PSScriptRoot -Parent) ('.tmp/relative-exe-' + [guid]::NewGuid().ToString('N'))
+    $scratch = New-ScratchCompanionRoot -Prefix 'relative-exe'
     $savedWindir = $env:WINDIR
     Remove-Item Env:WINDIR -ErrorAction SilentlyContinue
     try {
@@ -164,12 +164,18 @@ function Test-RelativeExecutableResolution {
         if ($null -ne $savedWindir) {
             $env:WINDIR = $savedWindir
         }
-
-        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-$tests = [ordered]@{ Streams = ${function:Test-AdapterCommandCapturesBothStreamsAndExitCode}; CleanExit = ${function:Test-AdapterCommandAcceptsCleanExit}; InheritedPipe = ${function:Test-AdapterCommandTimesOutWhenAnInheritedPipePreventsEof}; BoundaryOutput = ${function:Test-AdapterCommandDrainsBufferBoundaryOutput}; LargeStreams = ${function:Test-AdapterCommandDrainsConcurrentLargeStreams}; StreamCloseFailure = ${function:Test-AdapterCommandReportsInjectedStreamCloseFailure}; KillFailure = ${function:Test-AdapterCommandReportsInjectedKillFailureAndDiscardsCapture}; RelativeExecutableResolution = ${function:Test-RelativeExecutableResolution} }
-if ($Only -eq 'All') { foreach ($test in $tests.Values) { & $test } } else { & $tests[$Only] }
+try {
+    $tests = [ordered]@{ Streams = ${function:Test-AdapterCommandCapturesBothStreamsAndExitCode}; CleanExit = ${function:Test-AdapterCommandAcceptsCleanExit}; InheritedPipe = ${function:Test-AdapterCommandTimesOutWhenAnInheritedPipePreventsEof}; BoundaryOutput = ${function:Test-AdapterCommandDrainsBufferBoundaryOutput}; LargeStreams = ${function:Test-AdapterCommandDrainsConcurrentLargeStreams}; StreamCloseFailure = ${function:Test-AdapterCommandReportsInjectedStreamCloseFailure}; KillFailure = ${function:Test-AdapterCommandReportsInjectedKillFailureAndDiscardsCapture}; RelativeExecutableResolution = ${function:Test-RelativeExecutableResolution} }
+    if ($Only -eq 'All') { foreach ($test in $tests.Values) { & $test } } else { & $tests[$Only] }
 
-Write-Output 'PASS: Process runner'
+    Write-Output 'PASS: Process runner'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

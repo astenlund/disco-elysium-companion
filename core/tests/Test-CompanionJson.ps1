@@ -20,34 +20,29 @@ function Test-ReadRejectsEscapeEquivalentDuplicate {
 }
 
 function Test-ReadBoundaryMatrixForBothInputs {
-    $path = Join-Path (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tmp') "companion-json-$PID-matrix.json"
-    try {
-        foreach ($json in @('{"x":1,"x":2}', '{"x":1,"\u0078":2}', '{"x":', '')) {
-            [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
-            Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $json -Budget config }
-            Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget config }
-        }
-        $caseDistinct = '{"x":1,"X":2}'
-        [IO.File]::WriteAllText($path, $caseDistinct, [Text.UTF8Encoding]::new($false))
-        foreach ($value in @((Read-CompanionJson -Json $caseDistinct -Budget config), (Read-CompanionJson -Path $path -Budget config))) {
-            Assert-True -Condition ($value.Materialized.ContainsKey('x') -and $value.Materialized.ContainsKey('X')) -Message 'case-distinct properties are legal for both inputs'
-        }
-        $exact = '{"x":1}'
-        $byteCount = [Text.Encoding]::UTF8.GetByteCount($exact)
-        [IO.File]::WriteAllText($path, $exact, [Text.UTF8Encoding]::new($false))
-        foreach ($read in @({ Read-CompanionJson -Json $exact -Budget ([pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 4; MaxTextBytes = 1 }) }, { Read-CompanionJson -Path $path -Budget ([pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 4; MaxTextBytes = 1 }) })) {
-            $null = & $read
-        }
-        foreach ($budget in @(
-                [pscustomobject]@{ MaxBytes = $byteCount - 1; MaxTokens = 4; MaxTextBytes = 1 },
-                [pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 3; MaxTextBytes = 1 },
-                [pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 4; MaxTextBytes = 0 })) {
-            Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $exact -Budget $budget }
-            Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget $budget }
-        }
+    $path = Join-Path $script:Scratch 'matrix.json'
+    foreach ($json in @('{"x":1,"x":2}', '{"x":1,"\u0078":2}', '{"x":', '')) {
+        [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
+        Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $json -Budget config }
+        Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget config }
     }
-    finally {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    $caseDistinct = '{"x":1,"X":2}'
+    [IO.File]::WriteAllText($path, $caseDistinct, [Text.UTF8Encoding]::new($false))
+    foreach ($value in @((Read-CompanionJson -Json $caseDistinct -Budget config), (Read-CompanionJson -Path $path -Budget config))) {
+        Assert-True -Condition ($value.Materialized.ContainsKey('x') -and $value.Materialized.ContainsKey('X')) -Message 'case-distinct properties are legal for both inputs'
+    }
+    $exact = '{"x":1}'
+    $byteCount = [Text.Encoding]::UTF8.GetByteCount($exact)
+    [IO.File]::WriteAllText($path, $exact, [Text.UTF8Encoding]::new($false))
+    foreach ($read in @({ Read-CompanionJson -Json $exact -Budget ([pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 4; MaxTextBytes = 1 }) }, { Read-CompanionJson -Path $path -Budget ([pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 4; MaxTextBytes = 1 }) })) {
+        $null = & $read
+    }
+    foreach ($budget in @(
+            [pscustomobject]@{ MaxBytes = $byteCount - 1; MaxTokens = 4; MaxTextBytes = 1 },
+            [pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 3; MaxTextBytes = 1 },
+            [pscustomobject]@{ MaxBytes = $byteCount; MaxTokens = 4; MaxTextBytes = 0 })) {
+        Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $exact -Budget $budget }
+        Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget $budget }
     }
 }
 
@@ -69,29 +64,19 @@ function Test-ReadHonorsBudgetsAndDepth {
     $depth65 = ('[' * ($maxDepth + 1)) + '0' + (']' * ($maxDepth + 1))
     $null = Read-CompanionJson -Json $depth64 -Budget dump
     Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json $depth65 -Budget dump }
-    $path = Join-Path (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tmp') "companion-json-$PID-depth.json"
-    try {
-        [IO.File]::WriteAllText($path, $depth64, [Text.UTF8Encoding]::new($false))
-        $null = Read-CompanionJson -Path $path -Budget dump
-        [IO.File]::WriteAllText($path, $depth65, [Text.UTF8Encoding]::new($false))
-        Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget dump }
-    }
-    finally {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-    }
+    $path = Join-Path $script:Scratch 'depth.json'
+    [IO.File]::WriteAllText($path, $depth64, [Text.UTF8Encoding]::new($false))
+    $null = Read-CompanionJson -Path $path -Budget dump
+    [IO.File]::WriteAllText($path, $depth65, [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget dump }
 }
 
 function Test-ReadPathRejectsInvalidUtf8AndAllowsReplacement {
-    $path = Join-Path (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tmp') "companion-json-$PID-invalid.json"
-    try {
-        [IO.File]::WriteAllBytes($path, [byte[]](0x7B, 0x22, 0x78, 0x22, 0x3A, 0xC3, 0x28, 0x7D))
-        Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget config }
-        [IO.File]::WriteAllText($path, '{"x":true}', [Text.UTF8Encoding]::new($false))
-        Assert-Equal -Actual (Read-CompanionJson -Path $path -Budget config).Materialized['x'] -Expected $true -Message 'path opens with replacement-compatible sharing'
-    }
-    finally {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-    }
+    $path = Join-Path $script:Scratch 'invalid.json'
+    [IO.File]::WriteAllBytes($path, [byte[]](0x7B, 0x22, 0x78, 0x22, 0x3A, 0xC3, 0x28, 0x7D))
+    Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Path $path -Budget config }
+    [IO.File]::WriteAllText($path, '{"x":true}', [Text.UTF8Encoding]::new($false))
+    Assert-Equal -Actual (Read-CompanionJson -Path $path -Budget config).Materialized['x'] -Expected $true -Message 'path opens with replacement-compatible sharing'
 }
 
 function Test-ReadRejectsIsolatedSurrogateAndSupportsScalarAndNull {
@@ -99,16 +84,11 @@ function Test-ReadRejectsIsolatedSurrogateAndSupportsScalarAndNull {
     Assert-ThrowsType -TypeName 'CompanionJsonParseException' -Action { Read-CompanionJson -Json ([string][char]0xDC00) -Budget config }
     Assert-Equal -Actual (Read-CompanionJson -Json '42' -Budget config).Materialized -Expected ([long] 42) -Message 'scalar root is retained'
     Assert-True -Condition ($null -eq (Read-CompanionJson -Json 'null' -Budget config).Materialized) -Message 'null root is retained'
-    $path = Join-Path (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tmp') "companion-json-$PID-scalar.json"
-    try {
-        [IO.File]::WriteAllText($path, '42', [Text.UTF8Encoding]::new($false))
-        Assert-Equal -Actual (Read-CompanionJson -Path $path -Budget config).Materialized -Expected ([long] 42) -Message 'path scalar root is retained'
-        [IO.File]::WriteAllText($path, 'null', [Text.UTF8Encoding]::new($false))
-        Assert-True -Condition ($null -eq (Read-CompanionJson -Path $path -Budget config).Materialized) -Message 'path null root is retained'
-    }
-    finally {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-    }
+    $path = Join-Path $script:Scratch 'scalar.json'
+    [IO.File]::WriteAllText($path, '42', [Text.UTF8Encoding]::new($false))
+    Assert-Equal -Actual (Read-CompanionJson -Path $path -Budget config).Materialized -Expected ([long] 42) -Message 'path scalar root is retained'
+    [IO.File]::WriteAllText($path, 'null', [Text.UTF8Encoding]::new($false))
+    Assert-True -Condition ($null -eq (Read-CompanionJson -Path $path -Budget config).Materialized) -Message 'path null root is retained'
 }
 
 function Test-ReadKeepsOwnedElementAndRejectsMixedParameterSets {
@@ -140,24 +120,33 @@ function Test-SerializationUsesStrictBoundedUtf8AndExactJsonElement {
     }
 }
 
-$tests = [ordered]@{
-    EscapeEquivalentDuplicate = ${function:Test-ReadRejectsEscapeEquivalentDuplicate}
-    BoundaryMatrix = ${function:Test-ReadBoundaryMatrixForBothInputs}
-    CaseAndLexemes = ${function:Test-ReadPreservesCaseDistinctPropertiesAndNumberLexemes}
-    BudgetsAndDepth = ${function:Test-ReadHonorsBudgetsAndDepth}
-    InvalidUtf8 = ${function:Test-ReadPathRejectsInvalidUtf8AndAllowsReplacement}
-    ScalarRoots = ${function:Test-ReadRejectsIsolatedSurrogateAndSupportsScalarAndNull}
-    OwnedElement = ${function:Test-ReadKeepsOwnedElementAndRejectsMixedParameterSets}
-    Serialization = ${function:Test-SerializationUsesStrictBoundedUtf8AndExactJsonElement}
-}
-
-if ($Only -eq 'All') {
-    foreach ($test in $tests.Values) {
-        & $test
+try {
+    $script:Scratch = New-ScratchCompanionRoot -Prefix 'companion-json'
+    $tests = [ordered]@{
+        EscapeEquivalentDuplicate = ${function:Test-ReadRejectsEscapeEquivalentDuplicate}
+        BoundaryMatrix = ${function:Test-ReadBoundaryMatrixForBothInputs}
+        CaseAndLexemes = ${function:Test-ReadPreservesCaseDistinctPropertiesAndNumberLexemes}
+        BudgetsAndDepth = ${function:Test-ReadHonorsBudgetsAndDepth}
+        InvalidUtf8 = ${function:Test-ReadPathRejectsInvalidUtf8AndAllowsReplacement}
+        ScalarRoots = ${function:Test-ReadRejectsIsolatedSurrogateAndSupportsScalarAndNull}
+        OwnedElement = ${function:Test-ReadKeepsOwnedElementAndRejectsMixedParameterSets}
+        Serialization = ${function:Test-SerializationUsesStrictBoundedUtf8AndExactJsonElement}
     }
-}
-else {
-    & $tests[$Only]
-}
 
-Write-Output 'PASS: Companion JSON'
+    if ($Only -eq 'All') {
+        foreach ($test in $tests.Values) {
+            & $test
+        }
+    }
+    else {
+        & $tests[$Only]
+    }
+
+    Write-Output 'PASS: Companion JSON'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
+}
+finally {
+    Complete-ScratchHarness
+}

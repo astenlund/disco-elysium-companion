@@ -74,12 +74,6 @@ These user-tracked cleanups came from Nightshift run a69edaac-e54c-47ec-ba9c-3e2
 
 - **Launch admission test structure.** In `runtime/test/launch-directory.test.ts`, the test that refuses standalone status for a too-long helper image path sits in the suite named "installation launch admission at the command line", although it calls `readBackendStatus` directly and exercises the helper-image check in `NativeHelper.start`, not the CLI. The same file also repeats the scratch-folder and exact-length root staging four times (`openWith`, `cliWith`, that test, and the unreadable-configuration test, which writes a non-JSON configuration instead of the checked-in one). Move the status test next to its `openBackend` counterpart and extract one in-file `withStagedRoot(prefix, rootLength, configuration, action)` helper that creates the run's own folder, stages the root with the given configuration content, runs the action and removes only that folder, so all four sites use it; no production change.
 
-## Scratch cleanup follow-ups
-
-These user-tracked cleanups came from Nightshift run 4c9ec3e7-cbd5-4d5e-a544-7be74dd8cb2e. None was fixed by this tracking edit.
-
-- **Harnesses outside the scratch template.** Every harness that writes scratch without `New-ScratchCompanionRoot` removes it with `Remove-Item -ErrorAction SilentlyContinue`, which hides residue, under names `Clear-StaleScratchRoots` does not reap. As of 2026-11-15 there are three: `core/tests/Test-ProcessRunner.ps1` creates `relative-exe-<guid>`, `adapters/disco_elysium/Test-Build-Digest.ps1` creates `build-digest-<guid>`, and `core/tests/Test-CompanionJson.ps1` writes `companion-json-<pid>-*.json` files directly into the project `.tmp`. `Test-ProcessRunner.ps1` builds its path from the parent of `core/tests`, so it writes under `core/.tmp` rather than the project `.tmp`. Move them onto `New-ScratchCompanionRoot` and the shared `Exit-HarnessFailure`/`Complete-ScratchHarness` template, so their scratch lands in the project `.tmp` and residue fails them.
-
 ## Exhaustion batch follow-ups
 
 These user-tracked cleanups came from Nightshift run 3765cdf2-b11c-4178-8e84-4c235911bd07. None was fixed by this tracking edit.

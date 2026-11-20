@@ -12,10 +12,9 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Import-Module (Join-Path $root 'core/DigestDiff.psm1') -Force
+Import-Module (Join-Path $root 'core/tests/TestSupport.psm1') -Force
 $mapper = Join-Path $PSScriptRoot 'Build-Digest.ps1'
 $script:SkillKeyMap = Get-Content -Raw (Join-Path $PSScriptRoot 'game_data/skill_key_map.json') | ConvertFrom-Json -AsHashtable
-$scratch = Join-Path $root ('.tmp/build-digest-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $scratch | Out-Null
 
 function Assert([bool] $Condition, [string] $Message) {
     if (-not $Condition) {
@@ -354,6 +353,7 @@ function Test-MapperPublication {
 }
 
 try {
+    $scratch = New-ScratchCompanionRoot -Prefix 'build-digest'
     $tests = [ordered]@{
         MapperSemanticOutput = ${function:Test-MapperSemanticOutput}
         MapperPublication = ${function:Test-MapperPublication}
@@ -375,9 +375,12 @@ try {
     else {
         & $tests[$Only]
     }
+
+    Write-Host 'all Build-Digest assertions passed'
+}
+catch {
+    Exit-HarnessFailure -ErrorRecord $_
 }
 finally {
-    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    Complete-ScratchHarness
 }
-
-Write-Host 'all Build-Digest assertions passed'
